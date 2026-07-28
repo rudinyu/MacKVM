@@ -164,11 +164,19 @@ input.
    adapter.
 3. In **System Settings → Displays → Arrange**, make the MA270U the main
    display on both Macs.
-4. On each Mac, build its native app bundle and launch that bundle:
+4. On the M5 Pro, build both architecture-specific app bundles:
 
    ```sh
-   ./scripts/build-app.sh
-   open dist/MacKVM.app
+   ./scripts/build-app.sh --arch arm64
+   ./scripts/build-app.sh --arch x86_64
+   ```
+
+   Copy `dist/arm64/MacKVM.app` into `/Applications` on the M5 Pro and
+   `dist/x86_64/MacKVM.app` into `/Applications` on the 2019 Intel Mac. On
+   each Mac, launch the installed app:
+
+   ```sh
+   open /Applications/MacKVM.app
    ```
 
    Do not use `swift run` for normal operation: the generated `.app` carries

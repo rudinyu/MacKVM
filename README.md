@@ -40,16 +40,30 @@ MA270U OSD switching available at all times.
 
 ## Build and run the macOS app
 
-Build and ad-hoc sign a native app bundle:
+Build and ad-hoc sign an app bundle for the current Mac:
 
 ```sh
 ./scripts/build-app.sh
 open dist/MacKVM.app
 ```
 
-The result is `dist/MacKVM.app`. Build it separately on each Mac so the Intel
-Mac receives an x86_64 executable and the M5 Pro Mac receives an arm64
-executable. Copy the resulting app into `/Applications` on the same Mac.
+The result is `dist/MacKVM.app`.
+
+An Apple Silicon Mac can also cross-build both supported architectures:
+
+```sh
+# M5 Pro / Apple Silicon
+./scripts/build-app.sh --arch arm64
+
+# 2019 Intel MacBook Pro
+./scripts/build-app.sh --arch x86_64
+```
+
+These commands produce `dist/arm64/MacKVM.app` and
+`dist/x86_64/MacKVM.app`. Copy the x86_64 app to the Intel Mac and the arm64
+app to the M5 Pro Mac. The build script verifies the Mach-O architecture and
+the ad-hoc code signature without trying to execute the cross-built app.
+
 The app bundle is the supported launch path because it contains the Bonjour
 and Local Network privacy metadata required by macOS. Run it on both Macs while
 they are connected to the same local network. For pointer mapping, set the
@@ -73,6 +87,8 @@ Run local CI after every code change:
 ```sh
 ./.codex/ci.sh
 ```
+
+CI builds, tests, and packages both arm64 and x86_64 app bundles.
 
 Run Codex CI and code review after each complete plan step:
 

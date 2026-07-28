@@ -4,6 +4,58 @@ set -euo pipefail
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$project_root"
 
+usage() {
+  echo "Usage: $0 [--arch native|arm64|x86_64]" >&2
+}
+
+requested_arch="native"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --arch)
+      if [[ $# -lt 2 ]]; then
+        usage
+        exit 2
+      fi
+      requested_arch="$2"
+      shift 2
+      ;;
+    --arch=*)
+      requested_arch="${1#--arch=}"
+      if [[ -z "$requested_arch" ]]; then
+        usage
+        exit 2
+      fi
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage
+      exit 2
+      ;;
+  esac
+done
+
+host_arch="$(uname -m)"
+if [[ "$requested_arch" == "native" ]]; then
+  target_arch="$host_arch"
+  app_dir="$project_root/dist/MacKVM.app"
+else
+  target_arch="$requested_arch"
+  app_dir="$project_root/dist/$target_arch/MacKVM.app"
+fi
+
+case "$target_arch" in
+  arm64|x86_64)
+    ;;
+  *)
+    echo "Unsupported architecture: $target_arch" >&2
+    exit 2
+    ;;
+esac
+
 if [[ -d /Applications/Xcode.app/Contents/Developer ]]; then
   export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 fi
@@ -11,20 +63,44 @@ fi
 export CLANG_MODULE_CACHE_PATH="$project_root/.build/ModuleCache"
 export SWIFTPM_MODULECACHE_OVERRIDE="$CLANG_MODULE_CACHE_PATH"
 
-swift build -c release --disable-sandbox
+# Keep architecture build databases isolated so cached object files can never
+# leak from one target architecture into the other.
+scratch_path="$project_root/.build/app-$target_arch"
+target_triple="$target_arch-apple-macosx"
+build_arguments=(
+  -c release
+  --disable-sandbox
+  --scratch-path "$scratch_path"
+  --triple "$target_triple"
+)
+
+swift build "${build_arguments[@]}"
+# SwiftPM places an explicit triple under <scratch>/<triple>/<configuration>;
+# CI verifies this path for both supported architectures on the build host.
+binary_dir="$scratch_path/$target_triple/release"
+binary_path="$binary_dir/MacKVM"
+
+if [[ ! -x "$binary_path" ]]; then
+  echo "Built executable was not found at $binary_path" >&2
+  exit 1
+fi
+
 plutil -lint "$project_root/Resources/Info.plist"
 
-app_dir="$project_root/dist/MacKVM.app"
 contents_dir="$app_dir/Contents"
 executable_dir="$contents_dir/MacOS"
 
 mkdir -p "$executable_dir"
-install -m 755 "$project_root/.build/release/MacKVM" \
+install -m 755 "$binary_path" \
   "$executable_dir/MacKVM"
 install -m 644 "$project_root/Resources/Info.plist" \
   "$contents_dir/Info.plist"
 
 codesign --force --deep --sign - "$app_dir"
 codesign --verify --deep --strict "$app_dir"
+if ! lipo "$executable_dir/MacKVM" -verify_arch "$target_arch"; then
+  echo "Built binary at $executable_dir/MacKVM does not contain $target_arch." >&2
+  exit 1
+fi
 
-echo "Built $app_dir"
+echo "Built $app_dir ($target_arch)"

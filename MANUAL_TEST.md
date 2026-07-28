@@ -5,20 +5,23 @@ MacBook Pro on HDMI, and the 14-inch M5 Pro MacBook Pro on USB-C.
 
 ## 1. Build and install on each architecture
 
-Run these commands separately on each Mac so each app contains that Mac's
-native executable:
+On the M5 Pro, build both app architectures:
 
 ```sh
 ./.codex/ci.sh
-./scripts/build-app.sh
+./scripts/build-app.sh --arch arm64
+./scripts/build-app.sh --arch x86_64
 ```
 
-Copy `dist/MacKVM.app` into `/Applications` on that same Mac, then launch it.
-Do not copy the Apple Silicon build to the Intel Mac or vice versa.
+Copy `dist/arm64/MacKVM.app` to `/Applications` on the M5 Pro. Copy
+`dist/x86_64/MacKVM.app` to `/Applications` on the Intel Mac, then launch each
+app on its matching architecture.
 
 Expected:
 
-- `codesign --verify --deep --strict dist/MacKVM.app` succeeds.
+- `lipo -archs dist/arm64/MacKVM.app/Contents/MacOS/MacKVM` prints `arm64`.
+- `lipo -archs dist/x86_64/MacKVM.app/Contents/MacOS/MacKVM` prints `x86_64`.
+- `codesign --verify --deep --strict` succeeds for both app bundles.
 - MacKVM appears only in the menu bar.
 - macOS asks for local-network access when needed.
 
