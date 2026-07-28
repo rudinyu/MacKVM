@@ -1,0 +1,6 @@
+.build/
+.swiftpm/
+.DS_Store
+CODEX_CLAUDE_REVIEW.md
+CODEX_REVIEW.md
+dist/

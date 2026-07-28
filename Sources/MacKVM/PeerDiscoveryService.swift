@@ -1,0 +1,865 @@
+import Combine
+import CryptoKit
+import Foundation
+import MacKVMCore
+import Network
+
+struct DiscoveredPeer: Identifiable {
+    let id: String
+    let identity: PeerIdentity
+    let endpoint: NWEndpoint
+
+    var name: String { identity.name }
+}
+
+struct PendingPairingRequest: Identifiable {
+    let id: UUID
+    let peer: PeerIdentity
+    let verificationCode: String
+}
+
+enum DiscoveredPeerTrust {
+    case unpaired
+    case paired
+    case changedKey
+}
+
+final class PeerDiscoveryService: ObservableObject {
+    @Published private(set) var peers: [DiscoveredPeer] = []
+    @Published private(set) var pendingRequests: [PendingPairingRequest] = []
+    @Published private(set) var pairedPeerIDs: Set<UUID>
+    @Published private(set) var status = "Starting…"
+    @Published private(set) var activeVerificationCode: String?
+
+    let identity: PeerIdentity
+
+    private static let serviceType = "_mackvm._tcp"
+    private static let maximumPendingRequests = 5
+    private static let maximumUnauthenticatedConnections = 16
+    private let queue = DispatchQueue(label: "app.mackvm.network")
+    private let registry: PairingRegistry
+    private let privateKey: P256.Signing.PrivateKey
+    private var listener: NWListener?
+    private var browser: NWBrowser?
+    private var requestConnections: [UUID: NWConnection] = [:]
+    private var unauthenticatedConnections: [ObjectIdentifier: NWConnection] = [:]
+    private var requestMessages: [UUID: PairingEnvelope] = [:]
+    private var requestTargets: [UUID: PeerIdentity] = [:]
+    private var localContributions: [UUID: Data] = [:]
+    private var peerCommitments: [UUID: Data] = [:]
+    private var peerContributions: [UUID: Data] = [:]
+    private var locallyAcceptedRequestIDs: Set<UUID> = []
+    private var remotelyAcceptedRequestIDs: Set<UUID> = []
+    private var completionSendStartedRequestIDs: Set<UUID> = []
+    private var locallyCompletedRequestIDs: Set<UUID> = []
+    private var remotelyCompletedRequestIDs: Set<UUID> = []
+    private var completionAcknowledgementSendStartedRequestIDs: Set<UUID> = []
+    private var locallyAcknowledgedByPeerRequestIDs: Set<UUID> = []
+    private var peerClosedRequestIDs: Set<UUID> = []
+    private var activeOutboundRequestID: UUID?
+    private var receiveBuffers: [ObjectIdentifier: Data] = [:]
+    private var connectionTimeouts: [ObjectIdentifier: DispatchWorkItem] = [:]
+
+    init(
+        credentials: DeviceCredentials,
+        registry: PairingRegistry = PairingRegistry()
+    ) {
+        identity = credentials.identity
+        privateKey = credentials.privateKey
+        self.registry = registry
+        pairedPeerIDs = registry.pairedPeerIDs
+    }
+
+    func start() {
+        queue.async { [weak self] in
+            guard let self, self.listener == nil, self.browser == nil else {
+                return
+            }
+            self.startListener()
+            self.startBrowser()
+        }
+    }
+
+    func stop() {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.listener?.cancel()
+            self.browser?.cancel()
+            self.requestConnections.values.forEach { $0.cancel() }
+            self.unauthenticatedConnections.values.forEach { $0.cancel() }
+            self.listener = nil
+            self.browser = nil
+            self.requestConnections.removeAll()
+            self.unauthenticatedConnections.removeAll()
+            self.requestMessages.removeAll()
+            self.requestTargets.removeAll()
+            self.localContributions.removeAll()
+            self.peerCommitments.removeAll()
+            self.peerContributions.removeAll()
+            self.locallyAcceptedRequestIDs.removeAll()
+            self.remotelyAcceptedRequestIDs.removeAll()
+            self.completionSendStartedRequestIDs.removeAll()
+            self.locallyCompletedRequestIDs.removeAll()
+            self.remotelyCompletedRequestIDs.removeAll()
+            self.completionAcknowledgementSendStartedRequestIDs.removeAll()
+            self.locallyAcknowledgedByPeerRequestIDs.removeAll()
+            self.peerClosedRequestIDs.removeAll()
+            self.activeOutboundRequestID = nil
+            self.receiveBuffers.removeAll()
+            self.connectionTimeouts.values.forEach { $0.cancel() }
+            self.connectionTimeouts.removeAll()
+        }
+    }
+
+    func requestPairing(with peer: DiscoveredPeer) {
+        queue.async { [weak self] in
+            self?.requestPairingOnQueue(with: peer)
+        }
+    }
+
+    private func requestPairingOnQueue(with peer: DiscoveredPeer) {
+        guard activeOutboundRequestID == nil else {
+            publishStatus("Finish the current pairing request first")
+            return
+        }
+        guard PairingRequestPolicy.acceptsDiscoveredPeer(
+            peer.identity,
+            pinnedPublicKey: registry.publicKey(for: peer.identity.id)
+        ) else {
+            publishStatus("Rejected a peer with a changed identity key")
+            return
+        }
+
+        let requestID = UUID()
+        let contribution = PairingVerificationCode.makeContribution()
+        let request = PairingEnvelope.request(
+            from: identity,
+            requestID: requestID,
+            commitment: PairingVerificationCode.commitment(
+                requestID: requestID,
+                publicKey: identity.signingPublicKey,
+                contribution: contribution
+            )
+        )
+        let connection = NWConnection(to: peer.endpoint, using: .tcp)
+        activeOutboundRequestID = request.requestID
+        requestConnections[request.requestID] = connection
+        requestMessages[request.requestID] = request
+        requestTargets[request.requestID] = peer.identity
+        localContributions[request.requestID] = contribution
+
+        connection.stateUpdateHandler = { [weak self, weak connection] state in
+            guard let self, let connection else { return }
+            switch state {
+            case .ready:
+                self.scheduleTimeout(for: connection, after: 60)
+                self.send(request, over: connection)
+                self.receive(on: connection)
+                self.publishStatus("Negotiating a security code with \(peer.name)…")
+            case .failed(let error):
+                self.finish(requestID: request.requestID)
+                self.publishStatus("Could not reach \(peer.name): \(error.localizedDescription)")
+            case .cancelled:
+                self.finish(requestID: request.requestID)
+            default:
+                break
+            }
+        }
+        scheduleTimeout(for: connection, after: 15)
+        connection.start(queue: queue)
+    }
+
+    func respond(to pending: PendingPairingRequest, accepted: Bool) {
+        queue.async { [weak self] in
+            self?.respondOnQueue(to: pending, accepted: accepted)
+        }
+    }
+
+    private func respondOnQueue(
+        to pending: PendingPairingRequest,
+        accepted: Bool
+    ) {
+        guard let connection = requestConnections[pending.id],
+              let request = requestMessages[pending.id] else {
+            publishStatus("The pairing request has expired")
+            removePendingRequest(id: pending.id)
+            return
+        }
+
+        let response = PairingEnvelope.decision(
+            to: request,
+            from: identity,
+            accepted: accepted
+        )
+        send(response, over: connection) { [weak self] sent in
+            guard let self else { return }
+            guard sent else {
+                self.finish(requestID: pending.id)
+                return
+            }
+            if accepted {
+                self.locallyAcceptedRequestIDs.insert(pending.id)
+                self.beginCompletionIfMutuallyAccepted(requestID: pending.id)
+            } else {
+                self.finish(requestID: pending.id)
+            }
+        }
+        removePendingRequest(id: pending.id)
+        publishStatus(
+            accepted
+                ? "Waiting for \(pending.peer.name) to confirm"
+                : "Pairing request declined"
+        )
+    }
+
+    func forget(_ peerID: UUID) {
+        registry.remove(peerID)
+        DispatchQueue.main.async { [weak self] in
+            self?.pairedPeerIDs.remove(peerID)
+        }
+    }
+
+    func trustState(for peer: DiscoveredPeer) -> DiscoveredPeerTrust {
+        guard let pinnedKey = registry.publicKey(for: peer.identity.id) else {
+            return .unpaired
+        }
+        return pinnedKey == peer.identity.signingPublicKey
+            ? .paired
+            : .changedKey
+    }
+
+    private func startListener() {
+        do {
+            let listener = try NWListener(using: .tcp)
+            listener.service = NWListener.Service(
+                name: identity.serviceName,
+                type: Self.serviceType,
+                txtRecord: NWTXTRecord([
+                    "id": identity.id.uuidString,
+                    "name": identity.name,
+                    "key": identity.signingPublicKey.base64EncodedString()
+                ])
+            )
+            listener.stateUpdateHandler = { [weak self] state in
+                switch state {
+                case .ready:
+                    self?.publishStatus("Ready on the local network")
+                case .failed(let error):
+                    self?.publishStatus("Listening failed: \(error.localizedDescription)")
+                    self?.listener?.cancel()
+                    self?.listener = nil
+                default:
+                    break
+                }
+            }
+            listener.newConnectionHandler = { [weak self] connection in
+                self?.accept(connection)
+            }
+            self.listener = listener
+            listener.start(queue: queue)
+        } catch {
+            publishStatus("Could not start listener: \(error.localizedDescription)")
+        }
+    }
+
+    private func startBrowser() {
+        let parameters = NWParameters.tcp
+        parameters.includePeerToPeer = true
+        let browser = NWBrowser(
+            for: .bonjourWithTXTRecord(
+                type: Self.serviceType,
+                domain: nil
+            ),
+            using: parameters
+        )
+        browser.browseResultsChangedHandler = { [weak self] results, _ in
+            guard let self else { return }
+            let discovered = results.compactMap { result -> DiscoveredPeer? in
+                guard case let .service(name, _, _, _) = result.endpoint,
+                      name != self.identity.serviceName,
+                      case let .bonjour(txtRecord) = result.metadata,
+                      let peerIdentity = PeerIdentityTXTCodec.decode(txtRecord),
+                      peerIdentity.id != self.identity.id else {
+                    return nil
+                }
+                return DiscoveredPeer(
+                    id: name,
+                    identity: peerIdentity,
+                    endpoint: result.endpoint
+                )
+            }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+
+            DispatchQueue.main.async { [weak self] in
+                self?.peers = discovered
+            }
+        }
+        browser.stateUpdateHandler = { [weak self] state in
+            if case .failed(let error) = state {
+                self?.publishStatus("Discovery failed: \(error.localizedDescription)")
+            }
+        }
+        self.browser = browser
+        browser.start(queue: queue)
+    }
+
+    private func accept(_ connection: NWConnection) {
+        guard unauthenticatedConnections.count
+                < Self.maximumUnauthenticatedConnections else {
+            connection.cancel()
+            return
+        }
+        unauthenticatedConnections[ObjectIdentifier(connection)] = connection
+        connection.stateUpdateHandler = { [weak self, weak connection] state in
+            guard let self, let connection else { return }
+            switch state {
+            case .ready:
+                self.scheduleTimeout(for: connection, after: 10)
+                self.receive(on: connection)
+            case .failed, .cancelled:
+                self.removeConnection(connection)
+            default:
+                break
+            }
+        }
+        connection.start(queue: queue)
+    }
+
+    private func receive(on connection: NWConnection) {
+        connection.receive(
+            minimumIncompleteLength: 1,
+            maximumLength: 65_536
+        ) { [weak self, weak connection] data, _, isComplete, error in
+            guard let self, let connection else { return }
+
+            if let data, !data.isEmpty {
+                do {
+                    let key = ObjectIdentifier(connection)
+                    self.receiveBuffers[key, default: Data()].append(data)
+                    let messages = try PairingWireCodec.decodeAvailableFrames(
+                        from: &self.receiveBuffers[key, default: Data()]
+                    )
+                    messages.forEach {
+                        self.handle($0, on: connection)
+                    }
+                } catch {
+                    self.publishStatus("Received an invalid pairing message")
+                    connection.cancel()
+                    self.receiveBuffers.removeValue(
+                        forKey: ObjectIdentifier(connection)
+                    )
+                    return
+                }
+            }
+
+            if error != nil {
+                self.removeConnection(connection)
+            } else if isComplete {
+                self.handlePeerFinishedSending(connection)
+            } else {
+                self.receive(on: connection)
+            }
+        }
+    }
+
+    private func handle(_ message: PairingEnvelope, on connection: NWConnection) {
+        switch message.kind {
+        case .request:
+            guard message.sender.id != identity.id else {
+                connection.cancel()
+                return
+            }
+            if let outboundRequestID = activeOutboundRequestID,
+               requestTargets[outboundRequestID]?.id == message.sender.id {
+                if PairingRequestPolicy.keepOutboundDuringCollision(
+                    localID: identity.id,
+                    remoteID: message.sender.id
+                ) {
+                    publishStatus(
+                        "Kept the outgoing pairing request after a simultaneous request"
+                    )
+                    connection.cancel()
+                    return
+                }
+                finish(requestID: outboundRequestID)
+            }
+            let decision = PairingRequestPolicy.evaluate(
+                request: message,
+                pinnedPublicKey: registry.publicKey(for: message.sender.id),
+                activeRequestIDs: Set(requestMessages.keys),
+                pendingSenderIDs: Set(
+                    requestMessages.values
+                        .filter { $0.kind == .request }
+                        .map(\.sender.id)
+                ),
+                activeRequestCount: requestMessages.count,
+                maximumPendingRequests: Self.maximumPendingRequests
+            )
+            guard decision == .allow else {
+                publishStatus(statusMessage(for: decision))
+                connection.cancel()
+                return
+            }
+            guard let peerCommitment = message.verificationCommitment,
+                  peerCommitment.count == SHA256.Digest.byteCount else {
+                publishStatus("Rejected an invalid pairing commitment")
+                connection.cancel()
+                return
+            }
+            let localContribution = PairingVerificationCode.makeContribution()
+            unauthenticatedConnections.removeValue(
+                forKey: ObjectIdentifier(connection)
+            )
+            scheduleTimeout(for: connection, after: 60)
+            requestConnections[message.requestID] = connection
+            requestMessages[message.requestID] = message
+            localContributions[message.requestID] = localContribution
+            peerCommitments[message.requestID] = peerCommitment
+            let challenge = PairingEnvelope.challenge(
+                to: message,
+                from: identity,
+                commitment: PairingVerificationCode.commitment(
+                    requestID: message.requestID,
+                    publicKey: identity.signingPublicKey,
+                    contribution: localContribution
+                )
+            )
+            send(challenge, over: connection)
+            publishStatus("Negotiating a security code with \(message.sender.name)…")
+
+        case .challenge:
+            guard let expectedPeer = validatedOutboundPeer(for: message),
+                  let peerCommitment = message.verificationCommitment,
+                  peerCommitment.count == SHA256.Digest.byteCount,
+                  let localContribution = localContributions[message.requestID],
+                  let request = requestMessages[message.requestID] else {
+                rejectUnexpected(message, on: connection)
+                return
+            }
+            peerCommitments[message.requestID] = peerCommitment
+            let reveal = PairingEnvelope.reveal(
+                to: request,
+                from: identity,
+                contribution: localContribution
+            )
+            send(reveal, over: connection)
+            publishStatus("Waiting for \(expectedPeer.name) to confirm the code…")
+
+        case .reveal:
+            guard let request = requestMessages[message.requestID],
+                  request.sender.id == message.sender.id,
+                  request.sender.signingPublicKey == message.sender.signingPublicKey,
+                  let commitment = peerCommitments[message.requestID],
+                  let peerContribution = message.verificationContribution,
+                  PairingVerificationCode.verifies(
+                      commitment: commitment,
+                      requestID: message.requestID,
+                      publicKey: message.sender.signingPublicKey,
+                      contribution: peerContribution
+                  ),
+                  let localContribution = localContributions[message.requestID] else {
+                rejectUnexpected(message, on: connection)
+                return
+            }
+            peerContributions[message.requestID] = peerContribution
+            let verificationCode = PairingVerificationCode.make(
+                requestID: message.requestID,
+                initiatorPublicKey: message.sender.signingPublicKey,
+                responderPublicKey: identity.signingPublicKey,
+                initiatorContribution: peerContribution,
+                responderContribution: localContribution
+            )
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                if !self.pendingRequests.contains(where: { $0.id == message.requestID }) {
+                    self.pendingRequests.append(
+                        PendingPairingRequest(
+                            id: message.requestID,
+                            peer: message.sender,
+                            verificationCode: verificationCode
+                        )
+                    )
+                }
+                self.status = "\(message.sender.name) wants to pair"
+            }
+            let confirmation = PairingEnvelope.confirmation(
+                to: request,
+                from: identity,
+                contribution: localContribution
+            )
+            send(confirmation, over: connection)
+
+        case .confirmation:
+            guard let expectedPeer = validatedOutboundPeer(for: message),
+                  let peerCommitment = peerCommitments[message.requestID],
+                  let peerContribution = message.verificationContribution,
+                  PairingVerificationCode.verifies(
+                      commitment: peerCommitment,
+                      requestID: message.requestID,
+                      publicKey: expectedPeer.signingPublicKey,
+                      contribution: peerContribution
+                  ),
+                  let localContribution = localContributions[message.requestID] else {
+                rejectUnexpected(message, on: connection)
+                return
+            }
+            peerContributions[message.requestID] = peerContribution
+            let verificationCode = PairingVerificationCode.make(
+                requestID: message.requestID,
+                initiatorPublicKey: identity.signingPublicKey,
+                responderPublicKey: expectedPeer.signingPublicKey,
+                initiatorContribution: localContribution,
+                responderContribution: peerContribution
+            )
+            DispatchQueue.main.async { [weak self] in
+                self?.activeVerificationCode = verificationCode
+            }
+            addPendingConfirmation(
+                requestID: message.requestID,
+                peer: expectedPeer,
+                verificationCode: verificationCode
+            )
+            publishStatus("Compare code \(verificationCode) with \(expectedPeer.name)")
+
+        case .decision:
+            guard let peer = validatedSessionPeer(for: message),
+                  peerContributions[message.requestID] != nil else {
+                rejectUnexpected(message, on: connection)
+                return
+            }
+            guard message.accepted == true else {
+                publishStatus("\(message.sender.name) declined pairing")
+                finish(requestID: message.requestID)
+                return
+            }
+            remotelyAcceptedRequestIDs.insert(message.requestID)
+            if locallyAcceptedRequestIDs.contains(message.requestID) {
+                beginCompletionIfMutuallyAccepted(
+                    requestID: message.requestID
+                )
+            } else {
+                publishStatus("\(peer.name) confirmed; confirm the matching code locally")
+            }
+
+        case .completion:
+            guard let peer = validatedSessionPeer(for: message),
+                  peerContributions[message.requestID] != nil,
+                  locallyAcceptedRequestIDs.contains(message.requestID),
+                  remotelyAcceptedRequestIDs.contains(message.requestID) else {
+                rejectUnexpected(message, on: connection)
+                return
+            }
+            remotelyCompletedRequestIDs.insert(message.requestID)
+            beginCompletionIfMutuallyAccepted(requestID: message.requestID)
+            beginCompletionAcknowledgement(requestID: message.requestID)
+            completePairingIfTransportConfirmed(
+                with: peer,
+                requestID: message.requestID
+            )
+
+        case .completionAcknowledgement:
+            guard let peer = validatedSessionPeer(for: message),
+                  completionSendStartedRequestIDs.contains(message.requestID),
+                  remotelyCompletedRequestIDs.contains(message.requestID) else {
+                rejectUnexpected(message, on: connection)
+                return
+            }
+            // Receiving this signed acknowledgement proves that the peer
+            // received our completion, even if Network.framework has not yet
+            // delivered the local contentProcessed callback.
+            locallyCompletedRequestIDs.insert(message.requestID)
+            locallyAcknowledgedByPeerRequestIDs.insert(message.requestID)
+            completePairingIfTransportConfirmed(
+                with: peer,
+                requestID: message.requestID
+            )
+        }
+    }
+
+    private func send(
+        _ message: PairingEnvelope,
+        over connection: NWConnection,
+        isFinal: Bool = false,
+        completion: ((Bool) -> Void)? = nil
+    ) {
+        do {
+            let data = try PairingWireCodec.encode(
+                message,
+                signingWith: privateKey
+            )
+            connection.send(
+                content: data,
+                contentContext: isFinal ? .finalMessage : .defaultMessage,
+                isComplete: isFinal,
+                completion: .contentProcessed { [weak self] error in
+                    if let error {
+                        self?.publishStatus(
+                            "Send failed: \(error.localizedDescription)"
+                        )
+                    }
+                    completion?(error == nil)
+                }
+            )
+        } catch {
+            publishStatus("Could not encode pairing message")
+            completion?(false)
+        }
+    }
+
+    private func savePairing(with peer: PeerIdentity) {
+        registry.add(peer)
+        DispatchQueue.main.async { [weak self] in
+            self?.pairedPeerIDs.insert(peer.id)
+        }
+    }
+
+    private func finish(
+        requestID: UUID,
+        cancelConnection: Bool = true
+    ) {
+        if activeOutboundRequestID == requestID {
+            activeOutboundRequestID = nil
+            DispatchQueue.main.async { [weak self] in
+                self?.activeVerificationCode = nil
+            }
+        }
+        if let connection = requestConnections.removeValue(
+            forKey: requestID
+        ) {
+            cleanup(connection)
+            if cancelConnection {
+                connection.cancel()
+            }
+        }
+        requestMessages.removeValue(forKey: requestID)
+        requestTargets.removeValue(forKey: requestID)
+        localContributions.removeValue(forKey: requestID)
+        peerCommitments.removeValue(forKey: requestID)
+        peerContributions.removeValue(forKey: requestID)
+        locallyAcceptedRequestIDs.remove(requestID)
+        remotelyAcceptedRequestIDs.remove(requestID)
+        completionSendStartedRequestIDs.remove(requestID)
+        locallyCompletedRequestIDs.remove(requestID)
+        remotelyCompletedRequestIDs.remove(requestID)
+        completionAcknowledgementSendStartedRequestIDs.remove(requestID)
+        locallyAcknowledgedByPeerRequestIDs.remove(requestID)
+        peerClosedRequestIDs.remove(requestID)
+        removePendingRequest(id: requestID)
+    }
+
+    private func removeConnection(_ connection: NWConnection) {
+        cleanup(connection)
+        let requestIDs = requestConnections
+            .filter { $0.value === connection }
+            .map(\.key)
+        requestIDs.forEach { finish(requestID: $0) }
+    }
+
+    private func handlePeerFinishedSending(_ connection: NWConnection) {
+        receiveBuffers.removeValue(forKey: ObjectIdentifier(connection))
+        let requestIDs = requestConnections
+            .filter { $0.value === connection }
+            .map(\.key)
+        for requestID in requestIDs {
+            guard remotelyCompletedRequestIDs.contains(requestID),
+                  let peer = requestTargets[requestID]
+                    ?? requestMessages[requestID]?.sender else {
+                finish(requestID: requestID)
+                continue
+            }
+            peerClosedRequestIDs.insert(requestID)
+            completePairingIfTransportConfirmed(
+                with: peer,
+                requestID: requestID
+            )
+        }
+    }
+
+    private func cleanup(_ connection: NWConnection) {
+        let connectionID = ObjectIdentifier(connection)
+        connectionTimeouts.removeValue(forKey: connectionID)?.cancel()
+        receiveBuffers.removeValue(forKey: connectionID)
+        unauthenticatedConnections.removeValue(forKey: connectionID)
+    }
+
+    private func scheduleTimeout(
+        for connection: NWConnection,
+        after seconds: TimeInterval = 60
+    ) {
+        let connectionID = ObjectIdentifier(connection)
+        connectionTimeouts.removeValue(forKey: connectionID)?.cancel()
+
+        let timeout = DispatchWorkItem { [weak self, weak connection] in
+            guard let self, let connection else { return }
+            self.publishStatus("Pairing request timed out")
+            connection.cancel()
+            self.removeConnection(connection)
+        }
+        connectionTimeouts[connectionID] = timeout
+        queue.asyncAfter(deadline: .now() + seconds, execute: timeout)
+    }
+
+    private func removePendingRequest(id: UUID) {
+        DispatchQueue.main.async { [weak self] in
+            self?.pendingRequests.removeAll { $0.id == id }
+        }
+    }
+
+    private func addPendingConfirmation(
+        requestID: UUID,
+        peer: PeerIdentity,
+        verificationCode: String
+    ) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self,
+                  !self.pendingRequests.contains(where: { $0.id == requestID }) else {
+                return
+            }
+            self.pendingRequests.append(
+                PendingPairingRequest(
+                    id: requestID,
+                    peer: peer,
+                    verificationCode: verificationCode
+                )
+            )
+        }
+    }
+
+    private func publishStatus(_ message: String) {
+        DispatchQueue.main.async { [weak self] in
+            self?.status = message
+        }
+    }
+
+    private func validatedOutboundPeer(
+        for message: PairingEnvelope
+    ) -> PeerIdentity? {
+        guard let expectedPeer = requestTargets[message.requestID],
+              expectedPeer.id == message.sender.id,
+              expectedPeer.signingPublicKey == message.sender.signingPublicKey else {
+            return nil
+        }
+        return expectedPeer
+    }
+
+    private func validatedSessionPeer(
+        for message: PairingEnvelope
+    ) -> PeerIdentity? {
+        let expectedPeer = requestTargets[message.requestID]
+            ?? requestMessages[message.requestID]?.sender
+        guard let expectedPeer,
+              expectedPeer.id == message.sender.id,
+              expectedPeer.signingPublicKey == message.sender.signingPublicKey else {
+            return nil
+        }
+        return expectedPeer
+    }
+
+    private func beginCompletionIfMutuallyAccepted(requestID: UUID) {
+        guard locallyAcceptedRequestIDs.contains(requestID),
+              remotelyAcceptedRequestIDs.contains(requestID),
+              !completionSendStartedRequestIDs.contains(requestID),
+              let connection = requestConnections[requestID],
+              let request = requestMessages[requestID] else {
+            return
+        }
+        completionSendStartedRequestIDs.insert(requestID)
+        let completionMessage = PairingEnvelope.completion(
+            to: request,
+            from: identity
+        )
+        send(
+            completionMessage,
+            over: connection
+        ) { [weak self] sent in
+            guard let self else { return }
+            guard sent else {
+                finish(requestID: requestID)
+                return
+            }
+            guard requestConnections[requestID] != nil else { return }
+            locallyCompletedRequestIDs.insert(requestID)
+            beginCompletionAcknowledgement(requestID: requestID)
+            guard let peer = requestTargets[requestID]
+                    ?? requestMessages[requestID]?.sender else {
+                finish(requestID: requestID)
+                return
+            }
+            completePairingIfTransportConfirmed(
+                with: peer,
+                requestID: requestID
+            )
+        }
+    }
+
+    private func beginCompletionAcknowledgement(requestID: UUID) {
+        guard remotelyCompletedRequestIDs.contains(requestID),
+              !completionAcknowledgementSendStartedRequestIDs.contains(
+                requestID
+              ),
+              let connection = requestConnections[requestID],
+              let request = requestMessages[requestID] else {
+            return
+        }
+        completionAcknowledgementSendStartedRequestIDs.insert(requestID)
+        let acknowledgement = PairingEnvelope.completionAcknowledgement(
+            to: request,
+            from: identity
+        )
+        send(
+            acknowledgement,
+            over: connection,
+            isFinal: true
+        ) { [weak self] sent in
+            guard let self, !sent else { return }
+            finish(requestID: requestID)
+        }
+    }
+
+    private func completePairingIfTransportConfirmed(
+        with peer: PeerIdentity,
+        requestID: UUID
+    ) {
+        guard locallyAcceptedRequestIDs.contains(requestID),
+              remotelyAcceptedRequestIDs.contains(requestID),
+              locallyCompletedRequestIDs.contains(requestID),
+              remotelyCompletedRequestIDs.contains(requestID),
+              locallyAcknowledgedByPeerRequestIDs.contains(requestID),
+              peerClosedRequestIDs.contains(requestID) else {
+            return
+        }
+        savePairing(with: peer)
+        publishStatus("Paired with \(peer.name)")
+        finish(requestID: requestID, cancelConnection: false)
+    }
+
+    private func rejectUnexpected(
+        _ message: PairingEnvelope,
+        on connection: NWConnection
+    ) {
+        publishStatus("Rejected an unexpected pairing message")
+        connection.cancel()
+        if requestConnections[message.requestID] === connection {
+            finish(requestID: message.requestID)
+        } else {
+            cleanup(connection)
+        }
+    }
+
+    private func statusMessage(
+        for decision: PairingRequestDecision
+    ) -> String {
+        switch decision {
+        case .allow:
+            return "Pairing request accepted"
+        case .rejectChangedKey:
+            return "Rejected a peer with a changed identity key"
+        case .rejectDuplicateRequest:
+            return "Rejected a duplicate pairing request"
+        case .rejectDuplicateSender:
+            return "A request from this peer is already pending"
+        case .rejectAtCapacity:
+            return "Rejected excess pairing requests"
+        }
+    }
+}
