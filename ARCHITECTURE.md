@@ -9,7 +9,9 @@ with a safe local-return shortcut, and configurable BenQ monitor switching.
 ```mermaid
 flowchart LR
     subgraph MacA["MacBook Pro A"]
-        UIA["SwiftUI MenuBarExtra"]
+        UIA["SwiftUI MenuBarExtra<br/>persistent keyboard icon"]
+        PermA["PermissionOnboardingPresenter<br/>Input Monitoring + Accessibility"]
+        LoginA["LaunchAtLoginController<br/>SMAppService"]
         DA["PeerDiscoveryService"]
         WA["NWListener + NWBrowser"]
         KA["Keychain private key"]
@@ -19,6 +21,8 @@ flowchart LR
         OA["CGEvent injection<br/>Accessibility"]
         MA["MonitorController<br/>m1ddc or OSD fallback"]
         UIA --> DA
+        UIA --> PermA
+        UIA --> LoginA
         DA --> WA
         DA --> PA
         DA --> KA
@@ -34,7 +38,9 @@ flowchart LR
     end
 
     subgraph MacB["MacBook Pro B"]
-        UIB["SwiftUI MenuBarExtra"]
+        UIB["SwiftUI MenuBarExtra<br/>persistent keyboard icon"]
+        PermB["PermissionOnboardingPresenter"]
+        LoginB["LaunchAtLoginController"]
         DB["PeerDiscoveryService"]
         WB["NWListener + NWBrowser"]
         KB["Keychain private key"]
@@ -44,6 +50,8 @@ flowchart LR
         OB["CGEvent injection"]
         MB["MonitorController"]
         UIB --> DB
+        UIB --> PermB
+        UIB --> LoginB
         DB --> WB
         DB --> PB
         DB --> KB
@@ -135,18 +143,21 @@ up to 90 W power.
   automated tests cover the signed/encrypted protocol pipeline but cannot
   grant macOS privacy permissions or generate physical keyboard input.
 
-### Architectural cleanup before input forwarding
+### Runtime responsibilities
 
 The major runtime responsibilities are separated as follows:
 
 ```text
-PeerDiscoveryService   Bonjour pairing discovery and pairing session lifecycle
-SecureSessionService   authenticated encrypted message channel
-InputCaptureService    CGEventTap capture and Input Monitoring state
-RemoteInputSink        validated CGEvent injection and Accessibility state
-MonitorController      DDC/CI input switching with manual OSD fallback
-PairingRegistry        paired-peer persistence
-DeviceCredentialsStore Keychain identity persistence
+AppBootstrap            service wiring and launch-time startup
+PermissionOnboarding    missing-permission policy, setup alert, Settings links
+LaunchAtLoginController SMAppService login-item state
+PeerDiscoveryService    Bonjour pairing discovery and pairing session lifecycle
+SecureSessionService    authenticated encrypted message channel
+InputCaptureService     CGEventTap capture and Input Monitoring state
+RemoteInputSink         validated CGEvent injection and Accessibility state
+MonitorController       DDC/CI input switching with manual OSD fallback
+PairingRegistry         paired-peer persistence
+DeviceCredentialsStore  Keychain identity persistence
 ```
 
 Input capture uses the main display bounds on each Mac. Configure the MA270U as
@@ -181,21 +192,27 @@ input.
 
    Do not use `swift run` for normal operation: the generated `.app` carries
    the Bonjour and Local Network privacy metadata required by macOS.
-5. Open the MacKVM menu-bar item on either Mac to inspect nearby devices.
+5. MacKVM appears as a keyboard icon in the menu bar. If the launch-time setup
+   alert appears, select **Request Permissions**, grant the permission macOS
+   requests, then quit and reopen MacKVM. It requests one missing permission
+   per launch until both Input Monitoring and Accessibility are granted. If an
+   earlier denial prevents a new system prompt, use the **Settings** button
+   beside that permission.
+6. Optionally enable **Launch MacKVM at Login** so the menu-bar icon returns
+   automatically after signing in.
+7. Open the MacKVM menu-bar item on either Mac to inspect nearby devices.
    Discovery already starts when the app launches.
-6. Under **Nearby Macs**, select **Pair** on one Mac.
-7. Compare the six-digit security code shown on both Macs. Press **Accept** on
+8. Under **Nearby Macs**, select **Pair** on one Mac.
+9. Compare the six-digit security code shown on both Macs. Press **Accept** on
    both Macs only when the names and codes match.
-8. On both Macs, use the **Request** buttons to grant Input Monitoring and
-   Accessibility. Reopen MacKVM after changing either privacy setting.
-9. Install `m1ddc` on the M5 Pro Mac with `brew install m1ddc`. Select the
-   **M5 / USB-C preset** there and the **Intel / HDMI preset** on the 2019 Mac.
-   Test **Show this Mac** and **Show other Mac**. Leave DDC disabled and use
-   the MA270U OSD if the physical test fails.
-10. Select **Connect** on one Mac. When the encrypted session is connected,
-   choose **Request control of other Mac** on the Mac whose keyboard and mouse
-   you are using.
-11. After the receiver grants control, input is sent only to the other Mac.
+10. Install `m1ddc` on the M5 Pro Mac with `brew install m1ddc`. Select the
+    **M5 / USB-C preset** there and the **Intel / HDMI preset** on the 2019 Mac.
+    Test **Show this Mac** and **Show other Mac**. Leave DDC disabled and use
+    the MA270U OSD if the physical test fails.
+11. Select **Connect** on one Mac. When the encrypted session is connected,
+    choose **Request control of other Mac** on the Mac whose keyboard and mouse
+    you are using.
+12. After the receiver grants control, input is sent only to the other Mac.
     Press **Control–Option–Command–Escape** to return input immediately, or use
     **Return input to this Mac** from the menu. If DDC cannot switch the monitor,
     follow the status text and select the requested input through the OSD.

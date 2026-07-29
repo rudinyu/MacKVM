@@ -5,6 +5,8 @@ monitor between two Macs on the same local network.
 
 The current MVP provides:
 
+- a native high-resolution app icon and an always-visible keyboard icon in the
+  macOS menu bar while MacKVM is running;
 - a persistent local device identity;
 - Bonjour discovery on the local network;
 - signed pairing requests that must be accepted on the receiving Mac;
@@ -14,7 +16,9 @@ The current MVP provides:
   directional HKDF keys, ChaChaPoly encryption, and replay-protected counters.
 - validated keyboard, mouse, and scroll event forwarding over that encrypted
   session;
-- Input Monitoring and Accessibility permission controls;
+- proactive Input Monitoring and Accessibility setup guidance, permission
+  requests, and direct System Settings shortcuts;
+- an optional **Launch MacKVM at Login** setting;
 - injected-event marking that prevents input feedback loops;
 - request/grant control ownership with deterministic collision handling;
 - local input suppression while controlling and an emergency
@@ -64,10 +68,33 @@ These commands produce `dist/arm64/MacKVM.app` and
 app to the M5 Pro Mac. The build script verifies the Mach-O architecture and
 the ad-hoc code signature without trying to execute the cross-built app.
 
+The app bundle copies precompiled icon resources so normal builds also work
+with Command Line Tools only. After editing `Resources/Assets.xcassets`, use
+full Xcode to regenerate and commit both compiled resources:
+
+```sh
+DEVELOPER_DIR=/path/to/Xcode.app/Contents/Developer \
+  ./scripts/regenerate-app-icon.sh
+```
+
 The app bundle is the supported launch path because it contains the Bonjour
 and Local Network privacy metadata required by macOS. Run it on both Macs while
 they are connected to the same local network. For pointer mapping, set the
 MA270U as the main display on both Macs.
+
+Before the first launch, copy the matching app into `/Applications`. MacKVM
+appears as a keyboard icon in the menu bar rather than as a regular Dock app.
+If either keyboard/mouse permission is missing, MacKVM displays a setup alert:
+
+1. Select **Request Permissions**.
+2. Grant the permission requested by macOS. MacKVM requests one missing
+   keyboard/mouse permission per launch so system prompts cannot overlap.
+3. If macOS does not show a permission sheet again after an earlier denial,
+   open the MacKVM menu and use the matching **Settings** button.
+4. Quit and reopen MacKVM until both **Input Monitoring** and
+   **Accessibility** show **Granted**.
+5. Enable **Launch MacKVM at Login** in the menu if the menu-bar icon should
+   return automatically after signing in.
 
 In the MacKVM menu:
 

@@ -89,12 +89,23 @@ plutil -lint "$project_root/Resources/Info.plist"
 
 contents_dir="$app_dir/Contents"
 executable_dir="$contents_dir/MacOS"
+resources_dir="$contents_dir/Resources"
+app_icon="$project_root/Resources/AppIcon.icns"
+compiled_assets="$project_root/Resources/Assets.car"
 
-mkdir -p "$executable_dir"
+if [[ ! -f "$app_icon" || ! -f "$compiled_assets" ]]; then
+  echo "Compiled app icon resources were not found." >&2
+  echo "Run scripts/regenerate-app-icon.sh with full Xcode installed." >&2
+  exit 1
+fi
+
+mkdir -p "$executable_dir" "$resources_dir"
 install -m 755 "$binary_path" \
   "$executable_dir/MacKVM"
 install -m 644 "$project_root/Resources/Info.plist" \
   "$contents_dir/Info.plist"
+install -m 644 "$app_icon" "$resources_dir/AppIcon.icns"
+install -m 644 "$compiled_assets" "$resources_dir/Assets.car"
 
 codesign --force --deep --sign - "$app_dir"
 codesign --verify --deep --strict "$app_dir"

@@ -22,7 +22,8 @@ Expected:
 - `lipo -archs dist/arm64/MacKVM.app/Contents/MacOS/MacKVM` prints `arm64`.
 - `lipo -archs dist/x86_64/MacKVM.app/Contents/MacOS/MacKVM` prints `x86_64`.
 - `codesign --verify --deep --strict` succeeds for both app bundles.
-- MacKVM appears only in the menu bar.
+- Finder displays the MacKVM app icon clearly at small and large icon sizes.
+- MacKVM appears only in the menu bar with a visible keyboard icon.
 - macOS asks for local-network access when needed.
 
 ## 2. Cable and monitor setup
@@ -45,16 +46,27 @@ Expected:
 
 ## 3. Permissions
 
-On both Macs, grant MacKVM:
+1. Start MacKVM on a Mac where one or both keyboard/mouse permissions have not
+   been granted.
+2. In the MacKVM setup alert, select **Request Permissions**.
+3. Grant the first permission requested, then quit and reopen MacKVM to request
+   the next missing permission.
+4. On both Macs, grant MacKVM:
 
-- Input Monitoring;
-- Accessibility;
-- Local Network access when prompted.
+   - Input Monitoring;
+   - Accessibility;
+   - Local Network access when prompted.
 
-Quit and reopen MacKVM after changing privacy permissions.
+5. If a system permission sheet does not reappear after a previous denial,
+   click the corresponding **Settings** button in the MacKVM menu.
+6. Quit and reopen MacKVM after changing privacy permissions.
 
 Expected:
 
+- A setup alert appears proactively while either keyboard/mouse permission is
+  missing.
+- Only one macOS keyboard/mouse privacy prompt is requested per launch.
+- **Settings** opens the matching Privacy & Security pane.
 - Both permission rows show **Granted**.
 - Control cannot begin while a required permission is missing.
 
@@ -121,6 +133,21 @@ Expected:
   the exact OSD input to choose.
 - Quit waits for the final DDC attempt (at most about five seconds).
 
+## 8. Menu-bar residency
+
+1. Enable **Launch MacKVM at Login** in the MacKVM menu.
+2. Confirm macOS lists or enables MacKVM under **System Settings → General →
+   Login Items**. If approval is required, approve it there.
+3. Sign out and back in, or restart the Mac.
+4. Disable **Launch MacKVM at Login** and confirm the login item is removed.
+
+Expected:
+
+- The keyboard icon returns to the menu bar after login when enabled.
+- MacKVM reports when macOS requires Login Items approval.
+- Disabling the setting prevents future login launches without quitting the
+  current MacKVM process.
+
 ## Acceptance record
 
 Record the macOS version and result for each item:
@@ -128,7 +155,9 @@ Record the macOS version and result for each item:
 | Area | M5 Pro | Intel 2019 | Result/notes |
 | --- | --- | --- | --- |
 | Native app launch |  |  |  |
+| App/menu-bar icon |  |  |  |
 | Permissions |  |  |  |
+| Launch at login |  |  |  |
 | Discovery/pairing |  |  |  |
 | Secure reconnect |  |  |  |
 | Keyboard/mouse |  |  |  |

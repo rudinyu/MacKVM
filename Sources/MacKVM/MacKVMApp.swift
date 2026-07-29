@@ -2,12 +2,24 @@ import AppKit
 import MacKVMCore
 import SwiftUI
 
+@MainActor
+private final class MacKVMApplicationDelegate:
+    NSObject,
+    NSApplicationDelegate
+{
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        PermissionOnboardingPresenter.applicationDidFinishLaunching()
+    }
+}
+
 @main
 struct MacKVMApp: App {
+    @NSApplicationDelegateAdaptor(MacKVMApplicationDelegate.self)
+    private var applicationDelegate
     @StateObject private var bootstrap = AppBootstrap()
 
     var body: some Scene {
-        MenuBarExtra("MacKVM", systemImage: "rectangle.connected.to.line.below") {
+        MenuBarExtra {
             if let discovery = bootstrap.discovery,
                let secureSession = bootstrap.secureSession,
                let inputCapture = bootstrap.inputCapture,
@@ -20,7 +32,8 @@ struct MacKVMApp: App {
                     inputCapture: inputCapture,
                     inputSink: inputSink,
                     control: control,
-                    monitor: monitor
+                    monitor: monitor,
+                    launchAtLogin: bootstrap.launchAtLogin
                 )
             } else {
                 BootstrapErrorView(
@@ -28,11 +41,14 @@ struct MacKVMApp: App {
                         ?? "MacKVM could not load its device key."
                 )
             }
+        } label: {
+            Label("MacKVM", systemImage: "keyboard")
         }
         .menuBarExtraStyle(.window)
     }
 }
 
+@MainActor
 private final class AppBootstrap: ObservableObject {
     let discovery: PeerDiscoveryService?
     let secureSession: SecureSessionService?
@@ -40,6 +56,7 @@ private final class AppBootstrap: ObservableObject {
     let inputSink: RemoteInputSink?
     let control: ControlCoordinator?
     let monitor: MonitorController?
+    let launchAtLogin = LaunchAtLoginController()
     let errorMessage: String?
 
     init() {
@@ -76,6 +93,10 @@ private final class AppBootstrap: ObservableObject {
             self.control = control
             self.monitor = monitor
             errorMessage = nil
+            PermissionOnboardingPresenter.scheduleIfNeeded(
+                inputCapture: inputCapture,
+                inputSink: inputSink
+            )
         } catch {
             discovery = nil
             secureSession = nil
@@ -114,6 +135,7 @@ private struct MacKVMMenuView: View {
     @ObservedObject var inputSink: RemoteInputSink
     @ObservedObject var control: ControlCoordinator
     @ObservedObject var monitor: MonitorController
+    @ObservedObject var launchAtLogin: LaunchAtLoginController
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -130,6 +152,8 @@ private struct MacKVMMenuView: View {
             inputSection
             Divider()
             monitorSection
+            Divider()
+            startupSection
             Divider()
 
             HStack {
@@ -151,8 +175,10 @@ private struct MacKVMMenuView: View {
         .padding(16)
         .frame(width: 400)
         .onAppear {
-            inputCapture.refreshPermission()
-            inputSink.refreshPermission()
+            PermissionOnboardingPolicy.refresh(
+                inputCapture: inputCapture,
+                inputSink: inputSink
+            )
         }
     }
 
@@ -296,12 +322,18 @@ private struct MacKVMMenuView: View {
             permissionRow(
                 title: "Input Monitoring",
                 granted: inputCapture.hasInputMonitoringPermission,
-                action: inputCapture.requestPermission
+                requestAction: inputCapture.requestPermission,
+                settingsAction: {
+                    PrivacySettings.open(.inputMonitoring)
+                }
             )
             permissionRow(
                 title: "Accessibility",
                 granted: inputSink.hasAccessibilityPermission,
-                action: inputSink.requestPermission
+                requestAction: inputSink.requestPermission,
+                settingsAction: {
+                    PrivacySettings.open(.accessibility)
+                }
             )
 
             if control.state == .controlling || control.state == .suspended {
@@ -380,10 +412,36 @@ private struct MacKVMMenuView: View {
         }
     }
 
+    private var startupSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle(
+                "Launch MacKVM at Login",
+                isOn: Binding(
+                    get: { launchAtLogin.isEnabled },
+                    set: launchAtLogin.setEnabled
+                )
+            )
+            .disabled(launchAtLogin.isUpdating)
+            if let status = launchAtLogin.status {
+                Text(status)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .onAppear {
+            // Reflect changes made directly in System Settings while MacKVM
+            // remains running.
+            if !launchAtLogin.isUpdating {
+                launchAtLogin.refresh()
+            }
+        }
+    }
+
     private func permissionRow(
         title: String,
         granted: Bool,
-        action: @escaping () -> Void
+        requestAction: @escaping () -> Void,
+        settingsAction: @escaping () -> Void
     ) -> some View {
         HStack {
             Text(title)
@@ -397,7 +455,8 @@ private struct MacKVMMenuView: View {
             .font(.caption)
             .foregroundStyle(granted ? .green : .orange)
             if !granted {
-                Button("Request", action: action)
+                Button("Request", action: requestAction)
+                Button("Settings", action: settingsAction)
             }
         }
     }
