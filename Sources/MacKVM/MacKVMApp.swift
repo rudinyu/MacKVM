@@ -42,7 +42,7 @@ struct MacKVMApp: App {
                 )
             }
         } label: {
-            Label("MacKVM", systemImage: "keyboard")
+            Label("MacKVM", systemImage: "display.2")
         }
         .menuBarExtraStyle(.window)
     }

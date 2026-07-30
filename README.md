@@ -5,7 +5,7 @@ monitor between two Macs on the same local network.
 
 The current MVP provides:
 
-- a native high-resolution app icon and an always-visible keyboard icon in the
+- a native high-resolution app icon and an always-visible dual-display icon in the
   macOS menu bar while MacKVM is running;
 - a persistent local device identity;
 - Bonjour discovery on the local network;
@@ -83,7 +83,7 @@ they are connected to the same local network. For pointer mapping, set the
 MA270U as the main display on both Macs.
 
 Before the first launch, copy the matching app into `/Applications`. MacKVM
-appears as a keyboard icon in the menu bar rather than as a regular Dock app.
+appears as a dual-display icon in the menu bar rather than as a regular Dock app.
 If either keyboard/mouse permission is missing, MacKVM displays a setup alert:
 
 1. Select **Request Permissions**.

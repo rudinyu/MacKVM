@@ -23,7 +23,7 @@ Expected:
 - `lipo -archs dist/x86_64/MacKVM.app/Contents/MacOS/MacKVM` prints `x86_64`.
 - `codesign --verify --deep --strict` succeeds for both app bundles.
 - Finder displays the MacKVM app icon clearly at small and large icon sizes.
-- MacKVM appears only in the menu bar with a visible keyboard icon.
+- MacKVM appears only in the menu bar with a visible dual-display icon.
 - macOS asks for local-network access when needed.
 
 ## 2. Cable and monitor setup
@@ -143,7 +143,7 @@ Expected:
 
 Expected:
 
-- The keyboard icon returns to the menu bar after login when enabled.
+- The dual-display icon returns to the menu bar after login when enabled.
 - MacKVM reports when macOS requires Login Items approval.
 - Disabling the setting prevents future login launches without quitting the
   current MacKVM process.

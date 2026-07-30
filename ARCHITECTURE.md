@@ -9,7 +9,7 @@ with a safe local-return shortcut, and configurable BenQ monitor switching.
 ```mermaid
 flowchart LR
     subgraph MacA["MacBook Pro A"]
-        UIA["SwiftUI MenuBarExtra<br/>persistent keyboard icon"]
+        UIA["SwiftUI MenuBarExtra<br/>persistent dual-display icon"]
         PermA["PermissionOnboardingPresenter<br/>Input Monitoring + Accessibility"]
         LoginA["LaunchAtLoginController<br/>SMAppService"]
         DA["PeerDiscoveryService"]
@@ -38,7 +38,7 @@ flowchart LR
     end
 
     subgraph MacB["MacBook Pro B"]
-        UIB["SwiftUI MenuBarExtra<br/>persistent keyboard icon"]
+        UIB["SwiftUI MenuBarExtra<br/>persistent dual-display icon"]
         PermB["PermissionOnboardingPresenter"]
         LoginB["LaunchAtLoginController"]
         DB["PeerDiscoveryService"]
@@ -192,7 +192,7 @@ input.
 
    Do not use `swift run` for normal operation: the generated `.app` carries
    the Bonjour and Local Network privacy metadata required by macOS.
-5. MacKVM appears as a keyboard icon in the menu bar. If the launch-time setup
+5. MacKVM appears as a dual-display icon in the menu bar. If the launch-time setup
    alert appears, select **Request Permissions**, grant the permission macOS
    requests, then quit and reopen MacKVM. It requests one missing permission
    per launch until both Input Monitoring and Accessibility are granted. If an
