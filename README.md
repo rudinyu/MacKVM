@@ -134,6 +134,8 @@ See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the current architecture, known
 issues, wiring diagram, and MVP usage instructions.
 See [`MANUAL_TEST.md`](MANUAL_TEST.md) for the complete two-Mac hardware
 acceptance checklist.
+See [`docs/USER_MANUAL.html`](docs/USER_MANUAL.html) for the end-user
+Traditional Chinese manual that can be opened directly in a browser.
 
 ## Recommended wiring
 
