@@ -2,31 +2,92 @@ import Combine
 import Foundation
 import MacKVMCore
 
+struct IncomingControlRequest: Identifiable, Equatable {
+    let id: UUID
+    let peerID: UUID
+}
+
+/// Narrow abstractions keep the consent coordinator testable without changing
+/// the production secure-session or input-service implementations.
+protocol ControlSessionTransport: AnyObject {
+    var connectedPeerID: UUID? { get }
+    var connectedPeerIDPublisher: AnyPublisher<UUID?, Never> { get }
+    var onPayload: ((Data) -> Void)? { get set }
+
+    func send(_ payload: Data)
+}
+
+protocol ControlInputCapture: AnyObject {
+    var hasInputMonitoringPermission: Bool { get }
+    var isCapturing: Bool { get }
+    var onEvent: ((RemoteInputEvent) -> Void)? { get set }
+    var onEmergencyStop: (() -> Void)? { get set }
+
+    func refreshPermission()
+    func startCapture(suppressingLocalEvents: Bool)
+    func stopCapture()
+}
+
+protocol ControlInputSink: AnyObject {
+    var hasAccessibilityPermission: Bool { get }
+    var onControlFailure: (() -> Void)? { get set }
+
+    func refreshPermission()
+    func beginRemoteControl(completion: @escaping (Bool) -> Void)
+    func endRemoteControl(completion: @escaping () -> Void)
+    func receive(_ input: RemoteInputEvent)
+}
+
 final class ControlCoordinator: ObservableObject {
+    private struct ReceiverTeardown {
+        enum Phase {
+            case releasingInput
+            case restoringMonitor
+        }
+
+        let request: IncomingControlRequest
+        var phase: Phase
+        let notifyPeer: Bool
+        var restoreMonitor: Bool
+        var completions: [() -> Void]
+    }
+
     @Published private(set) var state: ControlSessionState = .idle
     @Published private(set) var isReceivingControl = false
+    @Published private(set) var isRemoteInputTearingDown = false
+    @Published private(set) var pendingIncomingControlRequest:
+        IncomingControlRequest?
     @Published private(set) var status = "Control session idle"
 
     var onControllingStarted: (() -> Void)?
     var onControllingStopped: (() -> Void)?
     var onReceivingStarted: (() -> Void)?
-    var onReceivingStopped: (() -> Void)?
+    var onReceivingStopped: ((@escaping () -> Void) -> Void)?
+    var onIncomingControlRequest: ((IncomingControlRequest) -> Void)?
 
+    private static let controlRequestTimeout: TimeInterval = 15
     private let localID: UUID
-    private let secureSession: SecureSessionService
-    private let inputCapture: InputCaptureService
-    private let inputSink: RemoteInputSink
+    private let secureSession: any ControlSessionTransport
+    private let inputCapture: any ControlInputCapture
+    private let inputSink: any ControlInputSink
     private var machine = ControlSessionStateMachine()
     private var connectionObservation: AnyCancellable?
     private var requestTimeout: DispatchWorkItem?
+    private var incomingRequestTimeout: DispatchWorkItem?
     private var activeOutboundRequestID: UUID?
-    private var activeInboundRequestID: UUID?
+    private var activeInboundControlRequest: IncomingControlRequest?
+    private var preparingIncomingControlRequest: IncomingControlRequest?
+    private var receiverTeardown: ReceiverTeardown?
+    private var transientRemoteInputTeardownCompletions: [() -> Void] = []
+    private var isStoppingForQuit = false
+    private var hasObservedConnectionState = false
+    private var observedConnectedPeerID: UUID?
 
     init(
         localID: UUID,
-        secureSession: SecureSessionService,
-        inputCapture: InputCaptureService,
-        inputSink: RemoteInputSink
+        secureSession: any ControlSessionTransport,
+        inputCapture: any ControlInputCapture,
+        inputSink: any ControlInputSink
     ) {
         self.localID = localID
         self.secureSession = secureSession
@@ -50,7 +111,7 @@ final class ControlCoordinator: ObservableObject {
         secureSession.onPayload = { [weak self] data in
             self?.receive(data)
         }
-        connectionObservation = secureSession.$connectedPeerID
+        connectionObservation = secureSession.connectedPeerIDPublisher
             .receive(on: DispatchQueue.main)
             .sink { [weak self] peerID in
                 self?.connectionChanged(peerID)
@@ -58,8 +119,18 @@ final class ControlCoordinator: ObservableObject {
     }
 
     func requestControl() {
+        guard !isStoppingForQuit else { return }
+        guard !isRemoteInputTearingDown else {
+            status = "Wait for remote input to finish returning locally"
+            return
+        }
         guard secureSession.connectedPeerID != nil else {
             status = "Connect to a paired Mac first"
+            return
+        }
+        guard pendingIncomingControlRequest == nil,
+              preparingIncomingControlRequest == nil else {
+            status = "Respond to the incoming control request first"
             return
         }
         guard !isReceivingControl else {
@@ -94,6 +165,10 @@ final class ControlCoordinator: ObservableObject {
     }
 
     func stopControl(reason: String = "Control returned locally") {
+        if isReceivingControl {
+            endReceivingControl(reason: reason)
+            return
+        }
         let wasControlling = state == .controlling
         requestTimeout?.cancel()
         requestTimeout = nil
@@ -118,6 +193,136 @@ final class ControlCoordinator: ObservableObject {
         status = reason
     }
 
+    /// Accepts the exact incoming request currently shown by the UI. Input is
+    /// enabled on the injection queue before the grant is sent to the peer.
+    func acceptIncomingControlRequest(_ requestID: UUID) {
+        guard !isStoppingForQuit else { return }
+        guard !isRemoteInputTearingDown else {
+            status = "Wait for remote input to finish returning locally"
+            return
+        }
+        guard let request = pendingIncomingControlRequest,
+              request.id == requestID else {
+            return
+        }
+        incomingRequestTimeout?.cancel()
+        incomingRequestTimeout = nil
+        pendingIncomingControlRequest = nil
+
+        inputSink.refreshPermission()
+        guard inputSink.hasAccessibilityPermission else {
+            rejectIncomingControlRequest(
+                request,
+                reason: "Denied remote control: Accessibility permission is missing"
+            )
+            return
+        }
+        guard secureSession.connectedPeerID == request.peerID else {
+            status = "Control request expired because the secure session changed"
+            return
+        }
+
+        preparingIncomingControlRequest = request
+        status = "Preparing to receive remote control…"
+        inputSink.beginRemoteControl { [weak self] didStart in
+            self?.completeIncomingControlAcceptance(
+                request,
+                didStart: didStart
+            )
+        }
+    }
+
+    /// Denies the exact incoming request currently shown by the UI.
+    func denyIncomingControlRequest(_ requestID: UUID) {
+        guard !isStoppingForQuit else { return }
+        guard let request = pendingIncomingControlRequest,
+              request.id == requestID else {
+            return
+        }
+        rejectIncomingControlRequest(
+            request,
+            reason: "The incoming control request was denied"
+        )
+    }
+
+    /// Ends a remote-control session from the receiving Mac. It immediately
+    /// stops accepting new events; held keys and buttons are released before
+    /// the peer is notified that control has ended.
+    func endReceivingControl(reason: String = "Remote control ended locally") {
+        guard !isStoppingForQuit else { return }
+        guard let request = activeInboundControlRequest,
+              isReceivingControl else {
+            return
+        }
+        finishReceivingControl(
+            request,
+            reason: reason,
+            notifyPeer: true
+        )
+    }
+
+    /// Stops every local control path before app termination. The final monitor
+    /// route belongs to the caller, so a receiver shutdown cannot queue its
+    /// usual remote-display route after the app has asked for the local route.
+    func stopForQuit(completion: @escaping () -> Void) {
+        guard !isStoppingForQuit else { return }
+        isStoppingForQuit = true
+        requestTimeout?.cancel()
+        requestTimeout = nil
+        incomingRequestTimeout?.cancel()
+        incomingRequestTimeout = nil
+        inputCapture.stopCapture()
+
+        if state == .controlling || state == .suspended {
+            let requestID = activeOutboundRequestID
+            _ = try? machine.handle(.stopControl)
+            state = machine.state
+            activeOutboundRequestID = nil
+            if let requestID {
+                send(
+                    ControlMessage(
+                        kind: .endControl,
+                        requestID: requestID
+                    )
+                )
+            }
+        }
+
+        if let request = pendingIncomingControlRequest {
+            pendingIncomingControlRequest = nil
+            sendResponse(kind: .controlDenied, for: request)
+        }
+        if let request = preparingIncomingControlRequest {
+            preparingIncomingControlRequest = nil
+            sendResponse(kind: .controlDenied, for: request)
+        }
+
+        if var teardown = receiverTeardown {
+            teardown.restoreMonitor = false
+            teardown.completions.append(completion)
+            receiverTeardown = teardown
+            status = "MacKVM is quitting"
+            return
+        }
+
+        if let request = activeInboundControlRequest,
+           isReceivingControl {
+            finishReceivingControl(
+                request,
+                reason: "MacKVM is quitting",
+                notifyPeer: true,
+                restoreMonitor: false,
+                completion: completion
+            )
+            return
+        }
+
+        isReceivingControl = false
+        activeInboundControlRequest = nil
+        endTransientRemoteInput(completion: completion)
+        status = "MacKVM is quitting"
+    }
+
     private func receive(_ data: Data) {
         let message: ControlMessage
         do {
@@ -134,6 +339,7 @@ final class ControlCoordinator: ObservableObject {
     }
 
     private func handle(_ message: ControlMessage) {
+        guard !isStoppingForQuit else { return }
         switch message.kind {
         case .requestControl:
             guard let requestID = message.requestID else { return }
@@ -166,17 +372,32 @@ final class ControlCoordinator: ObservableObject {
                 }
                 status = "The other Mac ended control; input is local"
             }
-            if message.requestID == activeInboundRequestID,
+            if let request = pendingIncomingControlRequest,
+               message.requestID == request.id {
+                cancelIncomingControlRequest(
+                    request,
+                    reason: "The other Mac cancelled its control request"
+                )
+            }
+            if let request = preparingIncomingControlRequest,
+               message.requestID == request.id {
+                cancelIncomingControlRequest(
+                    request,
+                    reason: "The other Mac cancelled its control request"
+                )
+            }
+            if let request = activeInboundControlRequest,
+               message.requestID == request.id,
                isReceivingControl {
-                isReceivingControl = false
-                activeInboundRequestID = nil
-                inputSink.endRemoteControl()
-                onReceivingStopped?()
-                status = "The other Mac returned control"
+                finishReceivingControl(
+                    request,
+                    reason: "The other Mac returned control",
+                    notifyPeer: false
+                )
             }
         case .input:
             if let input = message.input,
-               message.requestID == activeInboundRequestID,
+               message.requestID == activeInboundControlRequest?.id,
                isReceivingControl {
                 inputSink.receive(input)
             }
@@ -184,24 +405,39 @@ final class ControlCoordinator: ObservableObject {
     }
 
     private func handleControlRequest(requestID: UUID) {
+        guard let peerID = secureSession.connectedPeerID else {
+            status = "Ignored a control request without a secure session"
+            return
+        }
+        let request = IncomingControlRequest(id: requestID, peerID: peerID)
+        guard !isRemoteInputTearingDown else {
+            sendResponse(kind: .controlDenied, for: request)
+            status = "Denied a control request while remote input is returning locally"
+            return
+        }
         guard !isReceivingControl else {
-            send(
-                ControlMessage(
-                    kind: .controlDenied,
-                    requestID: requestID
-                )
+            sendResponse(
+                kind: .controlDenied,
+                for: request
             )
             status = "Denied a second request while remote control is active"
             return
         }
+        if pendingIncomingControlRequest?.id == requestID
+            || preparingIncomingControlRequest?.id == requestID {
+            return
+        }
+        guard pendingIncomingControlRequest == nil,
+              preparingIncomingControlRequest == nil else {
+            sendResponse(kind: .controlDenied, for: request)
+            status = "Denied a second control request while another is pending"
+            return
+        }
         inputSink.refreshPermission()
-        guard inputSink.hasAccessibilityPermission,
-              let peerID = secureSession.connectedPeerID else {
-            send(
-                ControlMessage(
-                    kind: .controlDenied,
-                    requestID: requestID
-                )
+        guard inputSink.hasAccessibilityPermission else {
+            sendResponse(
+                kind: .controlDenied,
+                for: request
             )
             status = "Denied remote control: Accessibility permission is missing"
             return
@@ -212,11 +448,9 @@ final class ControlCoordinator: ObservableObject {
                 remoteID: peerID
             )
             if localWins {
-                send(
-                    ControlMessage(
-                        kind: .controlDenied,
-                        requestID: requestID
-                    )
+                sendResponse(
+                    kind: .controlDenied,
+                    for: request
                 )
                 status = "Kept local control after a simultaneous request"
                 return
@@ -229,16 +463,41 @@ final class ControlCoordinator: ObservableObject {
                 )
             }
         }
-        isReceivingControl = true
-        activeInboundRequestID = requestID
-        inputSink.beginRemoteControl()
-        onReceivingStarted?()
-        send(
-            ControlMessage(
-                kind: .controlGranted,
-                requestID: requestID
+        pendingIncomingControlRequest = request
+        status = "The other Mac requests control — choose Allow or Deny"
+        scheduleIncomingRequestTimeout(for: request)
+        onIncomingControlRequest?(request)
+    }
+
+    private func completeIncomingControlAcceptance(
+        _ request: IncomingControlRequest,
+        didStart: Bool
+    ) {
+        guard preparingIncomingControlRequest?.id == request.id else {
+            if didStart {
+                endTransientRemoteInput()
+            }
+            return
+        }
+        preparingIncomingControlRequest = nil
+
+        guard didStart else {
+            rejectIncomingControlRequest(
+                request,
+                reason: "Denied remote control: Accessibility permission is missing"
             )
-        )
+            return
+        }
+        guard secureSession.connectedPeerID == request.peerID else {
+            endTransientRemoteInput()
+            status = "Control request expired because the secure session changed"
+            return
+        }
+
+        activeInboundControlRequest = request
+        isReceivingControl = true
+        onReceivingStarted?()
+        sendResponse(kind: .controlGranted, for: request)
         status = "Remote control granted to the other Mac"
     }
 
@@ -282,22 +541,42 @@ final class ControlCoordinator: ObservableObject {
     }
 
     private func connectionChanged(_ peerID: UUID?) {
+        guard !hasObservedConnectionState
+                || observedConnectedPeerID != peerID else {
+            return
+        }
+        hasObservedConnectionState = true
+        observedConnectedPeerID = peerID
         let wasControlling = state == .controlling
-        let wasReceiving = isReceivingControl
         requestTimeout?.cancel()
         requestTimeout = nil
+        incomingRequestTimeout?.cancel()
+        incomingRequestTimeout = nil
         activeOutboundRequestID = nil
-        activeInboundRequestID = nil
+        pendingIncomingControlRequest = nil
+        preparingIncomingControlRequest = nil
         if wasControlling {
             onControllingStopped?()
         }
-        if wasReceiving {
-            onReceivingStopped?()
+        if var teardown = receiverTeardown {
+            teardown.restoreMonitor = false
+            receiverTeardown = teardown
+        } else if let request = activeInboundControlRequest,
+           isReceivingControl {
+            finishReceivingControl(
+                request,
+                reason: peerID == nil
+                    ? "Secure session disconnected; input is local"
+                    : "Secure session changed; input is local",
+                notifyPeer: false
+            )
+        } else if !isRemoteInputTearingDown {
+            endTransientRemoteInput()
         }
+        activeInboundControlRequest = nil
         if peerID == nil {
             inputCapture.stopCapture()
             isReceivingControl = false
-            inputSink.endRemoteControl()
             _ = try? machine.handle(.transportDisconnected)
             state = machine.state
             status = "Secure session disconnected; input is local"
@@ -306,7 +585,6 @@ final class ControlCoordinator: ObservableObject {
                 inputCapture.stopCapture()
             }
             isReceivingControl = false
-            inputSink.endRemoteControl()
             _ = try? machine.handle(.transportConnected)
             state = machine.state
             status = "Secure session connected; input is local"
@@ -314,21 +592,15 @@ final class ControlCoordinator: ObservableObject {
     }
 
     private func remoteInputSinkFailed() {
-        guard isReceivingControl else { return }
-        isReceivingControl = false
-        let requestID = activeInboundRequestID
-        activeInboundRequestID = nil
-        inputSink.endRemoteControl()
-        onReceivingStopped?()
-        if let requestID {
-            send(
-                ControlMessage(
-                    kind: .endControl,
-                    requestID: requestID
-                )
-            )
+        guard let request = activeInboundControlRequest,
+              isReceivingControl else {
+            return
         }
-        status = "Remote control ended because Accessibility is unavailable"
+        finishReceivingControl(
+            request,
+            reason: "Remote control ended because Accessibility is unavailable",
+            notifyPeer: true
+        )
     }
 
     private func cancelPendingRequestForSimultaneousControl() {
@@ -348,7 +620,169 @@ final class ControlCoordinator: ObservableObject {
             stopControl(reason: "Control request timed out; input stayed local")
         }
         requestTimeout = timeout
-        DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: timeout)
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + Self.controlRequestTimeout,
+            execute: timeout
+        )
+    }
+
+    private func scheduleIncomingRequestTimeout(
+        for request: IncomingControlRequest
+    ) {
+        incomingRequestTimeout?.cancel()
+        let timeout = DispatchWorkItem { [weak self] in
+            guard let self,
+                  self.pendingIncomingControlRequest?.id == request.id else {
+                return
+            }
+            self.rejectIncomingControlRequest(
+                request,
+                reason: "Incoming control request timed out and was denied"
+            )
+        }
+        incomingRequestTimeout = timeout
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + Self.controlRequestTimeout,
+            execute: timeout
+        )
+    }
+
+    private func rejectIncomingControlRequest(
+        _ request: IncomingControlRequest,
+        reason: String
+    ) {
+        incomingRequestTimeout?.cancel()
+        incomingRequestTimeout = nil
+        if pendingIncomingControlRequest?.id == request.id {
+            pendingIncomingControlRequest = nil
+        }
+        if preparingIncomingControlRequest?.id == request.id {
+            preparingIncomingControlRequest = nil
+            endTransientRemoteInput()
+        }
+        sendResponse(kind: .controlDenied, for: request)
+        status = reason
+    }
+
+    private func cancelIncomingControlRequest(
+        _ request: IncomingControlRequest,
+        reason: String
+    ) {
+        incomingRequestTimeout?.cancel()
+        incomingRequestTimeout = nil
+        if pendingIncomingControlRequest?.id == request.id {
+            pendingIncomingControlRequest = nil
+        }
+        if preparingIncomingControlRequest?.id == request.id {
+            preparingIncomingControlRequest = nil
+            endTransientRemoteInput()
+        }
+        status = reason
+    }
+
+    private func finishReceivingControl(
+        _ request: IncomingControlRequest,
+        reason: String,
+        notifyPeer: Bool,
+        restoreMonitor: Bool = true,
+        completion: (() -> Void)? = nil
+    ) {
+        guard isReceivingControl,
+              activeInboundControlRequest?.id == request.id else {
+            return
+        }
+        isReceivingControl = false
+        activeInboundControlRequest = nil
+        isRemoteInputTearingDown = true
+        receiverTeardown = ReceiverTeardown(
+            request: request,
+            phase: .releasingInput,
+            notifyPeer: notifyPeer,
+            restoreMonitor: restoreMonitor,
+            completions: completion.map { [$0] } ?? []
+        )
+        inputSink.endRemoteControl { [weak self] in
+            self?.completeReceiverInputRelease(for: request.id)
+        }
+        status = reason
+    }
+
+    private func completeReceiverInputRelease(for requestID: UUID) {
+        guard var teardown = receiverTeardown,
+              teardown.request.id == requestID,
+              teardown.phase == .releasingInput else {
+            return
+        }
+        guard teardown.restoreMonitor, !isStoppingForQuit else {
+            completeReceiverTeardown(teardown)
+            return
+        }
+        teardown.phase = .restoringMonitor
+        receiverTeardown = teardown
+        let routeCompleted: () -> Void = { [weak self] in
+            guard let self else { return }
+            self.completeReceiverMonitorRestoration(for: requestID)
+        }
+        if let onReceivingStopped {
+            onReceivingStopped(routeCompleted)
+        } else {
+            routeCompleted()
+        }
+    }
+
+    private func completeReceiverMonitorRestoration(for requestID: UUID) {
+        guard let teardown = receiverTeardown,
+              teardown.request.id == requestID,
+              teardown.phase == .restoringMonitor else {
+            return
+        }
+        completeReceiverTeardown(teardown)
+    }
+
+    private func completeReceiverTeardown(_ teardown: ReceiverTeardown) {
+        guard receiverTeardown?.request.id == teardown.request.id else {
+            return
+        }
+        receiverTeardown = nil
+        isRemoteInputTearingDown = false
+        if teardown.notifyPeer {
+            sendResponse(kind: .endControl, for: teardown.request)
+        }
+        teardown.completions.forEach { $0() }
+    }
+
+    /// Cleans up a cancelled incoming acceptance or a connection transition.
+    /// A live receiver uses `ReceiverTeardown` above, which also waits for its
+    /// monitor route before allowing another session to begin.
+    private func endTransientRemoteInput(completion: (() -> Void)? = nil) {
+        guard receiverTeardown == nil else { return }
+        if let completion {
+            transientRemoteInputTeardownCompletions.append(completion)
+        }
+        guard !isRemoteInputTearingDown else { return }
+        isRemoteInputTearingDown = true
+        inputSink.endRemoteControl { [weak self] in
+            guard let self else { return }
+            let completions = transientRemoteInputTeardownCompletions
+            transientRemoteInputTeardownCompletions.removeAll()
+            isRemoteInputTearingDown = false
+            completions.forEach { $0() }
+        }
+    }
+
+    private func sendResponse(
+        kind: ControlMessageKind,
+        for request: IncomingControlRequest
+    ) {
+        guard secureSession.connectedPeerID == request.peerID else {
+            return
+        }
+        send(
+            ControlMessage(
+                kind: kind,
+                requestID: request.id
+            )
+        )
     }
 
     private func send(_ message: ControlMessage) {

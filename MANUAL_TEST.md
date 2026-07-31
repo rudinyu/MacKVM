@@ -23,7 +23,7 @@ Expected:
 - `lipo -archs dist/x86_64/MacKVM.app/Contents/MacOS/MacKVM` prints `x86_64`.
 - `codesign --verify --deep --strict` succeeds for both app bundles.
 - Finder displays the MacKVM app icon clearly at small and large icon sizes.
-- MacKVM appears only in the menu bar with a visible dual-display icon.
+- MacKVM appears only in the menu bar with a visible keyboard icon.
 - macOS asks for local-network access when needed.
 
 ## 2. Cable and monitor setup
@@ -34,41 +34,60 @@ Expected:
 3. Make the MA270U the main display in macOS on both Macs.
 4. In the MA270U OSD, enable DDC/CI if that setting is available.
 5. Install `m1ddc` on the M5 Pro Mac with `brew install m1ddc`.
-6. Select **M5 / USB-C preset** on the M5 Pro Mac.
-7. Select **Intel / HDMI preset** on the Intel Mac.
+6. Select **Detect MA270U** on the M5 Pro Mac and choose the display explicitly
+   identified as MA270U with its stable identifier.
+7. Select **M5 / USB-C preset** on the M5 Pro Mac.
+8. Select **Intel / HDMI preset** on the Intel Mac.
 
 Expected:
 
 - **Show this Mac** on the M5 Pro selects USB-C.
 - **Show other Mac** on the M5 Pro selects HDMI 1.
+- A reconnect or additional display does not silently redirect DDC to display
+  number 1; the selected MA270U remains visibly verified.
+- If an older installation saved display number 1, detecting the MA270U
+  replaces it with the stable identifier before automatic switching.
+- If a saved stable identifier is not present, detection does not replace it
+  with a different MA270U; select a new display explicitly before enabling DDC.
+- After launching MacKVM at login, a native Allow action can switch the
+  previously selected MA270U even if its menu has not been opened first; it
+  waits for MA270U verification rather than silently losing the first route.
+- A non-MA270U display is visibly marked and cannot be reported as a verified
+  MA270U or silently enable automatic switching.
 - A failed DDC command finishes within about five seconds and tells the user
-  which input to select through the OSD.
+  which input to select through the OSD, including a useful DDC diagnostic.
 
 ## 3. Permissions
 
-1. Start MacKVM on a Mac where one or both keyboard/mouse permissions have not
-   been granted.
-2. In the MacKVM setup alert, select **Request Permissions**.
-3. Grant the first permission requested, then quit and reopen MacKVM to request
-   the next missing permission.
-4. On both Macs, grant MacKVM:
-
-   - Input Monitoring;
-   - Accessibility;
-   - Local Network access when prompted.
-
-5. If a system permission sheet does not reappear after a previous denial,
-   click the corresponding **Settings** button in the MacKVM menu.
-6. Quit and reopen MacKVM after changing privacy permissions.
+1. Start MacKVM on a Mac where one or more permissions have not been granted
+   and open the menu-bar item.
+2. Under **Set up this Mac**, select **Enable Local Network**. Answer the
+   macOS prompt before selecting **I handled the macOS prompt**.
+3. Select **Request Input Monitoring**, grant it, return to MacKVM, and verify
+   that the checklist advances without quitting the app.
+4. Select **Request Accessibility** and grant it.
+5. After the checklist is complete, select **Enable** beside **Control request
+   notifications** and grant the optional macOS alert permission.
+6. Repeat on the other Mac.
+7. If a system permission sheet does not reappear after a previous denial,
+   click the corresponding **Settings** button and then use **Refresh setup
+   status** after returning to the app.
+8. If Local Network was denied, use **Review Local Network Settings**, allow
+   MacKVM there, then confirm nearby Macs can be discovered. The app cannot
+   preflight this particular macOS setting.
 
 Expected:
 
-- A setup alert appears proactively while either keyboard/mouse permission is
-  missing.
-- Only one macOS keyboard/mouse privacy prompt is requested per launch.
+- The checklist never presents Input Monitoring/Accessibility before the user
+  has explicitly handled the Local Network step.
+- Only one macOS privacy request can be initiated at a time.
 - **Settings** opens the matching Privacy & Security pane.
+- The Local Network row says **Reviewed**, not **Granted**, and its recovery
+  shortcut remains available after the checklist advances.
 - Both permission rows show **Granted**.
 - Control cannot begin while a required permission is missing.
+- The optional notification request is presented only after the three required
+  setup items; granting or denying it does not grant remote control.
 
 ## 4. Discovery and pairing
 
@@ -102,17 +121,41 @@ Expected:
 
 ## 6. Keyboard and mouse control
 
-1. From the M5 Pro Mac, request control of the Intel Mac.
-2. Type, move, click, drag, scroll, and use modifier shortcuts.
-3. Rapidly click at least four times.
-4. Move the pointer onto a secondary display, if connected.
-5. Hold a modifier and mouse button, then disconnect the network.
-6. Repeat with the Intel Mac controlling the M5 Pro Mac.
+1. On the receiving Mac, close the MacKVM menu, then from the M5 Pro request
+   control of the Intel Mac.
+2. Verify the Intel Mac receives a native macOS notification naming the M5 Pro
+   and offering **Allow**, **Deny**, and **Review in MacKVM**. Verify Review
+   opens an explicit approval dialog, then test each action.
+3. Lock the receiving Mac and choose **Allow** from the notification; macOS
+   must require authentication before it accepts the action.
+4. Open the menu and select **Allow**. Repeat once with **Deny** and once by
+   waiting for the timeout.
+5. Type, move, click, drag, scroll, and use modifier shortcuts.
+6. Rapidly click at least four times immediately after selecting **Allow**.
+7. Move the pointer onto a secondary display, if connected.
+8. Hold a modifier and mouse button, then disconnect the network.
+9. After a timeout, disconnect, or remote cancellation, tap any retained
+   notification action if macOS still displays it.
+10. On a Mac where notifications are not enabled, request control and verify
+    that MacKVM does not open a first-time notification-permission sheet during
+    the short consent window; its keyboard menu-bar icon should add a warning
+    symbol and retain the menu controls instead.
+11. Disable MacKVM notifications in System Settings, request control again, and
+   confirm the request remains available in the menu.
+12. Repeat with the Intel Mac controlling the M5 Pro Mac.
 
 Expected:
 
 - Input is not suppressed until the receiver grants the matching request ID.
+- The receiver never begins injection before its user selects **Allow**.
+- A closed menu does not hide a request: native actions use the live request ID
+  plus a fresh device-local notification nonce, while an expired/stale
+  notification cannot grant or deny a later request.
+- If notifications are disabled, MacKVM shows a warning symbol beside its
+  keyboard menu-bar icon and preserves the manual Allow/Deny controls in the
+  menu.
 - While controlling, input reaches only the receiving Mac.
+- The first keyboard/mouse event after **Allow** is not lost.
 - Pointer coordinates remain bounded to the receiving main display.
 - Four-click sequences are delivered.
 - Disconnect/end paths release every held key and mouse button.
@@ -122,13 +165,20 @@ Expected:
 
 1. While controlling, press **Control-Option-Command-Escape**.
 2. Repeat using **Return input to this Mac**.
-3. Repeat while DDC is disabled or `m1ddc` is unavailable.
-4. Quit MacKVM while the monitor shows the other Mac.
+3. From the receiving Mac, select **Stop remote control** while a key and a
+   mouse button are held by the controlling Mac.
+4. Repeat while DDC is disabled or `m1ddc` is unavailable.
+5. Quit MacKVM while the monitor shows the other Mac.
+6. Repeat step 5 while this Mac is receiving remote control.
 
 Expected:
 
 - The shortcut is consumed locally and immediately stops forwarding.
+- The receiving Mac can stop a live session without disconnecting or quitting;
+  both held keys and mouse buttons are released before the peer is notified.
 - Keyboard and mouse return before any monitor-switch result is assumed.
+- On quit during receiver-side control, injected input is released and the
+  monitor finishes on this Mac's local input, never on the remote route.
 - The M5 Pro attempts the correct USB-C/HDMI route; otherwise status identifies
   the exact OSD input to choose.
 - Quit waits for the final DDC attempt (at most about five seconds).
@@ -143,7 +193,7 @@ Expected:
 
 Expected:
 
-- The dual-display icon returns to the menu bar after login when enabled.
+- The keyboard icon returns to the menu bar after login when enabled.
 - MacKVM reports when macOS requires Login Items approval.
 - Disabling the setting prevents future login launches without quitting the
   current MacKVM process.
@@ -161,6 +211,8 @@ Record the macOS version and result for each item:
 | Discovery/pairing |  |  |  |
 | Secure reconnect |  |  |  |
 | Keyboard/mouse |  |  |  |
+| Control consent / receiver stop |  |  |  |
 | Emergency return |  |  |  |
+| MA270U detection / stable ID |  | N/A (`m1ddc`) |  |
 | MA270U DDC switch |  | N/A (`m1ddc`) |  |
 | Manual OSD fallback |  |  |  |

@@ -25,6 +25,10 @@ public struct PeerIdentity: Codable, Hashable, Sendable {
 public struct DeviceCredentials {
     public let identity: PeerIdentity
     public let privateKey: P256.Signing.PrivateKey
+    /// Whether this call loaded an existing complete identity rather than
+    /// creating a new one. The onboarding flow uses this to migrate upgrades
+    /// without a second Keychain lookup during app launch.
+    public let wasLoadedFromStorage: Bool
 }
 
 public protocol DevicePrivateKeyStore {
@@ -142,7 +146,8 @@ public enum DeviceCredentialsStore {
             }
             return DeviceCredentials(
                 identity: identity,
-                privateKey: privateKey
+                privateKey: privateKey,
+                wasLoadedFromStorage: true
             )
         }
 
@@ -156,6 +161,10 @@ public enum DeviceCredentialsStore {
         )
         try keyStore.save(privateKey.rawRepresentation)
         defaults.set(try JSONEncoder().encode(identity), forKey: identityKey)
-        return DeviceCredentials(identity: identity, privateKey: privateKey)
+        return DeviceCredentials(
+            identity: identity,
+            privateKey: privateKey,
+            wasLoadedFromStorage: false
+        )
     }
 }

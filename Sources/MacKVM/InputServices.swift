@@ -8,7 +8,7 @@ private enum InjectedEventMarker {
     static let value: Int64 = 0x4D_4B_56_4D
 }
 
-final class InputCaptureService: ObservableObject {
+final class InputCaptureService: ObservableObject, ControlInputCapture {
     @Published private(set) var hasInputMonitoringPermission: Bool
     @Published private(set) var isCapturing = false
     @Published private(set) var status = "Input capture stopped"
@@ -32,7 +32,7 @@ final class InputCaptureService: ObservableObject {
         hasInputMonitoringPermission = CGRequestListenEventAccess()
         status = hasInputMonitoringPermission
             ? "Input Monitoring permission granted"
-            : "Enable Input Monitoring in System Settings, then reopen MacKVM"
+            : "Enable Input Monitoring in System Settings, then return to MacKVM"
     }
 
     func startCapture(suppressingLocalEvents: Bool = false) {
@@ -235,7 +235,7 @@ final class InputCaptureService: ObservableObject {
     }()
 }
 
-final class RemoteInputSink: ObservableObject {
+final class RemoteInputSink: ObservableObject, ControlInputSink {
     @Published private(set) var hasAccessibilityPermission: Bool
     @Published private(set) var status = "Remote input ready"
 
@@ -263,24 +263,56 @@ final class RemoteInputSink: ObservableObject {
         hasAccessibilityPermission = AXIsProcessTrustedWithOptions(options)
         status = hasAccessibilityPermission
             ? "Accessibility permission granted"
-            : "Enable Accessibility in System Settings, then reopen MacKVM"
+            : "Enable Accessibility in System Settings, then return to MacKVM"
     }
 
-    func beginRemoteControl() {
+    /// Marks the sink ready to receive remote input before invoking completion.
+    /// The completion always runs on the main queue, after the serial injection
+    /// queue has established the accepting state.
+    func beginRemoteControl(
+        completion: @escaping (Bool) -> Void
+    ) {
         queue.async { [weak self] in
-            self?.isAcceptingRemoteInput = true
-            self?.hasPublishedInputActivity = false
-            self?.publish(status: "Remote control granted")
+            guard let self else {
+                DispatchQueue.main.async {
+                    completion(false)
+                }
+                return
+            }
+            guard AXIsProcessTrusted() else {
+                publish(
+                    permission: false,
+                    status: "Accessibility permission is required"
+                )
+                DispatchQueue.main.async {
+                    completion(false)
+                }
+                return
+            }
+            isAcceptingRemoteInput = true
+            hasPublishedInputActivity = false
+            publish(status: "Remote control granted")
+            DispatchQueue.main.async {
+                completion(true)
+            }
         }
     }
 
-    func endRemoteControl() {
+    /// Stops accepting input and releases held keys/buttons before completion.
+    /// The completion always runs on the main queue.
+    func endRemoteControl(
+        completion: @escaping () -> Void
+    ) {
         queue.async { [weak self] in
-            guard let self else { return }
+            guard let self else {
+                DispatchQueue.main.async(execute: completion)
+                return
+            }
             isAcceptingRemoteInput = false
             releaseAllInputsOnQueue()
             hasPublishedInputActivity = false
             publish(status: "Remote control ended")
+            DispatchQueue.main.async(execute: completion)
         }
     }
 

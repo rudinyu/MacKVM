@@ -1,21 +1,10 @@
 import AppKit
+import Combine
 import MacKVMCore
 import SwiftUI
 
-@MainActor
-private final class MacKVMApplicationDelegate:
-    NSObject,
-    NSApplicationDelegate
-{
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        PermissionOnboardingPresenter.applicationDidFinishLaunching()
-    }
-}
-
 @main
 struct MacKVMApp: App {
-    @NSApplicationDelegateAdaptor(MacKVMApplicationDelegate.self)
-    private var applicationDelegate
     @StateObject private var bootstrap = AppBootstrap()
 
     var body: some Scene {
@@ -33,7 +22,8 @@ struct MacKVMApp: App {
                     inputSink: inputSink,
                     control: control,
                     monitor: monitor,
-                    launchAtLogin: bootstrap.launchAtLogin
+                    launchAtLogin: bootstrap.launchAtLogin,
+                    bootstrap: bootstrap
                 )
             } else {
                 BootstrapErrorView(
@@ -42,10 +32,85 @@ struct MacKVMApp: App {
                 )
             }
         } label: {
-            Label("MacKVM", systemImage: "display.2")
+            if let control = bootstrap.control {
+                MacKVMMenuBarLabel(control: control)
+            } else {
+                Label("MacKVM", systemImage: "keyboard")
+            }
         }
         .menuBarExtraStyle(.window)
     }
+}
+
+/// The menu-bar state remains visible even when macOS notification alerts are
+/// disabled. `ControlCoordinator` owns the canonical pending-request state;
+/// this value only defines how that state is presented in the status item.
+enum ControlRequestMenuBarStatus: Equatable {
+    case ready
+    case pendingControlRequest
+
+    init(pendingIncomingControlRequest: IncomingControlRequest?) {
+        self = pendingIncomingControlRequest == nil
+            ? .ready : .pendingControlRequest
+    }
+
+    var pendingIndicatorSystemImage: String? {
+        switch self {
+        case .ready:
+            nil
+        case .pendingControlRequest:
+            "exclamationmark.circle.fill"
+        }
+    }
+
+    var accessibilityLabel: String {
+        switch self {
+        case .ready:
+            "MacKVM"
+        case .pendingControlRequest:
+            "MacKVM: incoming control request pending"
+        }
+    }
+
+    var accessibilityHint: String {
+        switch self {
+        case .ready:
+            "Open MacKVM."
+        case .pendingControlRequest:
+            "Open this menu bar item to allow or deny the control request."
+        }
+    }
+}
+
+/// Observing the coordinator directly is important: `AppBootstrap` does not
+/// relay `ControlCoordinator.objectWillChange`, and the indicator must update
+/// while the MacKVM menu is closed.
+private struct MacKVMMenuBarLabel: View {
+    @ObservedObject var control: ControlCoordinator
+
+    var body: some View {
+        let status = ControlRequestMenuBarStatus(
+            pendingIncomingControlRequest: control.pendingIncomingControlRequest
+        )
+        HStack(spacing: 2) {
+            Image(systemName: "keyboard")
+            if let image = status.pendingIndicatorSystemImage {
+                Image(systemName: image)
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(status.accessibilityLabel)
+        .accessibilityHint(status.accessibilityHint)
+        .help(status.accessibilityHint)
+    }
+}
+
+private func peerDisplayName(
+    for peerID: UUID,
+    from discovery: PeerDiscoveryService?
+) -> String {
+    discovery?.peers.first { $0.identity.id == peerID }?.name
+        ?? "Mac \(peerID.uuidString.prefix(8))"
 }
 
 @MainActor
@@ -56,12 +121,17 @@ private final class AppBootstrap: ObservableObject {
     let inputSink: RemoteInputSink?
     let control: ControlCoordinator?
     let monitor: MonitorController?
+    let controlRequestNotifier: ControlRequestNotifier?
     let launchAtLogin = LaunchAtLoginController()
     let errorMessage: String?
+    @Published private(set) var networkServicesStarted = false
+    private var controlRequestObservation: AnyCancellable?
 
     init() {
         do {
             let credentials = try DeviceCredentialsStore.load()
+            let hadExistingDeviceCredentials =
+                credentials.wasLoadedFromStorage
             let registry = PairingRegistry()
             let discovery = PeerDiscoveryService(
                 credentials: credentials,
@@ -80,23 +150,59 @@ private final class AppBootstrap: ObservableObject {
                 inputCapture: inputCapture,
                 inputSink: inputSink
             )
-            control.onControllingStarted = monitor.switchToRemote
+            control.onControllingStarted = { monitor.switchToRemote() }
             control.onControllingStopped = { monitor.switchToLocal() }
             control.onReceivingStarted = { monitor.switchToLocal() }
-            control.onReceivingStopped = monitor.switchToRemote
-            discovery.start()
-            secureSession.start()
+            control.onReceivingStopped = { completion in
+                monitor.switchToRemote(completion: completion)
+            }
+            let controlRequestNotifier = ControlRequestNotifier()
+            control.onIncomingControlRequest = {
+                [weak discovery, weak controlRequestNotifier] request in
+                let peerName = peerDisplayName(
+                    for: request.peerID,
+                    from: discovery
+                )
+                controlRequestNotifier?.present(
+                    request: request,
+                    peerName: peerName
+                )
+            }
             self.discovery = discovery
             self.secureSession = secureSession
             self.inputCapture = inputCapture
             self.inputSink = inputSink
             self.control = control
             self.monitor = monitor
+            self.controlRequestNotifier = controlRequestNotifier
             errorMessage = nil
-            PermissionOnboardingPresenter.scheduleIfNeeded(
-                inputCapture: inputCapture,
-                inputSink: inputSink
-            )
+            // A notification action can arrive before the menu is opened.
+            // Start MA270U discovery here so the saved selector is verified
+            // for that headless control path as well.
+            monitor.refreshDetectedDisplays()
+            controlRequestNotifier.onAction = { [weak self] action, requestID in
+                switch action {
+                case .allow:
+                    self?.control?.acceptIncomingControlRequest(requestID)
+                case .deny:
+                    self?.control?.denyIncomingControlRequest(requestID)
+                case .review:
+                    self?.reviewIncomingControlRequest(requestID)
+                }
+            }
+            controlRequestObservation = control.$pendingIncomingControlRequest
+                .dropFirst()
+                .receive(on: DispatchQueue.main)
+                .sink { [weak controlRequestNotifier] request in
+                    if request == nil {
+                        controlRequestNotifier?.clearActiveRequest()
+                    }
+                }
+            if OnboardingDefaults.resolveLocalNetworkAccessReviewed(
+                hadExistingDeviceCredentials: hadExistingDeviceCredentials
+            ) {
+                startNetworkServices()
+            }
         } catch {
             discovery = nil
             secureSession = nil
@@ -104,8 +210,66 @@ private final class AppBootstrap: ObservableObject {
             inputSink = nil
             control = nil
             monitor = nil
+            controlRequestNotifier = nil
             errorMessage = "Could not access the device key: \(error.localizedDescription)"
         }
+    }
+
+    func startNetworkServices() {
+        guard !networkServicesStarted,
+              let discovery,
+              let secureSession else {
+            return
+        }
+        discovery.start()
+        secureSession.start()
+        networkServicesStarted = true
+    }
+
+    func requestControlRequestNotifications() {
+        controlRequestNotifier?.requestAuthorization()
+    }
+
+    func clearControlRequestNotifications() {
+        controlRequestNotifier?.clearAllControlRequestNotifications()
+    }
+
+    func reviewIncomingControlRequest(_ requestID: UUID) {
+        guard let control,
+              let request = control.pendingIncomingControlRequest,
+              request.id == requestID else {
+            return
+        }
+
+        activateMacKVM()
+        let peerName = peerDisplayName(
+            for: request.peerID,
+            from: discovery
+        )
+        let alert = NSAlert()
+        alert.messageText = "MacKVM control request"
+        alert.informativeText = "\(peerName) wants to control this Mac. Allow only if you expect to use that Mac's keyboard and mouse."
+        alert.addButton(withTitle: "Review later")
+        alert.addButton(withTitle: "Allow")
+        alert.addButton(withTitle: "Deny")
+
+        switch alert.runModal() {
+        case .alertSecondButtonReturn:
+            control.acceptIncomingControlRequest(request.id)
+        case .alertThirdButtonReturn:
+            control.denyIncomingControlRequest(request.id)
+        default:
+            break
+        }
+    }
+}
+
+@MainActor
+private func activateMacKVM() {
+    if #available(macOS 14.0, *) {
+        NSApplication.shared.activate()
+    } else {
+        NSApplication.shared.activate(ignoringOtherApps: true)
     }
 }
 
@@ -136,24 +300,37 @@ private struct MacKVMMenuView: View {
     @ObservedObject var control: ControlCoordinator
     @ObservedObject var monitor: MonitorController
     @ObservedObject var launchAtLogin: LaunchAtLoginController
+    @ObservedObject var bootstrap: AppBootstrap
+    @AppStorage(OnboardingDefaults.localNetworkAccessReviewedKey)
+    private var localNetworkAccessReviewed = false
+    @State private var awaitingLocalNetworkResponse = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            header
-            Divider()
+        VStack(alignment: .leading, spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    header
+                    Divider()
 
-            if !discovery.pendingRequests.isEmpty {
-                pendingSection
-                Divider()
+                    setupSection
+                    Divider()
+
+                    if !discovery.pendingRequests.isEmpty {
+                        pendingSection
+                        Divider()
+                    }
+
+                    peerSection
+                    Divider()
+                    inputSection
+                    Divider()
+                    monitorSection
+                    Divider()
+                    startupSection
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(16)
             }
-
-            peerSection
-            Divider()
-            inputSection
-            Divider()
-            monitorSection
-            Divider()
-            startupSection
             Divider()
 
             HStack {
@@ -163,22 +340,38 @@ private struct MacKVMMenuView: View {
                     .lineLimit(2)
                 Spacer()
                 Button("Quit") {
-                    control.stopControl(reason: "MacKVM is quitting")
-                    discovery.stop()
-                    secureSession.stop()
-                    monitor.switchToLocal {
-                        NSApplication.shared.terminate(nil)
+                    bootstrap.clearControlRequestNotifications()
+                    // Latch the final local-route intent first, but do not
+                    // resolve a cancelled receiver monitor route until the
+                    // coordinator has recorded its quit teardown. Otherwise
+                    // that completion could make it release remote input a
+                    // second time before `stopForQuit` can observe it.
+                    let cancelledMonitorRoutes = monitor.beginTermination()
+                    control.stopForQuit {
+                        discovery.stop()
+                        secureSession.stop()
+                        monitor.switchToLocalForTermination {
+                            NSApplication.shared.terminate(nil)
+                        }
                     }
+                    cancelledMonitorRoutes.forEach { $0() }
                 }
             }
+            .padding(16)
         }
-        .padding(16)
-        .frame(width: 400)
+        // Keep every section reachable on shorter MacBook displays while
+        // leaving the return-to-local/quit control pinned at the bottom.
+        .frame(width: 400, height: 640)
         .onAppear {
-            PermissionOnboardingPolicy.refresh(
-                inputCapture: inputCapture,
-                inputSink: inputSink
+            refreshSetupState()
+            monitor.refreshDetectedDisplays()
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: NSApplication.didBecomeActiveNotification
             )
+        ) { _ in
+            refreshSetupState()
         }
     }
 
@@ -195,6 +388,154 @@ private struct MacKVMMenuView: View {
                 Text("Security code: \(code)")
                     .font(.title3.monospacedDigit().weight(.semibold))
             }
+        }
+    }
+
+    private var setupState: PermissionOnboardingState {
+        PermissionOnboardingPolicy.checklistState(
+            localNetworkAccessReviewed: localNetworkAccessReviewed,
+            inputMonitoringGranted: inputCapture.hasInputMonitoringPermission,
+            accessibilityGranted: inputSink.hasAccessibilityPermission
+        )
+    }
+
+    private var setupSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Set up this Mac")
+                .font(.subheadline.weight(.semibold))
+
+            ForEach(setupState.checklist) { item in
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack {
+                        Text(item.permission.displayName)
+                        Spacer()
+                        setupStatus(for: item)
+                    }
+                    if item.status == .current {
+                        setupAction(for: item.permission)
+                    }
+                }
+            }
+
+            if localNetworkAccessReviewed {
+                Button("Review Local Network Settings") {
+                    PrivacySettings.open(.localNetwork)
+                }
+                .font(.caption)
+                Text("If nearby Macs are not found, confirm MacKVM is allowed in Local Network settings. macOS does not let MacKVM verify that choice itself.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            if setupState.isReadyForInputSharing {
+                Label("Input permissions ready", systemImage: "checkmark.seal.fill")
+                    .font(.caption)
+                    .foregroundStyle(.green)
+            }
+            if setupState.isChecklistComplete {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Control request notifications")
+                        Spacer()
+                        Button("Enable") {
+                            bootstrap.requestControlRequestNotifications()
+                        }
+                    }
+                    Text("Optional but recommended: enable this before the first request so Allow/Deny alerts are ready while the menu is closed.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            } else if awaitingLocalNetworkResponse {
+                Text("Respond to the macOS Local Network prompt before continuing.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            Button("Refresh setup status") {
+                refreshSetupState()
+            }
+            .font(.caption)
+        }
+    }
+
+    @ViewBuilder
+    private func setupStatus(
+        for item: PermissionOnboardingChecklistItem
+    ) -> some View {
+        if item.permission == .localNetwork, item.status == .complete {
+            Label("Reviewed", systemImage: "checkmark.circle.fill")
+                .font(.caption)
+                .foregroundStyle(.green)
+        } else {
+            switch item.status {
+            case .complete:
+                Label("Complete", systemImage: "checkmark.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.green)
+            case .current:
+                Label("Action needed", systemImage: "exclamationmark.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            case .waiting:
+                Label("Waiting", systemImage: "clock")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func setupAction(for permission: MacKVMPermission) -> some View {
+        switch permission {
+        case .localNetwork:
+            HStack {
+                if awaitingLocalNetworkResponse {
+                    Button("I handled the macOS prompt") {
+                        awaitingLocalNetworkResponse = false
+                        localNetworkAccessReviewed = true
+                        bootstrap.startNetworkServices()
+                        refreshSetupState()
+                    }
+                    .buttonStyle(.borderedProminent)
+                } else {
+                    Button("Enable Local Network") {
+                        awaitingLocalNetworkResponse = true
+                        // Bonjour traffic triggers the macOS Local Network
+                        // prompt, so start it before recording the user's
+                        // acknowledgement in the next step.
+                        bootstrap.startNetworkServices()
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                Button("Settings") {
+                    PrivacySettings.open(.localNetwork)
+                }
+            }
+        case .inputMonitoring, .accessibility:
+            HStack {
+                Button("Request \(permission.displayName)") {
+                    _ = PermissionOnboardingPolicy.requestPermission(
+                        permission,
+                        inputCapture: inputCapture,
+                        inputSink: inputSink
+                    )
+                    refreshSetupState()
+                }
+                .buttonStyle(.borderedProminent)
+                Button("Settings") {
+                    PrivacySettings.open(permission)
+                }
+            }
+        }
+    }
+
+    private func refreshSetupState() {
+        PermissionOnboardingPolicy.refresh(
+            inputCapture: inputCapture,
+            inputSink: inputSink
+        )
+        if localNetworkAccessReviewed {
+            bootstrap.startNetworkServices()
         }
     }
 
@@ -229,7 +570,11 @@ private struct MacKVMMenuView: View {
             Text("Nearby Macs")
                 .font(.subheadline.weight(.semibold))
 
-            if discovery.peers.isEmpty {
+            if !bootstrap.networkServicesStarted {
+                Text("Complete the Local Network step above to discover nearby Macs.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if discovery.peers.isEmpty {
                 Text("Searching on the local network…")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -319,24 +664,32 @@ private struct MacKVMMenuView: View {
             Text("Keyboard and mouse")
                 .font(.subheadline.weight(.semibold))
 
-            permissionRow(
+            permissionStatusRow(
                 title: "Input Monitoring",
-                granted: inputCapture.hasInputMonitoringPermission,
-                requestAction: inputCapture.requestPermission,
-                settingsAction: {
-                    PrivacySettings.open(.inputMonitoring)
-                }
+                granted: inputCapture.hasInputMonitoringPermission
             )
-            permissionRow(
+            permissionStatusRow(
                 title: "Accessibility",
-                granted: inputSink.hasAccessibilityPermission,
-                requestAction: inputSink.requestPermission,
-                settingsAction: {
-                    PrivacySettings.open(.accessibility)
-                }
+                granted: inputSink.hasAccessibilityPermission
             )
 
-            if control.state == .controlling || control.state == .suspended {
+            if let request = control.pendingIncomingControlRequest {
+                incomingControlRequestSection(request)
+            } else if control.isReceivingControl {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("This Mac is receiving remote control.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button("Stop remote control") {
+                        control.endReceivingControl()
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            } else if control.isRemoteInputTearingDown {
+                Text("Returning remote input to this Mac…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if control.state == .controlling || control.state == .suspended {
                 Button("Return input to this Mac") {
                     control.stopControl()
                 }
@@ -349,6 +702,8 @@ private struct MacKVMMenuView: View {
                         || !inputSink.hasAccessibilityPermission
                         || secureSession.connectedPeerID == nil
                         || control.isReceivingControl
+                        || control.isRemoteInputTearingDown
+                        || !setupState.isReadyForInputSharing
                 )
             }
 
@@ -364,12 +719,42 @@ private struct MacKVMMenuView: View {
         }
     }
 
+    private func incomingControlRequestSection(
+        _ request: IncomingControlRequest
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(
+                "\(peerDisplayName(for: request.peerID, from: discovery)) requests control of this Mac."
+            )
+                .font(.caption)
+            Text("Allow only if you expect to use the other Mac's keyboard and mouse.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            HStack {
+                Button("Allow") {
+                    control.acceptIncomingControlRequest(request.id)
+                }
+                .buttonStyle(.borderedProminent)
+                Button("Deny") {
+                    control.denyIncomingControlRequest(request.id)
+                }
+            }
+        }
+    }
+
     private var monitorSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("BenQ MA270U input")
                 .font(.subheadline.weight(.semibold))
 
             Toggle("Automatic DDC/CI switching", isOn: $monitor.automationEnabled)
+                .disabled(!monitor.supportsAutomaticDDCSwitching)
+
+            if !monitor.supportsAutomaticDDCSwitching {
+                Text("This Intel Mac uses the MA270U OSD input menu. Automatic DDC/CI runs only on the Apple Silicon Mac connected by USB-C.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
 
             HStack {
                 Button("M5 / USB-C preset") {
@@ -391,8 +776,57 @@ private struct MacKVMMenuView: View {
                 }
             }
 
-            TextField("m1ddc display number or UUID", text: $monitor.displaySelector)
-            TextField("m1ddc executable path", text: $monitor.executablePath)
+            if monitor.supportsAutomaticDDCSwitching {
+                Button("Detect MA270U") {
+                    monitor.refreshDetectedDisplays()
+                }
+
+                if monitor.detectedDisplays.isEmpty {
+                    Text("No detected DDC display yet. Connect the MA270U by USB-C, then detect it.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(monitor.detectedDisplays) { display in
+                        Button {
+                            monitor.selectDisplay(display)
+                        } label: {
+                            HStack {
+                                Image(
+                                    systemName: display.matches(
+                                        selector: monitor.displaySelector
+                                    ) ? "checkmark.circle.fill" : "display"
+                                )
+                                Text(display.displayName)
+                                    .lineLimit(1)
+                                Spacer()
+                                if !display.isLikelyMA270U {
+                                    Text("Not MA270U")
+                                        .font(.caption2)
+                                        .foregroundStyle(.orange)
+                                }
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(
+                            display.matches(selector: monitor.displaySelector)
+                                ? Color.green : Color.primary
+                        )
+                    }
+                }
+
+                if monitor.isDisplaySelectorVerified {
+                    Label("Selected MA270U verified", systemImage: "checkmark.shield.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.green)
+                } else {
+                    Text("Only a detected MA270U can enable automatic switching. Do not select a different display unless you have confirmed its model.")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
+
+                TextField("m1ddc UUID (must match detected MA270U)", text: $monitor.displaySelector)
+                TextField("m1ddc executable path", text: $monitor.executablePath)
+            }
 
             HStack {
                 Button("Show this Mac") {
@@ -406,6 +840,13 @@ private struct MacKVMMenuView: View {
             Text(monitor.status)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+            if let diagnostic = monitor.diagnostic {
+                Text("DDC diagnostic: \(diagnostic)")
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+                    .textSelection(.enabled)
+            }
             Text("If DDC fails, use the monitor OSD input menu.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
@@ -437,11 +878,9 @@ private struct MacKVMMenuView: View {
         }
     }
 
-    private func permissionRow(
+    private func permissionStatusRow(
         title: String,
-        granted: Bool,
-        requestAction: @escaping () -> Void,
-        settingsAction: @escaping () -> Void
+        granted: Bool
     ) -> some View {
         HStack {
             Text(title)
@@ -454,10 +893,6 @@ private struct MacKVMMenuView: View {
             )
             .font(.caption)
             .foregroundStyle(granted ? .green : .orange)
-            if !granted {
-                Button("Request", action: requestAction)
-                Button("Settings", action: settingsAction)
-            }
         }
     }
 }

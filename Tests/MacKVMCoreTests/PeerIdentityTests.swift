@@ -27,6 +27,8 @@ final class PeerIdentityTests: XCTestCase {
             first.privateKey.rawRepresentation,
             second.privateKey.rawRepresentation
         )
+        XCTAssertFalse(first.wasLoadedFromStorage)
+        XCTAssertTrue(second.wasLoadedFromStorage)
         XCTAssertEqual(first.identity.name, "Rudin's MacBook Pro")
         XCTAssertEqual(
             first.identity.serviceName,

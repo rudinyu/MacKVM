@@ -4,11 +4,15 @@ import Foundation
 import MacKVMCore
 import Network
 
-final class SecureSessionService: ObservableObject {
+final class SecureSessionService: ObservableObject, ControlSessionTransport {
     @Published private(set) var connectedPeerID: UUID?
     @Published private(set) var status = "Secure session idle"
 
     var onPayload: ((Data) -> Void)?
+
+    var connectedPeerIDPublisher: AnyPublisher<UUID?, Never> {
+        $connectedPeerID.eraseToAnyPublisher()
+    }
 
     private static let serviceType = "_mackvm-secure._tcp"
     private static let maximumPendingConnections = 16

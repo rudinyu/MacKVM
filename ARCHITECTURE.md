@@ -3,14 +3,15 @@
 ## Current scope
 
 The repository implements discovery, mutual pairing, a persistent encrypted
-session, validated keyboard and mouse forwarding, explicit control ownership
-with a safe local-return shortcut, and configurable BenQ monitor switching.
+session, validated keyboard and mouse forwarding, explicit receiver consent and
+safe local-return controls, a sequential macOS setup checklist, and configurable
+BenQ monitor switching.
 
 ```mermaid
 flowchart LR
     subgraph MacA["MacBook Pro A"]
         UIA["SwiftUI MenuBarExtra<br/>persistent dual-display icon"]
-        PermA["PermissionOnboardingPresenter<br/>Input Monitoring + Accessibility"]
+        PermA["Guided setup checklist<br/>Local Network → Input Monitoring → Accessibility"]
         LoginA["LaunchAtLoginController<br/>SMAppService"]
         DA["PeerDiscoveryService"]
         WA["NWListener + NWBrowser"]
@@ -19,6 +20,7 @@ flowchart LR
         PA["Pairing + SecureSession<br/>P-256 + HKDF + ChaChaPoly"]
         IA["CGEventTap capture<br/>Input Monitoring"]
         OA["CGEvent injection<br/>Accessibility"]
+        NA["ControlRequestNotifier<br/>native Allow / Deny / Review"]
         MA["MonitorController<br/>m1ddc or OSD fallback"]
         UIA --> DA
         UIA --> PermA
@@ -29,6 +31,7 @@ flowchart LR
         DA --> RA
         IA --> PA
         PA --> OA
+        PA --> NA
         UIA --> MA
     end
 
@@ -39,7 +42,7 @@ flowchart LR
 
     subgraph MacB["MacBook Pro B"]
         UIB["SwiftUI MenuBarExtra<br/>persistent dual-display icon"]
-        PermB["PermissionOnboardingPresenter"]
+        PermB["Guided setup checklist"]
         LoginB["LaunchAtLoginController"]
         DB["PeerDiscoveryService"]
         WB["NWListener + NWBrowser"]
@@ -48,6 +51,7 @@ flowchart LR
         PB["Pairing + SecureSession"]
         IB["CGEventTap capture"]
         OB["CGEvent injection"]
+        NB["ControlRequestNotifier"]
         MB["MonitorController"]
         UIB --> DB
         UIB --> PermB
@@ -58,6 +62,7 @@ flowchart LR
         DB --> RB
         IB --> PB
         PB --> OB
+        PB --> NB
         UIB --> MB
     end
 
@@ -88,10 +93,21 @@ The pairing protocol currently works as follows:
 6. A later control connection exchanges signed ephemeral P-256 keys, derives
    directional keys with HKDF, and requires an encrypted key-confirmation packet
    before the responder marks the session connected.
-7. The controlling Mac captures selected keyboard, mouse, and scroll events
-   with a suppressing `CGEventTap` only after the receiver grants control,
-   validates and encrypts them, and sends them through the secure session. The
-   receiver validates them again and injects them using `CGEvent`.
+7. The receiving Mac presents each signed/encrypted control request to its user.
+   When its menu is closed, `ControlRequestNotifier` also presents a native
+   Allow/Deny/Review notification. The Allow action requires macOS
+   authentication at the lock screen. Its action includes the request UUID plus
+   a fresh device-local notification nonce; `ControlRequestNotifier` checks the
+   nonce against its one live notification, and `ControlCoordinator` separately
+   checks the UUID against its one live request before taking any action.
+   **Review in MacKVM** opens an explicit Allow/Deny dialog. Only after
+   **Allow** is selected does
+   its injection queue become ready and return a matching grant. The controlling
+   Mac then captures selected
+   keyboard, mouse, and scroll events with a suppressing `CGEventTap`, validates
+   and encrypts them, and sends them through the secure session. The receiver
+   validates them again and injects them using `CGEvent`; either side can end
+   control safely.
 
 ```mermaid
 stateDiagram-v2
@@ -129,7 +145,9 @@ up to 90 W power.
 ### Pairing issues resolved in Step 1
 
 - Outbound and inbound pairing both enforce the pinned public key.
-- Bonjour advertising and browsing start when the app initializes.
+- Bonjour advertising and browsing begin only after the user handles the
+  Local Network setup step, so its macOS prompt cannot race the input-permission
+  prompts.
 - Only one outbound pairing request can be active, and its verification code is
   cleared on every terminal path.
 - Completing or cancelling a request clears its connection timeout and receive
@@ -148,24 +166,25 @@ up to 90 W power.
 The major runtime responsibilities are separated as follows:
 
 ```text
-AppBootstrap            service wiring and launch-time startup
-PermissionOnboarding    missing-permission policy, setup alert, Settings links
+AppBootstrap            service wiring and Local Network-gated startup
+PermissionOnboarding    sequential checklist, permission refresh, Settings links
 LaunchAtLoginController SMAppService login-item state
 PeerDiscoveryService    Bonjour pairing discovery and pairing session lifecycle
 SecureSessionService    authenticated encrypted message channel
 InputCaptureService     CGEventTap capture and Input Monitoring state
 RemoteInputSink         validated CGEvent injection and Accessibility state
-MonitorController       DDC/CI input switching with manual OSD fallback
+ControlRequestNotifier  native incoming-control notification and stale-action guard
+MonitorController       MA270U discovery, stable DDC/CI selection, diagnostics, OSD fallback
 PairingRegistry         paired-peer persistence
 DeviceCredentialsStore  Keychain identity persistence
 ```
 
 Input capture uses the main display bounds on each Mac. Configure the MA270U as
 the main display on both computers so normalized pointer positions map to the
-same physical screen. Control uses a request/grant exchange; once granted,
-events are suppressed locally and forwarded remotely. Press
-**Control–Option–Command–Escape** at any time during control to restore local
-input.
+same physical screen. Control uses a request/grant exchange; the receiver must
+confirm the request before events are suppressed locally and forwarded remotely.
+The controller can press **Control–Option–Command–Escape**, while the receiver
+can use **Stop remote control** to release injected input and return control.
 
 ## How to use the current MVP
 
@@ -192,30 +211,44 @@ input.
 
    Do not use `swift run` for normal operation: the generated `.app` carries
    the Bonjour and Local Network privacy metadata required by macOS.
-5. MacKVM appears as a dual-display icon in the menu bar. If the launch-time setup
-   alert appears, select **Request Permissions**, grant the permission macOS
-   requests, then quit and reopen MacKVM. It requests one missing permission
-   per launch until both Input Monitoring and Accessibility are granted. If an
-   earlier denial prevents a new system prompt, use the **Settings** button
-   beside that permission.
-6. Optionally enable **Launch MacKVM at Login** so the menu-bar icon returns
+5. MacKVM appears as a keyboard icon in the menu bar. Open it and complete
+   **Set up this Mac** in order: select **Enable Local Network**, answer the
+   macOS prompt and select **I handled the macOS prompt**, then request Input
+   Monitoring and Accessibility one at a time. Returning from System Settings
+   refreshes the checklist; **Review Local Network Settings** remains available
+   for a prior Local Network denial because macOS does not expose its result to
+   MacKVM.
+6. After that checklist finishes, select **Enable** next to **Control request
+   notifications**. This optional macOS alert permission should be handled
+   before the first request, outside its short consent window. A control
+   request never triggers this authorization sheet by itself; without alerts,
+   MacKVM adds a warning symbol beside its keyboard menu-bar icon and retains
+   the menu controls.
+7. Optionally enable **Launch MacKVM at Login** so the menu-bar icon returns
    automatically after signing in.
-7. Open the MacKVM menu-bar item on either Mac to inspect nearby devices.
-   Discovery already starts when the app launches.
-8. Under **Nearby Macs**, select **Pair** on one Mac.
-9. Compare the six-digit security code shown on both Macs. Press **Accept** on
-   both Macs only when the names and codes match.
-10. Install `m1ddc` on the M5 Pro Mac with `brew install m1ddc`. Select the
-    **M5 / USB-C preset** there and the **Intel / HDMI preset** on the 2019 Mac.
-    Test **Show this Mac** and **Show other Mac**. Leave DDC disabled and use
-    the MA270U OSD if the physical test fails.
-11. Select **Connect** on one Mac. When the encrypted session is connected,
+8. After the Local Network step is complete, open the MacKVM menu-bar item on
+   either Mac to inspect nearby devices.
+9. Under **Nearby Macs**, select **Pair** on one Mac.
+10. Compare the six-digit security code shown on both Macs. Verify the peer name
+   on each Mac, then press **Accept** on both Macs only when the codes match.
+11. Install `m1ddc` on the M5 Pro Mac with `brew install m1ddc`. Select
+    **Detect MA270U** and choose the display explicitly identified as MA270U
+    before selecting the **M5 / USB-C preset**; use **Intel / HDMI preset** on
+    the 2019 Mac. Test
+    **Show this Mac** and **Show other Mac**. Leave DDC disabled and use the
+    MA270U OSD if the physical test fails.
+12. Select **Connect** on one Mac. When the encrypted session is connected,
     choose **Request control of other Mac** on the Mac whose keyboard and mouse
     you are using.
-12. After the receiver grants control, input is sent only to the other Mac.
-    Press **Control–Option–Command–Escape** to return input immediately, or use
-    **Return input to this Mac** from the menu. If DDC cannot switch the monitor,
-    follow the status text and select the requested input through the OSD.
+13. The receiving Mac must select **Allow** before input is sent only to the
+    other Mac. With the menu closed, it can use the native notification's
+    **Allow**, **Deny**, or **Review in MacKVM** action; Review opens an
+    explicit approval dialog, Allow requires macOS authentication if the
+    receiver is locked, and old/expired actions are ignored. Press
+    **Control–Option–Command–Escape** or use **Return input to
+    this Mac** on the controller; the receiver can also select **Stop remote
+    control**. If DDC cannot switch the monitor, follow the diagnostic and
+    select the requested input through the OSD.
 
 Before testing, macOS may ask for local-network access. Pairing metadata and
 Bonjour names are visible on the LAN, while established control-session payloads

@@ -5,8 +5,9 @@ monitor between two Macs on the same local network.
 
 The current MVP provides:
 
-- a native high-resolution app icon and an always-visible dual-display icon in the
-  macOS menu bar while MacKVM is running;
+- a native high-resolution app icon and an always-visible keyboard icon in the
+  macOS menu bar while MacKVM is running; it adds a warning symbol for a
+  pending incoming control request;
 - a persistent local device identity;
 - Bonjour discovery on the local network;
 - signed pairing requests that must be accepted on the receiving Mac;
@@ -16,15 +17,20 @@ The current MVP provides:
   directional HKDF keys, ChaChaPoly encryption, and replay-protected counters.
 - validated keyboard, mouse, and scroll event forwarding over that encrypted
   session;
-- proactive Input Monitoring and Accessibility setup guidance, permission
-  requests, and direct System Settings shortcuts;
+- a sequential Local Network, Input Monitoring, and Accessibility setup
+  checklist that prevents overlapping macOS permission prompts and refreshes
+  when MacKVM becomes active again;
 - an optional **Launch MacKVM at Login** setting;
 - injected-event marking that prevents input feedback loops;
-- request/grant control ownership with deterministic collision handling;
+- explicit Allow/Deny control consent on the receiving Mac, deterministic
+  collision handling, and a receiver-side stop action;
+- native macOS incoming-control notifications with Allow, Deny, and Review
+  actions, so the receiver can respond while the menu is closed;
 - local input suppression while controlling and an emergency
   `Control-Option-Command-Escape` return shortcut;
-- configurable BenQ MA270U input switching through `m1ddc`, with a clear
-  manual OSD fallback.
+- configurable BenQ MA270U input switching through `m1ddc`, including display
+  discovery, stable display-ID selection, DDC diagnostics, and a manual OSD
+  fallback.
 
 ## Requirements
 
@@ -83,29 +89,52 @@ they are connected to the same local network. For pointer mapping, set the
 MA270U as the main display on both Macs.
 
 Before the first launch, copy the matching app into `/Applications`. MacKVM
-appears as a dual-display icon in the menu bar rather than as a regular Dock app.
-If either keyboard/mouse permission is missing, MacKVM displays a setup alert:
+appears as a keyboard icon in the menu bar rather than as a regular Dock app.
+Open that menu and complete **Set up this Mac** on each computer:
 
-1. Select **Request Permissions**.
-2. Grant the permission requested by macOS. MacKVM requests one missing
-   keyboard/mouse permission per launch so system prompts cannot overlap.
-3. If macOS does not show a permission sheet again after an earlier denial,
-   open the MacKVM menu and use the matching **Settings** button.
-4. Quit and reopen MacKVM until both **Input Monitoring** and
-   **Accessibility** show **Granted**.
-5. Enable **Launch MacKVM at Login** in the menu if the menu-bar icon should
+1. Select **Enable Local Network**, answer the macOS prompt, then select
+   **I handled the macOS prompt**.
+2. Select **Request Input Monitoring** and grant the macOS prompt.
+3. Select **Request Accessibility** and grant the next prompt. MacKVM refreshes
+   the checklist when it becomes active after System Settings.
+4. If a prompt was previously denied, use the matching **Settings** shortcut.
+   After the Local Network step, **Review Local Network Settings** remains
+   available because macOS does not expose an API that lets MacKVM verify the
+   Allow/Deny choice.
+5. After the checklist is complete, select **Enable** beside **Control request
+   notifications**. This optional prompt is best handled before the first live
+   control request, so it does not consume the 15-second consent window.
+6. Enable **Launch MacKVM at Login** in the menu if the menu-bar icon should
    return automatically after signing in.
 
 In the MacKVM menu:
 
-1. On the M5 Pro Mac, select **M5 / USB-C preset**. This sets this Mac to
+1. On the M5 Pro Mac, select **Detect MA270U** and choose the detected display
+   explicitly identified as **MA270U**. MacKVM saves its stable m1ddc
+   identifier rather than assuming display number 1; an unrecognized display
+   cannot enable automatic switching.
+2. On the M5 Pro Mac, select **M5 / USB-C preset**. This sets this Mac to
    USB-C (VCP 27), the other Mac to HDMI 1 (VCP 17), and enables DDC.
-2. On the 2019 Intel Mac, select **Intel / HDMI preset**. This sets the local
+3. On the 2019 Intel Mac, select **Intel / HDMI preset**. This sets the local
    route to HDMI 1 and keeps automatic DDC off.
-3. If the Intel Mac uses HDMI 2, change both matching input pickers to HDMI 2.
-4. Use **Show this Mac** and **Show other Mac** to verify switching before
-   starting remote control. If it fails, enable DDC/CI in the MA270U OSD and
-   use the OSD input menu as the fallback.
+4. If the Intel Mac uses HDMI 2, change both matching input pickers to HDMI 2.
+5. Use **Show this Mac** and **Show other Mac** to verify switching before
+   starting remote control. If it fails, read the **DDC diagnostic**, enable
+   DDC/CI in the MA270U OSD, and use the OSD input menu as the fallback.
+
+When one Mac selects **Request control of other Mac**, the receiving Mac must
+select **Allow** or **Deny**. If its MacKVM menu is closed, macOS shows a
+native notification with **Allow**, **Deny**, and **Review in MacKVM** instead.
+**Review in MacKVM** opens an explicit Allow/Deny dialog. Each action is checked
+against the live request ID and a fresh device-local notification nonce, so an
+expired notification cannot start control. **Allow** requires macOS
+authentication when the receiver is locked. Only the explicit **Enable** setup
+action can show the optional macOS notification-permission prompt; otherwise
+MacKVM falls back to a visible menu-bar warning and the menu controls. It can always
+select **Stop remote control** to release
+injected keys/buttons and return control locally. If macOS notifications are
+disabled, its keyboard menu-bar icon shows a warning symbol and the same
+request remains in the menu.
 
 ## Validate
 
@@ -123,7 +152,7 @@ Run Codex CI and code review after each complete plan step:
 ./.codex/step-review.sh
 ```
 
-After every plan step is complete, run the final Claude reviewer:
+After all plan steps are complete, run the final Claude reviewer:
 
 ```sh
 ./.codex/final-review.sh
