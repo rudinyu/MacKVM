@@ -9,7 +9,7 @@ enum PeerIdentityTXTCodec {
         guard let idValue = values["id"],
               let id = UUID(uuidString: idValue),
               let name = values["name"],
-              !name.isEmpty,
+              PeerIdentity.isValidDisplayName(name),
               let keyValue = values["key"],
               let publicKey = Data(base64Encoded: keyValue),
               (try? P256.Signing.PublicKey(

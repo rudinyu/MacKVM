@@ -30,6 +30,121 @@ final class ControlCoordinatorTests: XCTestCase {
         )
     }
 
+    func testInboundAdmissionOverflowDisconnectsTransport() {
+        let fixture = makeFixture()
+
+        for _ in 0...256 {
+            fixture.transport.deliver(
+                controlMessage(.endControl, UUID())
+            )
+        }
+
+        XCTAssertEqual(fixture.transport.disconnectCount, 1)
+    }
+
+    func testAuthenticatedPayloadIsAdmittedBeforeConnectionPublisherRuns() {
+        let fixture = makeFixture()
+        let requestID = UUID()
+        let peerID = fixture.transport.connectedPeerID!
+
+        fixture.transport.connectedPeerID = nil
+        drainMainQueue()
+        fixture.transport.connectedPeerID = peerID
+        fixture.transport.onAuthenticated?()
+        fixture.transport.deliver(controlMessage(.requestControl, requestID))
+        drainMainQueue()
+
+        XCTAssertEqual(
+            fixture.coordinator.pendingIncomingControlRequest?.id,
+            requestID
+        )
+    }
+
+    func testReauthenticationKeepsPayloadAcrossAStaleDisconnectPublication() {
+        let fixture = makeFixture()
+        let requestID = UUID()
+        let peerID = fixture.transport.connectedPeerID!
+
+        fixture.transport.connectedPeerID = nil
+        fixture.transport.onAuthenticated?()
+        fixture.transport.connectedPeerID = peerID
+        fixture.transport.deliver(controlMessage(.requestControl, requestID))
+        drainMainQueue()
+
+        XCTAssertEqual(
+            fixture.coordinator.pendingIncomingControlRequest?.id,
+            requestID
+        )
+    }
+
+    func testAuthenticationBeatsTheInitialNilPublisherValue() {
+        let fixture = makeFixture(initiallyConnected: false)
+        let peerID = UUID()
+        let requestID = UUID()
+
+        fixture.transport.onAuthenticated?()
+        fixture.transport.connectedPeerID = peerID
+        fixture.transport.deliver(controlMessage(.requestControl, requestID))
+        drainMainQueue()
+
+        XCTAssertEqual(
+            fixture.coordinator.pendingIncomingControlRequest?.id,
+            requestID
+        )
+    }
+
+    func testStaleConnectionPublicationCannotInvalidateANewAuthentication() {
+        let fixture = makeFixture()
+        let peerID = fixture.transport.connectedPeerID!
+        let requestID = UUID()
+
+        let firstGeneration = fixture.transport.onAuthenticated?() ?? 0
+        fixture.transport.setConnection(
+            peerID,
+            admissionGeneration: firstGeneration
+        )
+        fixture.transport.setConnection(
+            nil,
+            admissionGeneration: firstGeneration
+        )
+        let secondGeneration = fixture.transport.onAuthenticated?() ?? 0
+        fixture.transport.setConnection(
+            peerID,
+            admissionGeneration: secondGeneration
+        )
+        fixture.transport.deliver(controlMessage(.requestControl, requestID))
+        drainMainQueue()
+
+        XCTAssertEqual(
+            fixture.coordinator.pendingIncomingControlRequest?.id,
+            requestID
+        )
+
+        fixture.transport.setConnection(
+            nil,
+            admissionGeneration: secondGeneration
+        )
+        fixture.transport.deliver(
+            controlMessage(.requestControl, UUID())
+        )
+        drainMainQueue()
+
+        XCTAssertNil(fixture.coordinator.pendingIncomingControlRequest)
+    }
+
+    func testInputQueueFailureUsesAResourceReason() {
+        let fixture = makeFixture()
+        let requestID = UUID()
+        fixture.transport.deliver(controlMessage(.requestControl, requestID))
+        drainMainQueue()
+        fixture.coordinator.acceptIncomingControlRequest(requestID)
+
+        fixture.sink.onControlFailure?(.queueOverloaded)
+
+        XCTAssertFalse(fixture.coordinator.isReceivingControl)
+        XCTAssertTrue(fixture.coordinator.status.contains("input queue"))
+    }
+
     func testStaleActionForPreviousRequestCannotAffectReplacement() {
         let fixture = makeFixture()
         let firstRequestID = UUID()
@@ -359,9 +474,12 @@ final class ControlCoordinatorTests: XCTestCase {
 
     private func makeFixture(
         localID: UUID = UUID(),
-        remoteID: UUID = UUID()
+        remoteID: UUID = UUID(),
+        initiallyConnected: Bool = true
     ) -> Fixture {
-        let transport = FakeControlTransport(connectedPeerID: remoteID)
+        let transport = FakeControlTransport(
+            connectedPeerID: initiallyConnected ? remoteID : nil
+        )
         let capture = FakeInputCapture()
         let sink = FakeInputSink()
         let coordinator = ControlCoordinator(
@@ -410,23 +528,60 @@ private struct Fixture {
 
 private final class FakeControlTransport: ControlSessionTransport {
     private let connectionSubject: CurrentValueSubject<UUID?, Never>
+    private let connectionPublicationSubject:
+        CurrentValueSubject<ControlConnectionPublication, Never>
+    private var nextAdmissionGeneration: UInt64?
 
     var connectedPeerID: UUID? {
-        didSet { connectionSubject.send(connectedPeerID) }
+        didSet {
+            connectionSubject.send(connectedPeerID)
+            connectionPublicationSubject.send(
+                ControlConnectionPublication(
+                    peerID: connectedPeerID,
+                    admissionGeneration: nextAdmissionGeneration
+                )
+            )
+            nextAdmissionGeneration = nil
+        }
     }
     var connectedPeerIDPublisher: AnyPublisher<UUID?, Never> {
         connectionSubject.eraseToAnyPublisher()
     }
+    var connectionPublicationPublisher:
+        AnyPublisher<ControlConnectionPublication, Never> {
+        connectionPublicationSubject.eraseToAnyPublisher()
+    }
     var onPayload: ((Data) -> Void)?
+    var onAuthenticated: (() -> UInt64)?
     var sentMessages: [ControlMessage] = []
+    private(set) var disconnectCount = 0
 
     init(connectedPeerID: UUID?) {
         connectionSubject = CurrentValueSubject(connectedPeerID)
+        connectionPublicationSubject = CurrentValueSubject(
+            ControlConnectionPublication(
+                peerID: connectedPeerID,
+                admissionGeneration: nil
+            )
+        )
         self.connectedPeerID = connectedPeerID
     }
 
     func send(_ payload: Data) {
         sentMessages.append(try! ControlMessageCodec.decode(payload))
+    }
+
+    func disconnect() {
+        disconnectCount += 1
+        connectedPeerID = nil
+    }
+
+    func setConnection(
+        _ peerID: UUID?,
+        admissionGeneration: UInt64?
+    ) {
+        nextAdmissionGeneration = admissionGeneration
+        connectedPeerID = peerID
     }
 
     func deliver(_ message: ControlMessage) {
@@ -462,7 +617,7 @@ private final class FakeInputCapture: ControlInputCapture {
 
 private final class FakeInputSink: ControlInputSink {
     var hasAccessibilityPermission = true
-    var onControlFailure: (() -> Void)?
+    var onControlFailure: ((ControlInputFailure) -> Void)?
     var completesBeginImmediately = true
     var completesEndImmediately = true
     var onEndRequested: (() -> Void)?

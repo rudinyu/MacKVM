@@ -3,6 +3,8 @@ import Foundation
 import Security
 
 public struct PeerIdentity: Codable, Hashable, Sendable {
+    public static let maximumDisplayNameBytes = 64
+
     public let id: UUID
     public var name: String
     public let signingPublicKey: Data
@@ -19,6 +21,95 @@ public struct PeerIdentity: Codable, Hashable, Sendable {
 
     public var serviceName: String {
         "MacKVM-\(id.uuidString)"
+    }
+
+    /// Truncates a display name on Character boundaries without exceeding the
+    /// UTF-8 wire/UI budget. Callers can still apply stricter validation when
+    /// the value is used as signed protocol identity data.
+    public static func boundedDisplayName(_ name: String) -> String {
+        var boundedName = ""
+        var boundedByteCount = 0
+        for character in name {
+            let characterByteCount = character.utf8.count
+            guard boundedByteCount + characterByteCount
+                    <= maximumDisplayNameBytes else {
+                break
+            }
+            boundedName.append(character)
+            boundedByteCount += characterByteCount
+        }
+        return boundedName
+    }
+
+    /// Returns a safe, bounded name for use in Bonjour records and signed
+    /// protocol messages. The wire protocols must never carry control
+    /// characters or an unbounded display name.
+    public static func isValidDisplayName(_ name: String) -> Bool {
+        // Validate the exact wire text, including surrounding whitespace;
+        // validatedDisplayName(_:) trims only locally stored/generated names.
+        guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              boundedDisplayName(name) == name,
+              name.unicodeScalars.allSatisfy({
+                  !isUnsafeDisplayScalar($0)
+              }) else {
+            return false
+        }
+        // Combining marks and variation selectors are only meaningful when
+        // attached to a visible base character; reject visually blank names
+        // made solely from those scalars.
+        return name.unicodeScalars.contains {
+            isVisibleDisplayBaseScalar($0)
+        }
+    }
+
+    private static func isVisibleDisplayBaseScalar(
+        _ scalar: Unicode.Scalar
+    ) -> Bool {
+        switch scalar.properties.generalCategory {
+        case .nonspacingMark, .spacingMark, .enclosingMark, .format:
+            return false
+        default:
+            return !isUnsafeDisplayScalar(scalar)
+        }
+    }
+
+    private static func isUnsafeDisplayScalar(
+        _ scalar: Unicode.Scalar
+    ) -> Bool {
+        let value = scalar.value
+        // C0/C1 controls, DEL, and line separators can hide or reorder
+        // peer-controlled text in menus and alerts.
+        guard value >= 0x20,
+              value != 0x7F,
+              !(0x80...0x9F).contains(value),
+              value != 0x2028,
+              value != 0x2029 else {
+            return true
+        }
+        switch scalar.properties.generalCategory {
+        // Allowlist printable categories so newly added control/format
+        // categories remain rejected by default. Variation selectors are the
+        // one format range retained for normal emoji presentation.
+        case .uppercaseLetter, .lowercaseLetter, .titlecaseLetter,
+             .modifierLetter, .otherLetter, .nonspacingMark, .spacingMark,
+             .enclosingMark, .decimalNumber, .letterNumber, .otherNumber,
+             .connectorPunctuation, .dashPunctuation, .openPunctuation,
+             .closePunctuation, .initialPunctuation, .finalPunctuation,
+             .otherPunctuation, .mathSymbol, .currencySymbol,
+             .modifierSymbol, .otherSymbol, .spaceSeparator:
+            return false
+        case .format:
+            return !(0xFE00...0xFE0F).contains(value)
+        default:
+            // Unknown and future Unicode categories are rejected by default.
+            return true
+        }
+    }
+
+    public static func validatedDisplayName(_ name: String) -> String? {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isValidDisplayName(trimmed) else { return nil }
+        return trimmed
     }
 }
 
@@ -144,6 +235,25 @@ public enum DeviceCredentialsStore {
                 == identity.signingPublicKey else {
                 throw DeviceCredentialError.identityKeyMismatch
             }
+            let normalizedName = PeerIdentity.validatedDisplayName(identity.name)
+                ?? PeerIdentity.validatedDisplayName(fallbackName)
+                ?? "Mac"
+            if normalizedName != identity.name {
+                let normalizedIdentity = PeerIdentity(
+                    id: identity.id,
+                    name: normalizedName,
+                    signingPublicKey: identity.signingPublicKey
+                )
+                defaults.set(
+                    try JSONEncoder().encode(normalizedIdentity),
+                    forKey: identityKey
+                )
+                return DeviceCredentials(
+                    identity: normalizedIdentity,
+                    privateKey: privateKey,
+                    wasLoadedFromStorage: true
+                )
+            }
             return DeviceCredentials(
                 identity: identity,
                 privateKey: privateKey,
@@ -156,7 +266,7 @@ public enum DeviceCredentialsStore {
         }
         let privateKey = P256.Signing.PrivateKey()
         let identity = PeerIdentity(
-            name: fallbackName,
+            name: PeerIdentity.validatedDisplayName(fallbackName) ?? "Mac",
             signingPublicKey: privateKey.publicKey.x963Representation
         )
         try keyStore.save(privateKey.rawRepresentation)

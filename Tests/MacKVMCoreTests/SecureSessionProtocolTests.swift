@@ -32,6 +32,78 @@ final class SecureSessionProtocolTests: XCTestCase {
         }
     }
 
+    func testHandshakeRejectsUnsafeSenderName() throws {
+        let fixture = makeFixture()
+        let unsafeHandshake = SecureSessionHandshake(
+            sessionID: fixture.initiatorHandshake.sessionID,
+            role: .initiator,
+            sender: PeerIdentity(
+                id: fixture.initiatorHandshake.sender.id,
+                name: "Initiator\nInjected",
+                signingPublicKey: fixture.initiatorHandshake.sender.signingPublicKey
+            ),
+            ephemeralPublicKey: fixture.initiatorHandshake.ephemeralPublicKey,
+            nonce: fixture.initiatorHandshake.nonce
+        )
+        var buffer = try SecureSessionWireCodec.encode(
+            handshake: unsafeHandshake,
+            signingWith: fixture.initiatorSigningKey
+        )
+
+        XCTAssertThrowsError(
+            try SecureSessionWireCodec.decodeAvailableFrames(from: &buffer)
+        ) { error in
+            XCTAssertEqual(error as? SecureSessionError, .invalidIdentityName)
+        }
+    }
+
+    func testChannelRejectsOversizedPlaintext() throws {
+        let fixture = makeFixture()
+        let channel = try SecureSessionChannel(
+            localRole: .initiator,
+            localEphemeralKey: fixture.initiatorEphemeralKey,
+            initiator: fixture.initiatorHandshake,
+            responder: fixture.responderHandshake
+        )
+
+        XCTAssertThrowsError(
+            try channel.seal(
+                Data(repeating: 1, count: SecureSessionChannel.maximumPlaintextLength + 1)
+            )
+        ) { error in
+            XCTAssertEqual(error as? SecureSessionError, .invalidFrame)
+        }
+    }
+
+    func testChannelRejectsOversizedSealedPacketWithDistinctError() throws {
+        let fixture = makeFixture()
+        let initiator = try SecureSessionChannel(
+            localRole: .initiator,
+            localEphemeralKey: fixture.initiatorEphemeralKey,
+            initiator: fixture.initiatorHandshake,
+            responder: fixture.responderHandshake
+        )
+        let responder = try SecureSessionChannel(
+            localRole: .responder,
+            localEphemeralKey: fixture.responderEphemeralKey,
+            initiator: fixture.initiatorHandshake,
+            responder: fixture.responderHandshake
+        )
+        let packet = try initiator.seal(Data("bounded".utf8))
+        let oversized = SecurePacket(
+            sessionID: packet.sessionID,
+            sequence: packet.sequence,
+            sealedData: Data(
+                repeating: 0,
+                count: SecureSessionChannel.maximumSealedDataLength + 1
+            )
+        )
+
+        XCTAssertThrowsError(try responder.open(oversized)) { error in
+            XCTAssertEqual(error as? SecureSessionError, .oversizedPacket)
+        }
+    }
+
     func testChannelsEncryptBothDirectionsAndRejectReplay() throws {
         let fixture = makeFixture()
         let initiator = try SecureSessionChannel(
@@ -83,6 +155,28 @@ final class SecureSessionProtocolTests: XCTestCase {
             try SecureSessionWireCodec.decodeAvailableFrames(from: &buffer),
             [.packet(packet)]
         )
+    }
+
+    func testPacketWireCodecBatchesCoalescedFramesWithoutDisconnecting() throws {
+        let packet = SecurePacket(
+            sessionID: UUID(),
+            sequence: 4,
+            sealedData: Data(repeating: 7, count: 48)
+        )
+        var buffer = Data()
+        for _ in 0..<SecureSessionWireCodec.maximumFramesPerDecode + 1 {
+            buffer.append(try SecureSessionWireCodec.encode(packet: packet))
+        }
+
+        XCTAssertEqual(
+            try SecureSessionWireCodec.decodeAvailableFrames(from: &buffer).count,
+            SecureSessionWireCodec.maximumFramesPerDecode
+        )
+        XCTAssertEqual(
+            try SecureSessionWireCodec.decodeAvailableFrames(from: &buffer),
+            [.packet(packet)]
+        )
+        XCTAssertTrue(buffer.isEmpty)
     }
 
     func testSimultaneousConnectionPolicyChoosesOppositeRoles() {

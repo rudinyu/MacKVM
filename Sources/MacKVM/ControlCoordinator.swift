@@ -7,14 +7,28 @@ struct IncomingControlRequest: Identifiable, Equatable {
     let peerID: UUID
 }
 
+enum ControlInputFailure {
+    case accessibilityPermission
+    case queueOverloaded
+}
+
+struct ControlConnectionPublication: Equatable {
+    let peerID: UUID?
+    let admissionGeneration: UInt64?
+}
+
 /// Narrow abstractions keep the consent coordinator testable without changing
 /// the production secure-session or input-service implementations.
 protocol ControlSessionTransport: AnyObject {
     var connectedPeerID: UUID? { get }
     var connectedPeerIDPublisher: AnyPublisher<UUID?, Never> { get }
+    var connectionPublicationPublisher:
+        AnyPublisher<ControlConnectionPublication, Never> { get }
     var onPayload: ((Data) -> Void)? { get set }
+    var onAuthenticated: (() -> UInt64)? { get set }
 
     func send(_ payload: Data)
+    func disconnect()
 }
 
 protocol ControlInputCapture: AnyObject {
@@ -30,7 +44,7 @@ protocol ControlInputCapture: AnyObject {
 
 protocol ControlInputSink: AnyObject {
     var hasAccessibilityPermission: Bool { get }
-    var onControlFailure: (() -> Void)? { get set }
+    var onControlFailure: ((ControlInputFailure) -> Void)? { get set }
 
     func refreshPermission()
     func beginRemoteControl(completion: @escaping (Bool) -> Void)
@@ -82,6 +96,14 @@ final class ControlCoordinator: ObservableObject {
     private var isStoppingForQuit = false
     private var hasObservedConnectionState = false
     private var observedConnectedPeerID: UUID?
+    private var observedAdmissionGeneration: UInt64?
+    // Starts enabled so a payload cannot race the first asynchronous
+    // connected-peer publisher update; authentication re-activates it after
+    // a disconnect invalidates the previous generation.
+    private let inboundAdmission = BoundedAdmissionGate(
+        capacity: BoundedAdmissionGate.defaultCapacity,
+        initiallyEnabled: true
+    )
 
     init(
         localID: UUID,
@@ -93,6 +115,10 @@ final class ControlCoordinator: ObservableObject {
         self.secureSession = secureSession
         self.inputCapture = inputCapture
         self.inputSink = inputSink
+        // Treat the initial publisher value as describing the gate's initial
+        // generation. If authentication races that first nil delivery, the
+        // nil event must not invalidate the newer authenticated generation.
+        observedAdmissionGeneration = inboundAdmission.currentGeneration()
 
         inputCapture.onEvent = { [weak self] event in
             guard let self,
@@ -105,16 +131,25 @@ final class ControlCoordinator: ObservableObject {
         inputCapture.onEmergencyStop = { [weak self] in
             self?.stopControl(reason: "Emergency shortcut returned input locally")
         }
-        inputSink.onControlFailure = { [weak self] in
-            self?.remoteInputSinkFailed()
+        inputSink.onControlFailure = { [weak self] failure in
+            self?.remoteInputSinkFailed(failure)
         }
         secureSession.onPayload = { [weak self] data in
             self?.receive(data)
         }
-        connectionObservation = secureSession.connectedPeerIDPublisher
+        secureSession.onAuthenticated = { [weak self] in
+            guard let self else { return 0 }
+            // Authentication starts a fresh generation even if the previous
+            // disconnect is still waiting in the main-queue publisher. The
+            // returned token travels with that publication, so stale UI
+            // events cannot invalidate a newer authenticated session.
+            self.inboundAdmission.begin()
+            return self.inboundAdmission.currentGeneration()
+        }
+        connectionObservation = secureSession.connectionPublicationPublisher
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] peerID in
-                self?.connectionChanged(peerID)
+            .sink { [weak self] publication in
+                self?.connectionChanged(publication)
             }
     }
 
@@ -324,17 +359,32 @@ final class ControlCoordinator: ObservableObject {
     }
 
     private func receive(_ data: Data) {
+        let admission = inboundAdmission.reserve()
+        guard admission.accepted else {
+            if admission.shouldSignalFailure {
+                // Control messages include state transitions and key/button
+                // releases. Once the main queue cannot keep up, terminate
+                // the encrypted session instead of silently losing ordering.
+                secureSession.disconnect()
+            }
+            return
+        }
         let message: ControlMessage
         do {
             message = try ControlMessageCodec.decode(data)
         } catch {
             DispatchQueue.main.async { [weak self] in
+                self?.inboundAdmission.release(admission)
                 self?.status = "Rejected an invalid control message"
             }
             return
         }
         DispatchQueue.main.async { [weak self] in
-            self?.handle(message)
+            guard let self else { return }
+            let isCurrent = self.inboundAdmission.isCurrent(admission)
+            self.inboundAdmission.release(admission)
+            guard isCurrent else { return }
+            self.handle(message)
         }
     }
 
@@ -540,13 +590,41 @@ final class ControlCoordinator: ObservableObject {
         }
     }
 
-    private func connectionChanged(_ peerID: UUID?) {
+    private func connectionChanged(
+        _ publication: ControlConnectionPublication
+    ) {
+        let peerID = publication.peerID
+        if let publicationGeneration = publication.admissionGeneration,
+           publicationGeneration < inboundAdmission.currentGeneration() {
+            return
+        }
         guard !hasObservedConnectionState
                 || observedConnectedPeerID != peerID else {
+            // A same-peer reconnect is still a new admission generation even
+            // though the published UUID did not change. Keep its token so a
+            // later disconnect invalidates the correct session.
+            if peerID != nil,
+               let publicationGeneration = publication.admissionGeneration {
+                observedAdmissionGeneration = publicationGeneration
+            }
             return
         }
         hasObservedConnectionState = true
         observedConnectedPeerID = peerID
+        if peerID == nil {
+            inboundAdmission.invalidate(
+                ifCurrentGeneration: observedAdmissionGeneration
+            )
+            observedAdmissionGeneration = nil
+        } else {
+            // SecureSessionService already applies a byte/packet budget, but
+            // keep a second bounded gate at the UI boundary. This prevents a
+            // burst of valid messages from creating an unbounded main-queue
+            // backlog that could delay consent or teardown actions.
+            inboundAdmission.activate()
+            observedAdmissionGeneration = publication.admissionGeneration
+                ?? inboundAdmission.currentGeneration()
+        }
         let wasControlling = state == .controlling
         requestTimeout?.cancel()
         requestTimeout = nil
@@ -591,14 +669,21 @@ final class ControlCoordinator: ObservableObject {
         }
     }
 
-    private func remoteInputSinkFailed() {
+    private func remoteInputSinkFailed(_ failure: ControlInputFailure) {
         guard let request = activeInboundControlRequest,
               isReceivingControl else {
             return
         }
+        let reason: String
+        switch failure {
+        case .accessibilityPermission:
+            reason = "Remote control ended because Accessibility is unavailable"
+        case .queueOverloaded:
+            reason = "Remote control ended because the input queue was overloaded"
+        }
         finishReceivingControl(
             request,
-            reason: "Remote control ended because Accessibility is unavailable",
+            reason: reason,
             notifyPeer: true
         )
     }

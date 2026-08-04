@@ -186,6 +186,41 @@ confirm the request before events are suppressed locally and forwarded remotely.
 The controller can press **Control–Option–Command–Escape**, while the receiver
 can use **Stop remote control** to release injected input and return control.
 
+### Runtime safety boundaries
+
+The network and input layers use explicit bounded queues and buffers rather than
+assuming a cooperative peer:
+
+- pairing and secure-session frames are limited to 64 KiB; encrypted session
+  plaintext is limited to 32 KiB;
+- each pairing transport delivery processes at most 16 framed messages; a
+  larger burst is rejected with a message-count error rather than decoded as
+  an unbounded batch;
+- secure-session decoding batches at most 16 frames at a time but may drain
+  multiple batches for high-polling input; its 64 KiB buffer and packet/byte
+  budgets remain the cumulative bounds;
+- incomplete secure frames time out after five seconds, and secure sessions
+  enforce limits on pending connections, queued payloads, packets, and bytes;
+- Bonjour pairing accepts only bounded connection/message rates and rejects
+  conflicting records for the same UUID;
+- the coordinator and injection queue each have a 256-item admission gate. A
+  full gate closes the session and releases tracked input, so key-up or
+  mouse-up transitions are never silently discarded;
+- `Forget` removes the pinned key before cross-service cleanup begins, then
+  advances a per-peer generation so late pairing completions cannot re-add the
+  trust record. Secure-session revoke also cancels all anonymous handshakes,
+  because an unauthenticated context cannot yet be attributed to a different
+  peer; an unrelated handshake may therefore need to retry after Forget.
+
+These limits are enforced before JSON decoding or event injection where
+possible. They are defensive availability controls; the encrypted channel and
+signed identity checks remain the authorization boundary.
+
+The CGEvent teardown path is OS-dependent; manual QA should verify that ending
+remote control releases held regular keys, modifiers, and mouse buttons while
+preserving locally held modifiers. Pure modifier projection and admission
+behavior are covered by the automated test suite.
+
 ## How to use the current MVP
 
 1. Connect both Macs to the same trusted local network.

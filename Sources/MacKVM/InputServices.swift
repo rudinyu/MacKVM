@@ -8,6 +8,134 @@ private enum InjectedEventMarker {
     static let value: Int64 = 0x4D_4B_56_4D
 }
 
+private enum VirtualKeyCode {
+    static let commandLeft: UInt16 = 54
+    static let commandRight: UInt16 = 55
+    static let shiftLeft: UInt16 = 56
+    static let capsLock: UInt16 = 57
+    static let optionLeft: UInt16 = 58
+    static let controlLeft: UInt16 = 59
+    static let shiftRight: UInt16 = 60
+    static let optionRight: UInt16 = 61
+    static let controlRight: UInt16 = 62
+}
+
+struct ModifierFlagProjection {
+    typealias Group = (flags: CGEventFlags, keyCodes: Set<UInt16>)
+
+    static func projectedFlags(
+        reportedFlags: CGEventFlags,
+        keyCode: UInt16,
+        isPressed: Bool?,
+        pressedKeyCodes: Set<UInt16>
+    ) -> CGEventFlags {
+        var flags = reportedFlags
+        guard let group = group(for: keyCode) else { return flags }
+        var nextPressedKeys = pressedKeyCodes
+        let nextState = isPressed ?? !pressedKeyCodes.contains(keyCode)
+        if nextState {
+            nextPressedKeys.insert(keyCode)
+        } else {
+            nextPressedKeys.remove(keyCode)
+        }
+        flags.remove(group.flags)
+        if !group.keyCodes.isDisjoint(with: nextPressedKeys) {
+            flags.insert(group.flags)
+        }
+        return flags
+    }
+
+    static func aggregateFlags(
+        for keyCodes: Set<UInt16>
+    ) -> CGEventFlags {
+        var flags: CGEventFlags = []
+        for group in groups
+            where !group.keyCodes.isDisjoint(with: keyCodes) {
+            flags.insert(group.flags)
+        }
+        return flags
+    }
+
+    static func releaseFlags(
+        preservingLocalKeyCodes localKeyCodes: Set<UInt16>,
+        remainingRemoteKeyCodes: Set<UInt16>
+    ) -> CGEventFlags {
+        var flags = aggregateFlags(for: localKeyCodes)
+        flags.formUnion(aggregateFlags(for: remainingRemoteKeyCodes))
+        return flags
+    }
+
+    static var modifierKeyCodes: Set<UInt16> {
+        Set(groups.flatMap(\.keyCodes))
+    }
+
+    static func group(for keyCode: UInt16) -> Group? {
+        groups.first { $0.keyCodes.contains(keyCode) }
+    }
+
+    private static let groups: [Group] = {
+        [
+            (.maskShift, [VirtualKeyCode.shiftLeft, VirtualKeyCode.shiftRight]),
+            (.maskControl, [VirtualKeyCode.controlLeft, VirtualKeyCode.controlRight]),
+            (.maskAlternate, [VirtualKeyCode.optionLeft, VirtualKeyCode.optionRight]),
+            (.maskCommand, [VirtualKeyCode.commandLeft, VirtualKeyCode.commandRight]),
+            (.maskAlphaShift, [VirtualKeyCode.capsLock])
+        ]
+    }()
+
+}
+
+private struct CapsLockStateTracker {
+    private var lastState: Bool?
+
+    mutating func edge(for state: Bool) -> Bool? {
+        guard lastState != state else { return nil }
+        lastState = state
+        return state
+    }
+
+    mutating func observe(_ state: Bool) {
+        lastState = state
+    }
+
+    mutating func reset() {
+        lastState = nil
+    }
+}
+
+struct CapsLockCapturePolicy {
+    private var stateTracker = CapsLockStateTracker()
+
+    mutating func nextState(from flags: CGEventFlags) -> Bool? {
+        stateTracker.edge(for: flags.contains(.maskAlphaShift))
+    }
+
+    mutating func reset() {
+        stateTracker.reset()
+    }
+}
+
+struct CapsLockRemoteInputPolicy {
+    private var stateTracker = CapsLockStateTracker()
+
+    mutating func keyDown(
+        explicitState: Bool?,
+        modifierFlags: UInt64
+    ) -> Bool? {
+        let reportedState = CGEventFlags(rawValue: modifierFlags)
+            .contains(.maskAlphaShift)
+        if let explicitState {
+            stateTracker.observe(explicitState)
+            return explicitState
+        }
+        return stateTracker.edge(for: reportedState)
+    }
+
+    mutating func reset() {
+        stateTracker.reset()
+    }
+}
+
 final class InputCaptureService: ObservableObject, ControlInputCapture {
     @Published private(set) var hasInputMonitoringPermission: Bool
     @Published private(set) var isCapturing = false
@@ -19,6 +147,7 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var suppressesLocalEvents = false
+    private var capsLockCapturePolicy = CapsLockCapturePolicy()
 
     init() {
         hasInputMonitoringPermission = CGPreflightListenEventAccess()
@@ -42,6 +171,7 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
             return
         }
         guard eventTap == nil else { return }
+        capsLockCapturePolicy.reset()
 
         let userInfo = Unmanaged.passUnretained(self).toOpaque()
         guard let tap = CGEvent.tapCreate(
@@ -75,6 +205,7 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
         runLoopSource = nil
         eventTap = nil
         suppressesLocalEvents = false
+        capsLockCapturePolicy.reset()
         isCapturing = false
         status = "Input capture stopped"
     }
@@ -97,7 +228,14 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
             return true
         }
         guard let remoteEvent = makeRemoteEvent(type: type, event: event) else {
-            return false
+            // A duplicate Caps Lock flagsChanged edge is intentionally not
+            // forwarded, but it must still be consumed while local input is
+            // suppressed or it would toggle the controlling Mac locally.
+            return suppressesLocalEvents
+                && type == .flagsChanged
+                && event.getIntegerValueField(
+                    .keyboardEventKeycode
+                ) == Int64(VirtualKeyCode.capsLock)
         }
         onEvent?(remoteEvent)
         return suppressesLocalEvents
@@ -177,12 +315,33 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
         _ kind: RemoteInputKind,
         event: CGEvent,
         flags: UInt64
-    ) -> RemoteInputEvent {
-        RemoteInputEvent(
+    ) -> RemoteInputEvent? {
+        let keyCode = UInt16(
+            event.getIntegerValueField(.keyboardEventKeycode)
+        )
+        let isPressed: Bool?
+        if kind != .flagsChanged {
+            isPressed = nil
+        } else if keyCode == VirtualKeyCode.capsLock {
+            // Caps Lock is a toggle and macOS commonly emits two identical
+            // flagsChanged events for one physical press. Forward only the
+            // state edge so the receiver cannot toggle twice.
+            guard let nextState = capsLockCapturePolicy.nextState(
+                from: event.flags
+            ) else {
+                return nil
+            }
+            isPressed = nextState
+        } else {
+            isPressed = CGEventSource.keyState(
+                .combinedSessionState,
+                key: CGKeyCode(keyCode)
+            )
+        }
+        return RemoteInputEvent(
             kind: kind,
-            keyCode: UInt16(
-                event.getIntegerValueField(.keyboardEventKeycode)
-            ),
+            keyCode: keyCode,
+            isPressed: isPressed,
             modifierFlags: flags
         )
     }
@@ -239,14 +398,23 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
     @Published private(set) var hasAccessibilityPermission: Bool
     @Published private(set) var status = "Remote input ready"
 
-    var onControlFailure: (() -> Void)?
+    var onControlFailure: ((ControlInputFailure) -> Void)?
 
     private let queue = DispatchQueue(label: "app.mackvm.input-injection")
-    private let eventSource = CGEventSource(stateID: .hidSystemState)
+    // Keep injected modifier state in Quartz's private source table. The
+    // HID table queried during teardown then represents physical local keys,
+    // rather than echoing the remote flags we are about to release.
+    private let eventSource = CGEventSource(stateID: .privateState)
     private var hasPublishedInputActivity = false
     private var isAcceptingRemoteInput = false
     private var pressedKeyCodes: Set<UInt16> = []
     private var pressedMouseButtons: Set<Int> = []
+    private var capsLockRemoteInputPolicy = CapsLockRemoteInputPolicy()
+    private let inputAdmission = BoundedAdmissionGate(
+        // Remote input opens only after Accessibility is confirmed and the
+        // serial injection queue has entered the active-control generation.
+        capacity: BoundedAdmissionGate.defaultCapacity
+    )
 
     init() {
         hasAccessibilityPermission = AXIsProcessTrusted()
@@ -280,6 +448,7 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
                 return
             }
             guard AXIsProcessTrusted() else {
+                invalidateInputAdmission()
                 publish(
                     permission: false,
                     status: "Accessibility permission is required"
@@ -290,6 +459,8 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
                 return
             }
             isAcceptingRemoteInput = true
+            beginInputAdmission()
+            capsLockRemoteInputPolicy.reset()
             hasPublishedInputActivity = false
             publish(status: "Remote control granted")
             DispatchQueue.main.async {
@@ -303,12 +474,16 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
     func endRemoteControl(
         completion: @escaping () -> Void
     ) {
+        // Invalidate before enqueueing teardown so a receive call racing with
+        // the user's stop action cannot add more work ahead of key release.
+        invalidateInputAdmission()
         queue.async { [weak self] in
             guard let self else {
                 DispatchQueue.main.async(execute: completion)
                 return
             }
             isAcceptingRemoteInput = false
+            capsLockRemoteInputPolicy.reset()
             releaseAllInputsOnQueue()
             hasPublishedInputActivity = false
             publish(status: "Remote control ended")
@@ -317,17 +492,30 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
     }
 
     func receive(_ input: RemoteInputEvent) {
+        let admission = inputAdmission.reserve()
+        guard admission.accepted else {
+            if admission.shouldSignalFailure {
+                DispatchQueue.main.async { [weak self] in
+                    self?.onControlFailure?(.queueOverloaded)
+                }
+            }
+            return
+        }
         queue.async { [weak self] in
-            guard let self, isAcceptingRemoteInput else { return }
+            guard let self else { return }
+            defer { inputAdmission.release(admission) }
+            guard inputAdmission.isCurrent(admission),
+                  isAcceptingRemoteInput else { return }
             guard AXIsProcessTrusted() else {
                 isAcceptingRemoteInput = false
+                invalidateInputAdmission()
                 releaseAllInputsOnQueue()
                 publish(
                     permission: false,
                     status: "Accessibility permission is required"
                 )
                 DispatchQueue.main.async { [weak self] in
-                    self?.onControlFailure?()
+                    self?.onControlFailure?(.accessibilityPermission)
                 }
                 return
             }
@@ -339,17 +527,29 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
         }
     }
 
+    private func beginInputAdmission() {
+        inputAdmission.begin()
+    }
+
+    private func invalidateInputAdmission() {
+        inputAdmission.invalidate()
+    }
+
     private func inject(_ input: RemoteInputEvent) throws {
+        guard let input = inputWithInferredCapsLockState(input) else {
+            return
+        }
         let event: CGEvent?
         switch input.kind {
         case .keyDown, .keyUp, .flagsChanged:
             guard let keyCode = input.keyCode else {
                 throw RemoteInputError.invalidFields
             }
+            let keyDown = try keyDownState(for: input, keyCode: keyCode)
             event = CGEvent(
                 keyboardEventSource: eventSource,
                 virtualKey: CGKeyCode(keyCode),
-                keyDown: input.kind != .keyUp
+                keyDown: keyDown
             )
             if input.kind == .flagsChanged {
                 event?.type = .flagsChanged
@@ -394,7 +594,7 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
         guard let event else {
             throw RemoteInputError.invalidFields
         }
-        event.flags = CGEventFlags(rawValue: input.modifierFlags)
+        event.flags = eventFlags(for: input)
         event.setIntegerValueField(
             .eventSourceUserData,
             value: InjectedEventMarker.value
@@ -407,6 +607,55 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
         }
     }
 
+    private func keyDownState(
+        for input: RemoteInputEvent,
+        keyCode: UInt16
+    ) throws -> Bool {
+        switch input.kind {
+        case .keyDown:
+            return true
+        case .keyUp:
+            return false
+        case .flagsChanged:
+            // flagsChanged is an edge event. The aggregate modifier mask
+            // cannot distinguish left/right variants, so use the tracked
+            // state supplied by the sender when available.
+            return input.isPressed ?? !pressedKeyCodes.contains(keyCode)
+        default:
+            throw RemoteInputError.invalidFields
+        }
+    }
+
+    private func inputWithInferredCapsLockState(
+        _ input: RemoteInputEvent
+    ) -> RemoteInputEvent? {
+        guard input.kind == .flagsChanged,
+              input.keyCode == VirtualKeyCode.capsLock else {
+            return input
+        }
+        // Explicit edge states are already de-duplicated by the sender's
+        // CapsLockCapturePolicy. This receiver policy only re-derives edges
+        // for legacy messages that omit isPressed.
+        guard let capsLockKeyDown = capsLockRemoteInputPolicy.keyDown(
+            explicitState: input.isPressed,
+            modifierFlags: input.modifierFlags
+        ) else {
+            return nil
+        }
+        guard input.isPressed == nil else { return input }
+        return RemoteInputEvent(
+            kind: input.kind,
+            keyCode: input.keyCode,
+            isPressed: capsLockKeyDown,
+            modifierFlags: input.modifierFlags,
+            location: input.location,
+            buttonNumber: input.buttonNumber,
+            clickCount: input.clickCount,
+            scrollDeltaX: input.scrollDeltaX,
+            scrollDeltaY: input.scrollDeltaY
+        )
+    }
+
     private func trackPressedState(_ input: RemoteInputEvent) {
         switch input.kind {
         case .keyDown:
@@ -416,6 +665,16 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
         case .keyUp:
             if let keyCode = input.keyCode {
                 pressedKeyCodes.remove(keyCode)
+            }
+        case .flagsChanged:
+            if let keyCode = input.keyCode {
+                let isPressed = input.isPressed
+                    ?? !pressedKeyCodes.contains(keyCode)
+                if isPressed {
+                    pressedKeyCodes.insert(keyCode)
+                } else {
+                    pressedKeyCodes.remove(keyCode)
+                }
             }
         case .leftMouseDown, .rightMouseDown, .otherMouseDown:
             if let buttonNumber = input.buttonNumber {
@@ -431,10 +690,23 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
     }
 
     private func releaseAllInputsOnQueue() {
-        let modifierKeyCodes: [UInt16] = [
-            54, 55, 56, 57, 58, 59, 60, 61, 62
-        ]
-        for keyCode in pressedKeyCodes.union(modifierKeyCodes) {
+        // Release only keys and buttons injected by this sink. Releasing a
+        // fixed modifier list would also release modifiers held locally by
+        // the user when a remote session ends.
+        let keysToRelease = pressedKeyCodes.sorted()
+        let localModifierKeyCodes = Set(
+            ModifierFlagProjection.modifierKeyCodes.filter {
+                CGEventSource.keyState(
+                    .hidSystemState,
+                    key: CGKeyCode($0)
+                )
+            }
+        )
+        for keyCode in keysToRelease {
+            // Clear tracking even if CoreGraphics cannot allocate a synthetic
+            // key-up event; retaining it would poison the next session's
+            // modifier projection and teardown state.
+            pressedKeyCodes.remove(keyCode)
             guard let event = CGEvent(
                 keyboardEventSource: eventSource,
                 virtualKey: CGKeyCode(keyCode),
@@ -442,10 +714,21 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
             ) else {
                 continue
             }
-            markAndPost(event)
+            if ModifierFlagProjection.group(for: keyCode) != nil {
+                event.type = .flagsChanged
+                var remainingKeys = pressedKeyCodes
+                remainingKeys.remove(keyCode)
+                markAndPost(
+                    event,
+                    flags: ModifierFlagProjection.releaseFlags(
+                        preservingLocalKeyCodes: localModifierKeyCodes,
+                        remainingRemoteKeyCodes: remainingKeys
+                    )
+                )
+            } else {
+                markAndPost(event)
+            }
         }
-        pressedKeyCodes.removeAll()
-
         let location = CGEvent(source: nil)?.location ?? .zero
         for buttonNumber in pressedMouseButtons {
             let type: CGEventType = buttonNumber == 0
@@ -469,15 +752,32 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
             markAndPost(event)
         }
         pressedMouseButtons.removeAll()
+        capsLockRemoteInputPolicy.reset()
     }
 
-    private func markAndPost(_ event: CGEvent) {
-        event.flags = []
+    private func markAndPost(
+        _ event: CGEvent,
+        flags: CGEventFlags = []
+    ) {
+        event.flags = flags
         event.setIntegerValueField(
             .eventSourceUserData,
             value: InjectedEventMarker.value
         )
         event.post(tap: .cghidEventTap)
+    }
+
+    private func eventFlags(for input: RemoteInputEvent) -> CGEventFlags {
+        guard input.kind == .flagsChanged,
+              let keyCode = input.keyCode else {
+            return CGEventFlags(rawValue: input.modifierFlags)
+        }
+        return ModifierFlagProjection.projectedFlags(
+            reportedFlags: CGEventFlags(rawValue: input.modifierFlags),
+            keyCode: keyCode,
+            isPressed: input.isPressed,
+            pressedKeyCodes: pressedKeyCodes
+        )
     }
 
     private func mouseMapping(

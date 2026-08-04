@@ -5,12 +5,17 @@ enum LengthPrefixedFrameError: Error, Equatable {
 }
 
 enum LengthPrefixedFrameCodec {
-    static let maximumPayloadLength = 1_048_576
+    static let defaultMaximumPayloadLength = 1_048_576
+    static let maximumSecurePayloadLength = 64 * 1024
     private static let headerLength = 4
 
-    static func encode(_ payload: Data) throws -> Data {
+    static func encode(
+        _ payload: Data,
+        maximumPayloadLength: Int = defaultMaximumPayloadLength
+    ) throws -> Data {
         guard !payload.isEmpty,
-              payload.count <= maximumPayloadLength else {
+              payload.count <= maximumPayloadLength,
+              maximumPayloadLength > 0 else {
             throw LengthPrefixedFrameError.invalidLength
         }
         let length = UInt32(payload.count)
@@ -25,10 +30,22 @@ enum LengthPrefixedFrameCodec {
     }
 
     static func decodeAvailablePayloads(
-        from buffer: inout Data
+        from buffer: inout Data,
+        maximumPayloadLength: Int = defaultMaximumPayloadLength,
+        maximumFrameCount: Int? = nil
     ) throws -> [Data] {
+        guard maximumPayloadLength > 0 else {
+            throw LengthPrefixedFrameError.invalidLength
+        }
+        if let maximumFrameCount, maximumFrameCount <= 0 {
+            throw LengthPrefixedFrameError.invalidLength
+        }
         var payloads: [Data] = []
         while buffer.count >= headerLength {
+            if let maximumFrameCount,
+               payloads.count >= maximumFrameCount {
+                break
+            }
             let length = buffer.prefix(headerLength).reduce(0) {
                 ($0 << 8) | Int($1)
             }
@@ -43,6 +60,22 @@ enum LengthPrefixedFrameCodec {
             buffer.removeSubrange(0..<frameLength)
         }
         return payloads
+    }
+
+    static func hasCompleteFrame(
+        in buffer: Data,
+        maximumPayloadLength: Int
+    ) -> Bool {
+        guard buffer.count >= headerLength,
+              maximumPayloadLength > 0 else {
+            return false
+        }
+        let length = buffer.prefix(headerLength).reduce(0) {
+            ($0 << 8) | Int($1)
+        }
+        return length > 0
+            && length <= maximumPayloadLength
+            && buffer.count >= headerLength + length
     }
 }
 

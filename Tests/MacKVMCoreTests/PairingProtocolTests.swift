@@ -145,6 +145,30 @@ final class PairingProtocolTests: XCTestCase {
         XCTAssertTrue(buffer.isEmpty)
     }
 
+    func testWireCodecBatchesCoalescedFramesWithoutDroppingTheRemainder() throws {
+        let key = P256.Signing.PrivateKey()
+        let request = makeRequest(
+            from: PeerIdentity(
+                name: "Desk Mac",
+                signingPublicKey: key.publicKey.x963Representation
+            )
+        )
+        var buffer = Data()
+        for _ in 0..<PairingWireCodec.maximumFramesPerDecode + 1 {
+            buffer.append(try PairingWireCodec.encode(request, signingWith: key))
+        }
+
+        XCTAssertEqual(
+            try PairingWireCodec.decodeAvailableFrames(from: &buffer).count,
+            PairingWireCodec.maximumFramesPerDecode
+        )
+        XCTAssertEqual(
+            try PairingWireCodec.decodeAvailableFrames(from: &buffer),
+            [request]
+        )
+        XCTAssertTrue(buffer.isEmpty)
+    }
+
     func testWireCodecRejectsMessageSignedByAnotherKey() throws {
         let claimedKey = P256.Signing.PrivateKey()
         let attackerKey = P256.Signing.PrivateKey()
@@ -163,6 +187,26 @@ final class PairingProtocolTests: XCTestCase {
             try PairingWireCodec.decodeAvailableFrames(from: &buffer)
         ) { error in
             XCTAssertEqual(error as? PairingWireError, .invalidSignature)
+        }
+    }
+
+    func testWireCodecRejectsUnsafeSenderName() throws {
+        let privateKey = P256.Signing.PrivateKey()
+        let request = makeRequest(
+            from: PeerIdentity(
+                name: "Desk\nMac",
+                signingPublicKey: privateKey.publicKey.x963Representation
+            )
+        )
+        var buffer = try PairingWireCodec.encode(
+            request,
+            signingWith: privateKey
+        )
+
+        XCTAssertThrowsError(
+            try PairingWireCodec.decodeAvailableFrames(from: &buffer)
+        ) { error in
+            XCTAssertEqual(error as? PairingWireError, .invalidIdentityName)
         }
     }
 

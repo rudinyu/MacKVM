@@ -63,6 +63,69 @@ final class PeerIdentityTests: XCTestCase {
         }
     }
 
+    func testStoredIdentityNameIsNormalizedWithoutRotatingItsKey() throws {
+        let suiteName = "PeerIdentityTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let keyStore = InMemoryPrivateKeyStore()
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        let first = try DeviceCredentialsStore.load(
+            from: defaults,
+            fallbackName: "Desk Mac",
+            keyStore: keyStore
+        )
+        let unsafe = PeerIdentity(
+            id: first.identity.id,
+            name: "  Legacy Mac  ",
+            signingPublicKey: first.identity.signingPublicKey
+        )
+        defaults.set(
+            try JSONEncoder().encode(unsafe),
+            forKey: "MacKVM.localIdentity"
+        )
+
+        let migrated = try DeviceCredentialsStore.load(
+            from: defaults,
+            fallbackName: "New Name",
+            keyStore: keyStore
+        )
+
+        XCTAssertEqual(migrated.identity.name, "Legacy Mac")
+        XCTAssertEqual(migrated.identity.id, first.identity.id)
+        XCTAssertEqual(
+            migrated.privateKey.rawRepresentation,
+            first.privateKey.rawRepresentation
+        )
+        let reloaded = try DeviceCredentialsStore.load(
+            from: defaults,
+            fallbackName: "New Name",
+            keyStore: keyStore
+        )
+        XCTAssertEqual(reloaded.identity.name, "Legacy Mac")
+    }
+
+    func testDisplayNameRejectsC1ControlCharacters() {
+        XCTAssertFalse(PeerIdentity.isValidDisplayName("Desk\u{0085}Mac"))
+    }
+
+    func testDisplayNameRejectsUnicodeFormatControls() {
+        for name in ["Desk\u{202E}Mac", "Desk\u{2066}Mac", "\u{200B}"] {
+            XCTAssertFalse(PeerIdentity.isValidDisplayName(name), name)
+        }
+    }
+
+    func testDisplayNameRejectsStandaloneVariationSelectors() {
+        XCTAssertFalse(PeerIdentity.isValidDisplayName("\u{FE0E}"))
+        XCTAssertFalse(PeerIdentity.isValidDisplayName("\u{FE0F}"))
+        XCTAssertTrue(PeerIdentity.isValidDisplayName("🖥️"))
+    }
+
+    func testDisplayNameAllowsSafeSupplementaryCharacters() {
+        XCTAssertTrue(PeerIdentity.isValidDisplayName("工作室 🖥️"))
+    }
+
     func testSharedPeerArbitrationUsesLowerUUID() {
         let lower = UUID(
             uuidString: "00000000-0000-0000-0000-000000000001"

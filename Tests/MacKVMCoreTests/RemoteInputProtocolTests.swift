@@ -16,6 +16,45 @@ final class RemoteInputProtocolTests: XCTestCase {
         )
     }
 
+    func testFlagsChangedRetainsExplicitModifierState() throws {
+        let event = RemoteInputEvent(
+            kind: .flagsChanged,
+            keyCode: 56,
+            isPressed: false,
+            modifierFlags: 1 << 17
+        )
+
+        XCTAssertEqual(
+            try RemoteInputCodec.decode(RemoteInputCodec.encode(event)),
+            event
+        )
+    }
+
+    func testRejectsModifierStateOnNonModifierEvents() {
+        let event = RemoteInputEvent(
+            kind: .mouseMoved,
+            isPressed: true,
+            location: NormalizedPoint(x: 0.25, y: 0.75)
+        )
+
+        XCTAssertThrowsError(try RemoteInputCodec.encode(event)) { error in
+            XCTAssertEqual(error as? RemoteInputError, .invalidFields)
+        }
+    }
+
+    func testKeyEventsRejectExplicitModifierEdgeState() {
+        for kind in [RemoteInputKind.keyDown, .keyUp] {
+            let event = RemoteInputEvent(
+                kind: kind,
+                keyCode: 0,
+                isPressed: true
+            )
+            XCTAssertThrowsError(try RemoteInputCodec.encode(event)) { error in
+                XCTAssertEqual(error as? RemoteInputError, .invalidFields)
+            }
+        }
+    }
+
     func testPointerEventRoundTrips() throws {
         let event = RemoteInputEvent(
             kind: .leftMouseDown,

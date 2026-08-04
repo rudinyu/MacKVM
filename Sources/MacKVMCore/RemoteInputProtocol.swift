@@ -30,6 +30,9 @@ public struct NormalizedPoint: Codable, Equatable, Sendable {
 public struct RemoteInputEvent: Codable, Equatable, Sendable {
     public let kind: RemoteInputKind
     public let keyCode: UInt16?
+    /// Explicit edge state for flagsChanged events. Older senders may omit it;
+    /// receivers retain a conservative transition fallback for compatibility.
+    public let isPressed: Bool?
     public let modifierFlags: UInt64
     public let location: NormalizedPoint?
     public let buttonNumber: Int?
@@ -40,6 +43,7 @@ public struct RemoteInputEvent: Codable, Equatable, Sendable {
     public init(
         kind: RemoteInputKind,
         keyCode: UInt16? = nil,
+        isPressed: Bool? = nil,
         modifierFlags: UInt64 = 0,
         location: NormalizedPoint? = nil,
         buttonNumber: Int? = nil,
@@ -49,6 +53,7 @@ public struct RemoteInputEvent: Codable, Equatable, Sendable {
     ) {
         self.kind = kind
         self.keyCode = keyCode
+        self.isPressed = isPressed
         self.modifierFlags = modifierFlags
         self.location = location
         self.buttonNumber = buttonNumber
@@ -59,7 +64,18 @@ public struct RemoteInputEvent: Codable, Equatable, Sendable {
 
     public func validated() throws -> RemoteInputEvent {
         switch kind {
-        case .keyDown, .keyUp, .flagsChanged:
+        case .keyDown, .keyUp:
+            guard keyCode != nil,
+                  isPressed == nil,
+                  location == nil,
+                  buttonNumber == nil,
+                  clickCount == nil,
+                  scrollDeltaX == nil,
+                  scrollDeltaY == nil else {
+                throw RemoteInputError.invalidFields
+            }
+
+        case .flagsChanged:
             guard keyCode != nil,
                   location == nil,
                   buttonNumber == nil,
@@ -72,6 +88,7 @@ public struct RemoteInputEvent: Codable, Equatable, Sendable {
         case .mouseMoved:
             guard try validLocation(),
                   keyCode == nil,
+                  isPressed == nil,
                   buttonNumber == nil,
                   clickCount == nil,
                   scrollDeltaX == nil,
@@ -97,6 +114,7 @@ public struct RemoteInputEvent: Codable, Equatable, Sendable {
         case .scroll:
             guard location == nil,
                   keyCode == nil,
+                  isPressed == nil,
                   buttonNumber == nil,
                   clickCount == nil,
                   let scrollDeltaX,
@@ -127,6 +145,7 @@ public struct RemoteInputEvent: Codable, Equatable, Sendable {
     ) throws -> Bool {
         guard try validLocation(),
               keyCode == nil,
+              isPressed == nil,
               let buttonNumber,
               buttonNumbers.contains(buttonNumber),
               let clickCount,

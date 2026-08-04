@@ -75,6 +75,17 @@ public enum SecureSessionWireMessage: Equatable, Sendable {
 }
 
 public enum SecureSessionWireCodec {
+    public static let maximumFramePayloadLength =
+        LengthPrefixedFrameCodec.maximumSecurePayloadLength
+    public static let maximumFramesPerDecode = 16
+
+    public static func hasCompleteFrame(in buffer: Data) -> Bool {
+        LengthPrefixedFrameCodec.hasCompleteFrame(
+            in: buffer,
+            maximumPayloadLength: maximumFramePayloadLength
+        )
+    }
+
     public static func encode(
         handshake: SecureSessionHandshake,
         signingWith privateKey: P256.Signing.PrivateKey
@@ -109,7 +120,11 @@ public enum SecureSessionWireCodec {
         let payloads: [Data]
         do {
             payloads = try LengthPrefixedFrameCodec
-                .decodeAvailablePayloads(from: &buffer)
+                .decodeAvailablePayloads(
+                    from: &buffer,
+                    maximumPayloadLength: maximumFramePayloadLength,
+                    maximumFrameCount: maximumFramesPerDecode
+                )
         } catch {
             throw SecureSessionError.invalidFrame
         }
@@ -144,6 +159,9 @@ public enum SecureSessionWireCodec {
                   ) else {
                 throw SecureSessionError.invalidHandshake
             }
+            guard PeerIdentity.isValidDisplayName(handshake.sender.name) else {
+                throw SecureSessionError.invalidIdentityName
+            }
             let data = try CanonicalJSON.encoder().encode(handshake)
             guard publicKey.isValidSignature(signature, for: data) else {
                 throw SecureSessionError.invalidSignature
@@ -162,7 +180,10 @@ public enum SecureSessionWireCodec {
     private static func frame(_ envelope: WireEnvelope) throws -> Data {
         let payload = try CanonicalJSON.encoder().encode(envelope)
         do {
-            return try LengthPrefixedFrameCodec.encode(payload)
+            return try LengthPrefixedFrameCodec.encode(
+                payload,
+                maximumPayloadLength: maximumFramePayloadLength
+            )
         } catch {
             throw SecureSessionError.invalidFrame
         }
@@ -170,6 +191,9 @@ public enum SecureSessionWireCodec {
 }
 
 public final class SecureSessionChannel {
+    public static let maximumPlaintextLength = 32 * 1024
+    public static let maximumSealedDataLength =
+        maximumPlaintextLength + 12 + 16
     public let sessionID: UUID
 
     private let sendingKey: SymmetricKey
@@ -224,6 +248,9 @@ public final class SecureSessionChannel {
     }
 
     public func seal(_ plaintext: Data) throws -> SecurePacket {
+        guard plaintext.count <= Self.maximumPlaintextLength else {
+            throw SecureSessionError.invalidFrame
+        }
         guard nextSendingSequence < UInt64.max else {
             throw SecureSessionError.sequenceExhausted
         }
@@ -245,6 +272,9 @@ public final class SecureSessionChannel {
         guard packet.sessionID == sessionID,
               packet.sequence == nextReceivingSequence else {
             throw SecureSessionError.unexpectedSequence
+        }
+        guard packet.sealedData.count <= Self.maximumSealedDataLength else {
+            throw SecureSessionError.oversizedPacket
         }
         let box = try ChaChaPoly.SealedBox(combined: packet.sealedData)
         let plaintext = try ChaChaPoly.open(
@@ -292,7 +322,9 @@ public enum SecureSessionError: Error, Equatable {
     case invalidFrame
     case invalidSignature
     case invalidHandshake
+    case invalidIdentityName
     case unexpectedSequence
+    case oversizedPacket
     case sequenceExhausted
 }
 

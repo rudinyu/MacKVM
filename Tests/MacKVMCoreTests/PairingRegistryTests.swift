@@ -44,6 +44,31 @@ final class PairingRegistryTests: XCTestCase {
         XCTAssertFalse(registry.contains(peerID))
     }
 
+    func testRevocationGenerationRejectsAStaleAdd() {
+        let registry = PairingRegistry(
+            defaults: defaults,
+            storageKey: "generation"
+        )
+        let peer = PeerIdentity(
+            name: "Desk Mac",
+            signingPublicKey: P256.Signing.PrivateKey()
+                .publicKey.x963Representation
+        )
+        let generation = registry.generation(for: peer.id)
+
+        registry.revoke(peer.id)
+
+        XCTAssertFalse(registry.add(peer, ifGeneration: generation))
+        XCTAssertFalse(registry.contains(peer.id))
+        XCTAssertTrue(
+            registry.add(
+                peer,
+                ifGeneration: registry.generation(for: peer.id)
+            )
+        )
+        XCTAssertTrue(registry.contains(peer.id))
+    }
+
     func testPairingsPersistAcrossRegistryInstances() {
         let peerID = UUID()
         let peer = PeerIdentity(
@@ -97,5 +122,25 @@ final class PairingRegistryTests: XCTestCase {
         group.wait()
 
         XCTAssertEqual(registry.pairedPeerIDs, Set(peers.map(\.id)))
+    }
+
+    func testCorruptPreferencesWithCaseVariantUUIDsDoNotCrash() throws {
+        let peerID = UUID()
+        let firstKey = P256.Signing.PrivateKey().publicKey.x963Representation
+        let secondKey = P256.Signing.PrivateKey().publicKey.x963Representation
+        let stored = [
+            peerID.uuidString: firstKey,
+            peerID.uuidString.lowercased(): secondKey,
+        ]
+        defaults.set(try JSONEncoder().encode(stored), forKey: "corrupt")
+
+        let registry = PairingRegistry(
+            defaults: defaults,
+            storageKey: "corrupt"
+        )
+
+        XCTAssertNoThrow(_ = registry.pairedPeers)
+        XCTAssertTrue(registry.pairedPeerIDs.isEmpty)
+        XCTAssertFalse(registry.contains(peerID))
     }
 }

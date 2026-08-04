@@ -101,6 +101,11 @@ final class ControlRequestNotifierTests: XCTestCase {
                 .authenticationRequired
             )
         )
+        XCTAssertTrue(
+            ControlRequestNotificationAction.review.notificationOptions.contains(
+                .authenticationRequired
+            )
+        )
     }
 
     func testPayloadRoundTripsOnlyAValidRequestIdentifierAndNonce() {

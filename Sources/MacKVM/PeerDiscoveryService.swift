@@ -36,6 +36,9 @@ final class PeerDiscoveryService: ObservableObject {
     private static let serviceType = "_mackvm._tcp"
     private static let maximumPendingRequests = 5
     private static let maximumUnauthenticatedConnections = 16
+    private static let maximumPairingMessagesPerReceive = 16
+    private static let maximumWireBufferLength =
+        PairingWireCodec.maximumFramePayloadLength + 4
     private let queue = DispatchQueue(label: "app.mackvm.network")
     private let registry: PairingRegistry
     private let privateKey: P256.Signing.PrivateKey
@@ -59,6 +62,10 @@ final class PeerDiscoveryService: ObservableObject {
     private var activeOutboundRequestID: UUID?
     private var receiveBuffers: [ObjectIdentifier: Data] = [:]
     private var connectionTimeouts: [ObjectIdentifier: DispatchWorkItem] = [:]
+    private var admissionLimiter =
+        ConnectionAdmissionLimiter.unauthenticatedConnectionLimiter()
+    private let lifecycleEpoch = EpochGuard()
+    private let requestForgetGenerations = GenerationGuard<UUID>()
 
     init(
         credentials: DeviceCredentials,
@@ -75,6 +82,8 @@ final class PeerDiscoveryService: ObservableObject {
             guard let self, self.listener == nil, self.browser == nil else {
                 return
             }
+            self.advanceLifecycleEpoch()
+            self.admissionLimiter.reset()
             self.startListener()
             self.startBrowser()
         }
@@ -83,6 +92,7 @@ final class PeerDiscoveryService: ObservableObject {
     func stop() {
         queue.async { [weak self] in
             guard let self else { return }
+            self.advanceLifecycleEpoch()
             self.listener?.cancel()
             self.browser?.cancel()
             self.requestConnections.values.forEach { $0.cancel() }
@@ -93,6 +103,7 @@ final class PeerDiscoveryService: ObservableObject {
             self.unauthenticatedConnections.removeAll()
             self.requestMessages.removeAll()
             self.requestTargets.removeAll()
+            self.requestForgetGenerations.removeAll()
             self.localContributions.removeAll()
             self.peerCommitments.removeAll()
             self.peerContributions.removeAll()
@@ -108,6 +119,17 @@ final class PeerDiscoveryService: ObservableObject {
             self.receiveBuffers.removeAll()
             self.connectionTimeouts.values.forEach { $0.cancel() }
             self.connectionTimeouts.removeAll()
+            self.admissionLimiter.reset()
+            // Stop is authoritative even if start() is already queued behind
+            // it. Do not epoch-gate this cleanup, or the next start could
+            // advance the epoch before the main queue clears stale UI state.
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.peers.removeAll()
+                self.pendingRequests.removeAll()
+                self.activeVerificationCode = nil
+                self.status = "Discovery stopped"
+            }
         }
     }
 
@@ -147,6 +169,10 @@ final class PeerDiscoveryService: ObservableObject {
         requestMessages[request.requestID] = request
         requestTargets[request.requestID] = peer.identity
         localContributions[request.requestID] = contribution
+        requestForgetGenerations.set(
+            registry.generation(for: peer.identity.id),
+            for: request.requestID
+        )
 
         connection.stateUpdateHandler = { [weak self, weak connection] state in
             guard let self, let connection else { return }
@@ -213,9 +239,31 @@ final class PeerDiscoveryService: ObservableObject {
     }
 
     func forget(_ peerID: UUID) {
-        registry.remove(peerID)
-        DispatchQueue.main.async { [weak self] in
-            self?.pairedPeerIDs.remove(peerID)
+        // Keep trust removal synchronous with the user action. The secure
+        // listener runs on another queue and must not authenticate this peer
+        // while the queued discovery cleanup is waiting to run.
+        registry.revoke(peerID)
+        queue.async { [weak self] in
+            guard let self else { return }
+            // Keep this idempotent removal as a safety net for a completion
+            // that was already queued before revoke(); add(ifGeneration:)
+            // rejects any newer stale completion atomically with revoke().
+            registry.remove(peerID)
+
+            let requestIDs = requestConnections.compactMap { requestID, _ in
+                let peer = self.requestTargets[requestID]
+                    ?? self.requestMessages[requestID]?.sender
+                return peer?.id == peerID ? requestID : nil
+            }
+            requestIDs.forEach { self.finish(requestID: $0) }
+            let pendingIDs = self.requestMessages.compactMap { requestID, message in
+                message.sender.id == peerID ? requestID : nil
+            }
+            pendingIDs.forEach { self.finish(requestID: $0) }
+            publishMain {
+                $0.pairedPeerIDs.remove(peerID)
+                $0.pendingRequests.removeAll { $0.peer.id == peerID }
+            }
         }
     }
 
@@ -240,14 +288,19 @@ final class PeerDiscoveryService: ObservableObject {
                     "key": identity.signingPublicKey.base64EncodedString()
                 ])
             )
-            listener.stateUpdateHandler = { [weak self] state in
+            listener.stateUpdateHandler = { [weak self, weak listener] state in
                 switch state {
                 case .ready:
                     self?.publishStatus("Ready on the local network")
                 case .failed(let error):
-                    self?.publishStatus("Listening failed: \(error.localizedDescription)")
-                    self?.listener?.cancel()
-                    self?.listener = nil
+                    guard let self else { return }
+                    self.publishStatus(
+                        "Listening failed: \(error.localizedDescription)"
+                    )
+                    if self.listener === listener {
+                        self.listener?.cancel()
+                        self.listener = nil
+                    }
                 default:
                     break
                 }
@@ -272,9 +325,10 @@ final class PeerDiscoveryService: ObservableObject {
             ),
             using: parameters
         )
-        browser.browseResultsChangedHandler = { [weak self] results, _ in
-            guard let self else { return }
-            let discovered = results.compactMap { result -> DiscoveredPeer? in
+        browser.browseResultsChangedHandler = { [weak self, weak browser] results, _ in
+            guard let self, self.browser === browser else { return }
+            let candidates: [(PeerIdentity, DiscoveredPeer)] = results.compactMap {
+                result in
                 guard case let .service(name, _, _, _) = result.endpoint,
                       name != self.identity.serviceName,
                       case let .bonjour(txtRecord) = result.metadata,
@@ -282,21 +336,35 @@ final class PeerDiscoveryService: ObservableObject {
                       peerIdentity.id != self.identity.id else {
                     return nil
                 }
-                return DiscoveredPeer(
-                    id: name,
-                    identity: peerIdentity,
-                    endpoint: result.endpoint
+                return (
+                    peerIdentity,
+                    DiscoveredPeer(
+                        id: name,
+                        identity: peerIdentity,
+                        endpoint: result.endpoint
+                    )
                 )
             }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-
-            DispatchQueue.main.async { [weak self] in
-                self?.peers = discovered
-            }
+            let discoveredByID = PeerIdentityAdmission.resolve(
+                candidates,
+                identity: { $0.0 }
+            )
+            let discovered = discoveredByID.values.sorted {
+                $0.1.name.localizedCaseInsensitiveCompare($1.1.name)
+                    == .orderedAscending
+            }.map(\.1)
+            let epoch = self.currentLifecycleEpoch()
+            self.publishMain(epoch: epoch) { $0.peers = discovered }
         }
-        browser.stateUpdateHandler = { [weak self] state in
+        browser.stateUpdateHandler = { [weak self, weak browser] state in
             if case .failed(let error) = state {
-                self?.publishStatus("Discovery failed: \(error.localizedDescription)")
+                guard let self else { return }
+                self.publishStatus(
+                    "Discovery failed: \(error.localizedDescription)"
+                )
+                if self.browser === browser {
+                    self.browser = nil
+                }
             }
         }
         self.browser = browser
@@ -305,7 +373,10 @@ final class PeerDiscoveryService: ObservableObject {
 
     private func accept(_ connection: NWConnection) {
         guard unauthenticatedConnections.count
-                < Self.maximumUnauthenticatedConnections else {
+                < Self.maximumUnauthenticatedConnections,
+              admissionLimiter.allows(
+                  eventAt: DispatchTime.now().uptimeNanoseconds
+              ) else {
             connection.cancel()
             return
         }
@@ -331,34 +402,82 @@ final class PeerDiscoveryService: ObservableObject {
             maximumLength: 65_536
         ) { [weak self, weak connection] data, _, isComplete, error in
             guard let self, let connection else { return }
+            let connectionID = ObjectIdentifier(connection)
+            guard self.isTracked(connection) else {
+                return
+            }
 
             if let data, !data.isEmpty {
-                do {
-                    let key = ObjectIdentifier(connection)
-                    self.receiveBuffers[key, default: Data()].append(data)
-                    let messages = try PairingWireCodec.decodeAvailableFrames(
-                        from: &self.receiveBuffers[key, default: Data()]
-                    )
-                    messages.forEach {
-                        self.handle($0, on: connection)
-                    }
-                } catch {
-                    self.publishStatus("Received an invalid pairing message")
-                    connection.cancel()
-                    self.receiveBuffers.removeValue(
-                        forKey: ObjectIdentifier(connection)
-                    )
-                    return
-                }
+                self.receiveBuffers[connectionID, default: Data()].append(data)
             }
+            self.drainBufferedFrames(
+                on: connection,
+                connectionEnded: isComplete || error != nil,
+                remainingMessageBudget: Self.maximumPairingMessagesPerReceive
+            )
+        }
+    }
 
-            if error != nil {
-                self.removeConnection(connection)
-            } else if isComplete {
-                self.handlePeerFinishedSending(connection)
-            } else {
-                self.receive(on: connection)
+    private func drainBufferedFrames(
+        on connection: NWConnection,
+        connectionEnded: Bool,
+        remainingMessageBudget: Int
+    ) {
+        guard isTracked(connection) else { return }
+        let connectionID = ObjectIdentifier(connection)
+        do {
+            let messages = try PairingWireCodec.decodeAvailableFrames(
+                from: &receiveBuffers[connectionID, default: Data()],
+                maximumFrameCount: remainingMessageBudget
+            )
+            let hasCompleteFrame = PairingWireCodec.hasCompleteFrame(
+                in: receiveBuffers[connectionID, default: Data()]
+            )
+            guard BufferedFrameDrainPolicy.acceptsBufferedBytes(
+                    bufferCount: receiveBuffers[connectionID, default: Data()].count,
+                    maximumBufferLength: Self.maximumWireBufferLength,
+                    hasCompleteFrame: hasCompleteFrame
+                  ) else {
+                throw PairingWireError.payloadTooLarge
             }
+            messages.forEach {
+                handle($0, on: connection)
+            }
+            let nextMessageBudget = remainingMessageBudget - messages.count
+            if BufferedFrameDrainPolicy.shouldContinueDecoding(
+                decodedFrameCount: messages.count,
+                hasCompleteFrame: hasCompleteFrame
+            ) {
+                guard nextMessageBudget > 0 else {
+                    throw PairingWireError.tooManyMessages
+                }
+                queue.async { [weak self, weak connection] in
+                    guard let self, let connection else { return }
+                    self.drainBufferedFrames(
+                        on: connection,
+                        connectionEnded: connectionEnded,
+                        remainingMessageBudget: nextMessageBudget
+                    )
+                }
+            } else if connectionEnded {
+                if receiveBuffers[connectionID, default: Data()].isEmpty {
+                    handlePeerFinishedSending(connection)
+                } else {
+                    publishStatus("Received an incomplete pairing message")
+                    connection.cancel()
+                    removeConnection(connection)
+                }
+            } else {
+                receive(on: connection)
+            }
+        } catch PairingWireError.tooManyMessages {
+            publishStatus("Received too many pairing messages in one delivery")
+            connection.cancel()
+            removeConnection(connection)
+        } catch {
+            publishStatus("Received an invalid pairing message")
+            connection.cancel()
+            removeConnection(connection)
         }
     }
 
@@ -414,6 +533,10 @@ final class PeerDiscoveryService: ObservableObject {
             requestConnections[message.requestID] = connection
             requestMessages[message.requestID] = message
             localContributions[message.requestID] = localContribution
+            requestForgetGenerations.set(
+                registry.generation(for: message.sender.id),
+                for: message.requestID
+            )
             peerCommitments[message.requestID] = peerCommitment
             let challenge = PairingEnvelope.challenge(
                 to: message,
@@ -469,10 +592,9 @@ final class PeerDiscoveryService: ObservableObject {
                 initiatorContribution: peerContribution,
                 responderContribution: localContribution
             )
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                if !self.pendingRequests.contains(where: { $0.id == message.requestID }) {
-                    self.pendingRequests.append(
+            publishMain { service in
+                if !service.pendingRequests.contains(where: { $0.id == message.requestID }) {
+                    service.pendingRequests.append(
                         PendingPairingRequest(
                             id: message.requestID,
                             peer: message.sender,
@@ -480,7 +602,7 @@ final class PeerDiscoveryService: ObservableObject {
                         )
                     )
                 }
-                self.status = "\(message.sender.name) wants to pair"
+                service.status = "\(message.sender.name) wants to pair"
             }
             let confirmation = PairingEnvelope.confirmation(
                 to: request,
@@ -511,9 +633,7 @@ final class PeerDiscoveryService: ObservableObject {
                 initiatorContribution: localContribution,
                 responderContribution: peerContribution
             )
-            DispatchQueue.main.async { [weak self] in
-                self?.activeVerificationCode = verificationCode
-            }
+            publishMain { $0.activeVerificationCode = verificationCode }
             addPendingConfirmation(
                 requestID: message.requestID,
                 peer: expectedPeer,
@@ -606,11 +726,18 @@ final class PeerDiscoveryService: ObservableObject {
         }
     }
 
-    private func savePairing(with peer: PeerIdentity) {
-        registry.add(peer)
-        DispatchQueue.main.async { [weak self] in
-            self?.pairedPeerIDs.insert(peer.id)
+    private func savePairing(
+        with peer: PeerIdentity,
+        expectedRegistryGeneration: UInt64
+    ) -> Bool {
+        guard registry.add(
+            peer,
+            ifGeneration: expectedRegistryGeneration
+        ) else {
+            return false
         }
+        publishMain { $0.pairedPeerIDs.insert(peer.id) }
+        return true
     }
 
     private func finish(
@@ -619,9 +746,7 @@ final class PeerDiscoveryService: ObservableObject {
     ) {
         if activeOutboundRequestID == requestID {
             activeOutboundRequestID = nil
-            DispatchQueue.main.async { [weak self] in
-                self?.activeVerificationCode = nil
-            }
+            publishMain { $0.activeVerificationCode = nil }
         }
         if let connection = requestConnections.removeValue(
             forKey: requestID
@@ -634,6 +759,7 @@ final class PeerDiscoveryService: ObservableObject {
         requestMessages.removeValue(forKey: requestID)
         requestTargets.removeValue(forKey: requestID)
         localContributions.removeValue(forKey: requestID)
+        requestForgetGenerations.remove(for: requestID)
         peerCommitments.removeValue(forKey: requestID)
         peerContributions.removeValue(forKey: requestID)
         locallyAcceptedRequestIDs.remove(requestID)
@@ -656,7 +782,8 @@ final class PeerDiscoveryService: ObservableObject {
     }
 
     private func handlePeerFinishedSending(_ connection: NWConnection) {
-        receiveBuffers.removeValue(forKey: ObjectIdentifier(connection))
+        let connectionID = ObjectIdentifier(connection)
+        receiveBuffers.removeValue(forKey: connectionID)
         let requestIDs = requestConnections
             .filter { $0.value === connection }
             .map(\.key)
@@ -691,6 +818,9 @@ final class PeerDiscoveryService: ObservableObject {
 
         let timeout = DispatchWorkItem { [weak self, weak connection] in
             guard let self, let connection else { return }
+            guard self.isTracked(connection) else {
+                return
+            }
             self.publishStatus("Pairing request timed out")
             connection.cancel()
             self.removeConnection(connection)
@@ -700,9 +830,7 @@ final class PeerDiscoveryService: ObservableObject {
     }
 
     private func removePendingRequest(id: UUID) {
-        DispatchQueue.main.async { [weak self] in
-            self?.pendingRequests.removeAll { $0.id == id }
-        }
+        publishMain { $0.pendingRequests.removeAll { $0.id == id } }
     }
 
     private func addPendingConfirmation(
@@ -710,12 +838,11 @@ final class PeerDiscoveryService: ObservableObject {
         peer: PeerIdentity,
         verificationCode: String
     ) {
-        DispatchQueue.main.async { [weak self] in
-            guard let self,
-                  !self.pendingRequests.contains(where: { $0.id == requestID }) else {
+        publishMain { service in
+            guard !service.pendingRequests.contains(where: { $0.id == requestID }) else {
                 return
             }
-            self.pendingRequests.append(
+            service.pendingRequests.append(
                 PendingPairingRequest(
                     id: requestID,
                     peer: peer,
@@ -726,9 +853,33 @@ final class PeerDiscoveryService: ObservableObject {
     }
 
     private func publishStatus(_ message: String) {
+        publishMain { $0.status = message }
+    }
+
+    private func publishMain(
+        epoch: UInt64? = nil,
+        _ update: @escaping (PeerDiscoveryService) -> Void
+    ) {
+        let expectedEpoch = epoch ?? currentLifecycleEpoch()
         DispatchQueue.main.async { [weak self] in
-            self?.status = message
+            guard let self,
+                  self.currentLifecycleEpoch() == expectedEpoch else { return }
+            update(self)
         }
+    }
+
+    private func advanceLifecycleEpoch() {
+        lifecycleEpoch.advance()
+    }
+
+    private func currentLifecycleEpoch() -> UInt64 {
+        lifecycleEpoch.current()
+    }
+
+    private func isTracked(_ connection: NWConnection) -> Bool {
+        let connectionID = ObjectIdentifier(connection)
+        return requestConnections.values.contains { $0 === connection }
+            || unauthenticatedConnections[connectionID] != nil
     }
 
     private func validatedOutboundPeer(
@@ -820,15 +971,33 @@ final class PeerDiscoveryService: ObservableObject {
         with peer: PeerIdentity,
         requestID: UUID
     ) {
+        guard let trackedPeer = requestTargets[requestID]
+                ?? requestMessages[requestID]?.sender,
+              trackedPeer.id == peer.id else {
+            return
+        }
+        let completionGuard = PairingCompletionGuard(
+            requestID: requestID,
+            peerID: trackedPeer.id,
+            generation: requestForgetGenerations.current(for: requestID)
+        )
         guard locallyAcceptedRequestIDs.contains(requestID),
               remotelyAcceptedRequestIDs.contains(requestID),
               locallyCompletedRequestIDs.contains(requestID),
               remotelyCompletedRequestIDs.contains(requestID),
               locallyAcknowledgedByPeerRequestIDs.contains(requestID),
-              peerClosedRequestIDs.contains(requestID) else {
+              peerClosedRequestIDs.contains(requestID),
+              completionGuard.permits(
+                  currentGeneration: registry.generation(for: peer.id)
+              ) else {
             return
         }
-        savePairing(with: peer)
+        guard savePairing(
+            with: peer,
+            expectedRegistryGeneration: completionGuard.generation
+        ) else {
+            return
+        }
         publishStatus("Paired with \(peer.name)")
         finish(requestID: requestID, cancelConnection: false)
     }

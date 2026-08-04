@@ -35,7 +35,14 @@ field validation before injection. Pointer coordinates and scroll values are
 bounded, and injected events carry a private source marker so a listening peer
 does not retransmit them. macOS still requires explicit Input Monitoring
 permission to capture local input and Accessibility permission to inject remote
-input.
+input. Pairing and secure-session wire frames are capped at 64 KiB, encrypted
+session plaintext is capped at 32 KiB, and partial frames expire after five
+seconds. Secure sessions also enforce bounded pending handshakes, payload
+queues, and per-session packet/byte budgets; discovery applies connection and
+message admission limits before decoding, including a 16-message cap per
+pairing transport delivery. If the control or injection queue
+cannot keep up, MacKVM tears down that session and releases all tracked keys
+and mouse buttons instead of silently dropping a state-changing transition.
 
 Input is never suppressed merely because the encrypted transport connected.
 The controller first sends a control request, and the receiving Mac grants it
@@ -44,3 +51,14 @@ the paired UUIDs for deterministic arbitration. During control,
 `Control-Option-Command-Escape` is consumed locally as an emergency return;
 disconnect and control-end paths synthesize key-up and mouse-up events on the
 receiver to avoid stuck input.
+
+Selecting **Forget** removes the pinned public key synchronously before the
+network cleanup queues run. In-flight pairing completions are generation
+checked and remove the key again on the serialized discovery queue, so a peer
+that is being forgotten cannot restore trust through a late completion or
+reconnect during the cleanup race. The secure-session service also cancels
+anonymous, unauthenticated handshakes during this operation: until the first
+signed handshake identifies a peer, the context cannot be safely attributed to
+another device. This can briefly interrupt an unrelated handshake, but it
+prevents a revoked peer from winning an attribution race and is immediately
+recoverable by reconnecting.

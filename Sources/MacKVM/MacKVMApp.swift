@@ -109,8 +109,16 @@ private func peerDisplayName(
     for peerID: UUID,
     from discovery: PeerDiscoveryService?
 ) -> String {
-    discovery?.peers.first { $0.identity.id == peerID }?.name
+    let candidateName = discovery?.peers.first { $0.identity.id == peerID }?.name
         ?? "Mac \(peerID.uuidString.prefix(8))"
+    let trimmedName = candidateName.trimmingCharacters(
+        in: .whitespacesAndNewlines
+    )
+    // Bonjour and the signed protocols already bound this value. Keep a
+    // defensive UI bound as well because notification/alert text is rendered
+    // outside the normal menu layout.
+    let boundedName = PeerIdentity.boundedDisplayName(trimmedName)
+    return boundedName.isEmpty ? "Mac" : boundedName
 }
 
 @MainActor
@@ -226,6 +234,14 @@ private final class AppBootstrap: ObservableObject {
         networkServicesStarted = true
     }
 
+    func forget(peerID: UUID) {
+        guard let discovery, let secureSession else { return }
+        // Discovery performs the synchronous registry revoke. Secure-session
+        // cleanup is then queued without bumping the same generation twice.
+        discovery.forget(peerID)
+        secureSession.revoke(peerID, trustAlreadyRevoked: true)
+    }
+
     func requestControlRequestNotifications() {
         controlRequestNotifier?.requestAuthorization()
     }
@@ -293,6 +309,8 @@ private struct BootstrapErrorView: View {
 }
 
 private struct MacKVMMenuView: View {
+    private static let menuWidth: CGFloat = 400
+    private static let menuHeight: CGFloat = 640
     @ObservedObject var discovery: PeerDiscoveryService
     @ObservedObject var secureSession: SecureSessionService
     @ObservedObject var inputCapture: InputCaptureService
@@ -361,7 +379,7 @@ private struct MacKVMMenuView: View {
         }
         // Keep every section reachable on shorter MacBook displays while
         // leaving the return-to-local/quit control pinned at the bottom.
-        .frame(width: 400, height: 640)
+        .frame(width: Self.menuWidth, height: Self.menuHeight)
         .onAppear {
             refreshSetupState()
             monitor.refreshDetectedDisplays()
@@ -599,16 +617,14 @@ private struct MacKVMMenuView: View {
                                 }
                             }
                             Button("Forget", role: .destructive) {
-                                secureSession.revoke(peer.identity.id)
-                                discovery.forget(peer.identity.id)
+                                bootstrap.forget(peerID: peer.identity.id)
                             }
                         case .changedKey:
                             Label("Key changed", systemImage: "exclamationmark.triangle.fill")
                                 .font(.caption)
                                 .foregroundStyle(.red)
                             Button("Forget old key", role: .destructive) {
-                                secureSession.revoke(peer.identity.id)
-                                discovery.forget(peer.identity.id)
+                                bootstrap.forget(peerID: peer.identity.id)
                             }
                         case .unpaired:
                             Button("Pair") {
@@ -634,8 +650,7 @@ private struct MacKVMMenuView: View {
                             }
                         }
                         Button("Forget", role: .destructive) {
-                            secureSession.revoke(peerID)
-                            discovery.forget(peerID)
+                            bootstrap.forget(peerID: peerID)
                         }
                     }
                 }

@@ -20,7 +20,10 @@ enum ControlRequestNotificationAction: String, CaseIterable {
         case .deny:
             [.destructive]
         case .review:
-            [.foreground]
+            // Opening the app exposes the pending remote-control decision;
+            // require the active user to authenticate before doing so from a
+            // lock-screen notification.
+            [.foreground, .authenticationRequired]
         }
     }
 }

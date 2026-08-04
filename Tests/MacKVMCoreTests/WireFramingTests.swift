@@ -40,7 +40,7 @@ final class WireFramingTests: XCTestCase {
     func testRejectsOversizedPayload() {
         let payload = Data(
             repeating: 0,
-            count: LengthPrefixedFrameCodec.maximumPayloadLength + 1
+            count: LengthPrefixedFrameCodec.defaultMaximumPayloadLength + 1
         )
 
         XCTAssertThrowsError(try LengthPrefixedFrameCodec.encode(payload)) {
@@ -50,5 +50,28 @@ final class WireFramingTests: XCTestCase {
                 .invalidLength
             )
         }
+    }
+
+    func testBoundsFrameBatchWithoutRejectingCoalescedFrames() throws {
+        var buffer = Data()
+        for _ in 0...2 {
+            buffer.append(try LengthPrefixedFrameCodec.encode(Data("x".utf8)))
+        }
+
+        XCTAssertEqual(
+            try LengthPrefixedFrameCodec.decodeAvailablePayloads(
+                from: &buffer,
+                maximumFrameCount: 2
+            ),
+            [Data("x".utf8), Data("x".utf8)]
+        )
+        XCTAssertEqual(
+            try LengthPrefixedFrameCodec.decodeAvailablePayloads(
+                from: &buffer,
+                maximumFrameCount: 2
+            ),
+            [Data("x".utf8)]
+        )
+        XCTAssertTrue(buffer.isEmpty)
     }
 }

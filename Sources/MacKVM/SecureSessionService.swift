@@ -4,19 +4,47 @@ import Foundation
 import MacKVMCore
 import Network
 
+enum SecureSessionRevocationPolicy {
+    static func removesActiveContext(
+        activeContextID: ObjectIdentifier?,
+        revokedContextIDs: Set<ObjectIdentifier>
+    ) -> Bool {
+        guard let activeContextID else { return false }
+        return revokedContextIDs.contains(activeContextID)
+    }
+}
+
 final class SecureSessionService: ObservableObject, ControlSessionTransport {
     @Published private(set) var connectedPeerID: UUID?
     @Published private(set) var status = "Secure session idle"
 
     var onPayload: ((Data) -> Void)?
+    var onAuthenticated: (() -> UInt64)?
+
+    private let connectionPublicationSubject =
+        PassthroughSubject<ControlConnectionPublication, Never>()
 
     var connectedPeerIDPublisher: AnyPublisher<UUID?, Never> {
         $connectedPeerID.eraseToAnyPublisher()
     }
 
+    var connectionPublicationPublisher:
+        AnyPublisher<ControlConnectionPublication, Never> {
+        connectionPublicationSubject.eraseToAnyPublisher()
+    }
+
     private static let serviceType = "_mackvm-secure._tcp"
     private static let maximumPendingConnections = 16
     private static let maximumPendingPayloads = 64
+    // Accommodate high-polling-rate mice without turning ordinary movement
+    // into a transport failure, while retaining a bounded per-session budget.
+    private static let maximumInboundPacketsPerSecond = 8_192
+    private static let maximumInboundBytesPerSecond = 8 * 1024 * 1024
+    private static let partialFrameTimeout: TimeInterval = 5
+    private static let partialFrameTimeoutNanoseconds =
+        UInt64(partialFrameTimeout * 1_000_000_000)
+    private static let maximumWireBufferLength =
+        SecureSessionWireCodec.maximumFramePayloadLength + 4
     private static let keyConfirmation = Data(
         "MacKVM encrypted key confirmation v1".utf8
     )
@@ -28,6 +56,10 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
     private var peersByID: [UUID: SecureServicePeer] = [:]
     private var contexts: [ObjectIdentifier: SessionConnectionContext] = [:]
     private var activeContextID: ObjectIdentifier?
+    private let connectionEpoch = EpochGuard()
+    private let peerEpochs = GenerationGuard<UUID>()
+    private var admissionLimiter =
+        ConnectionAdmissionLimiter.unauthenticatedConnectionLimiter()
 
     init(
         credentials: DeviceCredentials,
@@ -48,15 +80,28 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
     func stop() {
         queue.async { [weak self] in
             guard let self else { return }
+            connectionEpoch.advance()
             listener?.cancel()
             browser?.cancel()
-            contexts.values.forEach { $0.connection.cancel() }
+            let oldContexts = Array(contexts.values)
+            let hadActiveContext = activeContextID != nil
+            oldContexts.forEach {
+                $0.connection.cancel()
+                self.remove($0)
+            }
             listener = nil
             browser = nil
             peersByID.removeAll()
-            contexts.removeAll()
             activeContextID = nil
-            publishConnection(peerID: nil, status: "Secure session stopped")
+            peerEpochs.removeAll()
+            admissionLimiter.reset()
+            if hadActiveContext {
+                // remove(_:) already published the generation-tagged nil
+                // connection event; update only the human-readable status.
+                publishStatus("Secure session stopped")
+            } else {
+                publishConnection(peerID: nil, status: "Secure session stopped")
+            }
         }
     }
 
@@ -69,30 +114,74 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
     func disconnect() {
         queue.async { [weak self] in
             guard let self else { return }
-            if let activeContextID,
-               let context = contexts[activeContextID] {
+            connectionEpoch.advance()
+            // Disconnect is a session-wide local safety action. Cancel every
+            // context, including handshakes that have not selected a peer,
+            // so no stale callback can promote an old session afterward.
+            let hadActiveContext = activeContextID != nil
+            for context in Array(contexts.values) {
                 context.connection.cancel()
                 remove(context)
             }
-            publishConnection(peerID: nil, status: "Secure session disconnected")
+            if hadActiveContext {
+                // remove(_:) already published the generation-tagged nil
+                // connection event; avoid a second untagged disconnect.
+                publishStatus("Secure session disconnected")
+            } else {
+                publishConnection(
+                    peerID: nil,
+                    status: "Secure session disconnected"
+                )
+            }
         }
     }
 
-    func revoke(_ peerID: UUID) {
+    /// Revokes trust and intentionally cancels anonymous handshakes as well:
+    /// before identity attribution, an in-flight context cannot be safely
+    /// proven unrelated to the revoked peer.
+    func revoke(
+        _ peerID: UUID,
+        trustAlreadyRevoked: Bool = false
+    ) {
+        // Remove trust before scheduling queue cleanup. Discovery and the
+        // secure listener have independent serial queues, so a queued-only
+        // removal would leave a window in which a revoked peer could finish
+        // a new inbound handshake with the old pinned key. The app-level
+        // Forget entry point performs that synchronous revoke once, then
+        // passes trustAlreadyRevoked to this cleanup path.
+        if !trustAlreadyRevoked {
+            registry.revoke(peerID)
+        }
         queue.async { [weak self] in
             guard let self else { return }
+            peerEpochs.advance(for: peerID)
+            // Anonymous contexts cannot be safely attributed to a different
+            // peer yet. Drop them as well so a handshake racing Forget cannot
+            // establish trust before its identity is rechecked.
             let revokedContexts = contexts.values.filter {
                 $0.expectedPeer?.id == peerID
+                    || (!$0.isAuthenticated && $0.expectedPeer == nil)
             }
+            let removedActiveContext =
+                SecureSessionRevocationPolicy.removesActiveContext(
+                    activeContextID: activeContextID,
+                    revokedContextIDs: Set(
+                        revokedContexts.map { ObjectIdentifier($0) }
+                    )
+                )
             revokedContexts.forEach {
                 $0.connection.cancel()
                 self.remove($0)
             }
-            if !revokedContexts.isEmpty {
-                publishConnection(
-                    peerID: nil,
-                    status: "Trust was revoked for the disconnected peer"
+            if removedActiveContext {
+                // remove(_:) already published the generation-tagged nil
+                // event; update only its status to keep the event associated
+                // with the revoked session.
+                publishStatus(
+                    "Trust revoked; the active peer was disconnected"
                 )
+            } else if !revokedContexts.isEmpty {
+                publishStatus("Trust revoked; an unrelated handshake was cancelled")
             }
         }
     }
@@ -104,6 +193,10 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                   let context = contexts[activeContextID],
                   context.channel != nil else {
                 self?.publishStatus("No encrypted session is connected")
+                return
+            }
+            guard payload.count <= SecureSessionChannel.maximumPlaintextLength else {
+                publishStatus("Secure session rejected an oversized payload")
                 return
             }
             guard context.pendingPayloads.count
@@ -131,7 +224,9 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             let packet = try channel.seal(payload)
             let data = try SecureSessionWireCodec.encode(packet: packet)
             send(data, on: context.connection) { [weak self, weak context] sent in
-                guard let self, let context else { return }
+                guard let self, let context, self.isCurrent(context) else {
+                    return
+                }
                 context.isSendingPayload = false
                 guard sent else {
                     fail(context, message: "Encrypted input send failed")
@@ -175,11 +270,15 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             expectedPeer: peer.identity,
             localRole: .initiator,
             localEphemeralKey: ephemeralKey,
-            initiatorHandshake: hello
+            initiatorHandshake: hello,
+            maximumPacketsPerSecond: Self.maximumInboundPacketsPerSecond,
+            maximumBytesPerSecond: Self.maximumInboundBytesPerSecond
         )
+        context.epoch = connectionEpoch.current()
+        context.peerEpoch = peerEpochs.current(for: peerID)
         install(context)
         connection.stateUpdateHandler = { [weak self, weak context] state in
-            guard let self, let context else { return }
+            guard let self, let context, self.isCurrent(context) else { return }
             switch state {
             case .ready:
                 scheduleTimeout(
@@ -227,11 +326,15 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             listener.newConnectionHandler = { [weak self] connection in
                 self?.accept(connection)
             }
-            listener.stateUpdateHandler = { [weak self] state in
+            listener.stateUpdateHandler = { [weak self, weak listener] state in
                 if case .failed(let error) = state {
-                    self?.publishStatus(
+                    guard let self else { return }
+                    self.publishStatus(
                         "Secure listener failed: \(error.localizedDescription)"
                     )
+                    if self.listener === listener {
+                        self.listener = nil
+                    }
                 }
             }
             self.listener = listener
@@ -248,25 +351,37 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             for: .bonjourWithTXTRecord(type: Self.serviceType, domain: nil),
             using: parameters
         )
-        browser.browseResultsChangedHandler = { [weak self] results, _ in
-            guard let self else { return }
-            peersByID = results.reduce(into: [:]) { peers, result in
-                    guard case let .bonjour(txtRecord) = result.metadata,
-                          let identity = PeerIdentityTXTCodec.decode(txtRecord),
-                          identity.id != self.credentials.identity.id else {
-                        return
-                    }
-                    peers[identity.id] = SecureServicePeer(
+        browser.browseResultsChangedHandler = { [weak self, weak browser] results, _ in
+            guard let self, self.browser === browser else { return }
+            let candidates: [(PeerIdentity, SecureServicePeer)] = results.compactMap {
+                result in
+                guard case let .bonjour(txtRecord) = result.metadata,
+                      let identity = PeerIdentityTXTCodec.decode(txtRecord),
+                      identity.id != self.credentials.identity.id else {
+                    return nil
+                }
+                return (
+                    identity,
+                    SecureServicePeer(
                         identity: identity,
                         endpoint: result.endpoint
                     )
-                }
+                )
+            }
+            peersByID = PeerIdentityAdmission.resolve(
+                candidates,
+                identity: { $0.0 }
+            ).mapValues(\.1)
         }
-        browser.stateUpdateHandler = { [weak self] state in
+        browser.stateUpdateHandler = { [weak self, weak browser] state in
             if case .failed(let error) = state {
-                self?.publishStatus(
+                guard let self else { return }
+                self.publishStatus(
                     "Secure discovery failed: \(error.localizedDescription)"
                 )
+                if self.browser === browser {
+                    self.browser = nil
+                }
             }
         }
         self.browser = browser
@@ -275,18 +390,24 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
 
     private func accept(_ connection: NWConnection) {
         guard activeContextID == nil,
-              contexts.count < Self.maximumPendingConnections else {
+              contexts.count < Self.maximumPendingConnections,
+              admissionLimiter.allows(
+                  eventAt: DispatchTime.now().uptimeNanoseconds
+              ) else {
             connection.cancel()
             return
         }
         let context = SessionConnectionContext(
             connection: connection,
             expectedPeer: nil,
-            localRole: .responder
+            localRole: .responder,
+            maximumPacketsPerSecond: Self.maximumInboundPacketsPerSecond,
+            maximumBytesPerSecond: Self.maximumInboundBytesPerSecond
         )
+        context.epoch = connectionEpoch.current()
         install(context)
         connection.stateUpdateHandler = { [weak self, weak context] state in
-            guard let self, let context else { return }
+            guard let self, let context, self.isCurrent(context) else { return }
             switch state {
             case .ready:
                 scheduleTimeout(
@@ -314,26 +435,92 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             minimumIncompleteLength: 1,
             maximumLength: 65_536
         ) { [weak self, weak context] data, _, complete, error in
-            guard let self, let context else { return }
+            guard let self, let context, self.isCurrent(context) else { return }
             if let data, !data.isEmpty {
-                do {
-                    context.buffer.append(data)
-                    let messages = try SecureSessionWireCodec.decodeAvailableFrames(
-                        from: &context.buffer
-                    )
-                    try messages.forEach {
-                        try self.handle($0, in: context)
+                context.buffer.append(data)
+            }
+            drainBufferedFrames(
+                on: context,
+                connectionEnded: complete || error != nil
+            )
+        }
+    }
+
+    private func drainBufferedFrames(
+        on context: SessionConnectionContext,
+        connectionEnded: Bool
+    ) {
+        guard isCurrent(context) else { return }
+        do {
+            let messages = try SecureSessionWireCodec.decodeAvailableFrames(
+                from: &context.buffer
+            )
+            // Decode complete frames first. TCP can coalesce the tail of one
+            // frame with complete subsequent frames; only bytes retained for
+            // the next incomplete frame count against the memory budget. A
+            // capped decode batch may leave complete frames in the buffer,
+            // so do not count those already-valid frames against the cap.
+            let hasCompleteFrame = SecureSessionWireCodec.hasCompleteFrame(
+                in: context.buffer
+            )
+            guard BufferedFrameDrainPolicy.acceptsBufferedBytes(
+                bufferCount: context.buffer.count,
+                maximumBufferLength: Self.maximumWireBufferLength,
+                hasCompleteFrame: hasCompleteFrame
+            ) else {
+                throw SecureSessionError.invalidFrame
+            }
+            try messages.forEach {
+                try handle($0, in: context)
+            }
+
+            if !messages.isEmpty, context.partialFrameTimeout != nil {
+                // The previous partial frame completed. A remaining partial
+                // frame is a new lifetime and needs its own deadline.
+                context.partialFrameTimeout?.cancel()
+                context.partialFrameTimeout = nil
+                context.partialFrameDeadline = nil
+            }
+
+            if context.buffer.isEmpty {
+                context.partialFrameTimeout?.cancel()
+                context.partialFrameTimeout = nil
+                context.partialFrameDeadline = nil
+                if connectionEnded {
+                    remove(context)
+                } else {
+                    receive(on: context)
+                }
+            } else if BufferedFrameDrainPolicy.shouldContinueDecoding(
+                decodedFrameCount: messages.count,
+                hasCompleteFrame: hasCompleteFrame
+            ) {
+                // Secure sessions intentionally do not apply pairing's
+                // cumulative 16-message-per-delivery cap. The frame and
+                // buffer limits plus inbound packet/byte budgets bound this
+                // high-polling input path without dropping valid movement.
+                // A capped decode batch left more complete frames buffered.
+                // Drain the next batch on the serial queue without waiting
+                // for another network read (TCP coalescing is valid).
+                queue.async { [weak self, weak context] in
+                    guard let self, let context, self.isCurrent(context) else {
+                        return
                     }
-                } catch {
-                    fail(context, message: "Rejected invalid secure session data")
-                    return
+                    self.drainBufferedFrames(
+                        on: context,
+                        connectionEnded: connectionEnded
+                    )
+                }
+            } else {
+                schedulePartialFrameTimeout(for: context)
+                if connectionEnded {
+                    remove(context)
+                } else {
+                    receive(on: context)
                 }
             }
-            if complete || error != nil {
-                remove(context)
-            } else {
-                receive(on: context)
-            }
+        } catch {
+            fail(context, message: "Rejected invalid secure session data")
         }
     }
 
@@ -341,6 +528,9 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         _ message: SecureSessionWireMessage,
         in context: SessionConnectionContext
     ) throws {
+        guard isCurrent(context) else {
+            throw SecureSessionError.invalidFrame
+        }
         switch message {
         case .handshake(let handshake):
             try handle(handshake, in: context)
@@ -361,11 +551,19 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                 context.isAuthenticated = true
                 context.handshakeTimeout?.cancel()
                 activeContextID = ObjectIdentifier(context)
+                context.admissionGeneration = onAuthenticated?()
                 publishConnection(
                     peerID: peer.id,
-                    status: "Encrypted session connected to \(peer.name)"
+                    status: "Encrypted session connected to \(peer.name)",
+                    admissionGeneration: context.admissionGeneration
                 )
                 return
+            }
+            guard context.inboundPayloadBudget.allows(
+                bytes: payload.count,
+                at: DispatchTime.now().uptimeNanoseconds
+            ) else {
+                throw SecureSessionError.invalidFrame
             }
             onPayload?(payload)
         }
@@ -406,7 +604,9 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             )
             send(confirmationData, on: context.connection) {
                 [weak self, weak context] sent in
-                guard let self, let context else { return }
+                guard let self, let context, self.isCurrent(context) else {
+                    return
+                }
                 guard sent,
                       self.activeContextID == nil,
                       self.registry.publicKey(for: expectedPeer.id)
@@ -420,9 +620,11 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                 context.isAuthenticated = true
                 context.handshakeTimeout?.cancel()
                 self.activeContextID = ObjectIdentifier(context)
+                context.admissionGeneration = self.onAuthenticated?()
                 self.publishConnection(
                     peerID: expectedPeer.id,
-                    status: "Encrypted session connected to \(expectedPeer.name)"
+                    status: "Encrypted session connected to \(expectedPeer.name)",
+                    admissionGeneration: context.admissionGeneration
                 )
             }
 
@@ -444,6 +646,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                 ephemeralKey: ephemeralKey
             )
             context.expectedPeer = handshake.sender
+            context.peerEpoch = peerEpochs.current(for: handshake.sender.id)
             context.localEphemeralKey = ephemeralKey
             context.initiatorHandshake = handshake
             context.responderHandshake = response
@@ -458,7 +661,9 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                 signingWith: credentials.privateKey
             )
             send(data, on: context.connection) { [weak self, weak context] sent in
-                guard let self, let context else { return }
+                guard let self, let context, self.isCurrent(context) else {
+                    return
+                }
                 guard sent else {
                     fail(context, message: "Could not complete secure handshake")
                     return
@@ -480,6 +685,47 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         )
     }
 
+    private func isCurrent(_ context: SessionConnectionContext) -> Bool {
+        let contextID = ObjectIdentifier(context)
+        guard contexts[contextID] === context,
+              context.epoch == connectionEpoch.current() else {
+            return false
+        }
+        if let peerID = context.expectedPeer?.id {
+            return context.peerEpoch == peerEpochs.current(for: peerID)
+        }
+        return true
+    }
+
+    private func schedulePartialFrameTimeout(
+        for context: SessionConnectionContext
+    ) {
+        guard context.partialFrameTimeout == nil else { return }
+        let deadline = PartialFrameTimeoutPolicy.deadline(
+            now: DispatchTime.now().uptimeNanoseconds,
+            timeoutNanoseconds: Self.partialFrameTimeoutNanoseconds
+        )
+        context.partialFrameDeadline = deadline
+        let timeout = DispatchWorkItem { [weak self, weak context] in
+            guard let self, let context,
+                  self.isCurrent(context),
+                  PartialFrameTimeoutPolicy.shouldExpire(
+                      deadline: context.partialFrameDeadline,
+                      hasPartialFrame: !context.buffer.isEmpty,
+                      now: DispatchTime.now().uptimeNanoseconds
+                  ) else { return }
+            self.fail(
+                context,
+                message: "Secure session closed an incomplete frame that took too long"
+            )
+        }
+        context.partialFrameTimeout = timeout
+        queue.asyncAfter(
+            deadline: .now() + Self.partialFrameTimeout,
+            execute: timeout
+        )
+    }
+
     private func scheduleTimeout(
         for context: SessionConnectionContext,
         after seconds: TimeInterval,
@@ -487,7 +733,8 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
     ) {
         context.handshakeTimeout?.cancel()
         let timeout = DispatchWorkItem { [weak self, weak context] in
-            guard let self, let context, !context.isAuthenticated else { return }
+            guard let self, let context, self.isCurrent(context),
+                  !context.isAuthenticated else { return }
             fail(context, message: message)
         }
         context.handshakeTimeout = timeout
@@ -519,10 +766,17 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
     private func remove(_ context: SessionConnectionContext) {
         let contextID = ObjectIdentifier(context)
         context.handshakeTimeout?.cancel()
+        context.partialFrameTimeout?.cancel()
+        context.partialFrameDeadline = nil
         contexts.removeValue(forKey: contextID)
         if activeContextID == contextID {
+            let admissionGeneration = context.admissionGeneration
             activeContextID = nil
-            publishConnection(peerID: nil, status: "Secure session disconnected")
+            publishConnection(
+                peerID: nil,
+                status: "Secure session disconnected",
+                admissionGeneration: admissionGeneration
+            )
         }
     }
 
@@ -555,10 +809,20 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         }
     }
 
-    private func publishConnection(peerID: UUID?, status: String) {
+    private func publishConnection(
+        peerID: UUID?,
+        status: String,
+        admissionGeneration: UInt64? = nil
+    ) {
         DispatchQueue.main.async { [weak self] in
             self?.connectedPeerID = peerID
             self?.status = status
+            self?.connectionPublicationSubject.send(
+                ControlConnectionPublication(
+                    peerID: peerID,
+                    admissionGeneration: admissionGeneration
+                )
+            )
         }
     }
 }
@@ -581,18 +845,30 @@ private final class SessionConnectionContext {
     var pendingPayloads: [Data] = []
     var buffer = Data()
     var handshakeTimeout: DispatchWorkItem?
+    var partialFrameTimeout: DispatchWorkItem?
+    var partialFrameDeadline: UInt64?
+    var admissionGeneration: UInt64?
+    var epoch: UInt64 = 0
+    var peerEpoch: UInt64 = 0
+    var inboundPayloadBudget: InboundPayloadBudget
 
     init(
         connection: NWConnection,
         expectedPeer: PeerIdentity?,
         localRole: SecureSessionRole,
         localEphemeralKey: P256.KeyAgreement.PrivateKey? = nil,
-        initiatorHandshake: SecureSessionHandshake? = nil
+        initiatorHandshake: SecureSessionHandshake? = nil,
+        maximumPacketsPerSecond: Int,
+        maximumBytesPerSecond: Int
     ) {
         self.connection = connection
         self.expectedPeer = expectedPeer
         self.localRole = localRole
         self.localEphemeralKey = localEphemeralKey
         self.initiatorHandshake = initiatorHandshake
+        self.inboundPayloadBudget = InboundPayloadBudget(
+            maximumPacketsPerSecond: maximumPacketsPerSecond,
+            maximumBytesPerSecond: maximumBytesPerSecond
+        )
     }
 }

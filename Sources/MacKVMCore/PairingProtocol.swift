@@ -124,6 +124,17 @@ public struct PairingEnvelope: Codable, Equatable, Sendable {
 }
 
 public enum PairingWireCodec {
+    public static let maximumFramePayloadLength =
+        LengthPrefixedFrameCodec.maximumSecurePayloadLength
+    public static let maximumFramesPerDecode = 16
+
+    public static func hasCompleteFrame(in buffer: Data) -> Bool {
+        LengthPrefixedFrameCodec.hasCompleteFrame(
+            in: buffer,
+            maximumPayloadLength: maximumFramePayloadLength
+        )
+    }
+
     public static func encode(
         _ message: PairingEnvelope,
         signingWith privateKey: P256.Signing.PrivateKey
@@ -136,20 +147,28 @@ public enum PairingWireCodec {
         )
         let payload = try CanonicalJSON.encoder().encode(signedEnvelope)
         do {
-            return try LengthPrefixedFrameCodec.encode(payload)
+            return try LengthPrefixedFrameCodec.encode(
+                payload,
+                maximumPayloadLength: maximumFramePayloadLength
+            )
         } catch {
             throw PairingWireError.payloadTooLarge
         }
     }
 
     public static func decodeAvailableFrames(
-        from buffer: inout Data
+        from buffer: inout Data,
+        maximumFrameCount: Int = maximumFramesPerDecode
     ) throws -> [PairingEnvelope] {
         var messages: [PairingEnvelope] = []
         let payloads: [Data]
         do {
             payloads = try LengthPrefixedFrameCodec
-                .decodeAvailablePayloads(from: &buffer)
+                .decodeAvailablePayloads(
+                    from: &buffer,
+                    maximumPayloadLength: maximumFramePayloadLength,
+                    maximumFrameCount: maximumFrameCount
+                )
         } catch {
             throw PairingWireError.payloadTooLarge
         }
@@ -167,6 +186,11 @@ public enum PairingWireCodec {
     private static func verify(
         _ signedEnvelope: SignedPairingEnvelope
     ) throws {
+        guard PeerIdentity.isValidDisplayName(
+            signedEnvelope.message.sender.name
+        ) else {
+            throw PairingWireError.invalidIdentityName
+        }
         guard let publicKey = try? P256.Signing.PublicKey(
             x963Representation: signedEnvelope.message.sender.signingPublicKey
         ), let signature = try? P256.Signing.ECDSASignature(
@@ -190,7 +214,9 @@ public enum PairingWireCodec {
 
 public enum PairingWireError: Error, Equatable {
     case payloadTooLarge
+    case tooManyMessages
     case invalidSignature
+    case invalidIdentityName
 }
 
 private struct SignedPairingEnvelope: Codable {
