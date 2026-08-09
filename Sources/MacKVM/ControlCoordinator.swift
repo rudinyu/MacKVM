@@ -10,6 +10,7 @@ struct IncomingControlRequest: Identifiable, Equatable {
 enum ControlInputFailure {
     case accessibilityPermission
     case queueOverloaded
+    case keyboardLayoutMismatch
 }
 
 struct ControlConnectionPublication: Equatable {
@@ -84,6 +85,8 @@ final class ControlCoordinator: ObservableObject {
     private let secureSession: any ControlSessionTransport
     private let inputCapture: any ControlInputCapture
     private let inputSink: any ControlInputSink
+    private let localControlAllowed: () -> Bool
+    private let keyboardLayoutIdentifier: () -> String?
     private var machine = ControlSessionStateMachine()
     private var connectionObservation: AnyCancellable?
     private var requestTimeout: DispatchWorkItem?
@@ -109,12 +112,16 @@ final class ControlCoordinator: ObservableObject {
         localID: UUID,
         secureSession: any ControlSessionTransport,
         inputCapture: any ControlInputCapture,
-        inputSink: any ControlInputSink
+        inputSink: any ControlInputSink,
+        localControlAllowed: @escaping () -> Bool = { true },
+        keyboardLayoutIdentifier: @escaping () -> String? = { nil }
     ) {
         self.localID = localID
         self.secureSession = secureSession
         self.inputCapture = inputCapture
         self.inputSink = inputSink
+        self.localControlAllowed = localControlAllowed
+        self.keyboardLayoutIdentifier = keyboardLayoutIdentifier
         // Treat the initial publisher value as describing the gate's initial
         // generation. If authentication races that first nil delivery, the
         // nil event must not invalidate the newer authenticated generation.
@@ -155,6 +162,10 @@ final class ControlCoordinator: ObservableObject {
 
     func requestControl() {
         guard !isStoppingForQuit else { return }
+        guard localControlAllowed() else {
+            status = "This Mac has no physical keyboard/mouse path in the selected topology"
+            return
+        }
         guard !isRemoteInputTearingDown else {
             status = "Wait for remote input to finish returning locally"
             return
@@ -188,9 +199,9 @@ final class ControlCoordinator: ObservableObject {
             activeOutboundRequestID = requestID
             status = "Waiting for the other Mac to grant control…"
             send(
-                ControlMessage(
-                    kind: .requestControl,
-                    requestID: requestID
+                ControlMessage.requestControl(
+                    requestID: requestID,
+                    keyboardLayoutIdentifier: keyboardLayoutIdentifier()
                 )
             )
             scheduleRequestTimeout()
@@ -393,7 +404,7 @@ final class ControlCoordinator: ObservableObject {
         switch message.kind {
         case .requestControl:
             guard let requestID = message.requestID else { return }
-            handleControlRequest(requestID: requestID)
+            handleControlRequest(message: message, requestID: requestID)
         case .controlGranted:
             guard message.requestID == activeOutboundRequestID else { return }
             handleControlGranted()
@@ -454,12 +465,30 @@ final class ControlCoordinator: ObservableObject {
         }
     }
 
-    private func handleControlRequest(requestID: UUID) {
+    private func handleControlRequest(
+        message: ControlMessage,
+        requestID: UUID
+    ) {
         guard let peerID = secureSession.connectedPeerID else {
             status = "Ignored a control request without a secure session"
             return
         }
         let request = IncomingControlRequest(id: requestID, peerID: peerID)
+        guard ControlProtocolCompatibility.isCompatible(
+            remoteVersion: message.protocolVersion,
+            remoteMinimumVersion: message.minimumProtocolVersion
+        ) else {
+            sendResponse(kind: .controlDenied, for: request)
+            status = "Denied control: the other Mac uses an incompatible protocol"
+            return
+        }
+        if let remoteLayout = message.keyboardLayoutIdentifier,
+           let localLayout = keyboardLayoutIdentifier(),
+           remoteLayout != localLayout {
+            sendResponse(kind: .controlDenied, for: request)
+            status = "Denied control: keyboard layouts differ (\(remoteLayout) vs \(localLayout))"
+            return
+        }
         guard !isRemoteInputTearingDown else {
             sendResponse(kind: .controlDenied, for: request)
             status = "Denied a control request while remote input is returning locally"
@@ -680,6 +709,8 @@ final class ControlCoordinator: ObservableObject {
             reason = "Remote control ended because Accessibility is unavailable"
         case .queueOverloaded:
             reason = "Remote control ended because the input queue was overloaded"
+        case .keyboardLayoutMismatch:
+            reason = "Remote control ended because the keyboard layout changed"
         }
         finishReceivingControl(
             request,

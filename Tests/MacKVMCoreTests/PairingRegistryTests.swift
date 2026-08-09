@@ -44,6 +44,26 @@ final class PairingRegistryTests: XCTestCase {
         XCTAssertFalse(registry.contains(peerID))
     }
 
+    func testRemoveAllClearsEveryPairing() {
+        let registry = PairingRegistry(
+            defaults: defaults,
+            storageKey: "all"
+        )
+        let peers = (0..<3).map { index in
+            PeerIdentity(
+                name: "Mac \(index)",
+                signingPublicKey: P256.Signing.PrivateKey()
+                    .publicKey.x963Representation
+            )
+        }
+        peers.forEach { registry.add($0) }
+        XCTAssertEqual(registry.pairedPeerIDs, Set(peers.map(\.id)))
+
+        registry.removeAll()
+
+        XCTAssertTrue(registry.pairedPeerIDs.isEmpty)
+    }
+
     func testRevocationGenerationRejectsAStaleAdd() {
         let registry = PairingRegistry(
             defaults: defaults,

@@ -17,6 +17,7 @@ enum SecureSessionRevocationPolicy {
 final class SecureSessionService: ObservableObject, ControlSessionTransport {
     @Published private(set) var connectedPeerID: UUID?
     @Published private(set) var status = "Secure session idle"
+    @Published private(set) var isReconnecting = false
 
     var onPayload: ((Data) -> Void)?
     var onAuthenticated: (() -> UInt64)?
@@ -60,6 +61,12 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
     private let peerEpochs = GenerationGuard<UUID>()
     private var admissionLimiter =
         ConnectionAdmissionLimiter.unauthenticatedConnectionLimiter()
+    private var pathMonitor: NWPathMonitor?
+    private var networkPathSatisfied = true
+    private var desiredPeerID: UUID?
+    private var reconnectAttempt = 0
+    private var reconnectWorkItem: DispatchWorkItem?
+    private let reconnectBackoff = ReconnectBackoffPolicy()
 
     init(
         credentials: DeviceCredentials,
@@ -72,6 +79,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
     func start() {
         queue.async { [weak self] in
             guard let self, listener == nil, browser == nil else { return }
+            startPathMonitor()
             startListener()
             startBrowser()
         }
@@ -81,6 +89,10 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         queue.async { [weak self] in
             guard let self else { return }
             connectionEpoch.advance()
+            desiredPeerID = nil
+            cancelReconnect(resetAttempt: true)
+            pathMonitor?.cancel()
+            pathMonitor = nil
             listener?.cancel()
             browser?.cancel()
             let oldContexts = Array(contexts.values)
@@ -107,13 +119,18 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
 
     func connect(to peerID: UUID) {
         queue.async { [weak self] in
-            self?.connectOnQueue(to: peerID)
+            guard let self else { return }
+            desiredPeerID = peerID
+            cancelReconnect(resetAttempt: true)
+            connectOnQueue(to: peerID)
         }
     }
 
     func disconnect() {
         queue.async { [weak self] in
             guard let self else { return }
+            desiredPeerID = nil
+            cancelReconnect(resetAttempt: true)
             connectionEpoch.advance()
             // Disconnect is a session-wide local safety action. Cancel every
             // context, including handshakes that have not selected a peer,
@@ -154,6 +171,10 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         }
         queue.async { [weak self] in
             guard let self else { return }
+            if desiredPeerID == peerID {
+                desiredPeerID = nil
+                cancelReconnect(resetAttempt: true)
+            }
             peerEpochs.advance(for: peerID)
             // Anonymous contexts cannot be safely attributed to a different
             // peer yet. Drop them as well so a handshake racing Forget cannot
@@ -244,13 +265,18 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
     }
 
     private func connectOnQueue(to peerID: UUID) {
+        guard networkPathSatisfied else {
+            publishStatus("Network unavailable; waiting to reconnect")
+            return
+        }
         guard activeContextID == nil,
               !contexts.values.contains(where: { $0.localRole == .initiator }) else {
             publishStatus("Disconnect the current secure session first")
             return
         }
         guard let peer = peersByID[peerID] else {
-            publishStatus("The paired Mac's secure service is not available")
+            publishStatus("The paired Mac's secure service is not available; waiting to reconnect")
+            scheduleReconnect()
             return
         }
         guard registry.publicKey(for: peerID) == peer.identity.signingPublicKey else {
@@ -309,6 +335,82 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             }
         }
         connection.start(queue: queue)
+    }
+
+    private func startPathMonitor() {
+        guard pathMonitor == nil else { return }
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] path in
+            guard let self else { return }
+            networkPathSatisfied = path.status == .satisfied
+            if networkPathSatisfied {
+                retryConnectionIfNeeded()
+            } else {
+                reconnectWorkItem?.cancel()
+                reconnectWorkItem = nil
+                publishReconnecting(true)
+                publishStatus("Network unavailable; waiting to reconnect")
+            }
+        }
+        pathMonitor = monitor
+        monitor.start(queue: queue)
+    }
+
+    private func retryConnectionIfNeeded() {
+        guard desiredPeerID != nil,
+              networkPathSatisfied,
+              activeContextID == nil,
+              !contexts.values.contains(where: { $0.localRole == .initiator }) else {
+            return
+        }
+        scheduleReconnect()
+    }
+
+    private func scheduleReconnect() {
+        guard let peerID = desiredPeerID,
+              networkPathSatisfied,
+              activeContextID == nil,
+              !contexts.values.contains(where: { $0.localRole == .initiator }),
+              reconnectWorkItem == nil else {
+            return
+        }
+        let delay = reconnectBackoff.delay(forAttempt: reconnectAttempt)
+        reconnectAttempt += 1
+        publishReconnecting(true)
+        publishStatus(
+            delay == 0
+                ? "Reconnecting to the paired Mac…"
+                : "Secure session lost; retrying in \(Int(ceil(delay)))s…"
+        )
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self,
+                  desiredPeerID == peerID,
+                  networkPathSatisfied else {
+                return
+            }
+            reconnectWorkItem = nil
+            connectOnQueue(to: peerID)
+        }
+        reconnectWorkItem = workItem
+        queue.asyncAfter(
+            deadline: .now() + delay,
+            execute: workItem
+        )
+    }
+
+    private func cancelReconnect(resetAttempt: Bool) {
+        reconnectWorkItem?.cancel()
+        reconnectWorkItem = nil
+        if resetAttempt {
+            reconnectAttempt = 0
+        }
+        publishReconnecting(false)
+    }
+
+    private func publishReconnecting(_ value: Bool) {
+        DispatchQueue.main.async { [weak self] in
+            self?.isReconnecting = value
+        }
     }
 
     private func startListener() {
@@ -372,6 +474,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                 candidates,
                 identity: { $0.0 }
             ).mapValues(\.1)
+            retryConnectionIfNeeded()
         }
         browser.stateUpdateHandler = { [weak self, weak browser] state in
             if case .failed(let error) = state {
@@ -551,6 +654,8 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                 context.isAuthenticated = true
                 context.handshakeTimeout?.cancel()
                 activeContextID = ObjectIdentifier(context)
+                reconnectAttempt = 0
+                cancelReconnect(resetAttempt: false)
                 context.admissionGeneration = onAuthenticated?()
                 publishConnection(
                     peerID: peer.id,
@@ -620,6 +725,8 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                 context.isAuthenticated = true
                 context.handshakeTimeout?.cancel()
                 self.activeContextID = ObjectIdentifier(context)
+                self.reconnectAttempt = 0
+                self.cancelReconnect(resetAttempt: false)
                 context.admissionGeneration = self.onAuthenticated?()
                 self.publishConnection(
                     peerID: expectedPeer.id,
@@ -765,11 +872,12 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
 
     private func remove(_ context: SessionConnectionContext) {
         let contextID = ObjectIdentifier(context)
+        let removedActiveContext = activeContextID == contextID
         context.handshakeTimeout?.cancel()
         context.partialFrameTimeout?.cancel()
         context.partialFrameDeadline = nil
         contexts.removeValue(forKey: contextID)
-        if activeContextID == contextID {
+        if removedActiveContext {
             let admissionGeneration = context.admissionGeneration
             activeContextID = nil
             publishConnection(
@@ -777,6 +885,9 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                 status: "Secure session disconnected",
                 admissionGeneration: admissionGeneration
             )
+        }
+        if removedActiveContext || context.localRole == .initiator {
+            retryConnectionIfNeeded()
         }
     }
 

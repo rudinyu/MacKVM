@@ -82,6 +82,15 @@ public final class PairingRegistry {
         persist(peers)
     }
 
+    /// Clears every locally trusted peer. This is used only by the explicit
+    /// identity-recovery flow, which requires pairing again after relaunch.
+    public func removeAll() {
+        lock.lock()
+        defer { lock.unlock() }
+        revocationGenerations.removeAll()
+        persist([:])
+    }
+
     private func loadPairedPeers() -> [UUID: Data] {
         guard let storedData = defaults.data(forKey: storageKey),
               let storedPeers = try? JSONDecoder().decode(

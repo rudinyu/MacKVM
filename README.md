@@ -24,6 +24,12 @@ The current MVP provides:
 - injected-event marking that prevents input feedback loops;
 - explicit Allow/Deny control consent on the receiving Mac, deterministic
   collision handling, and a receiver-side stop action;
+- explicit physical-input topology modes that prevent the HDMI-only Intel Mac
+  from claiming bidirectional input unless an external USB switch is present;
+- network-path monitoring with bounded automatic reconnect after Wi-Fi,
+  sleep/wake, or peer-service interruptions;
+- keyboard-layout and control-protocol compatibility checks before consent,
+  with a safe identity-reset path when the local Keychain identity is damaged;
 - native macOS incoming-control notifications with Allow, Deny, and Review
   actions, so the receiver can respond while the menu is closed;
 - local input suppression while controlling and an emergency
@@ -74,6 +80,27 @@ These commands produce `dist/arm64/MacKVM.app` and
 app to the M5 Pro Mac. The build script verifies the Mach-O architecture and
 the ad-hoc code signature without trying to execute the cross-built app.
 
+Create a disk image after building. The default is a universal DMG with an
+ad-hoc signature for local testing:
+
+```sh
+./scripts/package-dmg.sh --arch universal
+```
+
+For distribution to another Mac, sign with a Developer ID Application
+identity and require the release check to reject ad-hoc signing:
+
+```sh
+./scripts/package-dmg.sh \
+  --arch universal \
+  --sign "Developer ID Application: Your Name (TEAMID)" \
+  --require-developer-id
+```
+
+`scripts/verify-release.sh` verifies an existing app bundle without creating a
+DMG. Ad-hoc signatures pass local verification but are not Apple Developer ID
+signatures and may require Finder's **Open** confirmation on another Mac.
+
 The app bundle copies precompiled icon resources so normal builds also work
 with Command Line Tools only. After editing `Resources/Assets.xcassets`, use
 full Xcode to regenerate and commit both compiled resources:
@@ -109,16 +136,22 @@ Open that menu and complete **Set up this Mac** on each computer:
 
 In the MacKVM menu:
 
-1. On the M5 Pro Mac, select **Detect MA270U** and choose the detected display
+1. Under **Physical input path**, keep **One keyboard on M5 Pro (USB-C)** for
+   the current wiring. Connect the keyboard and mouse to the M5 Pro directly
+   or through the MA270U USB hub. HDMI carries video only, so the Intel Mac
+   cannot originate a control request in this mode. If both Macs really see
+   the devices through an external USB switch, select **External USB switch
+   (bidirectional)** on both Macs and test both directions first.
+2. On the M5 Pro Mac, select **Detect MA270U** and choose the detected display
    explicitly identified as **MA270U**. MacKVM saves its stable m1ddc
    identifier rather than assuming display number 1; an unrecognized display
    cannot enable automatic switching.
-2. On the M5 Pro Mac, select **M5 / USB-C preset**. This sets this Mac to
+3. On the M5 Pro Mac, select **M5 / USB-C preset**. This sets this Mac to
    USB-C (VCP 27), the other Mac to HDMI 1 (VCP 17), and enables DDC.
-3. On the 2019 Intel Mac, select **Intel / HDMI preset**. This sets the local
+4. On the 2019 Intel Mac, select **Intel / HDMI preset**. This sets the local
    route to HDMI 1 and keeps automatic DDC off.
-4. If the Intel Mac uses HDMI 2, change both matching input pickers to HDMI 2.
-5. Use **Show this Mac** and **Show other Mac** to verify switching before
+5. If the Intel Mac uses HDMI 2, change both matching input pickers to HDMI 2.
+6. Use **Show this Mac** and **Show other Mac** to verify switching before
    starting remote control. If it fails, read the **DDC diagnostic**, enable
    DDC/CI in the MA270U OSD, and use the OSD input menu as the fallback.
 
@@ -135,6 +168,19 @@ select **Stop remote control** to release
 injected keys/buttons and return control locally. If macOS notifications are
 disabled, its keyboard menu-bar icon shows a warning symbol and the same
 request remains in the menu.
+
+After an authenticated transport loss, MacKVM releases local input immediately
+and retries the last user-selected peer with a bounded 0/1/2/4…30-second
+backoff. A deliberate **Disconnect**, **Forget**, or **Quit** clears that
+reconnect intent. Pairing is not repeated, but control consent must be granted
+again after a reconnect. If the keyboard layout changes while control is live,
+the receiver stops remote input and asks both users to choose the same macOS
+input source before trying again.
+
+If the app cannot load its Keychain identity, the error view offers **Reset this
+Mac identity**. Use it only after confirming that the old identity should be
+discarded; it removes local pairings, and the next launch requires pairing both
+Macs again.
 
 ## Validate
 
@@ -170,6 +216,13 @@ Traditional Chinese manual that can be opened directly in a browser.
 
 - Apple Silicon MacBook Pro: USB-C to the BenQ MA270U
 - Intel 2019 MacBook Pro: USB-C/Thunderbolt 3 to HDMI
+- Keyboard and mouse: connect to the M5 Pro directly or through the MA270U
+  USB hub. HDMI does not carry the monitor hub upstream to the Intel Mac.
+
+This is a one-way physical input topology: the M5 Pro can request control of
+the Intel Mac, while the Intel Mac can receive control. Select the app's
+**External USB switch (bidirectional)** mode only when a real USB switch makes
+the devices visible to both Macs.
 
 This keeps DDC/CI communication on the more reliable USB-C connection.
 

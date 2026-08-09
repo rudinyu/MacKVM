@@ -30,6 +30,28 @@ final class ControlCoordinatorTests: XCTestCase {
         )
     }
 
+    func testMismatchedKeyboardLayoutIsDeniedBeforeConsentPrompt() {
+        let fixture = makeFixture(
+            keyboardLayoutIdentifier: "com.apple.keylayout.US"
+        )
+        let requestID = UUID()
+        fixture.transport.deliver(
+            ControlMessage.requestControl(
+                requestID: requestID,
+                keyboardLayoutIdentifier: "com.apple.keylayout.ABC"
+            )
+        )
+        drainMainQueue()
+
+        XCTAssertNil(fixture.coordinator.pendingIncomingControlRequest)
+        XCTAssertTrue(
+            fixture.transport.sentMessages.contains(
+                controlMessage(.controlDenied, requestID)
+            )
+        )
+        XCTAssertTrue(fixture.coordinator.status.contains("keyboard layouts"))
+    }
+
     func testInboundAdmissionOverflowDisconnectsTransport() {
         let fixture = makeFixture()
 
@@ -475,7 +497,8 @@ final class ControlCoordinatorTests: XCTestCase {
     private func makeFixture(
         localID: UUID = UUID(),
         remoteID: UUID = UUID(),
-        initiallyConnected: Bool = true
+        initiallyConnected: Bool = true,
+        keyboardLayoutIdentifier: String? = nil
     ) -> Fixture {
         let transport = FakeControlTransport(
             connectedPeerID: initiallyConnected ? remoteID : nil
@@ -486,7 +509,8 @@ final class ControlCoordinatorTests: XCTestCase {
             localID: localID,
             secureSession: transport,
             inputCapture: capture,
-            inputSink: sink
+            inputSink: sink,
+            keyboardLayoutIdentifier: { keyboardLayoutIdentifier }
         )
         drainMainQueue()
         transport.sentMessages.removeAll()

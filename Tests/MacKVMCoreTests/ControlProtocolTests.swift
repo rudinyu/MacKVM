@@ -44,6 +44,63 @@ final class ControlProtocolTests: XCTestCase {
         )
     }
 
+    func testControlRequestCarriesProtocolAndKeyboardLayoutNegotiation() throws {
+        let requestID = UUID()
+        let message = ControlMessage.requestControl(
+            requestID: requestID,
+            keyboardLayoutIdentifier: "com.apple.keylayout.US"
+        )
+
+        let decoded = try ControlMessageCodec.decode(
+            ControlMessageCodec.encode(message)
+        )
+
+        XCTAssertEqual(decoded.protocolVersion, 1)
+        XCTAssertEqual(decoded.minimumProtocolVersion, 1)
+        XCTAssertEqual(
+            decoded.keyboardLayoutIdentifier,
+            "com.apple.keylayout.US"
+        )
+    }
+
+    func testProtocolRangesRequireAnOverlappingVersion() {
+        XCTAssertTrue(
+            ControlProtocolCompatibility.isCompatible(
+                remoteVersion: 1,
+                remoteMinimumVersion: 1
+            )
+        )
+        XCTAssertFalse(
+            ControlProtocolCompatibility.isCompatible(
+                remoteVersion: 2,
+                remoteMinimumVersion: 2
+            )
+        )
+        XCTAssertFalse(
+            ControlProtocolCompatibility.isCompatible(
+                remoteVersion: 1,
+                remoteMinimumVersion: 2
+            )
+        )
+    }
+
+    func testRequestRejectsAnUnboundedKeyboardLayoutIdentifier() {
+        let message = ControlMessage(
+            kind: .requestControl,
+            requestID: UUID(),
+            protocolVersion: 1,
+            minimumProtocolVersion: 1,
+            keyboardLayoutIdentifier: String(repeating: "x", count: 257)
+        )
+
+        XCTAssertThrowsError(try message.validated()) { error in
+            XCTAssertEqual(
+                error as? ControlProtocolError,
+                .invalidFields
+            )
+        }
+    }
+
     func testControlMessageRequiresRequestIdentifier() {
         XCTAssertThrowsError(
             try ControlMessage(kind: .controlGranted).validated()

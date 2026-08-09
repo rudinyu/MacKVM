@@ -43,7 +43,7 @@
 <body>
   <main>
     <header>
-      <div class="badge">MacKVM 0.4.1</div>
+      <div class="badge">MacKVM 0.5.0</div>
       <h1>MacKVM 使用手冊</h1>
       <p class="lede">讓兩台 MacBook Pro 共用一組鍵盤、滑鼠與 BenQ MA270U 螢幕的 macOS 選單列工具。</p>
     </header>
@@ -53,6 +53,7 @@
       <ol>
         <li><a href="#before">開始前</a></li>
         <li><a href="#install">安裝與啟動</a></li>
+        <li><a href="#input">實體鍵盤／滑鼠路徑</a></li>
         <li><a href="#monitor">MA270U 螢幕與線材設定</a></li>
         <li><a href="#permissions">授權 macOS 權限</a></li>
         <li><a href="#pair">探索、配對與控制</a></li>
@@ -89,10 +90,34 @@
       <pre><code>cd MacKVM
 ./scripts/build-app.sh --arch arm64
 ./scripts/build-app.sh --arch x86_64</code></pre>
+      <p>要建立 DMG，可使用：</p>
+      <pre><code>./scripts/package-dmg.sh --arch universal
+./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal</code></pre>
+      <p>未提供 Developer ID 時是 ad-hoc 簽章，只適合本機測試；跨電腦散布前請用
+        <code>--sign "Developer ID Application: …" --require-developer-id</code>，
+        並完成 Apple notarization。</p>
+    </section>
+
+    <section id="input">
+      <h2>3. 實體鍵盤／滑鼠路徑（P0）</h2>
+      <div class="notice">
+        <strong>目前接線的重點：</strong>HDMI 只傳送影像，不會把 MA270U 的 USB hub
+        上游提供給 2019 Intel Mac。預設請把鍵盤與滑鼠接在 M5 Pro（直接接，或接
+        MA270U USB hub），讓 Intel Mac 作為可被控制的目標。
+      </div>
+      <ol>
+        <li>在 MacKVM 的 <strong>Physical input path</strong> 保持
+          <strong>One keyboard on M5 Pro (USB-C)</strong>。</li>
+        <li>這個模式會允許 M5 Pro 發起控制，並在 Intel Mac 上停用發起控制按鈕；
+          Intel Mac 仍然可以接收遠端控制。</li>
+        <li>若使用實體 USB switch，先確認兩台 Mac 的 macOS 都能看到同一組鍵盤與
+          滑鼠，再在兩台選擇 <strong>External USB switch (bidirectional)</strong>。
+          app 無法從軟體偵測 switch 是否真的存在。</li>
+      </ol>
     </section>
 
     <section id="monitor">
-      <h2>3. MA270U 螢幕與線材設定</h2>
+      <h2>4. MA270U 螢幕與線材設定</h2>
       <table>
         <thead><tr><th>電腦</th><th>建議連線</th><th>MacKVM preset</th></tr></thead>
         <tbody>
@@ -111,7 +136,7 @@
     </section>
 
     <section id="permissions">
-      <h2>4. 授權 macOS 權限</h2>
+      <h2>5. 授權 macOS 權限</h2>
       <p>MacKVM 需要兩台 Mac 都依序完成 <strong>Local Network</strong>、<strong>Input Monitoring</strong> 與 <strong>Accessibility</strong>。這可避免多個 macOS 權限提示重疊。</p>
       <ol>
         <li>點擊選單列的 MacKVM 圖示，在 <strong>Set up this Mac</strong> 按 <strong>Enable Local Network</strong>。</li>
@@ -124,7 +149,7 @@
     </section>
 
     <section id="pair">
-      <h2>5. 探索、配對與控制</h2>
+      <h2>6. 探索、配對與控制</h2>
       <ol>
         <li>確認兩台 Mac 都開著 MacKVM，並在選單的 <strong>Nearby Macs</strong> 看見對方。</li>
         <li>在其中一台按 <strong>Pair</strong>。</li>
@@ -136,7 +161,7 @@
     </section>
 
     <section id="daily">
-      <h2>6. 日常操作與安全返回</h2>
+      <h2>7. 日常操作與安全返回</h2>
       <ul>
         <li>控制另一台 Mac 時，本機鍵盤與滑鼠輸入會被轉送；接收端按 Allow 前，不會開始抑制本機輸入。</li>
         <li>通知中的按鈕會帶著該次請求的識別碼與一次性的本機 nonce；請求逾時、取消或連線中斷後，舊通知的按鈕不會重新啟動控制。</li>
@@ -144,12 +169,18 @@
         <li>接收端也可按 <strong>Stop remote control</strong>，立即停止注入、釋放可能按住的按鍵／滑鼠按鈕，並通知控制端。</li>
         <li>緊急停止快捷鍵：<strong>Control-Option-Command-Escape</strong>。</li>
         <li>網路中斷時，MacKVM 會立刻把鍵盤與滑鼠控制歸還本機，並釋放可能按住的按鍵和滑鼠按鈕。</li>
+        <li>如果是已連線的 peer 暫時離線，MacKVM 會以 0／1／2／4…30 秒的退避
+          自動重連；重新連線後仍須再次按 <strong>Allow</strong>，不會靜默恢復輸入抑制。
+          手動 <strong>Disconnect</strong>、<strong>Forget</strong> 或退出 app 會清除重連意圖。</li>
+        <li>控制請求會比較兩台 Mac 的協定版本和鍵盤輸入來源。配置不同時會在
+          Allow 前拒絕；控制中途切換輸入法也會停止遠端輸入，請在兩台選相同輸入來源
+          後重新請求控制。</li>
         <li>想移除已配對裝置，選擇 <strong>Forget</strong>；之後要重新配對才能連線。</li>
       </ul>
     </section>
 
     <section id="troubleshooting">
-      <h2>7. 常見問題</h2>
+      <h2>8. 常見問題</h2>
       <h3>看不到另一台 Mac</h3>
       <p>確認兩台都在同一 Wi-Fi／乙太網路、MacKVM 正在執行，並在 Set up this Mac 完成本機網路步驟。公司或訪客網路可能阻擋 Bonjour 探索。</p>
       <h3>無法控制，或按鍵沒有反應</h3>
@@ -160,10 +191,14 @@
       <p>先在 M5 Pro 執行 <code>brew install m1ddc</code>，確認 USB-C 連接 MA270U、OSD 的 DDC/CI 已開啟。再按 <strong>Detect MA270U</strong> 並選擇偵測到的螢幕；仍失敗時查看 DDC diagnostic，然後用螢幕 OSD 手動選 USB-C 或 HDMI。</p>
       <h3>登入後沒有出現圖示</h3>
       <p>先手動啟動 MacKVM，在選單中重新開啟 <strong>Launch MacKVM at Login</strong>，並檢查「系統設定 → 一般 → 登入項目」是否需要核准。</p>
+      <h3>啟動時顯示 identity 或 Keychain 不一致</h3>
+      <p>只有在你確定舊 identity 應該被丟棄時，才按錯誤畫面的
+        <strong>Reset this Mac identity</strong>。它會刪除本機 identity、Keychain key
+        與 pairings；退出並重新開啟後，必須在兩台 Mac 重新配對。</p>
     </section>
 
     <footer>
-      <p>MacKVM 使用手冊 · 對應版本 0.4.1 · 最後更新 2026-08-04</p>
+      <p>MacKVM 使用手冊 · 對應版本 0.5.0 · 最後更新 2026-08-09</p>
     </footer>
   </main>
 </body>

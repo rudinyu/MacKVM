@@ -125,6 +125,7 @@ public struct DeviceCredentials {
 public protocol DevicePrivateKeyStore {
     func load() throws -> Data?
     func save(_ keyData: Data) throws
+    func delete() throws
 }
 
 public struct KeychainPrivateKeyStore: DevicePrivateKeyStore {
@@ -185,6 +186,18 @@ public struct KeychainPrivateKeyStore: DevicePrivateKeyStore {
             }
         } else if updateStatus != errSecSuccess {
             throw DeviceCredentialError.keychain(updateStatus)
+        }
+    }
+
+    public func delete() throws {
+        let identity: [CFString: Any] = [
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrService: service,
+            kSecAttrAccount: account
+        ]
+        let status = SecItemDelete(identity as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw DeviceCredentialError.keychain(status)
         }
     }
 }
@@ -276,5 +289,22 @@ public enum DeviceCredentialsStore {
             privateKey: privateKey,
             wasLoadedFromStorage: false
         )
+    }
+
+    /// Removes the local identity atomically from the app defaults and
+    /// Keychain boundary. A new identity is generated on the next launch;
+    /// callers should clear paired peers at the same time and pair again.
+    public static func reset(
+        from suppliedDefaults: UserDefaults? = nil,
+        keyStore: DevicePrivateKeyStore = KeychainPrivateKeyStore()
+    ) throws {
+        let defaults = suppliedDefaults
+            ?? UserDefaults(suiteName: identityDefaultsSuite)
+            ?? .standard
+        // Delete the Keychain record first. If that fails, retain the stored
+        // identity so the next launch cannot accidentally combine a new key
+        // with an old identity record.
+        try keyStore.delete()
+        defaults.removeObject(forKey: identityKey)
     }
 }

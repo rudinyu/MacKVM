@@ -39,6 +39,9 @@ public struct RemoteInputEvent: Codable, Equatable, Sendable {
     public let clickCount: Int?
     public let scrollDeltaX: Double?
     public let scrollDeltaY: Double?
+    /// Input-source identifier for keyboard events. It remains optional so a
+    /// legacy peer can still send mouse input and older keyboard events.
+    public let keyboardLayoutIdentifier: String?
 
     public init(
         kind: RemoteInputKind,
@@ -49,7 +52,8 @@ public struct RemoteInputEvent: Codable, Equatable, Sendable {
         buttonNumber: Int? = nil,
         clickCount: Int? = nil,
         scrollDeltaX: Double? = nil,
-        scrollDeltaY: Double? = nil
+        scrollDeltaY: Double? = nil,
+        keyboardLayoutIdentifier: String? = nil
     ) {
         self.kind = kind
         self.keyCode = keyCode
@@ -60,6 +64,7 @@ public struct RemoteInputEvent: Codable, Equatable, Sendable {
         self.clickCount = clickCount
         self.scrollDeltaX = scrollDeltaX
         self.scrollDeltaY = scrollDeltaY
+        self.keyboardLayoutIdentifier = keyboardLayoutIdentifier
     }
 
     public func validated() throws -> RemoteInputEvent {
@@ -71,7 +76,8 @@ public struct RemoteInputEvent: Codable, Equatable, Sendable {
                   buttonNumber == nil,
                   clickCount == nil,
                   scrollDeltaX == nil,
-                  scrollDeltaY == nil else {
+                  scrollDeltaY == nil,
+                  validKeyboardLayoutIdentifier else {
                 throw RemoteInputError.invalidFields
             }
 
@@ -81,7 +87,8 @@ public struct RemoteInputEvent: Codable, Equatable, Sendable {
                   buttonNumber == nil,
                   clickCount == nil,
                   scrollDeltaX == nil,
-                  scrollDeltaY == nil else {
+                  scrollDeltaY == nil,
+                  validKeyboardLayoutIdentifier else {
                 throw RemoteInputError.invalidFields
             }
 
@@ -92,7 +99,8 @@ public struct RemoteInputEvent: Codable, Equatable, Sendable {
                   buttonNumber == nil,
                   clickCount == nil,
                   scrollDeltaX == nil,
-                  scrollDeltaY == nil else {
+                  scrollDeltaY == nil,
+                  keyboardLayoutIdentifier == nil else {
                 throw RemoteInputError.invalidFields
             }
 
@@ -117,6 +125,7 @@ public struct RemoteInputEvent: Codable, Equatable, Sendable {
                   isPressed == nil,
                   buttonNumber == nil,
                   clickCount == nil,
+                  keyboardLayoutIdentifier == nil,
                   let scrollDeltaX,
                   let scrollDeltaY,
                   scrollDeltaX.isFinite,
@@ -127,6 +136,18 @@ public struct RemoteInputEvent: Codable, Equatable, Sendable {
             }
         }
         return self
+    }
+
+    private var validKeyboardLayoutIdentifier: Bool {
+        guard let keyboardLayoutIdentifier else { return true }
+        let trimmed = keyboardLayoutIdentifier.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        return !trimmed.isEmpty
+            && trimmed.utf8.count <= 256
+            && trimmed.unicodeScalars.allSatisfy {
+                $0.value >= 0x20 && $0.value != 0x7F
+            }
     }
 
     private func validLocation() throws -> Bool {
@@ -150,6 +171,7 @@ public struct RemoteInputEvent: Codable, Equatable, Sendable {
               buttonNumbers.contains(buttonNumber),
               let clickCount,
               (0...255).contains(clickCount),
+              keyboardLayoutIdentifier == nil,
               scrollDeltaX == nil,
               scrollDeltaY == nil else {
             throw RemoteInputError.invalidFields

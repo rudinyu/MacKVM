@@ -4,6 +4,27 @@ import CoreGraphics
 import Foundation
 import MacKVMCore
 
+enum KeyboardLayoutIdentifier {
+    private static let inputSourceKey =
+        "AppleCurrentKeyboardLayoutInputSourceID"
+
+    static func current() -> String? {
+        let configured = UserDefaults.standard.string(forKey: inputSourceKey)
+            ?? Locale.current.identifier
+        let trimmed = configured.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !trimmed.isEmpty,
+              trimmed.utf8.count <= 256,
+              trimmed.unicodeScalars.allSatisfy({
+                  $0.value >= 0x20 && $0.value != 0x7F
+              }) else {
+            return nil
+        }
+        return trimmed
+    }
+}
+
 private enum InjectedEventMarker {
     static let value: Int64 = 0x4D_4B_56_4D
 }
@@ -143,6 +164,10 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
 
     var onEvent: ((RemoteInputEvent) -> Void)?
     var onEmergencyStop: (() -> Void)?
+
+    var keyboardLayoutIdentifier: String? {
+        KeyboardLayoutIdentifier.current()
+    }
 
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
@@ -342,7 +367,8 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
             kind: kind,
             keyCode: keyCode,
             isPressed: isPressed,
-            modifierFlags: flags
+            modifierFlags: flags,
+            keyboardLayoutIdentifier: keyboardLayoutIdentifier
         )
     }
 
@@ -520,7 +546,22 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
                 return
             }
             do {
-                try inject(input.validated())
+                let validatedInput = try input.validated()
+                guard validatedInput.keyboardLayoutIdentifier == nil
+                    || validatedInput.keyboardLayoutIdentifier
+                        == KeyboardLayoutIdentifier.current() else {
+                    isAcceptingRemoteInput = false
+                    invalidateInputAdmission()
+                    releaseAllInputsOnQueue()
+                    publish(
+                        status: "Remote control ended: keyboard layout changed"
+                    )
+                    DispatchQueue.main.async { [weak self] in
+                        self?.onControlFailure?(.keyboardLayoutMismatch)
+                    }
+                    return
+                }
+                try inject(validatedInput)
             } catch {
                 publish(status: "Rejected invalid remote input")
             }
@@ -652,7 +693,8 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
             buttonNumber: input.buttonNumber,
             clickCount: input.clickCount,
             scrollDeltaX: input.scrollDeltaX,
-            scrollDeltaY: input.scrollDeltaY
+            scrollDeltaY: input.scrollDeltaY,
+            keyboardLayoutIdentifier: input.keyboardLayoutIdentifier
         )
     }
 

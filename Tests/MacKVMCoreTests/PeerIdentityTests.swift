@@ -63,6 +63,36 @@ final class PeerIdentityTests: XCTestCase {
         }
     }
 
+    func testResetRemovesIdentityAndKeyForExplicitRecovery() throws {
+        let suiteName = "PeerIdentityTests.reset.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let keyStore = InMemoryPrivateKeyStore()
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        _ = try DeviceCredentialsStore.load(
+            from: defaults,
+            keyStore: keyStore
+        )
+        XCTAssertNotNil(defaults.data(forKey: "MacKVM.localIdentity"))
+        XCTAssertNotNil(try keyStore.load())
+
+        try DeviceCredentialsStore.reset(
+            from: defaults,
+            keyStore: keyStore
+        )
+
+        XCTAssertNil(defaults.data(forKey: "MacKVM.localIdentity"))
+        XCTAssertNil(try keyStore.load())
+        let replacement = try DeviceCredentialsStore.load(
+            from: defaults,
+            fallbackName: "Replacement Mac",
+            keyStore: keyStore
+        )
+        XCTAssertEqual(replacement.identity.name, "Replacement Mac")
+    }
+
     func testStoredIdentityNameIsNormalizedWithoutRotatingItsKey() throws {
         let suiteName = "PeerIdentityTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -158,6 +188,10 @@ private final class InMemoryPrivateKeyStore: DevicePrivateKeyStore {
 
     func save(_ keyData: Data) throws {
         data = keyData
+    }
+
+    func delete() throws {
+        data = nil
     }
 
     func remove() {

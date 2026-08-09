@@ -22,13 +22,17 @@ struct MacKVMApp: App {
                     inputSink: inputSink,
                     control: control,
                     monitor: monitor,
+                    inputTopology: bootstrap.inputTopology,
                     launchAtLogin: bootstrap.launchAtLogin,
                     bootstrap: bootstrap
                 )
             } else {
                 BootstrapErrorView(
                     message: bootstrap.errorMessage
-                        ?? "MacKVM could not load its device key."
+                        ?? "MacKVM could not load its device key.",
+                    onResetIdentity: bootstrap.canResetIdentity
+                        ? { bootstrap.resetIdentity() } : nil,
+                    recoveryMessage: bootstrap.recoveryMessage
                 )
             }
         } label: {
@@ -130,9 +134,12 @@ private final class AppBootstrap: ObservableObject {
     let control: ControlCoordinator?
     let monitor: MonitorController?
     let controlRequestNotifier: ControlRequestNotifier?
+    let inputTopology = InputTopologyController()
     let launchAtLogin = LaunchAtLoginController()
     let errorMessage: String?
+    let canResetIdentity: Bool
     @Published private(set) var networkServicesStarted = false
+    @Published private(set) var recoveryMessage: String?
     private var controlRequestObservation: AnyCancellable?
 
     init() {
@@ -156,7 +163,13 @@ private final class AppBootstrap: ObservableObject {
                 localID: credentials.identity.id,
                 secureSession: secureSession,
                 inputCapture: inputCapture,
-                inputSink: inputSink
+                inputSink: inputSink,
+                localControlAllowed: { [weak inputTopology] in
+                    inputTopology?.allowsLocalControl ?? false
+                },
+                keyboardLayoutIdentifier: { [weak inputCapture] in
+                    inputCapture?.keyboardLayoutIdentifier
+                }
             )
             control.onControllingStarted = { monitor.switchToRemote() }
             control.onControllingStopped = { monitor.switchToLocal() }
@@ -184,6 +197,7 @@ private final class AppBootstrap: ObservableObject {
             self.monitor = monitor
             self.controlRequestNotifier = controlRequestNotifier
             errorMessage = nil
+            canResetIdentity = false
             // A notification action can arrive before the menu is opened.
             // Start MA270U discovery here so the saved selector is verified
             // for that headless control path as well.
@@ -220,6 +234,18 @@ private final class AppBootstrap: ObservableObject {
             monitor = nil
             controlRequestNotifier = nil
             errorMessage = "Could not access the device key: \(error.localizedDescription)"
+            canResetIdentity = error is DeviceCredentialError
+        }
+    }
+
+    func resetIdentity() {
+        guard canResetIdentity else { return }
+        do {
+            try DeviceCredentialsStore.reset()
+            PairingRegistry().removeAll()
+            recoveryMessage = "Local identity reset. Quit and relaunch MacKVM, then pair both Macs again."
+        } catch {
+            recoveryMessage = "Identity reset failed: \(error.localizedDescription)"
         }
     }
 
@@ -291,6 +317,8 @@ private func activateMacKVM() {
 
 private struct BootstrapErrorView: View {
     let message: String
+    let onResetIdentity: (() -> Void)?
+    let recoveryMessage: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -299,6 +327,19 @@ private struct BootstrapErrorView: View {
             Text(message)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            if let recoveryMessage {
+                Text(recoveryMessage)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+            if let onResetIdentity {
+                Button("Reset this Mac identity", role: .destructive) {
+                    onResetIdentity()
+                }
+                Text("This removes local pairings. You will need to confirm pairing again after relaunch.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
             Button("Quit") {
                 NSApplication.shared.terminate(nil)
             }
@@ -317,6 +358,7 @@ private struct MacKVMMenuView: View {
     @ObservedObject var inputSink: RemoteInputSink
     @ObservedObject var control: ControlCoordinator
     @ObservedObject var monitor: MonitorController
+    @ObservedObject var inputTopology: InputTopologyController
     @ObservedObject var launchAtLogin: LaunchAtLoginController
     @ObservedObject var bootstrap: AppBootstrap
     @AppStorage(OnboardingDefaults.localNetworkAccessReviewedKey)
@@ -331,6 +373,9 @@ private struct MacKVMMenuView: View {
                     Divider()
 
                     setupSection
+                    Divider()
+
+                    topologySection
                     Divider()
 
                     if !discovery.pendingRequests.isEmpty {
@@ -716,6 +761,7 @@ private struct MacKVMMenuView: View {
                     !inputCapture.hasInputMonitoringPermission
                         || !inputSink.hasAccessibilityPermission
                         || secureSession.connectedPeerID == nil
+                        || !inputTopology.allowsLocalControl
                         || control.isReceivingControl
                         || control.isRemoteInputTearingDown
                         || !setupState.isReadyForInputSharing
@@ -731,6 +777,39 @@ private struct MacKVMMenuView: View {
             Text(inputSink.status)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    private var topologySection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Physical input path")
+                .font(.subheadline.weight(.semibold))
+
+            Picker("Keyboard and mouse", selection: $inputTopology.mode) {
+                ForEach(InputTopologyMode.allCases, id: \.self) { mode in
+                    Text(mode.displayName).tag(mode)
+                }
+            }
+
+            Text(inputTopology.mode.hardwareSummary)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(inputTopology.statusMessage)
+                .font(.caption2)
+                .foregroundStyle(
+                    inputTopology.allowsLocalControl
+                        ? Color.secondary
+                        : Color.orange
+                )
+
+            if !inputTopology.allowsLocalControl {
+                Label(
+                    "Control requests are disabled on this Mac until the physical input path is changed.",
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .font(.caption2)
+                .foregroundStyle(.orange)
+            }
         }
     }
 

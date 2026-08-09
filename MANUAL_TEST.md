@@ -26,6 +26,17 @@ Expected:
 - MacKVM appears only in the menu bar with a visible keyboard icon.
 - macOS asks for local-network access when needed.
 
+Release check (from the M5 Pro) is also available:
+
+```sh
+./scripts/package-dmg.sh --arch universal
+./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
+```
+
+Expected: the app reports both `arm64` and `x86_64`, and an ad-hoc signature
+is explicitly labelled as local-testing-only. A release build must provide a
+Developer ID Application identity and pass `--require-developer-id`.
+
 ## 2. Cable and monitor setup
 
 1. Connect the M5 Pro Mac to the MA270U USB-C video/data/90 W port.
@@ -56,6 +67,23 @@ Expected:
   MA270U or silently enable automatic switching.
 - A failed DDC command finishes within about five seconds and tells the user
   which input to select through the OSD, including a useful DDC diagnostic.
+
+### Physical input path (P0)
+
+1. Leave **Physical input path** set to **One keyboard on M5 Pro (USB-C)**.
+2. Connect the keyboard and mouse to the M5 Pro directly or through the
+   MA270U USB hub. Do not assume the Intel HDMI cable carries USB data.
+3. On the Intel Mac, verify that **Request control of other Mac** is disabled
+   in this mode, while the Intel Mac can still receive remote control.
+4. If an external USB switch is installed, select **External USB switch
+   (bidirectional)** on both Macs and verify that both macOS systems see the
+   keyboard and mouse before trying either control direction.
+
+Expected:
+
+- The recommended mode never advertises a false bidirectional HDMI path.
+- The external-switch mode warns that hardware cannot be detected by software
+  and permits both directions only after the user's acknowledgement.
 
 ## 3. Permissions
 
@@ -143,6 +171,9 @@ Expected:
 11. Disable MacKVM notifications in System Settings, request control again, and
    confirm the request remains available in the menu.
 12. Repeat with the Intel Mac controlling the M5 Pro Mac.
+13. Change the keyboard input source on one Mac while control is active, then
+    press a key. Restore the same input source on both Macs and request control
+    again.
 
 Expected:
 
@@ -160,6 +191,9 @@ Expected:
 - Four-click sequences are delivered.
 - Disconnect/end paths release every held key and mouse button.
 - A second inbound control request is denied without disturbing the active one.
+- Different keyboard layout identifiers deny control before the receiver's
+  consent prompt; a layout change during control ends remote input and releases
+  held state.
 
 ## 7. Safe return and monitor routing
 
@@ -197,6 +231,21 @@ Expected:
 - MacKVM reports when macOS requires Login Items approval.
 - Disabling the setting prevents future login launches without quitting the
   current MacKVM process.
+
+## 9. Identity recovery
+
+1. With a disposable test profile, make the stored identity and Keychain key
+   disagree (or remove the Keychain item using a test account), then launch
+   MacKVM.
+2. Select **Reset this Mac identity** in the bootstrap error view.
+3. Quit and relaunch, then pair both Macs again.
+
+Expected:
+
+- Reset is offered only for a device-credential error.
+- The action reports that pairings will be removed and never rotates identity
+  automatically during ordinary startup.
+- After relaunch, a new identity is created and old pairings cannot reconnect.
 
 ## Acceptance record
 

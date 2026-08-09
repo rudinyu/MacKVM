@@ -16,6 +16,31 @@ final class RemoteInputProtocolTests: XCTestCase {
         )
     }
 
+    func testKeyboardEventCarriesLayoutIdentifier() throws {
+        let event = RemoteInputEvent(
+            kind: .keyDown,
+            keyCode: 12,
+            keyboardLayoutIdentifier: "com.apple.keylayout.US"
+        )
+
+        XCTAssertEqual(
+            try RemoteInputCodec.decode(RemoteInputCodec.encode(event)),
+            event
+        )
+    }
+
+    func testPointerEventRejectsKeyboardLayoutIdentifier() {
+        let event = RemoteInputEvent(
+            kind: .mouseMoved,
+            location: NormalizedPoint(x: 0.2, y: 0.3),
+            keyboardLayoutIdentifier: "com.apple.keylayout.US"
+        )
+
+        XCTAssertThrowsError(try event.validated()) { error in
+            XCTAssertEqual(error as? RemoteInputError, .invalidFields)
+        }
+    }
+
     func testFlagsChangedRetainsExplicitModifierState() throws {
         let event = RemoteInputEvent(
             kind: .flagsChanged,

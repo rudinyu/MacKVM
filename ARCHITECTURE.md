@@ -140,6 +140,27 @@ Recommended wiring is USB-C for the Apple Silicon Mac and USB-C/Thunderbolt 3
 to HDMI for the 2019 Intel Mac. MA270U's USB-C input carries video, data, and
 up to 90 W power.
 
+### Physical input topology (P0)
+
+The monitor's HDMI input is a video path; it does not upstream the MA270U USB
+hub to the Intel host. Therefore the recommended one-way topology is:
+
+```mermaid
+flowchart LR
+    KM["Keyboard + mouse"] --> HUB["M5 Pro directly or MA270U USB hub"]
+    HUB --> M5["M5 Pro / USB-C"]
+    M5 -->|"MacKVM request + encrypted input"| INTEL["2019 Intel / HDMI target"]
+    SWITCH["Optional external USB switch"] --> M5
+    SWITCH --> INTEL
+```
+
+`InputTopologyController` persists an explicit mode on each Mac. **One
+keyboard on M5 Pro (USB-C)** permits the Apple Silicon host to initiate input
+sharing and keeps the Intel HDMI host receive-only. **External USB switch
+(bidirectional)** permits either host, but the app cannot detect or validate
+that physical switch; manual verification on both Macs is required. Receiving
+remote control remains available in either mode.
+
 ## What needs to change before this is a real KVM
 
 ### Pairing issues resolved in Step 1
@@ -186,6 +207,25 @@ confirm the request before events are suppressed locally and forwarded remotely.
 The controller can press **Control–Option–Command–Escape**, while the receiver
 can use **Stop remote control** to release injected input and return control.
 
+`SecureSessionService` remembers only a user-selected paired peer for automatic
+reconnect. `NWPathMonitor` pauses attempts while the network path is unavailable
+and resumes with a bounded exponential backoff (0/1/2/4…30 seconds) after a
+path or Bonjour update. A deliberate Disconnect, Forget, or app stop clears the
+desired peer. Reconnection returns both Macs to a local-input state; the user
+must grant control again rather than silently resuming input suppression.
+
+Control requests carry a protocol-version range and the current macOS keyboard
+input-source identifier. A mismatched range or layout is denied before the
+receiver's consent prompt. Keyboard events repeat the layout identifier, so a
+layout change during an active session ends remote input safely instead of
+silently producing the wrong characters. Missing identifiers remain accepted
+for legacy peers, while new peers use the negotiation fields.
+
+If the local identity/keychain pair becomes inconsistent, the bootstrap error
+view exposes an explicit reset operation. It deletes the Keychain key and
+stored identity together, clears local pairings, and requires a relaunch and
+new pairing. It never rotates identity automatically.
+
 ### Runtime safety boundaries
 
 The network and input layers use explicit bounded queues and buffers rather than
@@ -229,7 +269,12 @@ behavior are covered by the automated test suite.
    adapter.
 3. In **System Settings → Displays → Arrange**, make the MA270U the main
    display on both Macs.
-4. On the M5 Pro, build both architecture-specific app bundles:
+4. In the MacKVM menu, keep **One keyboard on M5 Pro (USB-C)** for the
+   current wiring and connect the keyboard/mouse to the M5 Pro or its MA270U
+   USB hub. HDMI cannot carry the monitor hub upstream to the Intel Mac. Only
+   select **External USB switch (bidirectional)** after both Macs visibly see
+   the devices through a physical switch.
+5. On the M5 Pro, build both architecture-specific app bundles:
 
    ```sh
    ./scripts/build-app.sh --arch arm64
@@ -246,36 +291,36 @@ behavior are covered by the automated test suite.
 
    Do not use `swift run` for normal operation: the generated `.app` carries
    the Bonjour and Local Network privacy metadata required by macOS.
-5. MacKVM appears as a keyboard icon in the menu bar. Open it and complete
+6. MacKVM appears as a keyboard icon in the menu bar. Open it and complete
    **Set up this Mac** in order: select **Enable Local Network**, answer the
    macOS prompt and select **I handled the macOS prompt**, then request Input
    Monitoring and Accessibility one at a time. Returning from System Settings
    refreshes the checklist; **Review Local Network Settings** remains available
    for a prior Local Network denial because macOS does not expose its result to
    MacKVM.
-6. After that checklist finishes, select **Enable** next to **Control request
+7. After that checklist finishes, select **Enable** next to **Control request
    notifications**. This optional macOS alert permission should be handled
    before the first request, outside its short consent window. A control
    request never triggers this authorization sheet by itself; without alerts,
    MacKVM adds a warning symbol beside its keyboard menu-bar icon and retains
    the menu controls.
-7. Optionally enable **Launch MacKVM at Login** so the menu-bar icon returns
+8. Optionally enable **Launch MacKVM at Login** so the menu-bar icon returns
    automatically after signing in.
-8. After the Local Network step is complete, open the MacKVM menu-bar item on
+9. After the Local Network step is complete, open the MacKVM menu-bar item on
    either Mac to inspect nearby devices.
-9. Under **Nearby Macs**, select **Pair** on one Mac.
-10. Compare the six-digit security code shown on both Macs. Verify the peer name
+10. Under **Nearby Macs**, select **Pair** on one Mac.
+11. Compare the six-digit security code shown on both Macs. Verify the peer name
    on each Mac, then press **Accept** on both Macs only when the codes match.
-11. Install `m1ddc` on the M5 Pro Mac with `brew install m1ddc`. Select
+12. Install `m1ddc` on the M5 Pro Mac with `brew install m1ddc`. Select
     **Detect MA270U** and choose the display explicitly identified as MA270U
     before selecting the **M5 / USB-C preset**; use **Intel / HDMI preset** on
     the 2019 Mac. Test
     **Show this Mac** and **Show other Mac**. Leave DDC disabled and use the
     MA270U OSD if the physical test fails.
-12. Select **Connect** on one Mac. When the encrypted session is connected,
+13. Select **Connect** on one Mac. When the encrypted session is connected,
     choose **Request control of other Mac** on the Mac whose keyboard and mouse
     you are using.
-13. The receiving Mac must select **Allow** before input is sent only to the
+14. The receiving Mac must select **Allow** before input is sent only to the
     other Mac. With the menu closed, it can use the native notification's
     **Allow**, **Deny**, or **Review in MacKVM** action; Review opens an
     explicit approval dialog, Allow requires macOS authentication if the
@@ -284,6 +329,12 @@ behavior are covered by the automated test suite.
     this Mac** on the controller; the receiver can also select **Stop remote
     control**. If DDC cannot switch the monitor, follow the diagnostic and
     select the requested input through the OSD.
+
+After an authenticated transport loss, the selected peer is retried with
+bounded backoff and no new pairing. The next control request still requires a
+fresh Allow action. Use **Disconnect** or **Forget** to clear the reconnect
+intent. If the bootstrap screen reports an identity/keychain mismatch, use its
+explicit reset action, relaunch, and pair both Macs again.
 
 Before testing, macOS may ask for local-network access. Pairing metadata and
 Bonjour names are visible on the LAN, while established control-session payloads
