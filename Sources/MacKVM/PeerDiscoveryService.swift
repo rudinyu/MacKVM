@@ -24,6 +24,12 @@ enum DiscoveredPeerTrust {
     case changedKey
 }
 
+enum PairingConnectionEOFPolicy {
+    static func shouldCancelAfterEOF(activePairingCount: Int) -> Bool {
+        activePairingCount == 0
+    }
+}
+
 final class PeerDiscoveryService: ObservableObject {
     @Published private(set) var peers: [DiscoveredPeer] = []
     @Published private(set) var pendingRequests: [PendingPairingRequest] = []
@@ -787,6 +793,17 @@ final class PeerDiscoveryService: ObservableObject {
         let requestIDs = requestConnections
             .filter { $0.value === connection }
             .map(\.key)
+        // A peer can close before sending a pairing frame. Such a connection
+        // is still tracked as unauthenticated because Network.framework does
+        // not necessarily emit a second cancelled state after EOF. Release
+        // its admission slot immediately instead of waiting for the timeout.
+        if PairingConnectionEOFPolicy.shouldCancelAfterEOF(
+            activePairingCount: requestIDs.count
+        ) {
+            cleanup(connection)
+            connection.cancel()
+            return
+        }
         for requestID in requestIDs {
             guard remotelyCompletedRequestIDs.contains(requestID),
                   let peer = requestTargets[requestID]

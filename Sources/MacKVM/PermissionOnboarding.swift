@@ -48,11 +48,11 @@ enum MacKVMPermission: CaseIterable, Equatable, Hashable, Identifiable {
     var displayName: String {
         switch self {
         case .localNetwork:
-            return "Local Network"
+            return String(localized: "Local Network")
         case .inputMonitoring:
-            return "Input Monitoring"
+            return String(localized: "Input Monitoring")
         case .accessibility:
-            return "Accessibility"
+            return String(localized: "Accessibility")
         }
     }
 

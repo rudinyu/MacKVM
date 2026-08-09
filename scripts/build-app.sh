@@ -107,6 +107,15 @@ install -m 644 "$project_root/Resources/Info.plist" \
 install -m 644 "$app_icon" "$resources_dir/AppIcon.icns"
 install -m 644 "$compiled_assets" "$resources_dir/Assets.car"
 
+# SwiftUI resolves Localizable.strings and InfoPlist.strings from the app
+# bundle. Copy checked-in localizations without depending on Xcode's resource
+# compiler, so arm64 and x86_64 use the same packaging path.
+for localization_dir in "$project_root"/Resources/*.lproj; do
+  [[ -d "$localization_dir" ]] || continue
+  ditto --norsrc "$localization_dir" \
+    "$resources_dir/$(basename "$localization_dir")"
+done
+
 codesign --force --deep --sign - "$app_dir"
 codesign --verify --deep --strict "$app_dir"
 if ! lipo "$executable_dir/MacKVM" -verify_arch "$target_arch"; then

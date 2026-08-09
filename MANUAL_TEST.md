@@ -31,11 +31,13 @@ Release check (from the M5 Pro) is also available:
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
+(cd dist && shasum -a 256 -c MacKVM-0.6.0-universal.dmg.sha256)
 ```
 
 Expected: the app reports both `arm64` and `x86_64`, and an ad-hoc signature
-is explicitly labelled as local-testing-only. A release build must provide a
-Developer ID Application identity and pass `--require-developer-id`.
+is explicitly labelled as local-testing-only. The checksum command reports
+`OK`, and `dist/.staging` is absent after packaging. A release build must
+provide a Developer ID Application identity and pass `--require-developer-id`.
 
 ## 2. Cable and monitor setup
 
@@ -246,6 +248,32 @@ Expected:
 - The action reports that pairings will be removed and never rotates identity
   automatically during ordinary startup.
 - After relaunch, a new identity is created and old pairings cannot reconnect.
+
+## 10. P2 physical acceptance on the real setup
+
+Run this section on the actual 14-inch M5 Pro, 2019 16-inch Intel MacBook Pro,
+and BenQ MA270U; CI cannot emulate a monitor's DDC/CI response, a USB switch,
+or macOS privacy prompts.
+
+1. Launch the arm64 app on the M5 Pro and the x86_64 app on the Intel Mac.
+   Complete Local Network, Input Monitoring, and Accessibility on both Macs,
+   then pair them with matching verification codes.
+2. With **One keyboard on M5 Pro (USB-C)** selected, connect the keyboard and
+   mouse to the M5 Pro or the MA270U USB hub. Verify the M5 Pro can request
+   control and the Intel Mac can receive it, while the Intel Mac's request
+   action remains disabled.
+3. If using a physical USB switch, connect it to both Macs, select
+   **External USB switch (bidirectional)** on both, verify both systems see the
+   devices, and test control in both directions. Do not rely on the app to
+   detect the switch.
+4. Use **Show this Mac** and **Show other Mac** while watching the MA270U OSD:
+   USB-C must show the M5 Pro and HDMI 1 (or the selected HDMI input) must show
+   the Intel Mac. If DDC/CI fails, use the OSD manually and record the
+   diagnostic text.
+5. During an active control session, test the menu-bar **Stop remote control**
+   action, the emergency shortcut, a network unplug/reconnect, and a quit.
+   Confirm the local keyboard/mouse returns and no key or mouse button remains
+   stuck.
 
 ## Acceptance record
 

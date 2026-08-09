@@ -42,11 +42,11 @@ final class InputTopologyController: ObservableObject {
     var statusMessage: String {
         switch mode {
         case .singleHostOnM5Pro where !isAppleSilicon:
-            "This Intel Mac is HDMI-only in the current wiring, so it cannot originate keyboard/mouse input. Select the USB-switch mode after connecting the devices to both Macs."
+            String(localized: "This Intel Mac is HDMI-only in the current wiring, so it cannot originate keyboard/mouse input. Select the USB-switch mode after connecting the devices to both Macs.")
         case .singleHostOnM5Pro:
-            "Connect the keyboard and mouse to the M5 Pro (directly or through the MA270U USB hub). The Intel HDMI Mac can receive control only."
+            String(localized: "Connect the keyboard and mouse to the M5 Pro (directly or through the MA270U USB hub). The Intel HDMI Mac can receive control only.")
         case .externalUsbSwitch:
-            "MacKVM cannot detect a USB switch. Verify both Macs see the keyboard and mouse before requesting control."
+            String(localized: "MacKVM cannot detect a USB switch. Verify both Macs see the keyboard and mouse before requesting control.")
         }
     }
 }

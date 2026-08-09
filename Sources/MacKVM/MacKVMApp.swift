@@ -576,7 +576,7 @@ private struct MacKVMMenuView: View {
             }
         case .inputMonitoring, .accessibility:
             HStack {
-                Button("Request \(permission.displayName)") {
+                Button(permissionRequestTitle(for: permission)) {
                     _ = PermissionOnboardingPolicy.requestPermission(
                         permission,
                         inputCapture: inputCapture,
@@ -589,6 +589,17 @@ private struct MacKVMMenuView: View {
                     PrivacySettings.open(permission)
                 }
             }
+        }
+    }
+
+    private func permissionRequestTitle(for permission: MacKVMPermission) -> String {
+        switch permission {
+        case .localNetwork:
+            String(localized: "Request Local Network")
+        case .inputMonitoring:
+            String(localized: "Request Input Monitoring")
+        case .accessibility:
+            String(localized: "Request Accessibility")
         }
     }
 

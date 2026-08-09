@@ -17,18 +17,18 @@ public enum InputTopologyMode: String, CaseIterable, Codable, Sendable {
     public var displayName: String {
         switch self {
         case .singleHostOnM5Pro:
-            "One keyboard on M5 Pro (USB-C)"
+            String(localized: "One keyboard on M5 Pro (USB-C)")
         case .externalUsbSwitch:
-            "External USB switch (bidirectional)"
+            String(localized: "External USB switch (bidirectional)")
         }
     }
 
     public var hardwareSummary: String {
         switch self {
         case .singleHostOnM5Pro:
-            "Recommended for MA270U: M5 Pro uses USB-C and Intel uses HDMI."
+            String(localized: "Recommended for MA270U: M5 Pro uses USB-C and Intel uses HDMI.")
         case .externalUsbSwitch:
-            "Both Macs must see the keyboard and mouse through a physical USB switch."
+            String(localized: "Both Macs must see the keyboard and mouse through a physical USB switch.")
         }
     }
 

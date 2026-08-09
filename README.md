@@ -87,6 +87,13 @@ ad-hoc signature for local testing:
 ./scripts/package-dmg.sh --arch universal
 ```
 
+The package is built from a fresh staging directory and writes a portable
+SHA-256 sidecar next to the DMG. Verify the pair from the `dist` directory:
+
+```sh
+(cd dist && shasum -a 256 -c MacKVM-0.6.0-universal.dmg.sha256)
+```
+
 For distribution to another Mac, sign with a Developer ID Application
 identity and require the release check to reject ad-hoc signing:
 
@@ -133,6 +140,11 @@ Open that menu and complete **Set up this Mac** on each computer:
    control request, so it does not consume the 15-second consent window.
 6. Enable **Launch MacKVM at Login** in the menu if the menu-bar icon should
    return automatically after signing in.
+
+The menu follows the Mac's language and includes English and Traditional
+Chinese resources. The three required macOS permission descriptions are also
+localized; if macOS does not show a prompt after a previous denial, use the
+matching **Settings** shortcut instead.
 
 In the MacKVM menu:
 

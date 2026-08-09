@@ -209,17 +209,17 @@ final class ControlRequestNotifier: NSObject, UNUserNotificationCenterDelegate {
     private func registerCategory() {
         let allow = UNNotificationAction(
             identifier: ControlRequestNotificationAction.allow.rawValue,
-            title: "Allow",
+            title: String(localized: "Allow"),
             options: ControlRequestNotificationAction.allow.notificationOptions
         )
         let deny = UNNotificationAction(
             identifier: ControlRequestNotificationAction.deny.rawValue,
-            title: "Deny",
+            title: String(localized: "Deny"),
             options: ControlRequestNotificationAction.deny.notificationOptions
         )
         let review = UNNotificationAction(
             identifier: ControlRequestNotificationAction.review.rawValue,
-            title: "Review in MacKVM",
+            title: String(localized: "Review in MacKVM"),
             options: ControlRequestNotificationAction.review.notificationOptions
         )
         let category = UNNotificationCategory(
@@ -238,8 +238,9 @@ final class ControlRequestNotifier: NSObject, UNUserNotificationCenterDelegate {
     ) {
         guard isRequestActive(notificationPayload) else { return }
         let content = UNMutableNotificationContent()
-        content.title = "MacKVM control request"
-        content.body = "\(peerName) wants to control this Mac."
+        content.title = String(localized: "MacKVM control request")
+        let bodyFormat = String(localized: "%@ wants to control this Mac.")
+        content.body = String(format: bodyFormat, peerName)
         content.sound = .default
         content.categoryIdentifier = Self.categoryIdentifier
         content.userInfo = notificationPayload.userInfo

@@ -4,6 +4,18 @@ set -euo pipefail
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$project_root"
 
+staging_root="$project_root/dist/.staging"
+staging_dir=""
+cleanup_staging() {
+  if [[ -n "$staging_dir" && -d "$staging_dir" ]]; then
+    rm -rf "$staging_dir"
+  fi
+  if [[ -d "$staging_root" ]]; then
+    rmdir "$staging_root" 2>/dev/null || true
+  fi
+}
+trap cleanup_staging EXIT
+
 usage() {
   cat >&2 <<'EOF'
 Usage: scripts/package-dmg.sh [--arch universal|arm64|x86_64]
@@ -102,12 +114,27 @@ fi
 version="$(plutil -extract CFBundleShortVersionString raw -o - \
   "$app_dir/Contents/Info.plist")"
 dmg_path="$project_root/dist/MacKVM-$version-$requested_arch.dmg"
-rm -f "$dmg_path"
+checksum_path="$dmg_path.sha256"
+rm -f "$dmg_path" "$checksum_path"
+# The staging directory is generated output. Remove any abandoned staging
+# folders from an interrupted package so they cannot leak into the next image.
+rm -rf "$staging_root"
+mkdir -p "$staging_root"
+staging_dir="$(mktemp -d "$staging_root/MacKVM.XXXXXX")"
+# Build the image from a fresh staging directory so an old resource or a
+# Finder sidecar can never leak into a subsequent release image.
+ditto --norsrc "$app_dir" "$staging_dir/MacKVM.app"
 hdiutil create \
   -volname "MacKVM $version" \
-  -srcfolder "$app_dir" \
+  -srcfolder "$staging_dir" \
   -ov \
   -format UDZO \
   "$dmg_path" >/dev/null
 
+# Keep only the DMG basename in the sidecar so the pair can be moved together
+# and verified from any release directory.
+(cd "$(dirname "$dmg_path")" && \
+  shasum -a 256 "$(basename "$dmg_path")" > "$(basename "$checksum_path")")
+
 echo "Created $dmg_path"
+echo "SHA-256: $checksum_path"

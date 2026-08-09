@@ -176,11 +176,14 @@ remote control remains available in either mode.
 
 ### Remaining product validation
 
-- Verify the MA270U accepts input-source VCP commands on the actual M5 Pro
-  USB-C connection. Software cannot prove this without the physical monitor.
-- Complete the two-Mac checklist in [`MANUAL_TEST.md`](MANUAL_TEST.md);
-  automated tests cover the signed/encrypted protocol pipeline but cannot
-  grant macOS privacy permissions or generate physical keyboard input.
+- The P2 release path now creates a fresh universal-image staging directory
+  and a portable SHA-256 sidecar. A Developer ID identity plus notarization is
+  still required for distribution outside the developer's own Macs.
+- Complete the real-hardware section in [`MANUAL_TEST.md`](MANUAL_TEST.md):
+  verify MA270U input-source VCP commands on the M5 Pro USB-C connection, the
+  Intel HDMI OSD fallback, and the optional physical USB switch. Software
+  cannot prove those behaviors without the monitor, two Macs, and macOS privacy
+  prompts.
 
 ### Runtime responsibilities
 
