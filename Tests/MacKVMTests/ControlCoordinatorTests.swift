@@ -154,6 +154,53 @@ final class ControlCoordinatorTests: XCTestCase {
         XCTAssertNil(fixture.coordinator.pendingIncomingControlRequest)
     }
 
+    func testSamePeerReconnectEndsActiveControlAndRejectsOldInput() {
+        let fixture = makeFixture()
+        let peerID = fixture.transport.connectedPeerID!
+        let firstGeneration = fixture.transport.onAuthenticated?() ?? 0
+        fixture.transport.setConnection(
+            peerID,
+            admissionGeneration: firstGeneration
+        )
+        drainMainQueue()
+        fixture.sink.resetActivity()
+
+        let requestID = UUID()
+        fixture.transport.deliver(controlMessage(.requestControl, requestID))
+        drainMainQueue()
+        fixture.coordinator.acceptIncomingControlRequest(requestID)
+
+        XCTAssertTrue(fixture.coordinator.isReceivingControl)
+        XCTAssertEqual(fixture.sink.beginCount, 1)
+
+        fixture.transport.setConnection(
+            nil,
+            admissionGeneration: firstGeneration
+        )
+        let secondGeneration = fixture.transport.onAuthenticated?() ?? 0
+        fixture.transport.setConnection(
+            peerID,
+            admissionGeneration: secondGeneration
+        )
+        drainMainQueue()
+
+        XCTAssertFalse(fixture.coordinator.isReceivingControl)
+        XCTAssertEqual(fixture.sink.endCount, 1)
+
+        fixture.transport.deliver(
+            ControlMessage.input(
+                RemoteInputEvent(
+                    kind: .mouseMoved,
+                    location: NormalizedPoint(x: 0.25, y: 0.25)
+                ),
+                requestID: requestID
+            )
+        )
+        drainMainQueue()
+
+        XCTAssertEqual(fixture.sink.receiveCount, 0)
+    }
+
     func testInputQueueFailureUsesAResourceReason() {
         let fixture = makeFixture()
         let requestID = UUID()
@@ -647,6 +694,7 @@ private final class FakeInputSink: ControlInputSink {
     var onEndRequested: (() -> Void)?
     private(set) var beginCount = 0
     private(set) var endCount = 0
+    private(set) var receiveCount = 0
     private var pendingBeginCompletion: ((Bool) -> Void)?
     private var pendingEndCompletions: [() -> Void] = []
 
@@ -671,7 +719,9 @@ private final class FakeInputSink: ControlInputSink {
         }
     }
 
-    func receive(_ input: RemoteInputEvent) {}
+    func receive(_ input: RemoteInputEvent) {
+        receiveCount += 1
+    }
 
     func completeBegin(didStart: Bool) {
         let completion = pendingBeginCompletion
@@ -687,6 +737,7 @@ private final class FakeInputSink: ControlInputSink {
     func resetActivity() {
         beginCount = 0
         endCount = 0
+        receiveCount = 0
         pendingBeginCompletion = nil
         pendingEndCompletions.removeAll()
         onEndRequested = nil

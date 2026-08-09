@@ -84,6 +84,46 @@ final class PairingRequestPolicyTests: XCTestCase {
         )
     }
 
+    func testRejectsSecondUnpairedRequestBeforeGlobalCapacity() {
+        let request = makeRequest()
+
+        XCTAssertEqual(
+            evaluate(
+                request,
+                activeRequestCount: 1,
+                activeUnpairedRequestCount: 1
+            ),
+            .rejectAtCapacity
+        )
+    }
+
+    func testPairedRequestCanUseCapacityReservedFromUnpairedPool() {
+        let request = makeRequest()
+        let pinnedKey = request.sender.signingPublicKey
+
+        XCTAssertEqual(
+            evaluate(
+                request,
+                pinnedPublicKey: pinnedKey,
+                activeRequestCount: 4,
+                activeUnpairedRequestCount: 1
+            ),
+            .allow
+        )
+    }
+
+    func testUnpairedRequestCannotConsumeTheLastGlobalSlot() {
+        let request = makeRequest()
+
+        XCTAssertEqual(
+            evaluate(
+                request,
+                activeRequestCount: 4
+            ),
+            .rejectAtCapacity
+        )
+    }
+
     func testSimultaneousPairingKeepsOnlyLowerUUIDOutbound() {
         let lower = UUID(
             uuidString: "00000000-0000-0000-0000-000000000001"
@@ -111,7 +151,8 @@ final class PairingRequestPolicyTests: XCTestCase {
         pinnedPublicKey: Data? = nil,
         activeRequestIDs: Set<UUID> = [],
         pendingSenderIDs: Set<UUID> = [],
-        activeRequestCount: Int = 0
+        activeRequestCount: Int = 0,
+        activeUnpairedRequestCount: Int = 0
     ) -> PairingRequestDecision {
         PairingRequestPolicy.evaluate(
             request: request,
@@ -119,7 +160,9 @@ final class PairingRequestPolicyTests: XCTestCase {
             activeRequestIDs: activeRequestIDs,
             pendingSenderIDs: pendingSenderIDs,
             activeRequestCount: activeRequestCount,
-            maximumPendingRequests: 5
+            maximumPendingRequests: 5,
+            activeUnpairedRequestCount: activeUnpairedRequestCount,
+            maximumUnpairedPendingRequests: 1
         )
     }
 

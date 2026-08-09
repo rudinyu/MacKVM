@@ -36,6 +36,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
 
     private static let serviceType = "_mackvm-secure._tcp"
     private static let maximumPendingConnections = 16
+    private static let maximumPeerCandidatesPerID = 8
     private static let maximumPendingPayloads = 64
     // Accommodate high-polling-rate mice without turning ordinary movement
     // into a transport failure, while retaining a bounded per-session budget.
@@ -54,7 +55,8 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
     private let registry: PairingRegistry
     private var listener: NWListener?
     private var browser: NWBrowser?
-    private var peersByID: [UUID: SecureServicePeer] = [:]
+    private var peersByID: [UUID: [SecureServicePeer]] = [:]
+    private var peerCandidateIndices: [UUID: Int] = [:]
     private var contexts: [ObjectIdentifier: SessionConnectionContext] = [:]
     private var activeContextID: ObjectIdentifier?
     private let connectionEpoch = EpochGuard()
@@ -104,6 +106,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             listener = nil
             browser = nil
             peersByID.removeAll()
+            peerCandidateIndices.removeAll()
             activeContextID = nil
             peerEpochs.removeAll()
             admissionLimiter.reset()
@@ -274,11 +277,17 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             publishStatus("Disconnect the current secure session first")
             return
         }
-        guard let peer = peersByID[peerID] else {
+        guard let candidates = peersByID[peerID], !candidates.isEmpty else {
             publishStatus("The paired Mac's secure service is not available; waiting to reconnect")
             scheduleReconnect()
             return
         }
+        let candidateIndex = min(
+            peerCandidateIndices[peerID] ?? 0,
+            candidates.count - 1
+        )
+        peerCandidateIndices[peerID] = candidateIndex
+        let peer = candidates[candidateIndex]
         guard registry.publicKey(for: peerID) == peer.identity.signingPublicKey else {
             publishStatus("The peer key does not match the pinned pairing")
             return
@@ -470,10 +479,15 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                     )
                 )
             }
-            peersByID = PeerIdentityAdmission.resolve(
+            peersByID = PeerIdentityAdmission.resolvePinned(
                 candidates,
+                pinnedKeys: registry.pairedPeers,
+                maximumCandidatesPerID: Self.maximumPeerCandidatesPerID,
                 identity: { $0.0 }
-            ).mapValues(\.1)
+            ).mapValues { $0.map(\.1) }
+            peerCandidateIndices = peerCandidateIndices.filter {
+                self.peersByID[$0.key] != nil
+            }
             retryConnectionIfNeeded()
         }
         browser.stateUpdateHandler = { [weak self, weak browser] state in
@@ -896,8 +910,22 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         message: String
     ) {
         publishStatus(message)
+        if context.localRole == .initiator,
+           !context.isAuthenticated,
+           let peerID = context.expectedPeer?.id {
+            advancePeerCandidate(for: peerID)
+        }
         context.connection.cancel()
         remove(context)
+    }
+
+    private func advancePeerCandidate(for peerID: UUID) {
+        guard let candidates = peersByID[peerID], candidates.count > 1 else {
+            return
+        }
+        let currentIndex = peerCandidateIndices[peerID] ?? 0
+        peerCandidateIndices[peerID] =
+            (currentIndex + 1) % candidates.count
     }
 
     private func send(

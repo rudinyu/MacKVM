@@ -627,15 +627,13 @@ final class ControlCoordinator: ObservableObject {
            publicationGeneration < inboundAdmission.currentGeneration() {
             return
         }
-        guard !hasObservedConnectionState
-                || observedConnectedPeerID != peerID else {
-            // A same-peer reconnect is still a new admission generation even
-            // though the published UUID did not change. Keep its token so a
-            // later disconnect invalidates the correct session.
-            if peerID != nil,
-               let publicationGeneration = publication.admissionGeneration {
-                observedAdmissionGeneration = publicationGeneration
-            }
+        let isSamePeer = hasObservedConnectionState
+            && observedConnectedPeerID == peerID
+        let isNewSessionGeneration = isSamePeer
+            && peerID != nil
+            && publication.admissionGeneration != nil
+            && publication.admissionGeneration != observedAdmissionGeneration
+        guard !isSamePeer || isNewSessionGeneration else {
             return
         }
         hasObservedConnectionState = true

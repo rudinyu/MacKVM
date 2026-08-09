@@ -40,7 +40,11 @@ session plaintext is capped at 32 KiB, and partial frames expire after five
 seconds. Secure sessions also enforce bounded pending handshakes, payload
 queues, and per-session packet/byte budgets; discovery applies connection and
 message admission limits before decoding, including a 16-message cap per
-pairing transport delivery. If the control or injection queue
+pairing transport delivery. Pre-consent pairing keeps a separate one-request
+unpaired budget and reserves the final global slot for an already-paired peer.
+Secure Bonjour discovery filters candidates against the pinned key, retains a
+bounded set of same-key endpoints, and tries the next endpoint after a failed
+signed handshake. If the control or injection queue
 cannot keep up, MacKVM tears down that session and releases all tracked keys
 and mouse buttons instead of silently dropping a state-changing transition.
 

@@ -51,4 +51,32 @@ public enum PeerIdentityAdmission {
         }
         return accepted
     }
+
+    /// Resolves Bonjour candidates for a peer whose signing key is already
+    /// pinned. Conflicting TXT keys are ignored individually instead of
+    /// deleting the whole UUID, while same-key endpoints are retained for
+    /// connection fallback when a stale or spoofed endpoint is first.
+    public static func resolvePinned<S: Sequence>(
+        _ candidates: S,
+        pinnedKeys: [UUID: Data],
+        maximumCandidatesPerID: Int = 8,
+        identity: (S.Element) -> PeerIdentity
+    ) -> [UUID: [S.Element]] {
+        guard maximumCandidatesPerID > 0 else { return [:] }
+
+        var accepted: [UUID: [S.Element]] = [:]
+        for candidate in candidates {
+            let candidateIdentity = identity(candidate)
+            guard pinnedKeys[candidateIdentity.id]
+                    == candidateIdentity.signingPublicKey else {
+                continue
+            }
+            guard accepted[candidateIdentity.id, default: []].count
+                    < maximumCandidatesPerID else {
+                continue
+            }
+            accepted[candidateIdentity.id, default: []].append(candidate)
+        }
+        return accepted
+    }
 }

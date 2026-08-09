@@ -41,6 +41,10 @@ final class PeerDiscoveryService: ObservableObject {
 
     private static let serviceType = "_mackvm._tcp"
     private static let maximumPendingRequests = 5
+    // New devices are not authenticated until the user compares and accepts
+    // the verification code. Admit only one unsolicited unpaired request at
+    // a time so cheap self-signed identities cannot hold every slot for 60s.
+    private static let maximumUnpairedPendingRequests = 1
     private static let maximumUnauthenticatedConnections = 16
     private static let maximumPairingMessagesPerReceive = 16
     private static let maximumWireBufferLength =
@@ -518,7 +522,14 @@ final class PeerDiscoveryService: ObservableObject {
                         .map(\.sender.id)
                 ),
                 activeRequestCount: requestMessages.count,
-                maximumPendingRequests: Self.maximumPendingRequests
+                maximumPendingRequests: Self.maximumPendingRequests,
+                activeUnpairedRequestCount: requestMessages.values.filter {
+                    $0.kind == .request
+                        && $0.sender.id != identity.id
+                        && registry.publicKey(for: $0.sender.id) == nil
+                }.count,
+                maximumUnpairedPendingRequests:
+                    Self.maximumUnpairedPendingRequests
             )
             guard decision == .allow else {
                 publishStatus(statusMessage(for: decision))

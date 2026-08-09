@@ -79,4 +79,39 @@ final class PeerIdentityAdmissionTests: XCTestCase {
         XCTAssertNil(resolved[first.id])
         XCTAssertEqual(resolved[unique.id]?.1, "unique")
     }
+
+    func testResolvePinnedKeepsTrustedEndpointsAndDropsConflictingTXTKeys() {
+        let pinnedKey = P256.Signing.PrivateKey()
+        let conflictingKey = P256.Signing.PrivateKey()
+        let identity = PeerIdentity(
+            name: "Trusted Mac",
+            signingPublicKey: pinnedKey.publicKey.x963Representation
+        )
+        let sameKeyDuplicate = PeerIdentity(
+            id: identity.id,
+            name: "Trusted Mac duplicate",
+            signingPublicKey: pinnedKey.publicKey.x963Representation
+        )
+        let conflicting = PeerIdentity(
+            id: identity.id,
+            name: "Spoofed Mac",
+            signingPublicKey: conflictingKey.publicKey.x963Representation
+        )
+
+        let resolved = PeerIdentityAdmission.resolvePinned(
+            [
+                (conflicting, "spoofed endpoint"),
+                (sameKeyDuplicate, "trusted endpoint"),
+                (identity, "second trusted endpoint")
+            ],
+            pinnedKeys: [identity.id: identity.signingPublicKey],
+            maximumCandidatesPerID: 2,
+            identity: { $0.0 }
+        )
+
+        XCTAssertEqual(
+            resolved[identity.id]?.map(\.1),
+            ["trusted endpoint", "second trusted endpoint"]
+        )
+    }
 }
