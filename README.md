@@ -1,4 +1,4 @@
-English | [繁體中文](#中文說明)
+[繁體中文](README.zh-TW.md) · [Install](INSTALL.md) · [繁體中文安裝](INSTALL.zh-TW.md)
 
 # RemoteMac self-hosted relay
 
@@ -225,59 +225,6 @@ acceptance checklist.
 See [`docs/USER_MANUAL.html`](docs/USER_MANUAL.html) for the end-user
 Traditional Chinese manual that can be opened directly in a browser.
 
-## 中文說明
-
-MacKVM 是 macOS 選單列應用程式，讓兩台 Mac 在同一個區域網路中共用一組
-鍵盤、滑鼠與螢幕。配對與控制都需要兩台 Mac 明確同意；控制資料會透過
-加密連線傳送。
-
-### 建置與打包
-
-建議在 M5 Pro Apple Silicon Mac 上執行：
-
-```sh
-# 建立 Apple Silicon 版本
-./scripts/build-app.sh --arch arm64
-
-# 建立 2019 Intel Mac 可用的 x86_64 版本
-./scripts/build-app.sh --arch x86_64
-
-# 建立同時支援兩種架構的 DMG
-./scripts/package-dmg.sh --arch universal
-```
-
-產物會放在 `dist/`。本機測試版本使用 ad-hoc signature；若要提供給其他
-Mac 正式安裝，請使用 Developer ID Application identity、啟用 hardened
-runtime，並在發佈前完成 Apple notarization。
-
-### 你的硬體接法
-
-- M5 Pro MacBook Pro：USB-C 連接 BenQ MA270U。
-- 2019 Intel MacBook Pro：透過 USB-C/Thunderbolt 3 轉 HDMI 連接螢幕。
-- 鍵盤與滑鼠：接在 M5 Pro 或 MA270U USB hub；HDMI 不會傳送 USB hub。
-- 螢幕切換：M5 Pro 使用 USB-C preset，Intel Mac 使用 HDMI preset。
-
-### 第一次使用
-
-1. 在兩台 Mac 安裝並啟動 `MacKVM.app`。
-2. 依畫面提示授予 Local Network、Input Monitoring 與 Accessibility 權限。
-3. 在 **Nearby Macs** 找到另一台 Mac，兩邊都按 **Pair**，核對六位數驗證碼。
-4. 配對完成後，在 M5 Pro 按 **Request control**，另一台 Mac 按 **Allow**。
-5. 在 **已配對裝置資訊** 中可查看或修改友善名稱；型號、最後成功連線時間與
-   金鑰指紋會保存到本機。需要回報問題時按 **複製支援資訊**，內容只包含公開的
-   診斷資料，不包含私密金鑰、密碼或憑證。
-6. 若需要自動切換 MA270U 輸入，先在 M5 Pro 安裝 `m1ddc`：
-
-   ```sh
-   brew install m1ddc
-   ```
-
-7. 若通知被關閉，仍可從選單列鍵盤圖示查看並處理控制請求。
-
-完整的繁體中文操作與硬體驗收步驟，請參考
-[`docs/USER_MANUAL.html`](docs/USER_MANUAL.html) 與
-[`MANUAL_TEST.md`](MANUAL_TEST.md)。
-
 ## Recommended wiring
 
 - Apple Silicon MacBook Pro: USB-C to the BenQ MA270U
@@ -296,3 +243,11 @@ The input values and command syntax follow the
 [m1ddc project documentation](https://github.com/waydabber/m1ddc). BenQ lists
 two HDMI 2.0 ports and one USB-C video/data/90 W port in the
 [MA270U specifications](https://www.benq.com/en-us/monitor/home/ma270u/spec.html).
+
+## Documentation
+
+- [English installation guide](INSTALL.md) · [繁體中文安裝指南](INSTALL.zh-TW.md)
+- [English architecture](ARCHITECTURE.md) · [繁體中文架構](ARCHITECTURE.zh-TW.md)
+- [English acceptance test](MANUAL_TEST.md) · [繁體中文驗收](MANUAL_TEST.zh-TW.md)
+- [English security status](SECURITY.md) · [繁體中文安全說明](SECURITY.zh-TW.md)
+- [繁體中文 HTML 使用手冊](docs/USER_MANUAL.html)

@@ -1,43 +1,13 @@
 # MacKVM architecture and usage
 
+[繁體中文](ARCHITECTURE.zh-TW.md) · [Installation guide](INSTALL.md)
+
 ## Current scope
 
 The repository implements discovery, mutual pairing, a persistent encrypted
 session, validated keyboard and mouse forwarding, explicit receiver consent and
 safe local-return controls, a sequential macOS setup checklist, and configurable
 BenQ monitor switching.
-
-## 繁體中文架構與使用說明
-
-MacKVM 是一個 macOS 選單列應用程式，讓兩台位於同一本機網路的 Mac
-共用鍵盤、滑鼠與螢幕。兩台電腦各自執行一份 app；Bonjour 只負責尋找服務，
-配對完成後才會使用已釘選的公開金鑰建立加密控制連線。
-
-### 主要資料流
-
-1. `DeviceCredentialsStore` 將本機 UUID 與 P-256 私密金鑰保存於 Keychain；
-   Bonjour TXT 只公布裝置名稱、型號、UUID 與公開金鑰。
-2. `PeerDiscoveryService` 負責附近裝置探索、六位數驗證碼配對與雙方明確同意；
-   `PairingRegistry` 保存已配對的公開金鑰。
-3. `PairedPeerProfile` 在公開金鑰旁保存友善名稱、型號、最後成功連線時間，並由
-   公開金鑰計算可供人工核對的 SHA-256 金鑰指紋。
-4. `SecureSessionService` 使用簽署的短期 P-256 金鑰交換、HKDF 與 ChaChaPoly
-   建立雙向加密通道；控制請求仍須接收端按 **Allow** 才能注入輸入。
-5. `InputCaptureService` 取得本機鍵盤／滑鼠事件，`RemoteInputSink` 在接收端驗證
-   後注入；`MonitorController` 負責 MA270U 的 m1ddc 切換或 OSD 手動備援。
-
-### 實際使用流程
-
-在 M5 Pro 使用 USB-C 連接 BenQ MA270U，在 2019 Intel Mac 使用 USB-C／Thunderbolt
-轉 HDMI；鍵盤與滑鼠接在 M5 Pro 或 MA270U USB hub。兩台 Mac 完成本機網路、
-Input Monitoring 與 Accessibility 權限後，在 **Nearby Macs** 配對並核對驗證碼，
-再按 **Connect** 與 **Request control of other Mac**。接收端按 **Allow** 後才會
-開始遠端輸入。需要停止時可按 **Return input to this Mac**、接收端的
-**Stop remote control**，或使用 `Control-Option-Command-Escape`。
-
-在 **Paired device information** 可修改友善名稱、查看型號／最後連線時間／金鑰
-指紋；**Copy support information** 會複製版本、作業系統、裝置與連線狀態等公開
-診斷資料，不包含私密金鑰、密碼、憑證或網路端點。
 
 ```mermaid
 flowchart LR
