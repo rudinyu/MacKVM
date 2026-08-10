@@ -1,4 +1,4 @@
-[繁體中文](README.zh-TW.md) · [Install](INSTALL.md) · [繁體中文安裝](INSTALL.zh-TW.md)
+[繁體中文](README.zh-TW.md)
 
 # RemoteMac self-hosted relay
 

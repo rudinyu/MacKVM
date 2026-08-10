@@ -1,4 +1,4 @@
-[繁體中文](INSTALL.zh-TW.md) · [README](README.md)
+[繁體中文](INSTALL.zh-TW.md)
 
 # MacKVM installation guide
 
