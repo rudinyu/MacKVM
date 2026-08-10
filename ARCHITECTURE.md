@@ -1,6 +1,6 @@
 # MacKVM architecture and usage
 
-[繁體中文](ARCHITECTURE.zh-TW.md) · [Installation guide](INSTALL.md)
+[繁體中文](ARCHITECTURE.zh-TW.md) · [Installation guide](INSTALL.md) · [HTML manual](docs/USER_MANUAL.html)
 
 ## Current scope
 

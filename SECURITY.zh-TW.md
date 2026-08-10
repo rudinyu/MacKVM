@@ -1,4 +1,4 @@
-[English](SECURITY.md) · [安裝指南](INSTALL.zh-TW.md)
+[English](SECURITY.md) · [安裝指南](INSTALL.zh-TW.md) · [HTML 手冊](docs/USER_MANUAL.zh-TW.html)
 
 # MacKVM 安全狀態
 

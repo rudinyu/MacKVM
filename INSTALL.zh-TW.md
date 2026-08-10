@@ -116,4 +116,5 @@ SHA-256 指紋。
 - [架構說明](ARCHITECTURE.zh-TW.md) · [English architecture](ARCHITECTURE.md)
 - [驗收清單](MANUAL_TEST.zh-TW.md) · [English acceptance test](MANUAL_TEST.md)
 - [安全說明](SECURITY.zh-TW.md) · [English security status](SECURITY.md)
-- [繁體中文 HTML 使用手冊](docs/USER_MANUAL.html)
+- [English HTML manual](docs/USER_MANUAL.html) · [繁體中文 HTML 使用手冊](docs/USER_MANUAL.zh-TW.html)
+- [English Markdown manual](docs/USER_MANUAL.md) · [繁體中文 Markdown 手冊](docs/USER_MANUAL.zh-TW.md)

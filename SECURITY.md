@@ -1,6 +1,6 @@
 # Security status
 
-[繁體中文](SECURITY.zh-TW.md) · [Installation guide](INSTALL.md)
+[繁體中文](SECURITY.zh-TW.md) · [Installation guide](INSTALL.md) · [HTML manual](docs/USER_MANUAL.html)
 
 MacKVM is an early local-network prototype. The current pairing handshake:
 

@@ -222,8 +222,9 @@ See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the current architecture, known
 issues, wiring diagram, and MVP usage instructions.
 See [`MANUAL_TEST.md`](MANUAL_TEST.md) for the complete two-Mac hardware
 acceptance checklist.
-See [`docs/USER_MANUAL.html`](docs/USER_MANUAL.html) for the end-user
-Traditional Chinese manual that can be opened directly in a browser.
+See [`docs/USER_MANUAL.html`](docs/USER_MANUAL.html) for the English HTML manual,
+[`docs/USER_MANUAL.zh-TW.html`](docs/USER_MANUAL.zh-TW.html) for the Traditional
+Chinese HTML manual, and the matching Markdown files in `docs/`.
 
 ## Recommended wiring
 
@@ -250,4 +251,5 @@ two HDMI 2.0 ports and one USB-C video/data/90 W port in the
 - [English architecture](ARCHITECTURE.md) · [繁體中文架構](ARCHITECTURE.zh-TW.md)
 - [English acceptance test](MANUAL_TEST.md) · [繁體中文驗收](MANUAL_TEST.zh-TW.md)
 - [English security status](SECURITY.md) · [繁體中文安全說明](SECURITY.zh-TW.md)
-- [繁體中文 HTML 使用手冊](docs/USER_MANUAL.html)
+- [English HTML manual](docs/USER_MANUAL.html) · [繁體中文 HTML 使用手冊](docs/USER_MANUAL.zh-TW.html)
+- [English Markdown manual](docs/USER_MANUAL.md) · [繁體中文 Markdown 手冊](docs/USER_MANUAL.zh-TW.md)

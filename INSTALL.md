@@ -126,4 +126,5 @@ it excludes private keys, passwords, credentials, and network endpoints.
 - [Architecture](ARCHITECTURE.md) · [繁體中文架構](ARCHITECTURE.zh-TW.md)
 - [Acceptance test](MANUAL_TEST.md) · [繁體中文驗收](MANUAL_TEST.zh-TW.md)
 - [Security status](SECURITY.md) · [繁體中文安全說明](SECURITY.zh-TW.md)
-- [Traditional Chinese HTML manual](docs/USER_MANUAL.html)
+- [English HTML manual](docs/USER_MANUAL.html) · [Traditional Chinese HTML manual](docs/USER_MANUAL.zh-TW.html)
+- [English Markdown manual](docs/USER_MANUAL.md) · [Traditional Chinese Markdown manual](docs/USER_MANUAL.zh-TW.md)

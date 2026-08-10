@@ -1,6 +1,6 @@
 # Two-Mac acceptance test
 
-[繁體中文](MANUAL_TEST.zh-TW.md) · [Installation guide](INSTALL.md)
+[繁體中文](MANUAL_TEST.zh-TW.md) · [Installation guide](INSTALL.md) · [HTML manual](docs/USER_MANUAL.html)
 
 Use this checklist with the actual BenQ MA270U, the 2019 16-inch Intel
 MacBook Pro on HDMI, and the 14-inch M5 Pro MacBook Pro on USB-C.

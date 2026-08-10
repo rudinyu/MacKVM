@@ -1,4 +1,4 @@
-[English](ARCHITECTURE.md) · [安裝指南](INSTALL.zh-TW.md)
+[English](ARCHITECTURE.md) · [安裝指南](INSTALL.zh-TW.md) · [HTML 手冊](docs/USER_MANUAL.zh-TW.html)
 
 # MacKVM 架構與使用說明
 
