@@ -114,6 +114,84 @@ final class PairingRegistryTests: XCTestCase {
         )
     }
 
+    func testPairingProfilePersistsMetadataAndConnectionTime() {
+        let peerID = UUID()
+        let peer = PeerIdentity(
+            id: peerID,
+            name: "M5 Pro",
+            signingPublicKey: P256.Signing.PrivateKey()
+                .publicKey.x963Representation
+        )
+        let firstConnection = Date(timeIntervalSince1970: 1_700_000_000)
+        let secondConnection = Date(timeIntervalSince1970: 1_700_000_123)
+        let registry = PairingRegistry(
+            defaults: defaults,
+            storageKey: "profiles"
+        )
+
+        registry.add(peer, model: "MacBookPro18,3")
+        XCTAssertEqual(registry.profile(for: peerID)?.friendlyName, "M5 Pro")
+        XCTAssertEqual(registry.profile(for: peerID)?.model, "MacBookPro18,3")
+        XCTAssertNil(registry.profile(for: peerID)?.lastConnectedAt)
+
+        XCTAssertTrue(
+            registry.recordConnection(
+                for: peerID,
+                at: firstConnection
+            )
+        )
+        XCTAssertEqual(
+            registry.profile(for: peerID)?.lastConnectedAt,
+            firstConnection
+        )
+        XCTAssertTrue(
+            registry.updateFriendlyName(
+                for: peerID,
+                friendlyName: "Studio M5"
+            )
+        )
+        XCTAssertTrue(
+            registry.recordConnection(
+                for: peerID,
+                model: "MacBookPro18,4",
+                at: secondConnection
+            )
+        )
+
+        let reloaded = PairingRegistry(
+            defaults: defaults,
+            storageKey: "profiles"
+        )
+        let profile = reloaded.profile(for: peerID)
+        XCTAssertEqual(profile?.friendlyName, "Studio M5")
+        XCTAssertEqual(profile?.model, "MacBookPro18,4")
+        XCTAssertEqual(profile?.lastConnectedAt, secondConnection)
+        XCTAssertEqual(
+            profile?.keyFingerprint,
+            PeerKeyFingerprint.string(for: peer.signingPublicKey)
+        )
+        XCTAssertEqual(profile?.keyFingerprint.split(separator: ":").count, 32)
+    }
+
+    func testProfileMetadataIsRemovedWhenPairingIsRemoved() {
+        let peer = PeerIdentity(
+            name: "Desk Mac",
+            signingPublicKey: P256.Signing.PrivateKey()
+                .publicKey.x963Representation
+        )
+        let registry = PairingRegistry(
+            defaults: defaults,
+            storageKey: "profile-removal"
+        )
+        registry.add(peer, model: "MacBookPro16,1")
+        XCTAssertNotNil(registry.profile(for: peer.id))
+
+        registry.remove(peer.id)
+
+        XCTAssertNil(registry.profile(for: peer.id))
+        XCTAssertTrue(registry.pairedPeerProfiles.isEmpty)
+    }
+
     func testConcurrentAddsPreserveEveryPeer() {
         let registry = PairingRegistry(
             defaults: defaults,

@@ -43,7 +43,7 @@
 <body>
   <main>
     <header>
-      <div class="badge">MacKVM 0.6.2</div>
+      <div class="badge">MacKVM 0.7.0</div>
       <h1>MacKVM 使用手冊</h1>
       <p class="lede">讓兩台 MacBook Pro 共用一組鍵盤、滑鼠與 BenQ MA270U 螢幕的 macOS 選單列工具。</p>
     </header>
@@ -57,6 +57,7 @@
         <li><a href="#monitor">MA270U 螢幕與線材設定</a></li>
         <li><a href="#permissions">授權 macOS 權限</a></li>
         <li><a href="#pair">探索、配對與控制</a></li>
+        <li><a href="#profiles">裝置資料與支援資訊</a></li>
         <li><a href="#daily">日常操作與安全返回</a></li>
         <li><a href="#hardware">P2 實機驗收</a></li>
         <li><a href="#troubleshooting">常見問題</a></li>
@@ -94,7 +95,7 @@
       <p>要建立 DMG，可使用：</p>
       <pre><code>./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist &amp;&amp; shasum -a 256 -c MacKVM-0.6.2-universal.dmg.sha256)</code></pre>
+(cd dist &amp;&amp; shasum -a 256 -c MacKVM-0.7.0-universal.dmg.sha256)</code></pre>
       <p>DMG 會從乾淨的暫存目錄建立，並在旁邊產生可攜式 SHA-256 檔案；驗證結果應顯示 <strong>OK</strong>。</p>
       <p>未提供 Developer ID 時是 ad-hoc 簽章，只適合本機測試；跨電腦散布前請用
         <code>--sign "Developer ID Application: …" --require-developer-id</code>，
@@ -164,8 +165,24 @@
       <p>第一次配對後，裝置的公開金鑰會被保存。若看到不預期的裝置名稱或驗證碼不一致，請按 <strong>Decline</strong>。</p>
     </section>
 
+    <section id="profiles">
+      <h2>7. 裝置資料與支援資訊</h2>
+      <p>配對後，MacKVM 會在本機保存每台裝置的友善名稱、Bonjour 提供的 Mac
+        型號、最後一次成功完成加密連線的時間，以及固定的 SHA-256 公開金鑰指紋。</p>
+      <ol>
+        <li>在選單的 <strong>已配對裝置資訊</strong> 查看裝置資料。</li>
+        <li>可在 <strong>Friendly name</strong> 欄位輸入容易辨識的名稱並按
+          <strong>Save</strong>；名稱會在重新啟動後保留。</li>
+        <li>需要提交問題時按 <strong>複製支援資訊</strong>，再貼到文字或客服表單。</li>
+      </ol>
+      <div class="notice">
+        支援資訊只包含版本、macOS、裝置名稱／型號、連線狀態、UUID 與公開金鑰指紋；
+        不包含私密金鑰、密碼、憑證或網路端點。請仍在公開論壇貼出前自行檢查內容。
+      </div>
+    </section>
+
     <section id="daily">
-      <h2>7. 日常操作與安全返回</h2>
+      <h2>8. 日常操作與安全返回</h2>
       <ul>
         <li>控制另一台 Mac 時，本機鍵盤與滑鼠輸入會被轉送；接收端按 Allow 前，不會開始抑制本機輸入。</li>
         <li>通知中的按鈕會帶著該次請求的識別碼與一次性的本機 nonce；請求逾時、取消或連線中斷後，舊通知的按鈕不會重新啟動控制。</li>
@@ -184,7 +201,7 @@
     </section>
 
     <section id="hardware">
-      <h2>8. P2 實機驗收</h2>
+      <h2>9. P2 實機驗收</h2>
       <div class="notice">
         這一節必須在實際的 14 吋 M5 Pro、2019 16 吋 Intel MacBook Pro 與 BenQ MA270U 上執行；CI 無法模擬螢幕 DDC/CI、實體 USB switch 或 macOS 隱私權提示。
       </div>
@@ -198,7 +215,7 @@
     </section>
 
     <section id="troubleshooting">
-      <h2>9. 常見問題</h2>
+      <h2>10. 常見問題</h2>
       <h3>看不到另一台 Mac</h3>
       <p>確認兩台都在同一 Wi-Fi／乙太網路、MacKVM 正在執行，並在 Set up this Mac 完成本機網路步驟。公司或訪客網路可能阻擋 Bonjour 探索。</p>
       <h3>無法控制，或按鍵沒有反應</h3>
@@ -216,7 +233,7 @@
     </section>
 
     <footer>
-      <p>MacKVM 使用手冊 · 對應版本 0.6.2 · 最後更新 2026-08-10</p>
+      <p>MacKVM 使用手冊 · 對應版本 0.7.0 · 最後更新 2026-08-10</p>
     </footer>
   </main>
 </body>

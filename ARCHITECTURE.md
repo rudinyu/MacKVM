@@ -17,6 +17,7 @@ flowchart LR
         WA["NWListener + NWBrowser"]
         KA["Keychain private key"]
         RA["PairingRegistry<br/>UserDefaults"]
+        ProfileA["PairedPeerProfile<br/>name, model, last connection, fingerprint"]
         PA["Pairing + SecureSession<br/>P-256 + HKDF + ChaChaPoly"]
         IA["CGEventTap capture<br/>Input Monitoring"]
         OA["CGEvent injection<br/>Accessibility"]
@@ -29,6 +30,8 @@ flowchart LR
         DA --> PA
         DA --> KA
         DA --> RA
+        RA --> ProfileA
+        UIA --> ProfileA
         IA --> PA
         PA --> OA
         PA --> NA
@@ -48,6 +51,7 @@ flowchart LR
         WB["NWListener + NWBrowser"]
         KB["Keychain private key"]
         RB["PairingRegistry<br/>UserDefaults"]
+        ProfileB["PairedPeerProfile<br/>name, model, last connection, fingerprint"]
         PB["Pairing + SecureSession"]
         IB["CGEventTap capture"]
         OB["CGEvent injection"]
@@ -60,6 +64,8 @@ flowchart LR
         DB --> PB
         DB --> KB
         DB --> RB
+        RB --> ProfileB
+        UIB --> ProfileB
         IB --> PB
         PB --> OB
         PB --> NB
@@ -108,6 +114,14 @@ The pairing protocol currently works as follows:
    and encrypts them, and sends them through the secure session. The receiver
    validates them again and injects them using `CGEvent`; either side can end
    control safely.
+
+After pairing, each Mac stores a profile beside the pinned public key. The
+profile keeps the peer's validated friendly name and advertised model, records
+the time of the last authenticated connection, and derives a display-only
+SHA-256 fingerprint from the pinned public key. The menu lets the user edit the
+friendly name and copy a support report containing these public fields plus
+version, OS, and connection status. Private keys, credentials, and endpoints
+are deliberately excluded from that report.
 
 ```mermaid
 stateDiagram-v2
@@ -201,6 +215,7 @@ RemoteInputSink         validated CGEvent injection and Accessibility state
 ControlRequestNotifier  native incoming-control notification and stale-action guard
 MonitorController       MA270U discovery, stable DDC/CI selection, diagnostics, OSD fallback
 PairingRegistry         paired-peer persistence
+PairedPeerProfile        friendly name, model, connection time, key fingerprint
 DeviceCredentialsStore  Keychain identity persistence
 ```
 

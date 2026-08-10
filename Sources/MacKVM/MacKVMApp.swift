@@ -351,7 +351,7 @@ private struct BootstrapErrorView: View {
 
 private struct MacKVMMenuView: View {
     private static let menuWidth: CGFloat = 400
-    private static let menuHeight: CGFloat = 640
+    private static let menuHeight: CGFloat = 700
     @ObservedObject var discovery: PeerDiscoveryService
     @ObservedObject var secureSession: SecureSessionService
     @ObservedObject var inputCapture: InputCaptureService
@@ -364,6 +364,8 @@ private struct MacKVMMenuView: View {
     @AppStorage(OnboardingDefaults.localNetworkAccessReviewedKey)
     private var localNetworkAccessReviewed = false
     @State private var awaitingLocalNetworkResponse = false
+    @State private var supportCopyStatus: String?
+    @State private var editingFriendlyNames: [UUID: String] = [:]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -384,6 +386,8 @@ private struct MacKVMMenuView: View {
                     }
 
                     peerSection
+                    Divider()
+                    supportSection
                     Divider()
                     inputSection
                     Divider()
@@ -656,7 +660,7 @@ private struct MacKVMMenuView: View {
                 ForEach(discovery.peers) { peer in
                     HStack {
                         Image(systemName: "laptopcomputer")
-                        Text(peer.name)
+                        Text(displayName(for: peer))
                         Spacer()
                         switch discovery.trustState(for: peer) {
                         case .paired:
@@ -697,7 +701,10 @@ private struct MacKVMMenuView: View {
                 ForEach(unavailablePairedPeerIDs, id: \.self) { peerID in
                     HStack {
                         Image(systemName: "laptopcomputer.slash")
-                        Text("Mac \(peerID.uuidString.prefix(8))")
+                        Text(
+                            discovery.pairedPeerProfile(for: peerID)?.friendlyName
+                                ?? "Mac \(peerID.uuidString.prefix(8))"
+                        )
                             .font(.caption.monospaced())
                         Spacer()
                         if secureSession.connectedPeerID == peerID {
@@ -715,6 +722,155 @@ private struct MacKVMMenuView: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    private var supportSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Paired device information")
+                .font(.subheadline.weight(.semibold))
+
+            Text("This Mac: \(discovery.localModel)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if pairedProfiles.isEmpty {
+                Text("No paired devices yet.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(pairedProfiles) { profile in
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "laptopcomputer")
+                            TextField(
+                                "Friendly name",
+                                text: friendlyNameBinding(for: profile)
+                            )
+                            .textFieldStyle(.roundedBorder)
+                            Button("Save") {
+                                saveFriendlyName(for: profile)
+                            }
+                            .disabled(
+                                (editingFriendlyNames[profile.peerID]
+                                    ?? profile.friendlyName)
+                                    .trimmingCharacters(
+                                        in: .whitespacesAndNewlines
+                                    ).isEmpty
+                            )
+                        }
+                        Text("Model: \(profile.model)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Text(
+                            "Last connected: \(displayDate(profile.lastConnectedAt))"
+                        )
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        Text("Key fingerprint: \(profile.keyFingerprint)")
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .lineLimit(2)
+                    }
+                }
+            }
+
+            Button("Copy support information") {
+                copySupportInformation()
+            }
+            if let supportCopyStatus {
+                Text(supportCopyStatus)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var pairedProfiles: [PairedPeerProfile] {
+        discovery.pairedPeerProfiles.values.sorted {
+            let nameComparison = $0.friendlyName.localizedStandardCompare(
+                $1.friendlyName
+            )
+            if nameComparison != .orderedSame {
+                return nameComparison == .orderedAscending
+            }
+            return $0.peerID.uuidString < $1.peerID.uuidString
+        }
+    }
+
+    private func displayName(for peer: DiscoveredPeer) -> String {
+        discovery.pairedPeerProfile(for: peer.identity.id)?.friendlyName
+            ?? peer.name
+    }
+
+    private func friendlyNameBinding(
+        for profile: PairedPeerProfile
+    ) -> Binding<String> {
+        Binding(
+            get: {
+                editingFriendlyNames[profile.peerID] ?? profile.friendlyName
+            },
+            set: { editingFriendlyNames[profile.peerID] = $0 }
+        )
+    }
+
+    private func saveFriendlyName(for profile: PairedPeerProfile) {
+        let candidate = editingFriendlyNames[profile.peerID]
+            ?? profile.friendlyName
+        if discovery.updateFriendlyName(
+            for: profile.peerID,
+            friendlyName: candidate
+        ) {
+            editingFriendlyNames.removeValue(forKey: profile.peerID)
+        }
+    }
+
+    private func displayDate(_ date: Date?) -> String {
+        guard let date else { return String(localized: "Never") }
+        return date.formatted(date: .abbreviated, time: .shortened)
+    }
+
+    private func copySupportInformation() {
+        let peerInfo = pairedProfiles.map { profile in
+            SupportPeerInfo(
+                peerID: profile.peerID,
+                friendlyName: profile.friendlyName,
+                model: profile.model,
+                lastConnectedAt: profile.lastConnectedAt,
+                keyFingerprint: profile.keyFingerprint
+            )
+        }
+        let localFingerprint = PeerKeyFingerprint.string(
+            for: discovery.identity.signingPublicKey
+        )
+        let info = SupportInformationFormatter.make(
+            appVersion: appVersion,
+            appBuild: appBuild,
+            operatingSystem: ProcessInfo.processInfo.operatingSystemVersionString,
+            localFriendlyName: discovery.identity.name,
+            localModel: discovery.localModel,
+            localKeyFingerprint: localFingerprint,
+            peers: peerInfo,
+            connectionStatus: secureSession.status,
+            connectedPeerID: secureSession.connectedPeerID
+        )
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        if pasteboard.setString(info, forType: .string) {
+            supportCopyStatus = String(localized: "Support information copied")
+        } else {
+            supportCopyStatus = String(localized: "Could not copy support information")
+        }
+    }
+
+    private var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString")
+            as? String ?? "Unknown"
+    }
+
+    private var appBuild: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+            ?? "Unknown"
     }
 
     private var unavailablePairedPeerIDs: [UUID] {

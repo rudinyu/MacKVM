@@ -31,7 +31,7 @@ Release check (from the M5 Pro) is also available:
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist && shasum -a 256 -c MacKVM-0.6.2-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-0.7.0-universal.dmg.sha256)
 ```
 
 Expected: the app reports both `arm64` and `x86_64`, and an ad-hoc signature
@@ -236,7 +236,32 @@ Expected:
 - Disabling the setting prevents future login launches without quitting the
   current MacKVM process.
 
-## 9. Identity recovery
+## 9. Paired-device profile and support information
+
+1. Pair the two Macs, then open **Paired device information** in the menu.
+2. Confirm the paired device's friendly name and detected model are shown.
+3. Replace the friendly name with a safe value, select **Save**, quit and
+   relaunch MacKVM, and confirm the edited name remains.
+4. Connect to the peer, disconnect, and reopen the menu. Confirm **Last
+   connected** changes to the time of the authenticated connection.
+5. Confirm the key fingerprint is a 32-byte SHA-256 value shown as 32
+   colon-separated hexadecimal pairs and remains unchanged after reconnect.
+6. Select **Copy support information**, paste into a plain-text editor, and
+   verify it contains app/build, OS, local model/name/fingerprint, paired
+   metadata, and connection status.
+7. Verify the copied report contains no private key, password, credential,
+   or network endpoint, and that names/statuses containing line breaks are kept
+   on one line.
+
+Expected:
+
+- Profile fields survive app restart and pair removal clears the profile.
+- A successful authenticated connection updates only the timestamp/model; it
+  does not replace a user-edited friendly name.
+- The support report is deterministic in peer order and contains public
+  diagnostics only.
+
+## 10. Identity recovery
 
 1. With a disposable test profile, make the stored identity and Keychain key
    disagree (or remove the Keychain item using a test account), then launch
@@ -251,7 +276,7 @@ Expected:
   automatically during ordinary startup.
 - After relaunch, a new identity is created and old pairings cannot reconnect.
 
-## 10. P2 physical acceptance on the real setup
+## 11. P2 physical acceptance on the real setup
 
 Run this section on the actual 14-inch M5 Pro, 2019 16-inch Intel MacBook Pro,
 and BenQ MA270U; CI cannot emulate a monitor's DDC/CI response, a USB switch,
@@ -288,6 +313,7 @@ Record the macOS version and result for each item:
 | Permissions |  |  |  |
 | Launch at login |  |  |  |
 | Discovery/pairing |  |  |  |
+| Paired profile / support copy |  |  |  |
 | Secure reconnect |  |  |  |
 | Keyboard/mouse |  |  |  |
 | Control consent / receiver stop |  |  |  |

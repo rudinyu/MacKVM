@@ -17,6 +17,10 @@ The current MVP provides:
 - signed pairing requests that must be accepted on the receiving Mac;
 - a six-digit device-key verification code;
 - persistent public-key pinning for paired devices;
+- persistent paired-device profiles with editable friendly names, detected Mac
+  models, last successful connection times, and SHA-256 key fingerprints;
+- a **Copy support information** action that exports public diagnostics without
+  private keys, credentials, or network endpoints;
 - a persistent authenticated session using signed ephemeral P-256 key exchange,
   directional HKDF keys, ChaChaPoly encryption, and replay-protected counters.
 - validated keyboard, mouse, and scroll event forwarding over that encrypted
@@ -95,7 +99,7 @@ The package is built from a fresh staging directory and writes a portable
 SHA-256 sidecar next to the DMG. Verify the pair from the `dist` directory:
 
 ```sh
-(cd dist && shasum -a 256 -c MacKVM-0.6.2-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-0.7.0-universal.dmg.sha256)
 ```
 
 For distribution to another Mac, sign with a Developer ID Application
@@ -156,6 +160,10 @@ Open that menu and complete **Set up this Mac** on each computer:
    control request, so it does not consume the 15-second consent window.
 6. Enable **Launch MacKVM at Login** in the menu if the menu-bar icon should
    return automatically after signing in.
+7. In **Paired device information**, review or edit a paired Mac's friendly
+   name. The model, last successful connection time, and public-key fingerprint
+   are retained across relaunches. Select **Copy support information** when
+   reporting an issue; the copied text contains only public diagnostic values.
 
 The menu follows the Mac's language and includes English and Traditional
 Chinese resources. The three required macOS permission descriptions are also
@@ -255,13 +263,16 @@ runtime，並在發佈前完成 Apple notarization。
 2. 依畫面提示授予 Local Network、Input Monitoring 與 Accessibility 權限。
 3. 在 **Nearby Macs** 找到另一台 Mac，兩邊都按 **Pair**，核對六位數驗證碼。
 4. 配對完成後，在 M5 Pro 按 **Request control**，另一台 Mac 按 **Allow**。
-5. 若需要自動切換 MA270U 輸入，先在 M5 Pro 安裝 `m1ddc`：
+5. 在 **已配對裝置資訊** 中可查看或修改友善名稱；型號、最後成功連線時間與
+   金鑰指紋會保存到本機。需要回報問題時按 **複製支援資訊**，內容只包含公開的
+   診斷資料，不包含私密金鑰、密碼或憑證。
+6. 若需要自動切換 MA270U 輸入，先在 M5 Pro 安裝 `m1ddc`：
 
    ```sh
    brew install m1ddc
    ```
 
-6. 若通知被關閉，仍可從選單列鍵盤圖示查看並處理控制請求。
+7. 若通知被關閉，仍可從選單列鍵盤圖示查看並處理控制請求。
 
 完整的繁體中文操作與硬體驗收步驟，請參考
 [`docs/USER_MANUAL.html`](docs/USER_MANUAL.html) 與

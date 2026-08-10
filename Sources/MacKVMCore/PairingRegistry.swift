@@ -3,6 +3,7 @@ import Foundation
 public final class PairingRegistry {
     private let defaults: UserDefaults
     private let storageKey: String
+    private var profileStorageKey: String { "\(storageKey).profiles" }
     private let lock = NSLock()
     private var revocationGenerations: [UUID: UInt64] = [:]
 
@@ -24,6 +25,13 @@ public final class PairingRegistry {
         return loadPairedPeers()
     }
 
+    public var pairedPeerProfiles: [UUID: PairedPeerProfile] {
+        lock.lock()
+        defer { lock.unlock() }
+        let peers = loadPairedPeers()
+        return loadProfiles(for: peers)
+    }
+
     public func contains(_ peerID: UUID) -> Bool {
         publicKey(for: peerID) != nil
     }
@@ -34,23 +42,80 @@ public final class PairingRegistry {
         return loadPairedPeers()[peerID]
     }
 
-    public func add(_ peer: PeerIdentity) {
+    public func profile(for peerID: UUID) -> PairedPeerProfile? {
         lock.lock()
         defer { lock.unlock() }
-        addLocked(peer)
+        let peers = loadPairedPeers()
+        guard peers[peerID] != nil else { return nil }
+        return loadProfiles(for: peers)[peerID]
+    }
+
+    public func add(_ peer: PeerIdentity, model: String? = nil) {
+        lock.lock()
+        defer { lock.unlock() }
+        addLocked(peer, model: model)
     }
 
     @discardableResult
     public func add(
         _ peer: PeerIdentity,
-        ifGeneration generation: UInt64
+        ifGeneration generation: UInt64,
+        model: String? = nil
     ) -> Bool {
         lock.lock()
         defer { lock.unlock() }
         guard revocationGenerations[peer.id, default: 0] == generation else {
             return false
         }
-        addLocked(peer)
+        addLocked(peer, model: model)
+        return true
+    }
+
+    @discardableResult
+    public func recordConnection(
+        for peerID: UUID,
+        model: String? = nil,
+        at date: Date = Date()
+    ) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let peers = loadPairedPeers()
+        guard let publicKey = peers[peerID] else { return false }
+        let existing = loadProfiles(for: peers)[peerID]
+        let profile = PairedPeerProfile(
+            peerID: peerID,
+            friendlyName: existing?.friendlyName ?? "Mac \(peerID.uuidString.prefix(8))",
+            model: preferredModel(model, existing: existing?.model),
+            lastConnectedAt: date,
+            signingPublicKey: publicKey
+        )
+        persistProfiles([peerID: profile], mergingWith: loadStoredProfiles())
+        return true
+    }
+
+    @discardableResult
+    public func updateFriendlyName(
+        for peerID: UUID,
+        friendlyName: String
+    ) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let peers = loadPairedPeers()
+        guard let publicKey = peers[peerID],
+              let validatedName = PeerIdentity.validatedDisplayName(
+                  friendlyName
+              ) else {
+            return false
+        }
+        let existing = loadProfiles(for: peers)[peerID]
+        let profile = PairedPeerProfile(
+            peerID: peerID,
+            friendlyName: validatedName,
+            model: existing?.model,
+            lastConnectedAt: existing?.lastConnectedAt,
+            signingPublicKey: publicKey
+        )
+        persistProfiles([peerID: profile], mergingWith: loadStoredProfiles())
         return true
     }
 
@@ -71,6 +136,9 @@ public final class PairingRegistry {
         var peers = loadPairedPeers()
         peers.removeValue(forKey: peerID)
         persist(peers)
+        var profiles = loadStoredProfiles()
+        profiles.removeValue(forKey: peerID.uuidString)
+        persistProfiles(profiles)
         return nextGeneration
     }
 
@@ -80,6 +148,9 @@ public final class PairingRegistry {
         var peers = loadPairedPeers()
         peers.removeValue(forKey: peerID)
         persist(peers)
+        var profiles = loadStoredProfiles()
+        profiles.removeValue(forKey: peerID.uuidString)
+        persistProfiles(profiles)
     }
 
     /// Clears every locally trusted peer. This is used only by the explicit
@@ -89,6 +160,7 @@ public final class PairingRegistry {
         defer { lock.unlock() }
         revocationGenerations.removeAll()
         persist([:])
+        persistProfiles([:])
     }
 
     private func loadPairedPeers() -> [UUID: Data] {
@@ -120,10 +192,19 @@ public final class PairingRegistry {
         return peers
     }
 
-    private func addLocked(_ peer: PeerIdentity) {
+    private func addLocked(_ peer: PeerIdentity, model: String?) {
         var peers = loadPairedPeers()
         peers[peer.id] = peer.signingPublicKey
         persist(peers)
+        let existing = loadProfiles(for: peers)[peer.id]
+        let profile = PairedPeerProfile(
+            peerID: peer.id,
+            friendlyName: peer.name,
+            model: preferredModel(model, existing: existing?.model),
+            lastConnectedAt: existing?.lastConnectedAt,
+            signingPublicKey: peer.signingPublicKey
+        )
+        persistProfiles([peer.id: profile], mergingWith: loadStoredProfiles())
     }
 
     private func persist(_ peers: [UUID: Data]) {
@@ -134,5 +215,72 @@ public final class PairingRegistry {
             return
         }
         defaults.set(encodedPeers, forKey: storageKey)
+    }
+
+    private func loadStoredProfiles() -> [String: PairedPeerProfile] {
+        guard let storedData = defaults.data(forKey: profileStorageKey),
+              let profiles = try? JSONDecoder().decode(
+                  [String: PairedPeerProfile].self,
+                  from: storedData
+              ) else {
+            return [:]
+        }
+        return profiles
+    }
+
+    private func loadProfiles(
+        for peers: [UUID: Data]
+    ) -> [UUID: PairedPeerProfile] {
+        let storedProfiles = loadStoredProfiles()
+        return peers.reduce(into: [:]) { result, entry in
+            let (peerID, publicKey) = entry
+            if let profile = storedProfiles[peerID.uuidString],
+               profile.peerID == peerID,
+               profile.signingPublicKey == publicKey {
+                result[peerID] = profile
+            } else {
+                result[peerID] = PairedPeerProfile(
+                    peerID: peerID,
+                    friendlyName: "Mac \(peerID.uuidString.prefix(8))",
+                    model: nil,
+                    signingPublicKey: publicKey
+                )
+            }
+        }
+    }
+
+    private func persistProfiles(
+        _ profiles: [UUID: PairedPeerProfile],
+        mergingWith existing: [String: PairedPeerProfile] = [:]
+    ) {
+        var merged = existing
+        profiles.forEach { merged[$0.key.uuidString] = $0.value }
+        guard let encodedProfiles = try? JSONEncoder().encode(merged) else {
+            return
+        }
+        defaults.set(encodedProfiles, forKey: profileStorageKey)
+    }
+
+    private func preferredModel(
+        _ candidate: String?,
+        existing: String?
+    ) -> String {
+        guard let candidate else {
+            return existing ?? PeerMetadataValidation.unknownModel
+        }
+        let validated = PeerMetadataValidation.validatedModel(candidate)
+        if validated == PeerMetadataValidation.unknownModel,
+           let existing,
+           existing != PeerMetadataValidation.unknownModel {
+            return existing
+        }
+        return validated
+    }
+
+    private func persistProfiles(_ profiles: [String: PairedPeerProfile]) {
+        guard let encodedProfiles = try? JSONEncoder().encode(profiles) else {
+            return
+        }
+        defaults.set(encodedProfiles, forKey: profileStorageKey)
     }
 }

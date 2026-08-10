@@ -25,6 +25,31 @@ final class PeerIdentityTXTCodecTests: XCTestCase {
         )
     }
 
+    func testDecodesModelAdvertisementAndSupportsOlderRecords() {
+        let id = UUID()
+        let key = P256.Signing.PrivateKey().publicKey.x963Representation
+        let record = NWTXTRecord([
+            "id": id.uuidString,
+            "name": "Desk Mac",
+            "model": "MacBookPro18,3",
+            "key": key.base64EncodedString()
+        ])
+        let advertisement = PeerIdentityTXTCodec.decodeAdvertisement(record)
+
+        XCTAssertEqual(advertisement?.identity.id, id)
+        XCTAssertEqual(advertisement?.model, "MacBookPro18,3")
+
+        let olderRecord = NWTXTRecord([
+            "id": id.uuidString,
+            "name": "Desk Mac",
+            "key": key.base64EncodedString()
+        ])
+        XCTAssertEqual(
+            PeerIdentityTXTCodec.decodeAdvertisement(olderRecord)?.model,
+            PeerMetadataValidation.unknownModel
+        )
+    }
+
     func testRejectsInvalidPublicKey() {
         let record = NWTXTRecord([
             "id": UUID().uuidString,

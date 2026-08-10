@@ -53,9 +53,11 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
     private let queue = DispatchQueue(label: "app.mackvm.secure-session")
     private let credentials: DeviceCredentials
     private let registry: PairingRegistry
+    let localModel: String
     private var listener: NWListener?
     private var browser: NWBrowser?
     private var peersByID: [UUID: [SecureServicePeer]] = [:]
+    private var advertisedModelsByID: [UUID: String] = [:]
     private var peerCandidateIndices: [UUID: Int] = [:]
     private var preferredPeerEndpoints: [UUID: NWEndpoint] = [:]
     private var contexts: [ObjectIdentifier: SessionConnectionContext] = [:]
@@ -73,10 +75,12 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
 
     init(
         credentials: DeviceCredentials,
-        registry: PairingRegistry
+        registry: PairingRegistry,
+        localModel: String = MacHardwareInfo.currentModel
     ) {
         self.credentials = credentials
         self.registry = registry
+        self.localModel = PeerMetadataValidation.validatedModel(localModel)
     }
 
     func start() {
@@ -107,6 +111,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             listener = nil
             browser = nil
             peersByID.removeAll()
+            advertisedModelsByID.removeAll()
             peerCandidateIndices.removeAll()
             preferredPeerEndpoints.removeAll()
             activeContextID = nil
@@ -308,6 +313,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             expectedPeer: peer.identity,
             localRole: .initiator,
             candidateEndpoint: peer.endpoint,
+            peerModel: peer.model,
             localEphemeralKey: ephemeralKey,
             initiatorHandshake: hello,
             maximumPacketsPerSecond: Self.maximumInboundPacketsPerSecond,
@@ -435,6 +441,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                 txtRecord: NWTXTRecord([
                     "id": credentials.identity.id.uuidString,
                     "name": credentials.identity.name,
+                    "model": localModel,
                     "key": credentials.identity.signingPublicKey.base64EncodedString()
                 ])
             )
@@ -469,16 +476,19 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         browser.browseResultsChangedHandler = { [weak self, weak browser] results, _ in
             guard let self, self.browser === browser else { return }
             let candidates = results.lazy.compactMap {
-                (result) -> (PeerIdentity, SecureServicePeer)? in
+                (result) -> (PeerAdvertisement, SecureServicePeer)? in
                 guard case let .bonjour(txtRecord) = result.metadata,
-                      let identity = PeerIdentityTXTCodec.decode(txtRecord),
-                      identity.id != self.credentials.identity.id else {
+                      let advertisement = PeerIdentityTXTCodec.decodeAdvertisement(
+                          txtRecord
+                      ),
+                      advertisement.identity.id != self.credentials.identity.id else {
                     return nil
                 }
                 return (
-                    identity,
+                    advertisement,
                     SecureServicePeer(
-                        identity: identity,
+                        identity: advertisement.identity,
+                        model: advertisement.model,
                         endpoint: result.endpoint
                     )
                 )
@@ -489,13 +499,17 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                 maximumCandidatesPerID: Self.maximumPeerCandidatesPerID,
                 preferred: { candidate in
                     guard let preferredEndpoint =
-                            self.preferredPeerEndpoints[candidate.0.id] else {
+                        self.preferredPeerEndpoints[candidate.0.identity.id]
+                    else {
                         return false
                     }
                     return candidate.1.endpoint == preferredEndpoint
                 },
-                identity: { $0.0 }
+                identity: { $0.0.identity }
             ).mapValues { $0.map(\.1) }
+            self.advertisedModelsByID = peersByID.mapValues { peers in
+                peers.first?.model ?? PeerMetadataValidation.unknownModel
+            }
             peerCandidateIndices = peerCandidateIndices.filter {
                 self.peersByID[$0.key] != nil
             }
@@ -682,6 +696,10 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                 reconnectAttempt = 0
                 cancelReconnect(resetAttempt: false)
                 context.admissionGeneration = onAuthenticated?()
+                registry.recordConnection(
+                    for: peer.id,
+                    model: context.peerModel
+                )
                 publishConnection(
                     peerID: peer.id,
                     status: "Encrypted session connected to \(peer.name)",
@@ -756,6 +774,10 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                 self.reconnectAttempt = 0
                 self.cancelReconnect(resetAttempt: false)
                 context.admissionGeneration = self.onAuthenticated?()
+                self.registry.recordConnection(
+                    for: expectedPeer.id,
+                    model: context.peerModel
+                )
                 self.publishConnection(
                     peerID: expectedPeer.id,
                     status: "Encrypted session connected to \(expectedPeer.name)",
@@ -781,6 +803,8 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                 ephemeralKey: ephemeralKey
             )
             context.expectedPeer = handshake.sender
+            context.peerModel = advertisedModelsByID[handshake.sender.id]
+                ?? registry.profile(for: handshake.sender.id)?.model
             context.peerEpoch = peerEpochs.current(for: handshake.sender.id)
             context.localEphemeralKey = ephemeralKey
             context.initiatorHandshake = handshake
@@ -986,6 +1010,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
 
 private struct SecureServicePeer {
     let identity: PeerIdentity
+    let model: String
     let endpoint: NWEndpoint
 }
 
@@ -994,6 +1019,7 @@ private final class SessionConnectionContext {
     var expectedPeer: PeerIdentity?
     let localRole: SecureSessionRole
     let candidateEndpoint: NWEndpoint?
+    var peerModel: String?
     var localEphemeralKey: P256.KeyAgreement.PrivateKey?
     var initiatorHandshake: SecureSessionHandshake?
     var responderHandshake: SecureSessionHandshake?
@@ -1015,6 +1041,7 @@ private final class SessionConnectionContext {
         expectedPeer: PeerIdentity?,
         localRole: SecureSessionRole,
         candidateEndpoint: NWEndpoint? = nil,
+        peerModel: String? = nil,
         localEphemeralKey: P256.KeyAgreement.PrivateKey? = nil,
         initiatorHandshake: SecureSessionHandshake? = nil,
         maximumPacketsPerSecond: Int,
@@ -1024,6 +1051,7 @@ private final class SessionConnectionContext {
         self.expectedPeer = expectedPeer
         self.localRole = localRole
         self.candidateEndpoint = candidateEndpoint
+        self.peerModel = peerModel
         self.localEphemeralKey = localEphemeralKey
         self.initiatorHandshake = initiatorHandshake
         self.inboundPayloadBudget = InboundPayloadBudget(

@@ -75,3 +75,14 @@
 "This Intel Mac is HDMI-only in the current wiring, so it cannot originate keyboard/mouse input. Select the USB-switch mode after connecting the devices to both Macs." = "This Intel Mac is HDMI-only in the current wiring, so it cannot originate keyboard/mouse input. Select the USB-switch mode after connecting the devices to both Macs.";
 "Connect the keyboard and mouse to the M5 Pro (directly or through the MA270U USB hub). The Intel HDMI Mac can receive control only." = "Connect the keyboard and mouse to the M5 Pro (directly or through the MA270U USB hub). The Intel HDMI Mac can receive control only.";
 "MacKVM cannot detect a USB switch. Verify both Macs see the keyboard and mouse before requesting control." = "MacKVM cannot detect a USB switch. Verify both Macs see the keyboard and mouse before requesting control.";
+"Paired device information" = "Paired device information";
+"Friendly name" = "Friendly name";
+"Save" = "Save";
+"Model: %@" = "Model: %@";
+"No paired devices yet." = "No paired devices yet.";
+"Last connected: %@" = "Last connected: %@";
+"Key fingerprint: %@" = "Key fingerprint: %@";
+"Copy support information" = "Copy support information";
+"Support information copied" = "Support information copied";
+"Could not copy support information" = "Could not copy support information";
+"Never" = "Never";

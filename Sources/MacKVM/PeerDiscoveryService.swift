@@ -7,6 +7,7 @@ import Network
 struct DiscoveredPeer: Identifiable {
     let id: String
     let identity: PeerIdentity
+    let model: String
     let endpoint: NWEndpoint
 
     var name: String { identity.name }
@@ -38,6 +39,7 @@ final class PeerDiscoveryService: ObservableObject {
     @Published private(set) var activeVerificationCode: String?
 
     let identity: PeerIdentity
+    let localModel: String
 
     private static let serviceType = "_mackvm._tcp"
     private static let maximumPendingRequests = 5
@@ -62,6 +64,8 @@ final class PeerDiscoveryService: ObservableObject {
     private var unauthenticatedConnections: [ObjectIdentifier: NWConnection] = [:]
     private var requestMessages: [UUID: PairingEnvelope] = [:]
     private var requestTargets: [UUID: PeerIdentity] = [:]
+    private var requestModels: [UUID: String] = [:]
+    private var advertisedModelsByID: [UUID: String] = [:]
     private var localContributions: [UUID: Data] = [:]
     private var peerCommitments: [UUID: Data] = [:]
     private var peerContributions: [UUID: Data] = [:]
@@ -83,12 +87,37 @@ final class PeerDiscoveryService: ObservableObject {
 
     init(
         credentials: DeviceCredentials,
-        registry: PairingRegistry = PairingRegistry()
+        registry: PairingRegistry = PairingRegistry(),
+        localModel: String = MacHardwareInfo.currentModel
     ) {
         identity = credentials.identity
+        self.localModel = PeerMetadataValidation.validatedModel(localModel)
         privateKey = credentials.privateKey
         self.registry = registry
         pairedPeerIDs = registry.pairedPeerIDs
+    }
+
+    var pairedPeerProfiles: [UUID: PairedPeerProfile] {
+        registry.pairedPeerProfiles
+    }
+
+    func pairedPeerProfile(for peerID: UUID) -> PairedPeerProfile? {
+        registry.profile(for: peerID)
+    }
+
+    @discardableResult
+    func updateFriendlyName(
+        for peerID: UUID,
+        friendlyName: String
+    ) -> Bool {
+        guard registry.updateFriendlyName(
+            for: peerID,
+            friendlyName: friendlyName
+        ) else {
+            return false
+        }
+        objectWillChange.send()
+        return true
     }
 
     func start() {
@@ -117,6 +146,8 @@ final class PeerDiscoveryService: ObservableObject {
             self.unauthenticatedConnections.removeAll()
             self.requestMessages.removeAll()
             self.requestTargets.removeAll()
+            self.requestModels.removeAll()
+            self.advertisedModelsByID.removeAll()
             self.requestForgetGenerations.removeAll()
             self.localContributions.removeAll()
             self.peerCommitments.removeAll()
@@ -182,6 +213,7 @@ final class PeerDiscoveryService: ObservableObject {
         requestConnections[request.requestID] = connection
         requestMessages[request.requestID] = request
         requestTargets[request.requestID] = peer.identity
+        requestModels[request.requestID] = peer.model
         localContributions[request.requestID] = contribution
         requestForgetGenerations.set(
             registry.generation(for: peer.identity.id),
@@ -299,6 +331,7 @@ final class PeerDiscoveryService: ObservableObject {
                 txtRecord: NWTXTRecord([
                     "id": identity.id.uuidString,
                     "name": identity.name,
+                    "model": localModel,
                     "key": identity.signingPublicKey.base64EncodedString()
                 ])
             )
@@ -342,19 +375,22 @@ final class PeerDiscoveryService: ObservableObject {
         browser.browseResultsChangedHandler = { [weak self, weak browser] results, _ in
             guard let self, self.browser === browser else { return }
             let candidates = results.lazy.compactMap {
-                (result) -> (PeerIdentity, DiscoveredPeer)? in
+                (result) -> (PeerAdvertisement, DiscoveredPeer)? in
                 guard case let .service(name, _, _, _) = result.endpoint,
                       name != self.identity.serviceName,
                       case let .bonjour(txtRecord) = result.metadata,
-                      let peerIdentity = PeerIdentityTXTCodec.decode(txtRecord),
-                      peerIdentity.id != self.identity.id else {
+                      let advertisement = PeerIdentityTXTCodec.decodeAdvertisement(
+                          txtRecord
+                      ),
+                      advertisement.identity.id != self.identity.id else {
                     return nil
                 }
                 return (
-                    peerIdentity,
+                    advertisement,
                     DiscoveredPeer(
                         id: name,
-                        identity: peerIdentity,
+                        identity: advertisement.identity,
+                        model: advertisement.model,
                         endpoint: result.endpoint
                     )
                 )
@@ -362,12 +398,17 @@ final class PeerDiscoveryService: ObservableObject {
             let discoveredByID = PeerIdentityAdmission.resolve(
                 candidates,
                 maximumIdentities: Self.maximumDiscoveredPeers,
-                identity: { $0.0 }
+                identity: { $0.0.identity }
             )
             let discovered = discoveredByID.values.sorted {
                 $0.1.name.localizedCaseInsensitiveCompare($1.1.name)
                     == .orderedAscending
             }.prefix(Self.maximumDiscoveredPeers).map(\.1)
+            self.advertisedModelsByID = Dictionary(
+                uniqueKeysWithValues: discovered.map {
+                    ($0.identity.id, $0.model)
+                }
+            )
             let epoch = self.currentLifecycleEpoch()
             self.publishMain(epoch: epoch) { $0.peers = discovered }
         }
@@ -554,6 +595,9 @@ final class PeerDiscoveryService: ObservableObject {
             scheduleTimeout(for: connection, after: 60)
             requestConnections[message.requestID] = connection
             requestMessages[message.requestID] = message
+            requestModels[message.requestID] = advertisedModelsByID[
+                message.sender.id
+            ] ?? PeerMetadataValidation.unknownModel
             localContributions[message.requestID] = localContribution
             requestForgetGenerations.set(
                 registry.generation(for: message.sender.id),
@@ -750,11 +794,13 @@ final class PeerDiscoveryService: ObservableObject {
 
     private func savePairing(
         with peer: PeerIdentity,
-        expectedRegistryGeneration: UInt64
+        expectedRegistryGeneration: UInt64,
+        model: String?
     ) -> Bool {
         guard registry.add(
             peer,
-            ifGeneration: expectedRegistryGeneration
+            ifGeneration: expectedRegistryGeneration,
+            model: model
         ) else {
             return false
         }
@@ -780,6 +826,7 @@ final class PeerDiscoveryService: ObservableObject {
         }
         requestMessages.removeValue(forKey: requestID)
         requestTargets.removeValue(forKey: requestID)
+        requestModels.removeValue(forKey: requestID)
         localContributions.removeValue(forKey: requestID)
         requestForgetGenerations.remove(for: requestID)
         peerCommitments.removeValue(forKey: requestID)
@@ -1027,7 +1074,8 @@ final class PeerDiscoveryService: ObservableObject {
         }
         guard savePairing(
             with: peer,
-            expectedRegistryGeneration: completionGuard.generation
+            expectedRegistryGeneration: completionGuard.generation,
+            model: requestModels[requestID]
         ) else {
             return
         }

@@ -3,8 +3,19 @@ import Foundation
 import MacKVMCore
 import Network
 
+struct PeerAdvertisement: Equatable, Sendable {
+    let identity: PeerIdentity
+    let model: String
+}
+
 enum PeerIdentityTXTCodec {
     static func decode(_ txtRecord: NWTXTRecord) -> PeerIdentity? {
+        decodeAdvertisement(txtRecord)?.identity
+    }
+
+    static func decodeAdvertisement(
+        _ txtRecord: NWTXTRecord
+    ) -> PeerAdvertisement? {
         let values = txtRecord.dictionary
         guard let idValue = values["id"],
               let id = UUID(uuidString: idValue),
@@ -17,10 +28,13 @@ enum PeerIdentityTXTCodec {
               )) != nil else {
             return nil
         }
-        return PeerIdentity(
-            id: id,
-            name: name,
-            signingPublicKey: publicKey
+        return PeerAdvertisement(
+            identity: PeerIdentity(
+                id: id,
+                name: name,
+                signingPublicKey: publicKey
+            ),
+            model: PeerMetadataValidation.validatedModel(values["model"])
         )
     }
 }
