@@ -3,12 +3,53 @@
 Use this checklist with the actual BenQ MA270U, the 2019 16-inch Intel
 MacBook Pro on HDMI, and the 14-inch M5 Pro MacBook Pro on USB-C.
 
+## 繁體中文驗收說明
+
+本文件的英文步驟是逐項驗收清單；以下提供相同範圍的繁體中文摘要，方便在
+實機執行時快速確認。測試對象是 BenQ MA270U、2019 16 吋 Intel MacBook Pro
+（HDMI）與 14 吋 M5 Pro MacBook Pro（USB-C）。
+
+### 建置與安裝
+
+在 M5 Pro 執行 `./scripts/ci.sh`，並建立 `arm64` 與
+`x86_64` app；將相符架構複製到兩台 Mac 的 `/Applications`。確認 app bundle
+簽章正確、選單列顯示鍵盤圖示，且 macOS 能正常提出本機網路權限提示。正式散布
+應使用 Developer ID、hardened runtime 與 notarization；ad-hoc 只適合本機測試。
+
+### 硬體、權限與配對
+
+1. M5 Pro 接 MA270U USB-C；Intel Mac 接指定的 HDMI 1 或 HDMI 2，兩台都把
+   MA270U 設為主要顯示器。
+2. 在 M5 Pro 執行 `brew install m1ddc`，偵測並選取明確標示為 MA270U 的穩定
+   顯示器識別碼，再套用 **M5 / USB-C preset**；Intel Mac 套用
+   **Intel / HDMI preset**。DDC 失敗時使用 OSD 手動切換。
+3. 鍵盤與滑鼠接 M5 Pro 或 MA270U hub，選擇 **One keyboard on M5 Pro (USB-C)**；
+   只有在兩台 Mac 都確實看得到實體 USB switch 時，才選雙向模式。
+4. 依序授予 Local Network、Input Monitoring、Accessibility。兩台在
+   **Nearby Macs** 看到彼此後配對，核對相同六位數驗證碼，並在兩端按 **Accept**。
+
+### 控制、重連與安全返回
+
+連線後由控制端提出請求，接收端測試選單中的 **Allow**、**Deny**、通知的
+**Review in MacKVM** 與逾時行為；確認 Allow 前本機輸入不會被抑制。測試鍵盤、
+滑鼠、滾輪、修飾鍵、四連點、不同輸入法、網路中斷與重連。任何結束路徑都必須
+釋放按住的按鍵／滑鼠按鈕；測試 **Return input to this Mac**、接收端
+**Stop remote control**、緊急快捷鍵與退出 app。
+
+### 裝置資料、支援資訊與發佈驗證
+
+在 **Paired device information** 修改友善名稱並重啟 app，確認名稱仍保留；
+成功完成加密連線後，確認最後連線時間更新，型號與 32 組十六進位金鑰指紋穩定。
+按 **Copy support information** 並貼到純文字編輯器，確認內容包含版本、macOS、
+裝置資料與連線狀態，但沒有私密金鑰、密碼、憑證或網路端點。最後執行 DMG checksum
+與 `verify-release.sh`；正式版本還要完成 Apple notarization。
+
 ## 1. Build and install on each architecture
 
 On the M5 Pro, build both app architectures:
 
 ```sh
-./.codex/ci.sh
+./scripts/ci.sh
 ./scripts/build-app.sh --arch arm64
 ./scripts/build-app.sh --arch x86_64
 ```
