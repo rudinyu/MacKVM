@@ -1,4 +1,8 @@
-# MacKVM
+English | [繁體中文](#中文說明)
+
+# RemoteMac self-hosted relay
+
+MacKVM is the native macOS client for the RemoteMac self-hosted relay.
 
 MacKVM is a native macOS menu bar app for sharing one keyboard, mouse, and
 monitor between two Macs on the same local network.
@@ -91,7 +95,7 @@ The package is built from a fresh staging directory and writes a portable
 SHA-256 sidecar next to the DMG. Verify the pair from the `dist` directory:
 
 ```sh
-(cd dist && shasum -a 256 -c MacKVM-0.6.1-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-0.6.2-universal.dmg.sha256)
 ```
 
 For distribution to another Mac, sign with a Developer ID Application
