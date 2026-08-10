@@ -343,23 +343,3 @@ explicit reset action, relaunch, and pair both Macs again.
 Before testing, macOS may ask for local-network access. Pairing metadata and
 Bonjour names are visible on the LAN, while established control-session payloads
 are encrypted; see [`SECURITY.md`](SECURITY.md).
-
-## Verification commands
-
-Run after every code or documentation change:
-
-```sh
-./.codex/ci.sh
-```
-
-After each completed plan step, run:
-
-```sh
-./.codex/step-review.sh
-```
-
-After all steps in the complete plan are finished, run the final Claude review:
-
-```sh
-./.codex/final-review.sh
-```
