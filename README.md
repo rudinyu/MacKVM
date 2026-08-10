@@ -54,7 +54,7 @@ The upstream tool supports external displays connected to Apple Silicon by
 USB-C/DisplayPort Alt Mode, but not Intel Macs. MacKVM therefore keeps manual
 MA270U OSD switching available at all times.
 
-## Build and run the macOS app
+## How to build
 
 Build and ad-hoc sign an app bundle for the current Mac:
 
@@ -121,6 +121,12 @@ full Xcode to regenerate and commit both compiled resources:
 ```sh
 DEVELOPER_DIR=/path/to/Xcode.app/Contents/Developer \
   ./scripts/regenerate-app-icon.sh
+```
+
+Run the Swift test suite before packaging:
+
+```sh
+swift test
 ```
 
 The app bundle is the supported launch path because it contains the Bonjour
@@ -200,44 +206,62 @@ Mac identity**. Use it only after confirming that the old identity should be
 discarded; it removes local pairings, and the next launch requires pairing both
 Macs again.
 
-## Validate
-
-Run local CI after every code change:
-
-```sh
-./.codex/ci.sh
-```
-
-CI builds, tests, and packages both arm64 and x86_64 app bundles.
-
-Run Codex CI and code review after each complete plan step:
-
-```sh
-./.codex/step-review.sh
-```
-
-After all plan steps are complete, run the final Claude reviewer:
-
-```sh
-./.codex/final-review.sh
-```
-
-The Claude pass is repository-local and read-only. It reviews only the current
-checkout and writes its report to the ignored local file
-`CODEX_CLAUDE_REVIEW.md`; it does not push to GitHub or any other remote. The
-review policy forbids exposing passwords, API keys, private keys, tokens,
-certificates, OAuth values, or other credentials. Keep Claude's login state,
-transcripts, and caches outside this repository. Repository-local refers to
-the review scope; the review request may still use Claude's configured service
-connection, so never put secrets in the diff.
-
-See [`.codex/WORKFLOW.md`](.codex/WORKFLOW.md) for the full development policy.
 See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the current architecture, known
 issues, wiring diagram, and MVP usage instructions.
 See [`MANUAL_TEST.md`](MANUAL_TEST.md) for the complete two-Mac hardware
 acceptance checklist.
 See [`docs/USER_MANUAL.html`](docs/USER_MANUAL.html) for the end-user
 Traditional Chinese manual that can be opened directly in a browser.
+
+## 中文說明
+
+MacKVM 是 macOS 選單列應用程式，讓兩台 Mac 在同一個區域網路中共用一組
+鍵盤、滑鼠與螢幕。配對與控制都需要兩台 Mac 明確同意；控制資料會透過
+加密連線傳送。
+
+### 建置與打包
+
+建議在 M5 Pro Apple Silicon Mac 上執行：
+
+```sh
+# 建立 Apple Silicon 版本
+./scripts/build-app.sh --arch arm64
+
+# 建立 2019 Intel Mac 可用的 x86_64 版本
+./scripts/build-app.sh --arch x86_64
+
+# 建立同時支援兩種架構的 DMG
+./scripts/package-dmg.sh --arch universal
+```
+
+產物會放在 `dist/`。本機測試版本使用 ad-hoc signature；若要提供給其他
+Mac 正式安裝，請使用 Developer ID Application identity、啟用 hardened
+runtime，並在發佈前完成 Apple notarization。
+
+### 你的硬體接法
+
+- M5 Pro MacBook Pro：USB-C 連接 BenQ MA270U。
+- 2019 Intel MacBook Pro：透過 USB-C/Thunderbolt 3 轉 HDMI 連接螢幕。
+- 鍵盤與滑鼠：接在 M5 Pro 或 MA270U USB hub；HDMI 不會傳送 USB hub。
+- 螢幕切換：M5 Pro 使用 USB-C preset，Intel Mac 使用 HDMI preset。
+
+### 第一次使用
+
+1. 在兩台 Mac 安裝並啟動 `MacKVM.app`。
+2. 依畫面提示授予 Local Network、Input Monitoring 與 Accessibility 權限。
+3. 在 **Nearby Macs** 找到另一台 Mac，兩邊都按 **Pair**，核對六位數驗證碼。
+4. 配對完成後，在 M5 Pro 按 **Request control**，另一台 Mac 按 **Allow**。
+5. 若需要自動切換 MA270U 輸入，先在 M5 Pro 安裝 `m1ddc`：
+
+   ```sh
+   brew install m1ddc
+   ```
+
+6. 若通知被關閉，仍可從選單列鍵盤圖示查看並處理控制請求。
+
+完整的繁體中文操作與硬體驗收步驟，請參考
+[`docs/USER_MANUAL.html`](docs/USER_MANUAL.html) 與
+[`MANUAL_TEST.md`](MANUAL_TEST.md)。
 
 ## Recommended wiring
 
