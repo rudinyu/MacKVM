@@ -2,6 +2,44 @@ import Carbon
 import Foundation
 import MacKVMCore
 
+/// Abstracts the current-layout lookup `RemoteInputSink` needs, so its
+/// cross-layout remap logic — which caught five real bugs across two review
+/// passes — is testable with a fake layout instead of whatever keyboard
+/// layout happens to be active on the machine running the test. The
+/// production implementation, `CarbonKeyboardLayoutProvider`, additionally
+/// marshals its calls onto the main thread; see that type's documentation
+/// for why.
+protocol KeyboardLayoutProviding {
+    func currentIdentifier() -> String?
+    func currentTranslator() -> UnicodeLayoutCharacterProviding?
+}
+
+/// `RemoteInputSink` calls this from its private background injection queue,
+/// never from the main thread — `CarbonKeyboardLayout`'s capture-side callers
+/// are already on the main thread and call it directly, without going
+/// through this type, since `DispatchQueue.main.sync` from the main thread
+/// itself would deadlock.
+///
+/// Text Input Source (TIS) functions are not documented thread-safe, and the
+/// capture side already calls the same underlying APIs from the main thread
+/// (inside the event tap callback) while typing is live. Marshaling every
+/// call from the injection queue onto the main thread too, rather than
+/// calling Carbon concurrently from both, is what removes that risk instead
+/// of merely making it less likely to be hit.
+struct CarbonKeyboardLayoutProvider: KeyboardLayoutProviding {
+    func currentIdentifier() -> String? {
+        DispatchQueue.main.sync {
+            CarbonKeyboardLayout.currentIdentifier()
+        }
+    }
+
+    func currentTranslator() -> UnicodeLayoutCharacterProviding? {
+        DispatchQueue.main.sync {
+            CarbonKeyboardLayout.currentTranslator()
+        }
+    }
+}
+
 /// The macOS keyboard-layout input source, read fresh on every call rather
 /// than cached, since the user can switch layouts or input methods at any
 /// time and this must always reflect what is active right now.

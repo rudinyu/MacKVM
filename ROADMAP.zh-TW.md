@@ -2,7 +2,7 @@
 
 # MacKVM 開發路線圖
 
-本路線圖以 0.9.1 程式碼為基準。配對、公開金鑰釘選、加密連線、輸入驗證、
+本路線圖以 0.9.2 程式碼為基準。配對、公開金鑰釘選、加密連線、輸入驗證、
 接收端明確同意、權限引導與有界佇列已完成；後續項目主要改善日常使用體驗。
 
 ## 目前狀態
@@ -95,8 +95,32 @@ MacKVM 現在透過原生 IOKit bridge 探索外接顯示器，直接傳送 DDC/
 
   reverse-map 的查表邏輯已有
   [`KeyboardLayoutRemapTests.swift`](Tests/MacKVMCoreTests/KeyboardLayoutRemapTests.swift)
-  搭配假配置驗證；`UCKeyTranslate`／`TISCopyCurrentKeyboardLayoutInputSource`
-  本身沒有實機無法測試，仍需要在兩台真正使用不同實體配置（不只是切輸入法）的 Mac
+  搭配假配置驗證。第三輪 review 又抓到兩個問題：
+
+  - `RemoteInputSink` 這層的 remap 解析邏輯（`KeyInjectionTarget`、
+    `resolveKeyInjectionTarget`、`computeKeyInjectionTarget`、`eventFlags` 的
+    remap 分支）原本全部是 `private`，`@testable import MacKVM` 完全碰不到——
+    偏偏這正是前面 5 個真實 bug 藏身的地方。改成 internal 可見度，並新增
+    [`RemoteInputSinkKeyRemapTests.swift`](Tests/MacKVMTests/RemoteInputSinkKeyRemapTests.swift)，
+    搭配假的 `KeyboardLayoutProviding` 涵蓋 auto-repeat 沿用結果、快捷鍵／一般
+    打字的 flags 分流、以及查不到對應字元時回傳 nil 這幾條路徑，不用依賴跑測試
+    的機器實際裝了什麼鍵盤配置。
+  - `RemoteInputSink` 是從背景的注入佇列呼叫 `CarbonKeyboardLayout`，但擷取端
+    是從主執行緒（event tap callback 裡）呼叫同一批 Text Input Source API——
+    Apple 沒有文件保證這些 API 執行緒安全，兩條執行緒同時碰 Carbon 的 TIS 狀態
+    是真實的當機／卡住風險。現在改成透過可替換的 `KeyboardLayoutProviding`
+    取得鍵盤配置，正式環境的實作 `CarbonKeyboardLayoutProvider` 用
+    `DispatchQueue.main.sync` 把每次呼叫都轉送到主執行緒；同一個介面也是讓
+    上面新測試能塞假配置進去的原因。
+
+  另外還有一個不影響安全性、只值得記一筆的邊角案例：`UCKeyTranslate` 用
+  `kUCKeyTranslateNoDeadKeysBit` 執行，所以重映射後的按鍵有可能剛好落在接收端
+  配置的死鍵（dead key）上（例如德文／法文／西班牙文的重音鍵），結果會卡在
+  組字狀態，打不出寄送端原本要的字元。範圍很窄，如果之後兩台 Mac 真的會用到
+  死鍵密集的配置，值得補一輪實機測試，不需要為此改程式碼。
+
+  `UCKeyTranslate`／`TISCopyCurrentKeyboardLayoutInputSource` 本身沒有實機
+  無法測試，仍需要在兩台真正使用不同實體配置（不只是切輸入法）的 Mac
   上實測，確認 Shift／Option／Caps Lock 組合、按住連發都正確；在字母位置真的
   不同的配置（如德文 QWERTZ）上測 Cmd-Z 這類快捷鍵是否落在正確按鍵，以及 Cmd
   快捷鍵不受寄送端 CapsLock 影響；有 ISO／JIS 實體鍵盤的話也一併驗證。

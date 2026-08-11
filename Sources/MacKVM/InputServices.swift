@@ -549,7 +549,13 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
 /// key that actually produces "z" on a layout where Y and Z are swapped,
 /// without also being able to turn Command-C into Command-Shift-C because
 /// the sender's Caps Lock happened to be on.
-private enum KeyInjectionTarget {
+///
+/// Internal rather than private: this is the logic two review passes found
+/// five real bugs in (auto-repeat retargeting a held key, Caps Lock/Option
+/// corrupting a shortcut, wrong-key targeting on swapped layouts, and more),
+/// so it needs to be reachable from `@testable import MacKVM`, the same way
+/// `ModifierFlagProjection` above already is.
+enum KeyInjectionTarget: Equatable {
     case identity(keyCode: UInt16)
     case remapped(RemappedKeyTarget, applyModifiers: Bool)
 
@@ -563,7 +569,7 @@ private enum KeyInjectionTarget {
     }
 }
 
-private enum RemoteInputSinkError: Error {
+enum RemoteInputSinkError: Error, Equatable {
     /// A remappable key arrived under a differing keyboard layout with no
     /// local key producing the same character.
     case unmappableKey
@@ -599,8 +605,13 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
         // serial injection queue has entered the active-control generation.
         capacity: BoundedAdmissionGate.defaultCapacity
     )
+    private let keyboardLayoutProvider: any KeyboardLayoutProviding
 
-    init() {
+    init(
+        keyboardLayoutProvider: any KeyboardLayoutProviding =
+            CarbonKeyboardLayoutProvider()
+    ) {
+        self.keyboardLayoutProvider = keyboardLayoutProvider
         hasAccessibilityPermission = AXIsProcessTrusted()
     }
 
@@ -865,7 +876,7 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
     /// only when the sender's key is remappable, the layouts genuinely
     /// differ, and this layout has no key that produces the same character —
     /// the one case `inject` treats as fatal.
-    private func resolveKeyInjectionTarget(
+    func resolveKeyInjectionTarget(
         for input: RemoteInputEvent,
         remoteKeyCode: UInt16
     ) -> KeyInjectionTarget? {
@@ -898,12 +909,12 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
         return target
     }
 
-    private func computeKeyInjectionTarget(
+    func computeKeyInjectionTarget(
         for input: RemoteInputEvent,
         remoteKeyCode: UInt16
     ) -> KeyInjectionTarget? {
         guard let remoteLayout = input.keyboardLayoutIdentifier,
-              let localLayout = CarbonKeyboardLayout.currentIdentifier(),
+              let localLayout = keyboardLayoutProvider.currentIdentifier(),
               remoteLayout != localLayout,
               RemappableKeyCodes.all.contains(remoteKeyCode) else {
             return .identity(keyCode: remoteKeyCode)
@@ -924,9 +935,9 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
         return .remapped(target, applyModifiers: !isShortcut)
     }
 
-    private func refreshReverseMapIfNeeded(for localLayout: String) {
+    func refreshReverseMapIfNeeded(for localLayout: String) {
         guard reverseMapLayoutIdentifier != localLayout else { return }
-        guard let translator = CarbonKeyboardLayout.currentTranslator() else {
+        guard let translator = keyboardLayoutProvider.currentTranslator() else {
             reverseMap = nil
             reverseMapLayoutIdentifier = nil
             return
@@ -1088,7 +1099,7 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
         event.post(tap: .cghidEventTap)
     }
 
-    private func eventFlags(
+    func eventFlags(
         for input: RemoteInputEvent,
         remap: KeyInjectionTarget? = nil
     ) -> CGEventFlags {

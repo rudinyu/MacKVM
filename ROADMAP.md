@@ -3,7 +3,7 @@
 [Architecture](ARCHITECTURE.md) · [Installation guide](INSTALL.md) ·
 [Security status](SECURITY.md) · [繁體中文](ROADMAP.zh-TW.md)
 
-This roadmap is written against the 0.9.1 source tree. Every gap below was
+This roadmap is written against the 0.9.2 source tree. Every gap below was
 confirmed in code rather than inferred from the documentation, and each item
 records the files a change would start from.
 
@@ -200,7 +200,32 @@ leaving every flag untouched, as described above).
 
 The reverse-map lookup logic is exercised by
 [`KeyboardLayoutRemapTests.swift`](Tests/MacKVMCoreTests/KeyboardLayoutRemapTests.swift)
-against a stub layout; the `UCKeyTranslate`/`TISCopyCurrentKeyboardLayoutInputSource`
+against a stub layout, and `RemoteInputSink`'s resolution of it — auto-repeat
+pinning, the shortcut/typing flag split, and the unmappable-key path — by
+[`RemoteInputSinkKeyRemapTests.swift`](Tests/MacKVMTests/RemoteInputSinkKeyRemapTests.swift)
+against a fake `KeyboardLayoutProviding`, added after a third review pass
+found the injection-side logic was entirely private and therefore
+unreachable from `@testable import MacKVM` despite being exactly the code
+those five bugs lived in. That same pass also found `RemoteInputSink` called
+`CarbonKeyboardLayout` from its private background injection queue while the
+capture side calls the same Text Input Source APIs from the main thread —
+undocumented as thread-safe by Apple, and a real crash/hang risk from two
+threads touching Carbon's TIS state concurrently. `RemoteInputSink` now takes
+its layout lookups through an injectable `KeyboardLayoutProviding`, whose
+production implementation, `CarbonKeyboardLayoutProvider`, marshals every
+call onto the main thread with `DispatchQueue.main.sync`; the same protocol
+is what lets the new tests substitute a fake layout instead of depending on
+the test machine's real one.
+
+`UCKeyTranslate` runs with `kUCKeyTranslateNoDeadKeysBit`, so a remapped
+keystroke can land on a key that is a genuine dead key on the receiver's
+layout (an accent key on German, French, or Spanish, for instance),
+producing a stuck pending composition instead of the sender's character.
+Narrow and not security-relevant — worth a manual-test pass if dead-key-heavy
+layouts are ever in the two-Mac setup, not a code change on its own.
+
+Both `KeyboardLayoutRemapTests.swift` and `RemoteInputSinkKeyRemapTests.swift`
+are deterministic; the `UCKeyTranslate`/`TISCopyCurrentKeyboardLayoutInputSource`
 calls themselves are not testable without real hardware and still need
 verification: type through a genuinely different physical layout (not just a
 different input method) on both Macs and confirm the right characters land,
