@@ -159,34 +159,44 @@ Two problems here turned out to be separate, and both are fixed:
   the same thing on every layout) now carries the character the sender's own
   layout produced for it. When the receiver's layout differs, it builds a
   `KeyboardLayoutReverseMap` once per layout change and looks up which local
-  key and Shift/Option/Caps Lock combination reproduce that character, rather
-  than injecting the sender's keycode under a meaning it doesn't have
-  locally. A key held with Command or Control bypasses remapping entirely and
-  injects with the sender's own keycode and flags, exactly as before
-  remapping existed — those keys select a shortcut by logical key rather than
-  by character, and remapping them could turn Command-C into Command-Shift-C
-  whenever the sender's Caps Lock happened to be on. `ControlCoordinator`
-  denies a request over a layout mismatch only when the requesting peer's
-  protocol version predates character-based remapping (it would never send
-  the character field, so admitting it would only grant control to end it on
-  the first remappable keystroke); a v2 peer's differing layout is not
-  denied, since `RemoteInputSink` resolves it instead — ending the session,
-  the original fallback behavior, only when a specific key turns out to have
-  no equivalent on the receiver's layout. A held key's auto-repeat reuses the
+  key produce that character, rather than injecting the sender's keycode
+  under a meaning it doesn't have locally. What happens to the flags then
+  splits on whether Command or Control was held. Plain typing replaces
+  Shift/Option/Caps Lock with whatever combination the local layout needs to
+  reproduce the sender's character. A key held with Command or Control looks
+  itself up using its unmodified character — Shift and Caps Lock never affect
+  which local key is found — and injects with every one of the sender's flags
+  unchanged, including a real Shift that selects a different shortcut (Redo
+  instead of Undo): only the keycode came from the lookup. That split is what
+  lands Command-Z on the key that actually produces "z" on a layout where Y
+  and Z are swapped (German QWERTZ, for one) without letting an incidental
+  Caps Lock turn Command-C into Command-Shift-C. `ControlCoordinator` denies a
+  request over a layout mismatch only when the requesting peer's protocol
+  version predates character-based remapping (it would never send the
+  character field, so admitting it would only grant control to end it on the
+  first remappable keystroke); a v2 peer's differing layout is not denied,
+  since `RemoteInputSink` resolves it instead — ending the session, the
+  original fallback behavior, only when a specific key turns out to have no
+  equivalent on the receiver's layout. A held key's auto-repeat reuses the
   same resolution as its first keyDown rather than recomputing one per
   repeat, so a modifier changing mid-hold cannot retarget a live press to a
   different local key and strand the original one held down.
 
-A first pass of this shipped with four real gaps a review caught before
-merge, all now fixed: a v1 peer with a differing layout was granted control
-only to have it end on its first remappable keystroke (fixed by the protocol
-version gate above); auto-repeat could retarget and strand a held key (fixed
-by pinning the resolution above); Command/Control shortcuts could be
-corrupted by Caps Lock or Option (fixed by the bypass above); and
-`UCKeyTranslate` always passed keyboard type 0, which silently selects the
-wrong ANSI/ISO/JIS sub-table on non-ANSI hardware (fixed by reading
-`LMGetKbdType()` in
-[`CarbonKeyboardLayout.swift`](Sources/MacKVM/CarbonKeyboardLayout.swift)).
+Two review passes before merge caught five real gaps here, all now fixed: a
+v1 peer with a differing layout was granted control only to have it end on
+its first remappable keystroke (fixed by the protocol version gate above);
+auto-repeat could retarget and strand a held key (fixed by pinning the
+resolution above); `UCKeyTranslate` always passed keyboard type 0, which
+silently selects the wrong ANSI/ISO/JIS sub-table on non-ANSI hardware (fixed
+by reading `LMGetKbdType()` in
+[`CarbonKeyboardLayout.swift`](Sources/MacKVM/CarbonKeyboardLayout.swift)); and
+Command/Control shortcuts went through two fixes in sequence — first found to
+be corruptible by Caps Lock or Option (an initial fix bypassed remapping for
+them entirely), then found to land on the wrong key on a layout where letter
+positions genuinely differ, like the Y/Z swap on German QWERTZ, because
+bypassing remapping also bypassed the keycode translation these keys still
+need (fixed by remapping only the keycode, via the unmodified character, and
+leaving every flag untouched, as described above).
 
 The reverse-map lookup logic is exercised by
 [`KeyboardLayoutRemapTests.swift`](Tests/MacKVMCoreTests/KeyboardLayoutRemapTests.swift)
@@ -194,9 +204,12 @@ against a stub layout; the `UCKeyTranslate`/`TISCopyCurrentKeyboardLayoutInputSo
 calls themselves are not testable without real hardware and still need
 verification: type through a genuinely different physical layout (not just a
 different input method) on both Macs and confirm the right characters land,
-including Shift/Option/Caps Lock combinations, held-key auto-repeat, and that
-Cmd-modified shortcuts are untouched by remapping — plus, if ISO or JIS
-hardware is available, that its layout-specific keys translate correctly.
+including Shift/Option/Caps Lock combinations and held-key auto-repeat; that a
+Cmd-modified shortcut for a key at a swapped position (Command-Z on German
+QWERTZ, where Y and Z trade places, is the standing example) fires the
+correct action; and that the same shortcut is unaffected by the sender's Caps
+Lock state. Plus, if ISO or JIS hardware is available, that its
+layout-specific keys translate correctly.
 
 ### F7. Native DDC without an external helper — completed
 

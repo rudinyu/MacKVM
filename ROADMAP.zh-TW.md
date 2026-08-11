@@ -66,32 +66,40 @@ MacKVM 現在透過原生 IOKit bridge 探索外接顯示器，直接傳送 DDC/
   2. 真正不同的實體配置——可重映射的按鍵（字母／數字／符號，`RemappableKeyCodes.all`，
      方向鍵、Return、Tab、所有修飾鍵都排除在外，因為這些鍵在任何配置下意義都相同）
      的 `keyDown` 現在會帶上寄送端配置產生的字元；接收端配置不同時，建立一份
-     `KeyboardLayoutReverseMap`（每次配置變更才重建一次），查出本機哪個按鍵＋
-     Shift／Option／Caps Lock 組合能產生相同字元，而不是照搬寄送端的 keyCode。
-     按住 Cmd 或 Control 的按鍵完全跳過重映射，照寄送端原本的 keyCode／flags 注入
-     ——這類按鍵是靠邏輯按鍵選快捷鍵，不是靠字元，重映射反而會出錯（例如寄送端
-     Caps Lock 剛好開著，Cmd-C 可能被誤植成 Cmd-Shift-C）。`ControlCoordinator`
-     只有在請求方的協定版本低於支援重映射的 v2 時，才會因配置不同直接拒絕（v1
-     peer 不會送字元欄位，硬放行只會在第一個可重映射按鍵時中斷連線）；v2 peer
-     配置不同不會被拒絕，交給 `RemoteInputSink` 處理，只有在某個按鍵真的在本機
-     配置上找不到對應時才會中止連線（沿用原本的保底行為）。按住某鍵觸發的
-     macOS 自動連發（auto-repeat）會沿用第一次 keyDown 算出的結果，不會每次
-     連發都重算——避免連發中途修飾鍵改變導致目標按鍵被換掉，原本按下的鍵收不到
-     對應的放開事件而卡住。
+     `KeyboardLayoutReverseMap`（每次配置變更才重建一次），查出本機哪個按鍵能產生
+     相同字元，而不是照搬寄送端的 keyCode。之後怎麼決定要送出去的 flags，看有沒有
+     按著 Cmd 或 Control：一般打字時，Shift／Option／Caps Lock 會換成本機配置產生
+     該字元所需的組合；按著 Cmd 或 Control 的按鍵，查表時固定用「無 Shift、無
+     Option、無 CapsLock」的基礎字元去找——Shift 跟 CapsLock 完全不影響查到哪個
+     按鍵——而寄送端原本的 flags（包含真的按著的 Shift，這會決定選到 Redo 還是
+     Undo 這類不同快捷鍵）原封不動送出去，只有 keyCode 是查表來的。這樣 Cmd-Z
+     在字母位置真的不同的配置（例如 Y／Z 互換的德文 QWERTZ）才會落在真正打得出
+     "z" 的鍵上，同時又不會因為寄送端 CapsLock 剛好開著，就把 Cmd-C 誤植成
+     Cmd-Shift-C。`ControlCoordinator` 只有在請求方的協定版本低於支援重映射的 v2
+     時，才會因配置不同直接拒絕（v1 peer 不會送字元欄位，硬放行只會在第一個可
+     重映射按鍵時中斷連線）；v2 peer 配置不同不會被拒絕，交給 `RemoteInputSink`
+     處理，只有在某個按鍵真的在本機配置上找不到對應時才會中止連線（沿用原本的
+     保底行為）。按住某鍵觸發的 macOS 自動連發（auto-repeat）會沿用第一次
+     keyDown 算出的結果，不會每次連發都重算——避免連發中途修飾鍵改變導致目標
+     按鍵被換掉，原本按下的鍵收不到對應的放開事件而卡住。
 
-  第一版上線前的 review 抓到 4 個真實的問題，都已修正：v1 peer 配置不同時會先
+  上線前兩輪 review 一共抓到 5 個真實的問題，都已修正：v1 peer 配置不同時會先
   授權、第一個可重映射按鍵才中斷（改用上述協定版本檢查修正）；auto-repeat 可能
-  換掉重映射目標導致卡鍵（改用上述「沿用第一次結果」修正）；Cmd／Control 快捷鍵
-  可能被 Caps Lock 或 Option 影響變成別的快捷鍵（改用上述「完全跳過重映射」修正）；
-  `UCKeyTranslate` 原本固定傳入鍵盤類型 `0`，在 ISO／JIS 等非 ANSI 實體鍵盤上會
-  悄悄選錯對應表（改成讀取 `LMGetKbdType()`）。
+  換掉重映射目標導致卡鍵（改用上述「沿用第一次結果」修正）；`UCKeyTranslate`
+  原本固定傳入鍵盤類型 `0`，在 ISO／JIS 等非 ANSI 實體鍵盤上會悄悄選錯對應表
+  （改成讀取 `LMGetKbdType()`）；Cmd／Control 快捷鍵則是修了兩次——第一次發現
+  會被 Caps Lock 或 Option 影響變成別的快捷鍵，當時的修法是完全跳過重映射；
+  結果第二次發現這樣反而會在字母位置真的不同的配置上打錯鍵（因為跳過重映射
+  連 keyCode 翻譯也一起跳過了），最後改成上述「只重映射 keyCode、flags 完全
+  不動」的做法才兩個問題一起解決。
 
   reverse-map 的查表邏輯已有
   [`KeyboardLayoutRemapTests.swift`](Tests/MacKVMCoreTests/KeyboardLayoutRemapTests.swift)
   搭配假配置驗證；`UCKeyTranslate`／`TISCopyCurrentKeyboardLayoutInputSource`
   本身沒有實機無法測試，仍需要在兩台真正使用不同實體配置（不只是切輸入法）的 Mac
-  上實測，確認 Shift／Option／Caps Lock 組合、按住連發、Cmd 快捷鍵不受重映射影響
-  都正確；有 ISO／JIS 實體鍵盤的話也一併驗證。
+  上實測，確認 Shift／Option／Caps Lock 組合、按住連發都正確；在字母位置真的
+  不同的配置（如德文 QWERTZ）上測 Cmd-Z 這類快捷鍵是否落在正確按鍵，以及 Cmd
+  快捷鍵不受寄送端 CapsLock 影響；有 ISO／JIS 實體鍵盤的話也一併驗證。
 
 ## 剩餘的 P0／P1
 

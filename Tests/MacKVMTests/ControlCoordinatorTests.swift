@@ -58,6 +58,61 @@ final class ControlCoordinatorTests: XCTestCase {
         )
     }
 
+    /// A v1 peer never sends the RemoteInputEvent.character field remapping
+    /// needs, so admitting it under a differing layout would only grant
+    /// control to end it on the first remappable keystroke. Denying it here
+    /// instead, before the consent prompt, is the one case where a layout
+    /// mismatch is still denied outright.
+    func testMismatchedKeyboardLayoutFromLegacyPeerIsDeniedBeforeConsentPrompt() {
+        let fixture = makeFixture(
+            keyboardLayoutIdentifier: "com.apple.keylayout.US"
+        )
+        let requestID = UUID()
+        fixture.transport.deliver(
+            ControlMessage(
+                kind: .requestControl,
+                requestID: requestID,
+                protocolVersion: 1,
+                minimumProtocolVersion: 1,
+                keyboardLayoutIdentifier: "com.apple.keylayout.ABC"
+            )
+        )
+        drainMainQueue()
+
+        XCTAssertNil(fixture.coordinator.pendingIncomingControlRequest)
+        XCTAssertTrue(
+            fixture.transport.sentMessages.contains(
+                controlMessage(.controlDenied, requestID)
+            )
+        )
+        XCTAssertTrue(fixture.coordinator.status.contains("keyboard layout"))
+    }
+
+    /// The legacy-peer gate above is specifically about a *differing*
+    /// layout, not about the peer's version by itself: a v1 peer with a
+    /// matching layout has nothing to remap and must be admitted normally.
+    func testMatchingKeyboardLayoutFromLegacyPeerIsNotDenied() {
+        let fixture = makeFixture(
+            keyboardLayoutIdentifier: "com.apple.keylayout.US"
+        )
+        let requestID = UUID()
+        fixture.transport.deliver(
+            ControlMessage(
+                kind: .requestControl,
+                requestID: requestID,
+                protocolVersion: 1,
+                minimumProtocolVersion: 1,
+                keyboardLayoutIdentifier: "com.apple.keylayout.US"
+            )
+        )
+        drainMainQueue()
+
+        XCTAssertEqual(
+            fixture.coordinator.pendingIncomingControlRequest?.id,
+            requestID
+        )
+    }
+
     func testInboundAdmissionOverflowDisconnectsTransport() {
         let fixture = makeFixture()
 

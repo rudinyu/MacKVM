@@ -450,11 +450,20 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
         // actually depends on the layout; see RemoteInputEvent.character.
         let character: String?
         if kind == .keyDown, RemappableKeyCodes.all.contains(keyCode) {
+            // Command/Control select an application shortcut by logical key,
+            // not by the character the key types with its current
+            // modifiers, so the unmodified base character is sent instead —
+            // the receiver looks up the same key regardless of whether Caps
+            // Lock or Shift happens to be on, and applies the sender's
+            // actual flags (including a real Shift, which selects a
+            // different shortcut such as Redo instead of Undo) unchanged.
+            let isShortcut = event.flags.contains(.maskCommand)
+                || event.flags.contains(.maskControl)
             character = CarbonKeyboardLayout.currentTranslator()?.character(
                 forKeyCode: keyCode,
-                shift: event.flags.contains(.maskShift),
-                option: event.flags.contains(.maskAlternate),
-                capsLock: event.flags.contains(.maskAlphaShift)
+                shift: !isShortcut && event.flags.contains(.maskShift),
+                option: !isShortcut && event.flags.contains(.maskAlternate),
+                capsLock: !isShortcut && event.flags.contains(.maskAlphaShift)
             )
         } else {
             character = nil
@@ -525,17 +534,30 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
 /// covers the overwhelming common case (matching layouts, or a key outside
 /// `RemappableKeyCodes.all`): inject the sender's own keyCode unchanged,
 /// exactly as before this feature existed. `.remapped` carries the local key
-/// and modifier combination a `KeyboardLayoutReverseMap` lookup found for the
-/// sender's character.
+/// a `KeyboardLayoutReverseMap` lookup found for the sender's character.
+///
+/// `applyModifiers` distinguishes what the lookup was *for*. For plain
+/// typing it is true: `RemappedKeyTarget`'s Shift/Option/Caps Lock recipe
+/// must be applied so the injected key reproduces the sender's exact
+/// character. For a Command/Control-held key it is false: only the keycode
+/// came from the lookup (using the character the key produces with no
+/// modifiers, so a Caps Lock or Shift the sender happened to be holding
+/// cannot change which key was found), and the sender's original flags —
+/// including its own Shift, which selects a different shortcut such as Redo
+/// instead of Undo — are injected completely unchanged. Remapping only the
+/// keycode, never the flags, is what keeps Command-Z landing on the local
+/// key that actually produces "z" on a layout where Y and Z are swapped,
+/// without also being able to turn Command-C into Command-Shift-C because
+/// the sender's Caps Lock happened to be on.
 private enum KeyInjectionTarget {
     case identity(keyCode: UInt16)
-    case remapped(RemappedKeyTarget)
+    case remapped(RemappedKeyTarget, applyModifiers: Bool)
 
     var keyCode: UInt16 {
         switch self {
         case .identity(let keyCode):
             return keyCode
-        case .remapped(let target):
+        case .remapped(let target, _):
             return target.keyCode
         }
     }
@@ -880,21 +902,6 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
         for input: RemoteInputEvent,
         remoteKeyCode: UInt16
     ) -> KeyInjectionTarget? {
-        let modifierFlags = CGEventFlags(rawValue: input.modifierFlags)
-        guard !modifierFlags.contains(.maskCommand),
-              !modifierFlags.contains(.maskControl) else {
-            // Command/Control select an application shortcut by logical key,
-            // not by the character the key types, so remapping them is the
-            // wrong operation, not just an unnecessary one: the reverse map
-            // is keyed by character, and the sender's character reflects
-            // Shift/Option/Caps Lock, none of which the shortcut cares
-            // about. Recomputing them to match a character the receiver
-            // never asked for could turn, for example, Command-C into
-            // Command-Shift-C. These keys inject with the sender's own
-            // keycode and flags unchanged, exactly as before cross-layout
-            // remapping existed.
-            return .identity(keyCode: remoteKeyCode)
-        }
         guard let remoteLayout = input.keyboardLayoutIdentifier,
               let localLayout = CarbonKeyboardLayout.currentIdentifier(),
               remoteLayout != localLayout,
@@ -911,7 +918,10 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
         guard let target = reverseMap?.target(for: character) else {
             return nil
         }
-        return .remapped(target)
+        let modifierFlags = CGEventFlags(rawValue: input.modifierFlags)
+        let isShortcut = modifierFlags.contains(.maskCommand)
+            || modifierFlags.contains(.maskControl)
+        return .remapped(target, applyModifiers: !isShortcut)
     }
 
     private func refreshReverseMapIfNeeded(for localLayout: String) {
@@ -1082,12 +1092,17 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
         for input: RemoteInputEvent,
         remap: KeyInjectionTarget? = nil
     ) -> CGEventFlags {
-        if let remap, case .remapped(let target) = remap {
-            // computeKeyInjectionTarget never returns .remapped while
-            // Command or Control is held, so only Shift/Option/Caps Lock
-            // need replacing here with whatever this local layout needs to
-            // produce the sender's character, which may differ from what
-            // the sender itself held.
+        if let remap, case .remapped(let target, let applyModifiers) = remap {
+            guard applyModifiers else {
+                // Only the keycode came from the lookup (see
+                // KeyInjectionTarget); the sender's own flags — Command,
+                // Control, and whatever Shift/Option/Caps Lock it actually
+                // held — pass through completely unchanged.
+                return CGEventFlags(rawValue: input.modifierFlags)
+            }
+            // Shift/Option/Caps Lock are replaced with whatever this local
+            // layout needs to produce the sender's character, which may
+            // differ from what the sender itself held.
             var flags = CGEventFlags(rawValue: input.modifierFlags)
             flags.remove([.maskShift, .maskAlternate, .maskAlphaShift])
             if target.shift { flags.insert(.maskShift) }

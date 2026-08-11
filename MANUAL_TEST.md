@@ -184,11 +184,12 @@ Expected:
     Dvorak or a European ABC layout on the other). Request control, then type
     letters, numbers, and symbol keys, including combinations that need Shift,
     Option, and Caps Lock on at least one of the two layouts.
-15. Still on differing layouts, use a Cmd-modified shortcut that involves a
-    remappable key (for example Cmd-C to copy selected text) on the
+15. Still on differing layouts — ideally with one Mac set to a layout where
+    letter positions genuinely move, such as German QWERTZ, where Y and Z
+    trade places relative to US — use Cmd-Z to undo an action on the
     controlling Mac.
 16. Still on differing layouts, turn Caps Lock on on the controlling Mac, then
-    repeat the same Cmd-modified shortcut from step 15.
+    repeat the same Cmd-Z shortcut from step 15.
 17. Still on differing layouts, hold a remappable letter key on the
     controlling Mac long enough for macOS's own key-repeat to kick in, release
     Shift partway through the hold without releasing the letter key, then
@@ -235,12 +236,13 @@ Expected:
   receiver's layout. Keys outside the remapped set — arrows, Return, Tab,
   Delete, Escape, Space, function keys, and modifiers — behave identically to
   same-layout control.
-- The Cmd-modified shortcut in steps 15 and 16 fires its normal action (for
-  example the selection is copied) both with and without Caps Lock on. Caps
-  Lock must not change which shortcut fires (no Command-Shift-C in place of
-  Command-C): Cmd-held keys bypass remapping entirely and inject with the
-  sender's own keycode and flags, so this must behave identically to
-  same-layout control regardless of the two Macs' keyboard layouts.
+- Cmd-Z in step 15 fires Undo on the receiving Mac even though the letter
+  positions differ between the two layouts — it must land on the receiver's
+  key that actually produces "z", not on whatever the sender's raw keycode
+  means locally (which, on a US-sender/German-receiver pairing, would be
+  "y"). Step 16 confirms the same shortcut fires identically with the
+  sender's Caps Lock on: it must not turn into Command-Shift-Z (Redo) or
+  anything else.
 - In step 17, the receiving Mac shows the repeated character only for as long
   as the key is actually held, and releasing the key leaves nothing stuck
   down or still repeating — releasing Shift mid-hold must not change which
@@ -256,10 +258,10 @@ Expected:
   as receiver, are unaffected.
 - In step 21, the ISO/JIS-specific keys type the correct character, not
   whatever an ANSI interpretation of the same position would produce.
-- The volume and brightness keys in step 18 change the setting only on the
+- The volume and brightness keys in step 22 change the setting only on the
   receiving Mac, with its own on-screen indicator; the controlling Mac's own
   volume/brightness is unaffected.
-- The power key in step 19 has no effect on either Mac — no shutdown or sleep
+- The power key in step 23 has no effect on either Mac — no shutdown or sleep
   dialog appears on the receiver. Caps Lock toggles correctly and only once
   per physical press.
 

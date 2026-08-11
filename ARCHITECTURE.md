@@ -271,19 +271,25 @@ control to end it on the first remappable keystroke. A v2 peer's differing
 layout is not denied, since `RemoteInputSink` resolves it instead. Each
 `keyDown` for a letter, digit, or symbol key also carries the character the
 sender's own layout and modifier state produced for it. When the receiver's
-layout differs, it looks up which local key and Shift/Option/Caps Lock
-combination produce that same character — built once per layout change into a
-`KeyboardLayoutReverseMap`, and reused for the rest of a held key's auto-repeat
-so a modifier changing mid-hold cannot retarget a live press to a different
-local key — and injects that key instead of the sender's keycode, which would
-mean something else under a different layout. A key held with Command or
-Control bypasses remapping entirely: those select an application shortcut by
-logical key, not by the character the key types, and remapping them could
-turn (for example) Command-C into Command-Shift-C when the sender's Caps Lock
-happens to be on, so they inject with the sender's own keycode and flags
-unchanged, exactly as every key did before remapping existed. A key with no
-equivalent on the receiver's layout ends remote input safely rather than
-injecting the wrong character. Keys outside that letter/digit/symbol set
+layout differs, it looks up which local key produces that same character —
+built once per layout change into a `KeyboardLayoutReverseMap`, and reused for
+the rest of a held key's auto-repeat so a modifier changing mid-hold cannot
+retarget a live press to a different local key — and injects that key instead
+of the sender's keycode, which would mean something else under a different
+layout. What happens to the injected event's flags then depends on whether
+Command or Control was held. For plain typing, Shift/Option/Caps Lock are
+replaced with whatever combination the local layout needs to reproduce the
+sender's character. For a key held with Command or Control, the character
+used for that lookup is always the key's unmodified character — Shift and
+Caps Lock never affect which local key is found — and every flag the sender
+held, including a real Shift that selects a different shortcut such as Redo
+instead of Undo, passes through completely unchanged: only the keycode came
+from the lookup. This is what keeps Command-Z landing on the local key that
+actually produces "z" on a layout where Y and Z are swapped (for example
+German QWERTZ), without also letting an incidental Caps Lock turn Command-C
+into Command-Shift-C. A key with no equivalent on the receiver's layout ends
+remote input safely rather than injecting the wrong character. Keys outside
+that letter/digit/symbol set
 (arrows, Return, Tab, Delete, Escape, Space, function keys, and every
 modifier) occupy the same physical position on every layout and are injected
 by keycode exactly as before. Missing identifiers remain accepted for legacy
