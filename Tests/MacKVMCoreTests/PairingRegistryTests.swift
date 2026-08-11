@@ -154,6 +154,7 @@ final class PairingRegistryTests: XCTestCase {
             registry.recordConnection(
                 for: peerID,
                 model: "MacBookPro18,4",
+                friendlyName: "Advertised Mac",
                 at: secondConnection
             )
         )
@@ -171,6 +172,70 @@ final class PairingRegistryTests: XCTestCase {
             PeerKeyFingerprint.string(for: peer.signingPublicKey)
         )
         XCTAssertEqual(profile?.keyFingerprint.split(separator: ":").count, 32)
+    }
+
+    func testLegacyPairingWithoutProfileDoesNotSynthesizePersistentMetadata() throws {
+        let peerID = UUID()
+        let publicKey = P256.Signing.PrivateKey()
+            .publicKey.x963Representation
+        defaults.set(
+            try JSONEncoder().encode([peerID.uuidString: publicKey]),
+            forKey: "legacy"
+        )
+
+        let registry = PairingRegistry(
+            defaults: defaults,
+            storageKey: "legacy"
+        )
+
+        XCTAssertTrue(registry.contains(peerID))
+        XCTAssertNil(registry.profile(for: peerID))
+        XCTAssertTrue(registry.pairedPeerProfiles.isEmpty)
+        XCTAssertTrue(
+            registry.recordConnection(
+                for: peerID,
+                model: "MacBookPro18,3",
+                friendlyName: "Trusted Studio Mac"
+            )
+        )
+        XCTAssertEqual(
+            registry.profile(for: peerID)?.friendlyName,
+            "Trusted Studio Mac"
+        )
+    }
+
+    func testAuthenticatedNameReplacesPersistedGeneratedFallback() {
+        let peerID = UUID()
+        let peer = PeerIdentity(
+            id: peerID,
+            name: "Trusted Studio Mac",
+            signingPublicKey: P256.Signing.PrivateKey()
+                .publicKey.x963Representation
+        )
+        let registry = PairingRegistry(
+            defaults: defaults,
+            storageKey: "legacy-profile"
+        )
+
+        registry.add(peer)
+        let generatedName = "Mac \(peerID.uuidString.prefix(8))"
+        XCTAssertTrue(
+            registry.updateFriendlyName(
+                for: peerID,
+                friendlyName: generatedName
+            )
+        )
+        XCTAssertTrue(
+            registry.recordConnection(
+                for: peerID,
+                friendlyName: peer.name
+            )
+        )
+
+        XCTAssertEqual(
+            registry.profile(for: peerID)?.friendlyName,
+            peer.name
+        )
     }
 
     func testProfileMetadataIsRemovedWhenPairingIsRemoved() {

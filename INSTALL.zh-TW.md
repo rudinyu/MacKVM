@@ -10,13 +10,10 @@
 - 兩台 Mac 都使用 macOS 13 或更新版本。
 - 兩台 Mac 位於同一個可信任的本機網路。
 - 建置 MacKVM 的電腦安裝 Swift 6 toolchain 或 Xcode。
-- 選用：在 Apple Silicon 上安裝 `m1ddc`，自動切換 MA270U 輸入來源。
+- 外接螢幕與線材需提供 VESA DDC/CI；若螢幕 OSD 有 DDC/CI 選項，請先開啟。
 
-安裝選用的 DDC 工具：
-
-```sh
-brew install m1ddc
-```
+MacKVM 使用原生 IOKit DDC/CI：Apple Silicon 走 `IOAVService`，Intel 走 `IOI2C`。
+不需要安裝 Homebrew 工具，兩台 Mac 都能使用自動輸入切換。
 
 ## 建置 app
 
@@ -43,7 +40,7 @@ Intel Mac。建置腳本會驗證 Mach-O 架構與 ad-hoc 簽章。
 ./scripts/verify-release.sh \
   --app dist/universal/MacKVM.app \
   --arch universal
-(cd dist && shasum -a 256 -c MacKVM-0.7.1-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-0.8.0-universal.dmg.sha256)
 ```
 
 ad-hoc 簽章只適合本機測試。要提供給其他 Mac，請使用 Developer ID Application、
@@ -76,8 +73,10 @@ bundle，不要使用 `swift run`，因為 app bundle 包含 Bonjour 與本機�
 1. 用 USB-C 視訊／資料連接埠將 M5 Pro 接到 MA270U。
 2. 將 Intel Mac 接 HDMI 1；若使用 HDMI 2，後續所有輸入選擇器都一致使用 HDMI 2。
 3. 在兩台 Mac 都把 MA270U 設為主要顯示器。
-4. 在 M5 Pro 按 **Detect MA270U**，選取已驗證的 MA270U，再按 **M5 / USB-C preset**。
-5. 在 Intel Mac 按 **Intel / HDMI preset**。
+4. 在任一台 Mac 按 **Detect DDC-capable displays**，明確選取要控制的外接螢幕，再套用
+   相符的預設。
+5. M5 Pro 的 **M5 / USB-C preset** 會選取本機 USB-C、另一台 HDMI 1；Intel Mac 的
+   **Intel / HDMI preset** 會選取本機 HDMI 1，且同樣啟用原生 DDC/CI。
 6. 鍵盤與滑鼠接在 M5 Pro 或 MA270U USB hub 時，選 **One keyboard on M5 Pro
    (USB-C)**；HDMI 不會傳送 USB 資料。
 7. 用 **Show this Mac** 與 **Show other Mac** 測試切換。DDC/CI 失敗時查看診斷文字，

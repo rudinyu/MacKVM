@@ -11,13 +11,12 @@ Silicon M5 Pro MacBook Pro connected to a BenQ MA270U over USB-C, and a 2019
 - macOS 13 or later on both Macs.
 - A trusted local network shared by both Macs.
 - Swift 6 toolchain or Xcode on the Mac used to build the app.
-- Optional: `m1ddc` on Apple Silicon for automatic MA270U input switching.
+- An external monitor and connection that expose VESA DDC/CI. Enable DDC/CI
+  in the monitor OSD when the setting is available.
 
-Install the optional DDC helper:
-
-```sh
-brew install m1ddc
-```
+MacKVM uses native IOKit DDC/CI: `IOAVService` on Apple Silicon and `IOI2C`
+on Intel. There is no Homebrew helper to install, and the same automatic input
+switching flow is available on both Macs.
 
 ## Build the app
 
@@ -45,7 +44,7 @@ Create and verify a universal DMG for local testing:
 ./scripts/verify-release.sh \
   --app dist/universal/MacKVM.app \
   --arch universal
-(cd dist && shasum -a 256 -c MacKVM-0.7.1-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-0.8.0-universal.dmg.sha256)
 ```
 
 Ad-hoc signing is suitable only for local testing. For distribution to
@@ -83,9 +82,11 @@ Bonjour and Local Network privacy metadata.
 2. Connect the Intel Mac to HDMI 1, or use HDMI 2 consistently in both input
    pickers if that is the chosen port.
 3. Set the MA270U as the main display on both Macs.
-4. On the M5 Pro, select **Detect MA270U**, choose the verified MA270U display,
-   then select **M5 / USB-C preset**.
-5. On the Intel Mac, select **Intel / HDMI preset**.
+4. On either Mac, select **Detect DDC-capable displays** and choose the
+   intended external display explicitly, then select the matching preset.
+5. On the M5 Pro, **M5 / USB-C preset** selects USB-C locally and HDMI 1 on
+   the other Mac. On the Intel Mac, **Intel / HDMI preset** selects HDMI 1
+   locally and keeps native DDC enabled.
 6. Select **One keyboard on M5 Pro (USB-C)** when the keyboard and mouse are
    connected to the M5 Pro or the MA270U USB hub. HDMI does not carry USB data.
 7. Use **Show this Mac** and **Show other Mac** to verify switching. If DDC/CI

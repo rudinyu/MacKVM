@@ -24,6 +24,10 @@ public struct SecureSessionHandshake: Codable, Equatable, Sendable {
     public let sessionID: UUID
     public let role: SecureSessionRole
     public let sender: PeerIdentity
+    /// An optional signed hardware model. It is optional on the wire so a
+    /// newer release can still authenticate a handshake from an older peer;
+    /// callers must treat nil as unknown rather than consulting Bonjour TXT.
+    public let senderModel: String?
     public let ephemeralPublicKey: Data
     public let nonce: Data
 
@@ -31,26 +35,59 @@ public struct SecureSessionHandshake: Codable, Equatable, Sendable {
         sessionID: UUID,
         role: SecureSessionRole,
         sender: PeerIdentity,
+        senderModel: String? = nil,
         ephemeralPublicKey: Data,
         nonce: Data
     ) {
         self.sessionID = sessionID
         self.role = role
         self.sender = sender
+        self.senderModel = senderModel.map {
+            PeerMetadataValidation.validatedModel($0)
+        }
         self.ephemeralPublicKey = ephemeralPublicKey
         self.nonce = nonce
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sessionID
+        case role
+        case sender
+        case senderModel
+        case ephemeralPublicKey
+        case nonce
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            sessionID: try container.decode(UUID.self, forKey: .sessionID),
+            role: try container.decode(SecureSessionRole.self, forKey: .role),
+            sender: try container.decode(PeerIdentity.self, forKey: .sender),
+            senderModel: try container.decodeIfPresent(
+                String.self,
+                forKey: .senderModel
+            ),
+            ephemeralPublicKey: try container.decode(
+                Data.self,
+                forKey: .ephemeralPublicKey
+            ),
+            nonce: try container.decode(Data.self, forKey: .nonce)
+        )
     }
 
     public static func make(
         sessionID: UUID = UUID(),
         role: SecureSessionRole,
         sender: PeerIdentity,
+        senderModel: String? = nil,
         ephemeralKey: P256.KeyAgreement.PrivateKey
     ) -> SecureSessionHandshake {
         SecureSessionHandshake(
             sessionID: sessionID,
             role: role,
             sender: sender,
+            senderModel: senderModel,
             ephemeralPublicKey: ephemeralKey.publicKey.x963Representation,
             nonce: PairingVerificationCode.makeContribution()
         )
@@ -90,13 +127,42 @@ public enum SecureSessionWireCodec {
         handshake: SecureSessionHandshake,
         signingWith privateKey: P256.Signing.PrivateKey
     ) throws -> Data {
-        let handshakeData = try CanonicalJSON.encoder().encode(handshake)
+        // Keep the base handshake byte-for-byte compatible with older
+        // releases. The model is an optional, separately signed extension;
+        // older peers ignore the additional envelope fields and still verify
+        // the original handshake signature.
+        let baseHandshake = SecureSessionHandshake(
+            sessionID: handshake.sessionID,
+            role: handshake.role,
+            sender: handshake.sender,
+            ephemeralPublicKey: handshake.ephemeralPublicKey,
+            nonce: handshake.nonce
+        )
+        let handshakeData = try CanonicalJSON.encoder().encode(baseHandshake)
         let signature = try privateKey.signature(for: handshakeData)
+        let modelSignature: Data?
+        if let senderModel = handshake.senderModel {
+            let extensionData = try CanonicalJSON.encoder().encode(
+                HandshakeModelExtension(
+                    sessionID: handshake.sessionID,
+                    role: handshake.role,
+                    senderID: handshake.sender.id,
+                    model: senderModel
+                )
+            )
+            modelSignature = try privateKey.signature(
+                for: extensionData
+            ).derRepresentation
+        } else {
+            modelSignature = nil
+        }
         return try frame(
             WireEnvelope(
                 kind: .handshake,
-                handshake: handshake,
+                handshake: baseHandshake,
                 signature: signature.derRepresentation,
+                senderModel: handshake.senderModel,
+                senderModelSignature: modelSignature,
                 packet: nil
             )
         )
@@ -108,6 +174,8 @@ public enum SecureSessionWireCodec {
                 kind: .packet,
                 handshake: nil,
                 signature: nil,
+                senderModel: nil,
+                senderModelSignature: nil,
                 packet: packet
             )
         )
@@ -166,7 +234,45 @@ public enum SecureSessionWireCodec {
             guard publicKey.isValidSignature(signature, for: data) else {
                 throw SecureSessionError.invalidSignature
             }
-            return .handshake(handshake)
+            let model: String?
+            switch (envelope.senderModel, envelope.senderModelSignature) {
+            case (nil, nil):
+                model = nil
+            case let (.some(senderModel), .some(modelSignatureData)):
+                guard let modelSignature = try? P256.Signing.ECDSASignature(
+                    derRepresentation: modelSignatureData
+                ),
+                      PeerMetadataValidation.validatedModel(senderModel)
+                        == senderModel else {
+                    throw SecureSessionError.invalidHandshake
+                }
+                let extensionData = try CanonicalJSON.encoder().encode(
+                    HandshakeModelExtension(
+                        sessionID: handshake.sessionID,
+                        role: handshake.role,
+                        senderID: handshake.sender.id,
+                        model: senderModel
+                    )
+                )
+                guard publicKey.isValidSignature(
+                    modelSignature,
+                    for: extensionData
+                ) else {
+                    throw SecureSessionError.invalidSignature
+                }
+                model = senderModel
+            default:
+                throw SecureSessionError.invalidHandshake
+            }
+            let authenticatedHandshake = SecureSessionHandshake(
+                sessionID: handshake.sessionID,
+                role: handshake.role,
+                sender: handshake.sender,
+                senderModel: model,
+                ephemeralPublicKey: handshake.ephemeralPublicKey,
+                nonce: handshake.nonce
+            )
+            return .handshake(authenticatedHandshake)
         case .packet:
             guard let packet = envelope.packet,
                   envelope.handshake == nil,
@@ -337,5 +443,16 @@ private struct WireEnvelope: Codable {
     let kind: WireKind
     let handshake: SecureSessionHandshake?
     let signature: Data?
+    let senderModel: String?
+    let senderModelSignature: Data?
     let packet: SecurePacket?
+}
+
+/// Signed separately from the legacy handshake so adding device metadata does
+/// not change the bytes older peers verify or the transcript they derive.
+private struct HandshakeModelExtension: Codable {
+    let sessionID: UUID
+    let role: SecureSessionRole
+    let senderID: UUID
+    let model: String
 }

@@ -9,23 +9,19 @@ final class MonitorRoutingTests: XCTestCase {
         XCTAssertEqual(MonitorInputSource.usbC.rawValue, 27)
     }
 
-    func testCommandTargetsSelectedDisplay() {
+    func testNativeDDCCommandTargetsInputVCP60() {
         XCTAssertEqual(
-            M1DDCCommand.arguments(
-                displaySelector: "1",
-                input: .usbC
-            ),
-            ["display", "1", "set", "input", "27"]
+            NativeDDCCommand.setInputPacket(for: .usbC),
+            [0x51, 0x84, 0x03, 0x60, 0x00, 0x1B, 0xC3]
         )
     }
 
-    func testBlankSelectorUsesDefaultDisplay() {
-        XCTAssertEqual(
-            M1DDCCommand.arguments(
-                displaySelector: "  ",
-                input: .hdmi1
-            ),
-            ["set", "input", "17"]
-        )
+    func testNativeDDCCommandChecksumChangesWithInput() {
+        let hdmi = NativeDDCCommand.setInputPacket(for: .hdmi1)
+        let displayPort = NativeDDCCommand.setInputPacket(for: .displayPort1)
+
+        XCTAssertEqual(hdmi, [0x51, 0x84, 0x03, 0x60, 0x00, 0x11, 0xC9])
+        XCTAssertNotEqual(hdmi.last, displayPort.last)
+        XCTAssertEqual(displayPort[5], UInt8(MonitorInputSource.displayPort1.rawValue))
     }
 }

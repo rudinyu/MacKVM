@@ -75,6 +75,7 @@ public final class PairingRegistry {
     public func recordConnection(
         for peerID: UUID,
         model: String? = nil,
+        friendlyName: String? = nil,
         at date: Date = Date()
     ) -> Bool {
         lock.lock()
@@ -82,9 +83,25 @@ public final class PairingRegistry {
         let peers = loadPairedPeers()
         guard let publicKey = peers[peerID] else { return false }
         let existing = loadProfiles(for: peers)[peerID]
+        let generatedName = generatedFriendlyName(for: peerID)
+        let authenticatedName = PeerIdentity.validatedDisplayName(
+            friendlyName ?? ""
+        )
+        let retainedName: String
+        if let existingName = existing?.friendlyName,
+           existingName != generatedName {
+            // Keep an explicitly chosen name, including one that happens to
+            // differ from the currently advertised signed identity name.
+            retainedName = existingName
+        } else {
+            // Older releases persisted this generated fallback on first
+            // connection. Replace that exact value once a signed connection
+            // supplies the peer's validated name.
+            retainedName = authenticatedName ?? generatedName
+        }
         let profile = PairedPeerProfile(
             peerID: peerID,
-            friendlyName: existing?.friendlyName ?? "Mac \(peerID.uuidString.prefix(8))",
+            friendlyName: retainedName,
             model: preferredModel(model, existing: existing?.model),
             lastConnectedAt: date,
             signingPublicKey: publicKey
@@ -244,13 +261,6 @@ public final class PairingRegistry {
                 publicKey: publicKey
             ) {
                 result[peerID] = profile
-            } else {
-                result[peerID] = PairedPeerProfile(
-                    peerID: peerID,
-                    friendlyName: "Mac \(peerID.uuidString.prefix(8))",
-                    model: nil,
-                    signingPublicKey: publicKey
-                )
             }
         }
     }
@@ -293,6 +303,10 @@ public final class PairingRegistry {
             return existing
         }
         return validated
+    }
+
+    private func generatedFriendlyName(for peerID: UUID) -> String {
+        "Mac \(peerID.uuidString.prefix(8))"
     }
 
     private func persistProfiles(_ profiles: [String: PairedPeerProfile]) {

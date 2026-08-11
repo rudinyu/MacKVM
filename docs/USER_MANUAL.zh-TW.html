@@ -43,7 +43,7 @@
 <body>
   <main>
     <header>
-      <div class="badge">MacKVM 0.7.1</div>
+      <div class="badge">MacKVM 0.8.0</div>
       <h1>MacKVM 使用手冊</h1>
       <p class="lede">讓兩台 MacBook Pro 共用一組鍵盤、滑鼠與 BenQ MA270U 螢幕的 macOS 選單列工具。</p>
       <p><a href="USER_MANUAL.html" lang="en">English Version</a> · <a href="USER_MANUAL.zh-TW.md">Markdown 版本</a></p>
@@ -96,7 +96,7 @@
       <p>要建立 DMG，可使用：</p>
       <pre><code>./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist &amp;&amp; shasum -a 256 -c MacKVM-0.7.1-universal.dmg.sha256)</code></pre>
+(cd dist &amp;&amp; shasum -a 256 -c MacKVM-0.8.0-universal.dmg.sha256)</code></pre>
       <p>DMG 會從乾淨的暫存目錄建立，並在旁邊產生可攜式 SHA-256 檔案；驗證結果應顯示 <strong>OK</strong>。</p>
       <p>未提供 Developer ID 時是 ad-hoc 簽章，只適合本機測試；跨電腦散布前請用
         <code>--sign "Developer ID Application: …" --require-developer-id</code>，
@@ -132,12 +132,12 @@
       </table>
       <ol>
         <li>在 MA270U 的螢幕選單（OSD）啟用 DDC/CI，如該選項可用。</li>
-        <li>在 M5 Pro 安裝選用的自動切換工具：<code>brew install m1ddc</code>。</li>
-        <li>在 M5 Pro 按 <strong>Detect MA270U</strong>，只選擇結果中明確標示為 MA270U 的螢幕。MacKVM 會保存穩定的 m1ddc 識別碼，而不是假設螢幕永遠是編號 1；未辨識為 MA270U 的螢幕不能啟用自動切換。</li>
-        <li>在 M5 Pro 選擇 <strong>M5 / USB-C preset</strong>；在 Intel Mac 選擇 <strong>Intel / HDMI preset</strong>。</li>
+        <li>MacKVM 使用原生 IOKit DDC/CI：Apple Silicon 走 <code>IOAVService</code>，Intel 走 <code>IOI2C</code>，不需要 Homebrew 工具。</li>
+        <li>在任一台 Mac 按 <strong>Detect DDC-capable displays</strong>，明確選取要控制的螢幕。MacKVM 保存原生穩定識別碼，不會假設螢幕永遠是編號 1。</li>
+        <li>在 M5 Pro 選擇 <strong>M5 / USB-C preset</strong>；在 Intel Mac 選擇 <strong>Intel / HDMI preset</strong>，兩種架構都能使用原生自動 DDC/CI。</li>
         <li>先以 <strong>Show this Mac</strong> 與 <strong>Show other Mac</strong> 確認切換，再開始遠端控制。失敗時先閱讀 <strong>DDC diagnostic</strong>。</li>
       </ol>
-      <p>若 Intel Mac 接在 HDMI 2，請將所有對應的輸入選擇改成 HDMI 2。Intel Mac 不支援由 <code>m1ddc</code> 自動切換，切換失敗時請用 MA270U OSD 手動選擇輸入來源。</p>
+      <p>若 Intel Mac 接在 HDMI 2，請將所有對應的輸入選擇改成 HDMI 2。螢幕與線材必須提供 DDC/CI；切換失敗時請查看診斷並用螢幕 OSD 手動選擇輸入來源。</p>
     </section>
 
     <section id="permissions">
@@ -224,7 +224,7 @@
       <h3>收不到控制請求通知</h3>
       <p>建議先在 Set up this Mac 的 <strong>Control request notifications</strong> 按 Enable。若之前拒絕，請到「系統設定 → 通知 → MacKVM」開啟通知。通知被停用時，請求仍會保留在 MacKVM 選單中，鍵盤選單列圖示也會加上驚嘆號提醒你處理。</p>
       <h3>螢幕沒有自動切換</h3>
-      <p>先在 M5 Pro 執行 <code>brew install m1ddc</code>，確認 USB-C 連接 MA270U、OSD 的 DDC/CI 已開啟。再按 <strong>Detect MA270U</strong> 並選擇偵測到的螢幕；仍失敗時查看 DDC diagnostic，然後用螢幕 OSD 手動選 USB-C 或 HDMI。</p>
+      <p>確認螢幕與線材提供 DDC/CI，按 <strong>Detect DDC-capable displays</strong> 並明確選取螢幕；仍失敗時查看 DDC diagnostic，然後用螢幕 OSD 手動選 USB-C 或 HDMI。</p>
       <h3>登入後沒有出現圖示</h3>
       <p>先手動啟動 MacKVM，在選單中重新開啟 <strong>Launch MacKVM at Login</strong>，並檢查「系統設定 → 一般 → 登入項目」是否需要核准。</p>
       <h3>啟動時顯示 identity 或 Keychain 不一致</h3>
@@ -234,7 +234,7 @@
     </section>
 
     <footer>
-      <p>MacKVM 使用手冊 · 對應版本 0.7.1 · 最後更新 2026-08-11</p>
+      <p>MacKVM 使用手冊 · 對應版本 0.8.0 · 最後更新 2026-08-11</p>
     </footer>
   </main>
 </body>

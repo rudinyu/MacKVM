@@ -57,7 +57,6 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
     private var listener: NWListener?
     private var browser: NWBrowser?
     private var peersByID: [UUID: [SecureServicePeer]] = [:]
-    private var advertisedModelsByID: [UUID: String] = [:]
     private var peerCandidateIndices: [UUID: Int] = [:]
     private var preferredPeerEndpoints: [UUID: NWEndpoint] = [:]
     private var contexts: [ObjectIdentifier: SessionConnectionContext] = [:]
@@ -111,7 +110,6 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             listener = nil
             browser = nil
             peersByID.removeAll()
-            advertisedModelsByID.removeAll()
             peerCandidateIndices.removeAll()
             preferredPeerEndpoints.removeAll()
             activeContextID = nil
@@ -306,6 +304,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         let hello = SecureSessionHandshake.make(
             role: .initiator,
             sender: credentials.identity,
+            senderModel: localModel,
             ephemeralKey: ephemeralKey
         )
         let context = SessionConnectionContext(
@@ -313,7 +312,6 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             expectedPeer: peer.identity,
             localRole: .initiator,
             candidateEndpoint: peer.endpoint,
-            peerModel: peer.model,
             localEphemeralKey: ephemeralKey,
             initiatorHandshake: hello,
             maximumPacketsPerSecond: Self.maximumInboundPacketsPerSecond,
@@ -348,7 +346,17 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                     message: "Secure connection failed: \(error.localizedDescription)"
                 )
             case .cancelled:
-                remove(context)
+                // A cancelled unauthenticated outbound connection can be a
+                // send failure after the endpoint accepted TCP. Advance to
+                // the next bounded Bonjour candidate so one broken endpoint
+                // cannot pin reconnects forever. Intentional cancellations
+                // remove the context synchronously first, making this branch
+                // unreachable for disconnect/revoke/collision teardown.
+                remove(
+                    context,
+                    advanceCandidate: context.localRole == .initiator
+                        && !context.isAuthenticated
+                )
             default:
                 break
             }
@@ -488,12 +496,12 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                     advertisement,
                     SecureServicePeer(
                         identity: advertisement.identity,
-                        model: advertisement.model,
                         endpoint: result.endpoint
                     )
                 )
             }
-            peersByID = PeerIdentityAdmission.resolvePinned(
+            let previousPeersByID = self.peersByID
+            let resolvedPeersByID = PeerIdentityAdmission.resolvePinned(
                 candidates,
                 pinnedKeys: registry.pairedPeers,
                 maximumCandidatesPerID: Self.maximumPeerCandidatesPerID,
@@ -507,8 +515,21 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                 },
                 identity: { $0.0.identity }
             ).mapValues { $0.map(\.1) }
-            self.advertisedModelsByID = peersByID.mapValues { peers in
-                peers.first?.model ?? PeerMetadataValidation.unknownModel
+            self.peersByID = resolvedPeersByID
+            // `resolvePinned` promotes an authenticated preferred endpoint to
+            // index zero. Reset the cursor only when that promotion changes
+            // the ordered list; preserving a non-zero cursor for an unchanged
+            // list would bypass the endpoint that just authenticated.
+            for (peerID, candidates) in resolvedPeersByID {
+                guard let preferredEndpoint =
+                    self.preferredPeerEndpoints[peerID],
+                    candidates.first?.endpoint == preferredEndpoint else {
+                    continue
+                }
+                if previousPeersByID[peerID]?.first?.endpoint
+                        != preferredEndpoint {
+                    self.peerCandidateIndices[peerID] = 0
+                }
             }
             peerCandidateIndices = peerCandidateIndices.filter {
                 self.peersByID[$0.key] != nil
@@ -629,7 +650,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                 context.partialFrameTimeout = nil
                 context.partialFrameDeadline = nil
                 if connectionEnded {
-                    remove(context)
+                    remove(context, advanceCandidate: true)
                 } else {
                     receive(on: context)
                 }
@@ -656,7 +677,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             } else {
                 schedulePartialFrameTimeout(for: context)
                 if connectionEnded {
-                    remove(context)
+                    remove(context, advanceCandidate: true)
                 } else {
                     receive(on: context)
                 }
@@ -698,7 +719,8 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                 context.admissionGeneration = onAuthenticated?()
                 registry.recordConnection(
                     for: peer.id,
-                    model: context.peerModel
+                    model: context.peerModel,
+                    friendlyName: peer.name
                 )
                 publishConnection(
                     peerID: peer.id,
@@ -737,6 +759,9 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                 throw SecureSessionError.invalidHandshake
             }
             context.responderHandshake = handshake
+            context.peerModel = PeerMetadataValidation.validatedModel(
+                handshake.senderModel
+            )
             context.channel = try SecureSessionChannel(
                 localRole: .initiator,
                 localEphemeralKey: ephemeralKey,
@@ -776,7 +801,8 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                 context.admissionGeneration = self.onAuthenticated?()
                 self.registry.recordConnection(
                     for: expectedPeer.id,
-                    model: context.peerModel
+                    model: context.peerModel,
+                    friendlyName: expectedPeer.name
                 )
                 self.publishConnection(
                     peerID: expectedPeer.id,
@@ -800,11 +826,13 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                 sessionID: handshake.sessionID,
                 role: .responder,
                 sender: credentials.identity,
+                senderModel: localModel,
                 ephemeralKey: ephemeralKey
             )
             context.expectedPeer = handshake.sender
-            context.peerModel = advertisedModelsByID[handshake.sender.id]
-                ?? registry.profile(for: handshake.sender.id)?.model
+            context.peerModel = PeerMetadataValidation.validatedModel(
+                handshake.senderModel
+            )
             context.peerEpoch = peerEpochs.current(for: handshake.sender.id)
             context.localEphemeralKey = ephemeralKey
             context.initiatorHandshake = handshake
@@ -922,10 +950,15 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         remove(outbound)
     }
 
-    private func remove(_ context: SessionConnectionContext) {
+    private func remove(
+        _ context: SessionConnectionContext,
+        advanceCandidate: Bool = false
+    ) {
         let contextID = ObjectIdentifier(context)
+        guard contexts[contextID] === context else { return }
         let removedActiveContext = activeContextID == contextID
-        if context.localRole == .initiator,
+        if advanceCandidate,
+           context.localRole == .initiator,
            !context.isAuthenticated,
            let peerID = context.expectedPeer?.id {
             // A failed handshake may end with a clean EOF instead of an
@@ -958,7 +991,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
     ) {
         publishStatus(message)
         context.connection.cancel()
-        remove(context)
+        remove(context, advanceCandidate: true)
     }
 
     private func advancePeerCandidate(for peerID: UUID) {
@@ -1010,7 +1043,6 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
 
 private struct SecureServicePeer {
     let identity: PeerIdentity
-    let model: String
     let endpoint: NWEndpoint
 }
 

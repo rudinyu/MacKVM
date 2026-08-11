@@ -199,8 +199,8 @@ private final class AppBootstrap: ObservableObject {
             errorMessage = nil
             canResetIdentity = false
             // A notification action can arrive before the menu is opened.
-            // Start MA270U discovery here so the saved selector is verified
-            // for that headless control path as well.
+            // Start native DDC/CI discovery here so the saved selector is
+            // verified for that headless control path as well.
             monitor.refreshDetectedDisplays()
             controlRequestNotifier.onAction = { [weak self] action, requestID in
                 switch action {
@@ -787,7 +787,26 @@ private struct MacKVMMenuView: View {
     }
 
     private var pairedProfiles: [PairedPeerProfile] {
-        discovery.pairedPeerProfiles.values.sorted {
+        let persistedProfiles = discovery.pairedPeerProfiles
+        let profiles = discovery.pairedPeerIDs.compactMap { peerID -> PairedPeerProfile? in
+            if let profile = persistedProfiles[peerID] {
+                return profile
+            }
+            guard let publicKey = discovery.pairedPublicKey(for: peerID) else {
+                return nil
+            }
+            // Pairings created by older releases predate profile storage. Do
+            // not use Bonjour TXT as a default here: it is unsigned and the
+            // user could save it unchanged. A signed pairing or secure
+            // handshake will replace this fallback with the peer's name.
+            return PairedPeerProfile(
+                peerID: peerID,
+                friendlyName: "Mac \(peerID.uuidString.prefix(8))",
+                model: nil,
+                signingPublicKey: publicKey
+            )
+        }
+        return profiles.sorted {
             let nameComparison = $0.friendlyName.localizedStandardCompare(
                 $1.friendlyName
             )
@@ -1005,14 +1024,14 @@ private struct MacKVMMenuView: View {
 
     private var monitorSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("BenQ MA270U input")
+            Text("Monitor input")
                 .font(.subheadline.weight(.semibold))
 
             Toggle("Automatic DDC/CI switching", isOn: $monitor.automationEnabled)
                 .disabled(!monitor.supportsAutomaticDDCSwitching)
 
             if !monitor.supportsAutomaticDDCSwitching {
-                Text("This Intel Mac uses the MA270U OSD input menu. Automatic DDC/CI runs only on the Apple Silicon Mac connected by USB-C.")
+                Text("This Mac does not expose a native DDC/CI transport; use the monitor OSD input menu.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -1037,57 +1056,49 @@ private struct MacKVMMenuView: View {
                 }
             }
 
-            if monitor.supportsAutomaticDDCSwitching {
-                Button("Detect MA270U") {
-                    monitor.refreshDetectedDisplays()
-                }
-
-                if monitor.detectedDisplays.isEmpty {
-                    Text("No detected DDC display yet. Connect the MA270U by USB-C, then detect it.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(monitor.detectedDisplays) { display in
-                        Button {
-                            monitor.selectDisplay(display)
-                        } label: {
-                            HStack {
-                                Image(
-                                    systemName: display.matches(
-                                        selector: monitor.displaySelector
-                                    ) ? "checkmark.circle.fill" : "display"
-                                )
-                                Text(display.displayName)
-                                    .lineLimit(1)
-                                Spacer()
-                                if !display.isLikelyMA270U {
-                                    Text("Not MA270U")
-                                        .font(.caption2)
-                                        .foregroundStyle(.orange)
-                                }
-                            }
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(
-                            display.matches(selector: monitor.displaySelector)
-                                ? Color.green : Color.primary
-                        )
-                    }
-                }
-
-                if monitor.isDisplaySelectorVerified {
-                    Label("Selected MA270U verified", systemImage: "checkmark.shield.fill")
-                        .font(.caption2)
-                        .foregroundStyle(.green)
-                } else {
-                    Text("Only a detected MA270U can enable automatic switching. Do not select a different display unless you have confirmed its model.")
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
-                }
-
-                TextField("m1ddc UUID (must match detected MA270U)", text: $monitor.displaySelector)
-                TextField("m1ddc executable path", text: $monitor.executablePath)
+            Button("Detect DDC-capable displays") {
+                monitor.refreshDetectedDisplays()
             }
+
+            if monitor.detectedDisplays.isEmpty {
+                Text("No DDC-capable display detected yet. Connect an external display, then detect it.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(monitor.detectedDisplays) { display in
+                    Button {
+                        monitor.selectDisplay(display)
+                    } label: {
+                        HStack {
+                            Image(
+                                systemName: display.matches(
+                                    selector: monitor.displaySelector
+                                ) ? "checkmark.circle.fill" : "display"
+                            )
+                            Text(display.displayName)
+                                .lineLimit(1)
+                            Spacer()
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(
+                        display.matches(selector: monitor.displaySelector)
+                            ? Color.green : Color.primary
+                    )
+                }
+            }
+
+            if monitor.isDisplaySelectorVerified {
+                Label("Selected DDC display verified", systemImage: "checkmark.shield.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.green)
+            } else {
+                Text("Only a detected DDC-capable display can enable automatic switching.")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            }
+
+            TextField("Native DDC display selector", text: $monitor.displaySelector)
 
             HStack {
                 Button("Show this Mac") {

@@ -31,7 +31,7 @@ Intel Mac 的 `/Applications`，再開啟各自架構的 app。
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist && shasum -a 256 -c MacKVM-0.7.1-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-0.8.0-universal.dmg.sha256)
 ```
 
 本機 ad-hoc 簽章只能用於測試；正式散布必須使用 Developer ID、hardened runtime
@@ -43,15 +43,14 @@ Intel Mac 的 `/Applications`，再開啟各自架構的 app。
 2. Intel Mac 接 HDMI 1；若使用 HDMI 2，後續所有設定都使用 HDMI 2。
 3. 在兩台 Mac 將 MA270U 設為主要顯示器。
 4. 在 MA270U OSD 開啟 DDC/CI（若該選項存在）。
-5. 在 M5 Pro 執行 `brew install m1ddc`，按 **Detect MA270U** 並選取明確標示的
-   MA270U 穩定識別碼。
+5. 在任一台 Mac 按 **Detect DDC-capable displays**，明確選取要控制的外接螢幕。
 6. M5 Pro 按 **M5 / USB-C preset**；Intel Mac 按 **Intel / HDMI preset**。
 7. 鍵盤與滑鼠接 M5 Pro 或 MA270U USB hub，選 **One keyboard on M5 Pro (USB-C)**。
    HDMI 不會把 hub 的 USB 資料傳給 Intel Mac。
 8. 只有在兩台 Mac 都能看見實體 USB switch 的裝置時，才選雙向模式。
 
-預期結果：**Show this Mac** 顯示 USB-C，**Show other Mac** 顯示指定 HDMI；DDC
-失敗時五秒內回報診斷並可用 OSD 手動切換，不能悄悄改用不明顯示器。
+預期結果：**Show this Mac** 顯示 USB-C，**Show other Mac** 顯示指定 HDMI；原生
+DDC/CI 失敗時五秒內回報診斷並可用 OSD 手動切換，不能悄悄改用不明顯示器。
 
 ## 3. macOS 權限
 
@@ -126,5 +125,6 @@ Acceptance record。
 | 安全重連 |  |  |  |
 | 鍵盤／滑鼠 |  |  |  |
 | 控制同意／接收端停止 |  |  |  |
-| MA270U 偵測／DDC |  | 不適用 m1ddc |  |
+| DDC 螢幕偵測／原生識別碼 |  |  |  |
+| 原生 DDC/CI 切換 |  |  |  |
 | OSD 手動備援 |  |  |  |

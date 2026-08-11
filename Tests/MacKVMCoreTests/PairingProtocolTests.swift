@@ -22,7 +22,8 @@ final class PairingProtocolTests: XCTestCase {
                 requestID: requestID,
                 publicKey: sender.signingPublicKey,
                 contribution: contribution
-            )
+            ),
+            senderModel: "MacBookPro18,3"
         )
 
         let encoded = try PairingWireCodec.encode(
@@ -35,6 +36,7 @@ final class PairingProtocolTests: XCTestCase {
         )
 
         XCTAssertEqual(decoded, [request])
+        XCTAssertEqual(decoded.first?.senderModel, "MacBookPro18,3")
         XCTAssertTrue(buffer.isEmpty)
     }
 

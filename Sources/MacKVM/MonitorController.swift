@@ -2,7 +2,12 @@ import Combine
 import Foundation
 import MacKVMCore
 
-struct M1DDCDisplay: Identifiable, Equatable {
+/// A display returned by the native DDC/CI discovery layer.
+///
+/// The selector is an opaque, stable identifier made from EDID/CoreGraphics
+/// display identity. Numeric display indexes are intentionally not accepted as
+/// routing selectors because they can change when a display is reconnected.
+struct DDCDisplay: Identifiable, Equatable {
     let index: Int
     let name: String
     let stableIdentifier: String?
@@ -12,8 +17,6 @@ struct M1DDCDisplay: Identifiable, Equatable {
     }
 
     var selector: String {
-        // DDC routing is allowed only with m1ddc's stable identifier. A
-        // numeric display index can change whenever the display topology does.
         stableIdentifier ?? ""
     }
 
@@ -24,12 +27,8 @@ struct M1DDCDisplay: Identifiable, Equatable {
         return "[\(index)] \(name)"
     }
 
-    var isLikelyMA270U: Bool {
-        // This is an EDID-provided model-name hint, not hardware attestation.
-        // The stable m1ddc identifier below is still required before DDC/CI is
-        // allowed, and a person must confirm the chosen display in the UI.
-        let normalizedName = name.lowercased()
-        return normalizedName.contains("ma270u")
+    var isDDCCapable: Bool {
+        stableIdentifier != nil
     }
 
     func matches(selector: String) -> Bool {
@@ -41,76 +40,6 @@ struct M1DDCDisplay: Identifiable, Equatable {
             == .orderedSame
     }
 
-    /// Replaces an older numeric display index with this display's stable
-    /// m1ddc identifier. A different stable identifier is deliberately kept:
-    /// discovery must never retarget DDC/CI to another display by itself.
-    func stableSelectorReplacing(_ currentSelector: String) -> String? {
-        guard let stableIdentifier else { return nil }
-        let normalizedSelector = currentSelector.trimmingCharacters(
-            in: .whitespacesAndNewlines
-        )
-        guard Int(normalizedSelector) == index else {
-            return nil
-        }
-        return stableIdentifier
-    }
-}
-
-enum M1DDCDisplayListParser {
-    static func displays(from output: String) -> [M1DDCDisplay] {
-        output.split(whereSeparator: \.isNewline).compactMap { line in
-            parse(String(line))
-        }
-    }
-
-    static func recommendedDisplay(
-        from displays: [M1DDCDisplay]
-    ) -> M1DDCDisplay? {
-        let ma270UDisplays = displays.filter {
-            $0.isLikelyMA270U && $0.stableIdentifier != nil
-        }
-        if ma270UDisplays.count == 1 {
-            return ma270UDisplays[0]
-        }
-        return nil
-    }
-
-    private static func parse(_ line: String) -> M1DDCDisplay? {
-        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.first == "[",
-              let closingBracket = trimmed.firstIndex(of: "]") else {
-            return nil
-        }
-        let indexStart = trimmed.index(after: trimmed.startIndex)
-        guard let index = Int(trimmed[indexStart..<closingBracket]) else {
-            return nil
-        }
-        let afterIndex = trimmed[trimmed.index(after: closingBracket)...]
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !afterIndex.isEmpty else { return nil }
-
-        guard let closingParenthesis = afterIndex.lastIndex(of: ")"),
-              let openingParenthesis = afterIndex[..<closingParenthesis]
-                .lastIndex(of: "(") else {
-            return M1DDCDisplay(
-                index: index,
-                name: afterIndex,
-                stableIdentifier: nil
-            )
-        }
-
-        let name = afterIndex[..<openingParenthesis]
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let identifierStart = afterIndex.index(after: openingParenthesis)
-        let identifier = afterIndex[identifierStart..<closingParenthesis]
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return M1DDCDisplay(
-            index: index,
-            name: name.isEmpty ? "Unnamed display" : name,
-            stableIdentifier: identifier.isEmpty || identifier == "(null)"
-                || identifier.lowercased() == "null" ? nil : identifier
-        )
-    }
 }
 
 enum AutomaticDDCSwitchDecision: Equatable {
@@ -135,21 +64,13 @@ final class MonitorController: ObservableObject {
             updateSelectorVerification()
         }
     }
-    @Published var executablePath: String {
-        didSet { defaults.set(executablePath, forKey: Keys.executablePath) }
-    }
     @Published private(set) var status = "Monitor switching is ready"
-    @Published private(set) var detectedDisplays: [M1DDCDisplay] = []
+    @Published private(set) var detectedDisplays: [DDCDisplay] = []
     @Published private(set) var isDisplaySelectorVerified = false
     @Published private(set) var diagnostic: String?
 
-    var supportsAutomaticDDCSwitching: Bool {
-#if arch(arm64)
-        true
-#else
-        false
-#endif
-    }
+    /// Native IOKit DDC/CI is available on both supported architectures.
+    var supportsAutomaticDDCSwitching: Bool { true }
 
     private let defaults: UserDefaults
     private let queue = DispatchQueue(label: "app.mackvm.monitor-control")
@@ -171,9 +92,6 @@ final class MonitorController: ObservableObject {
         displaySelector = defaults.string(
             forKey: Keys.displaySelector
         ) ?? ""
-        executablePath = defaults.string(
-            forKey: Keys.executablePath
-        ) ?? Self.detectM1DDC()
     }
 
     func applyAppleSiliconUSBPreset() {
@@ -186,64 +104,37 @@ final class MonitorController: ObservableObject {
     func applyIntelHDMIPreset() {
         localInput = .hdmi1
         remoteInput = .usbC
-        automationEnabled = false
-        status = "Preset: this Mac uses HDMI 1; use manual monitor switching"
+        automationEnabled = true
+        status = "Preset: this Mac uses HDMI 1; native DDC/CI is enabled"
     }
 
     func refreshDetectedDisplays() {
-#if arch(arm64)
         guard !isDiscoveringDisplays else { return }
         isDiscoveringDisplays = true
         hasCompletedDisplayDiscovery = false
         detectedDisplays = []
         isDisplaySelectorVerified = false
-        let path = executablePath.trimmingCharacters(
-            in: .whitespacesAndNewlines
-        )
-        guard path.hasPrefix("/"),
-              FileManager.default.isExecutableFile(atPath: path) else {
-            self.publishDiscovery(
-                displays: [],
-                message: "m1ddc was not found; install it before detecting the MA270U",
-                diagnostic: "No executable m1ddc was found at \(path)."
-            )
-            return
-        }
-        status = "Detecting external displays…"
+        status = "Detecting DDC-capable external displays…"
         queue.async { [weak self] in
             guard let self else { return }
-            let result = executeM1DDC(
-                path: path,
-                arguments: ["display", "list"]
-            )
-            let displays = result.succeeded
-                ? M1DDCDisplayListParser.displays(from: result.standardOutput)
-                : []
-            let message: String
-            if !result.succeeded {
-                message = "Could not detect displays; see the DDC diagnostic below"
-            } else if displays.isEmpty {
-                message = "m1ddc found no external displays; check the USB-C connection"
-            } else if let recommended = M1DDCDisplayListParser.recommendedDisplay(
-                from: displays
-            ) {
-                message = "Detected \(recommended.name); select it to use DDC/CI"
-            } else {
-                message = "No uniquely identified MA270U was found; automatic switching remains off"
+            do {
+                let displays = try NativeDDCService.discover()
+                let message = displays.count == 1
+                    ? "Detected 1 DDC-capable external display"
+                    : "Detected \(displays.count) DDC-capable external displays"
+                self.publishDiscovery(
+                    displays: displays,
+                    message: message,
+                    diagnostic: nil
+                )
+            } catch {
+                self.publishDiscovery(
+                    displays: [],
+                    message: "No DDC-capable external display was detected; check the cable and DDC/CI setting",
+                    diagnostic: Self.diagnostic(from: error)
+                )
             }
-            self.publishDiscovery(
-                displays: displays,
-                message: message,
-                diagnostic: result.diagnostic
-            )
         }
-#else
-        publishDiscovery(
-            displays: [],
-            message: "m1ddc does not support Intel Macs; use the MA270U OSD",
-            diagnostic: nil
-        )
-#endif
     }
 
     /// Latches the app's final local-route intent and returns completions for
@@ -255,15 +146,13 @@ final class MonitorController: ObservableObject {
         deferredAutomaticSwitchState.beginTermination()
     }
 
-    func selectDisplay(_ display: M1DDCDisplay) {
+    func selectDisplay(_ display: DDCDisplay) {
         displaySelector = display.selector
-        if display.stableIdentifier == nil {
-            status = "\(display.name) has no stable m1ddc identifier; automatic switching remains blocked"
-        } else if display.isLikelyMA270U {
-            status = "Selected \(display.name) for DDC/CI switching"
-        } else {
-            status = "\(display.name) is not identified as an MA270U; automatic switching remains blocked"
+        guard display.isDDCCapable else {
+            status = "\(display.name) has no native DDC/CI selector; automatic switching remains blocked"
+            return
         }
+        status = "Selected \(display.name) for native DDC/CI switching"
     }
 
     func switchToLocal(completion: (() -> Void)? = nil) {
@@ -305,22 +194,13 @@ final class MonitorController: ObservableObject {
             return
         }
         guard automationEnabled else {
-            status = "Use the MA270U OSD to select \(input.name) for \(description)"
+            status = "Use the monitor OSD to select \(input.name) for \(description)"
             completion?()
             return
         }
-#if arch(arm64)
-        let path = executablePath.trimmingCharacters(
+        let selector = displaySelector.trimmingCharacters(
             in: .whitespacesAndNewlines
         )
-        guard path.hasPrefix("/"),
-              FileManager.default.isExecutableFile(atPath: path) else {
-            status = "m1ddc was not found; use the MA270U OSD to select \(input.name)"
-            completion?()
-            return
-        }
-        let selector = displaySelector
-            .trimmingCharacters(in: .whitespacesAndNewlines)
         switch Self.automaticSwitchDecision(
             displaySelector: selector,
             isDisplaySelectorVerified: isDisplaySelectorVerified,
@@ -336,57 +216,45 @@ final class MonitorController: ObservableObject {
                 completion: completion
             )
             cancelledCompletions.forEach { $0() }
-            status = "Verifying the saved MA270U before switching…"
+            status = "Verifying the saved DDC display before switching…"
             if !isDiscoveringDisplays {
                 refreshDetectedDisplays()
             }
             return
         case .useManualFallback:
             status = selector.isEmpty
-                ? "Detect and select the MA270U before using DDC/CI switching"
-                : "The selected display is not a verified MA270U; choose the MA270U again"
+                ? "Detect and select a DDC-capable display before automatic switching"
+                : "The selected DDC display is not currently available; detect it again"
             completion?()
             return
         }
-        status = "Switching the MA270U to \(input.name)…"
-        queue.async { [weak self] in
-            self?.runM1DDC(
-                path: path,
-                arguments: M1DDCCommand.arguments(
-                    displaySelector: selector,
-                    input: input
-                ),
-                input: input,
-                description: description,
-                completion: completion
-            )
-        }
-#else
-        status = "m1ddc does not support Intel Macs; use the MA270U OSD to select \(input.name)"
-        completion?()
-#endif
-    }
 
-    private func runM1DDC(
-        path: String,
-        arguments: [String],
-        input: MonitorInputSource,
-        description: String,
-        completion: (() -> Void)?
-    ) {
-        let result = executeM1DDC(path: path, arguments: arguments)
-        if result.succeeded {
-            publish(
-                "MA270U switched to \(input.name) for \(description)",
-                diagnostic: result.diagnostic,
-                completion: completion
-            )
-        } else {
-            publish(
-                "DDC switch failed; select \(input.name) in the MA270U OSD",
-                diagnostic: result.diagnostic,
-                completion: completion
-            )
+        let selectedDisplay = detectedDisplays.first {
+            $0.matches(selector: selector)
+        }
+        let displayName = selectedDisplay?.name ?? "display"
+        // Use the canonical selector returned by discovery. This keeps the
+        // editable field case-insensitive without passing a user-edited
+        // spelling to the native C bridge.
+        let nativeSelector = selectedDisplay?.selector ?? selector
+        status = "Switching \(displayName) to \(input.name)…"
+        queue.async { [weak self] in
+            do {
+                try NativeDDCService.switchInput(
+                    displaySelector: nativeSelector,
+                    input: input
+                )
+                self?.publish(
+                    "\(displayName) switched to \(input.name) for \(description)",
+                    completion: completion
+                )
+            } catch {
+                self?.publish(
+                    "Native DDC/CI switch failed; use the monitor OSD to select \(input.name)",
+                    diagnostic: Self.diagnostic(from: error),
+                    completion: completion
+                )
+            }
         }
     }
 
@@ -403,7 +271,7 @@ final class MonitorController: ObservableObject {
     }
 
     private func publishDiscovery(
-        displays: [M1DDCDisplay],
+        displays: [DDCDisplay],
         message: String,
         diagnostic: String?
     ) {
@@ -415,16 +283,11 @@ final class MonitorController: ObservableObject {
             self.diagnostic = diagnostic
             updateSelectorVerification()
 
-            if let selected = M1DDCDisplayListParser.recommendedDisplay(
-                from: displays
-            ), let stableSelector = selected.stableSelectorReplacing(
-                displaySelector
-            ) {
-                displaySelector = stableSelector
-                status = "Migrated the selected \(selected.name) to its stable identifier"
-            } else {
-                status = message
-            }
+            // Legacy m1ddc selectors were numeric indexes. Native CoreGraphics
+            // and IOKit enumeration order is not guaranteed to match that
+            // tool, so never migrate a number implicitly: the user must pick
+            // the intended display from the verified native list.
+            status = message
             resumeDeferredAutomaticSwitch()
         }
     }
@@ -448,7 +311,7 @@ final class MonitorController: ObservableObject {
         )
         isDisplaySelectorVerified = !selector.isEmpty
             && detectedDisplays.contains {
-                $0.matches(selector: selector) && $0.isLikelyMA270U
+                $0.matches(selector: selector) && $0.isDDCCapable
             }
     }
 
@@ -485,17 +348,16 @@ final class MonitorController: ObservableObject {
         let selector = displaySelector.trimmingCharacters(
             in: .whitespacesAndNewlines
         )
-        return !selector.isEmpty && Int(selector) == nil
+        let prefix = "native-ddc:"
+        return selector.count >= prefix.count
+            && selector.prefix(prefix.count)
+                .caseInsensitiveCompare(prefix) == .orderedSame
+            && selector.count <= 255
+            && Int(selector) == nil
     }
 
-    private static func detectM1DDC() -> String {
-        let candidates = [
-            "/opt/homebrew/bin/m1ddc",
-            "/usr/local/bin/m1ddc"
-        ]
-        return candidates.first {
-            FileManager.default.isExecutableFile(atPath: $0)
-        } ?? "/opt/homebrew/bin/m1ddc"
+    private static func diagnostic(from error: Error) -> String {
+        String(error.localizedDescription.prefix(600))
     }
 
     private enum Keys {
@@ -503,7 +365,6 @@ final class MonitorController: ObservableObject {
         static let localInput = "MacKVM.monitor.localInput"
         static let remoteInput = "MacKVM.monitor.remoteInput"
         static let displaySelector = "MacKVM.monitor.displaySelector"
-        static let executablePath = "MacKVM.monitor.executablePath"
     }
 }
 
@@ -575,135 +436,5 @@ struct DeferredAutomaticSwitchState {
     mutating func takeDeferredSwitch() -> DeferredAutomaticSwitch? {
         defer { deferredAutomaticSwitch = nil }
         return deferredAutomaticSwitch
-    }
-}
-
-private struct M1DDCProcessResult {
-    let terminationStatus: Int32?
-    let timedOut: Bool
-    let standardOutput: String
-    let standardError: String
-    let launchError: String?
-
-    var succeeded: Bool {
-        terminationStatus == 0 && !timedOut && launchError == nil
-    }
-
-    var diagnostic: String? {
-        let output = [standardError, standardOutput]
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .joined(separator: "\n")
-        let detail: String
-        if let launchError {
-            detail = launchError
-        } else if timedOut {
-            detail = "m1ddc timed out after 5 seconds."
-        } else if let terminationStatus, terminationStatus != 0 {
-            detail = "m1ddc exited with status \(terminationStatus)."
-        } else {
-            detail = ""
-        }
-        let combined = [detail, output]
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
-        guard !combined.isEmpty else { return nil }
-        return String(combined.prefix(600))
-    }
-}
-
-private final class M1DDCTimeoutState {
-    private let lock = NSLock()
-    private var value = false
-
-    func markTimedOut() {
-        lock.lock()
-        value = true
-        lock.unlock()
-    }
-
-    var timedOut: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return value
-    }
-}
-
-private func executeM1DDC(
-    path: String,
-    arguments: [String]
-) -> M1DDCProcessResult {
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: path)
-    process.arguments = arguments
-    let standardOutput = Pipe()
-    let standardError = Pipe()
-    process.standardOutput = standardOutput
-    process.standardError = standardError
-    do {
-        try process.run()
-        let output = M1DDCOutputCollector()
-        let errorOutput = M1DDCOutputCollector()
-        let readGroup = DispatchGroup()
-        collectPipe(standardOutput, into: output, group: readGroup)
-        collectPipe(standardError, into: errorOutput, group: readGroup)
-        let timeoutState = M1DDCTimeoutState()
-        let timeout = DispatchWorkItem {
-            if process.isRunning {
-                timeoutState.markTimedOut()
-                process.terminate()
-            }
-        }
-        DispatchQueue.global(qos: .utility).asyncAfter(
-            deadline: .now() + 5,
-            execute: timeout
-        )
-        process.waitUntilExit()
-        timeout.cancel()
-        readGroup.wait()
-        return M1DDCProcessResult(
-            terminationStatus: process.terminationStatus,
-            timedOut: timeoutState.timedOut,
-            standardOutput: output.value,
-            standardError: errorOutput.value,
-            launchError: nil
-        )
-    } catch {
-        return M1DDCProcessResult(
-            terminationStatus: nil,
-            timedOut: false,
-            standardOutput: "",
-            standardError: "",
-            launchError: "Could not start m1ddc: \(error.localizedDescription)"
-        )
-    }
-}
-
-private final class M1DDCOutputCollector {
-    private let lock = NSLock()
-    private var data = Data()
-
-    func set(_ data: Data) {
-        lock.lock()
-        self.data = data
-        lock.unlock()
-    }
-
-    var value: String {
-        lock.lock()
-        defer { lock.unlock() }
-        return String(data: data, encoding: .utf8) ?? ""
-    }
-}
-
-private func collectPipe(
-    _ pipe: Pipe,
-    into collector: M1DDCOutputCollector,
-    group: DispatchGroup
-) {
-    group.enter()
-    DispatchQueue.global(qos: .utility).async {
-        collector.set(pipe.fileHandleForReading.readDataToEndOfFile())
-        group.leave()
     }
 }

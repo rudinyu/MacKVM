@@ -64,8 +64,9 @@ final class PeerDiscoveryService: ObservableObject {
     private var unauthenticatedConnections: [ObjectIdentifier: NWConnection] = [:]
     private var requestMessages: [UUID: PairingEnvelope] = [:]
     private var requestTargets: [UUID: PeerIdentity] = [:]
-    private var requestModels: [UUID: String] = [:]
-    private var advertisedModelsByID: [UUID: String] = [:]
+    // The model is learned only from a signed pairing message. Bonjour's TXT
+    // model remains a discovery hint and is never persisted as trust metadata.
+    private var requestPeerModels: [UUID: String] = [:]
     private var localContributions: [UUID: Data] = [:]
     private var peerCommitments: [UUID: Data] = [:]
     private var peerContributions: [UUID: Data] = [:]
@@ -99,6 +100,10 @@ final class PeerDiscoveryService: ObservableObject {
 
     var pairedPeerProfiles: [UUID: PairedPeerProfile] {
         registry.pairedPeerProfiles
+    }
+
+    func pairedPublicKey(for peerID: UUID) -> Data? {
+        registry.publicKey(for: peerID)
     }
 
     func pairedPeerProfile(for peerID: UUID) -> PairedPeerProfile? {
@@ -146,8 +151,7 @@ final class PeerDiscoveryService: ObservableObject {
             self.unauthenticatedConnections.removeAll()
             self.requestMessages.removeAll()
             self.requestTargets.removeAll()
-            self.requestModels.removeAll()
-            self.advertisedModelsByID.removeAll()
+            self.requestPeerModels.removeAll()
             self.requestForgetGenerations.removeAll()
             self.localContributions.removeAll()
             self.peerCommitments.removeAll()
@@ -206,14 +210,14 @@ final class PeerDiscoveryService: ObservableObject {
                 requestID: requestID,
                 publicKey: identity.signingPublicKey,
                 contribution: contribution
-            )
+            ),
+            senderModel: localModel
         )
         let connection = NWConnection(to: peer.endpoint, using: .tcp)
         activeOutboundRequestID = request.requestID
         requestConnections[request.requestID] = connection
         requestMessages[request.requestID] = request
         requestTargets[request.requestID] = peer.identity
-        requestModels[request.requestID] = peer.model
         localContributions[request.requestID] = contribution
         requestForgetGenerations.set(
             registry.generation(for: peer.identity.id),
@@ -261,7 +265,8 @@ final class PeerDiscoveryService: ObservableObject {
         let response = PairingEnvelope.decision(
             to: request,
             from: identity,
-            accepted: accepted
+            accepted: accepted,
+            senderModel: localModel
         )
         send(response, over: connection) { [weak self] sent in
             guard let self else { return }
@@ -374,7 +379,7 @@ final class PeerDiscoveryService: ObservableObject {
         )
         browser.browseResultsChangedHandler = { [weak self, weak browser] results, _ in
             guard let self, self.browser === browser else { return }
-            let candidates = results.lazy.compactMap {
+            let candidates = results.compactMap {
                 (result) -> (PeerAdvertisement, DiscoveredPeer)? in
                 guard case let .service(name, _, _, _) = result.endpoint,
                       name != self.identity.serviceName,
@@ -395,8 +400,34 @@ final class PeerDiscoveryService: ObservableObject {
                     )
                 )
             }
+            // NWBrowser delivers a Set, whose iteration order is not stable.
+            // Order before applying the admission cap so an attacker cannot
+            // make an otherwise valid peer churn in and out of the first 64
+            // entries. Paired identities are kept ahead of unpaired ones;
+            // the remaining tie-breakers are deterministic and do not rely on
+            // Bonjour result order.
+            let orderedCandidates = candidates.sorted {
+                let lhsPaired = self.registry.contains($0.0.identity.id)
+                let rhsPaired = self.registry.contains($1.0.identity.id)
+                if lhsPaired != rhsPaired {
+                    return lhsPaired
+                }
+                let lhsID = $0.0.identity.id.uuidString
+                let rhsID = $1.0.identity.id.uuidString
+                if lhsID != rhsID {
+                    return lhsID < rhsID
+                }
+                let lhsKey = $0.0.identity.signingPublicKey
+                    .base64EncodedString()
+                let rhsKey = $1.0.identity.signingPublicKey
+                    .base64EncodedString()
+                if lhsKey != rhsKey {
+                    return lhsKey < rhsKey
+                }
+                return $0.1.id < $1.1.id
+            }
             let discoveredByID = PeerIdentityAdmission.resolve(
-                candidates,
+                orderedCandidates,
                 maximumIdentities: Self.maximumDiscoveredPeers,
                 identity: { $0.0.identity }
             )
@@ -404,11 +435,6 @@ final class PeerDiscoveryService: ObservableObject {
                 $0.1.name.localizedCaseInsensitiveCompare($1.1.name)
                     == .orderedAscending
             }.prefix(Self.maximumDiscoveredPeers).map(\.1)
-            self.advertisedModelsByID = Dictionary(
-                uniqueKeysWithValues: discovered.map {
-                    ($0.identity.id, $0.model)
-                }
-            )
             let epoch = self.currentLifecycleEpoch()
             self.publishMain(epoch: epoch) { $0.peers = discovered }
         }
@@ -595,9 +621,11 @@ final class PeerDiscoveryService: ObservableObject {
             scheduleTimeout(for: connection, after: 60)
             requestConnections[message.requestID] = connection
             requestMessages[message.requestID] = message
-            requestModels[message.requestID] = advertisedModelsByID[
-                message.sender.id
-            ] ?? PeerMetadataValidation.unknownModel
+            if let model = message.senderModel {
+                // The request has passed the admission policy and is now
+                // bound to this request ID and sender connection.
+                requestPeerModels[message.requestID] = model
+            }
             localContributions[message.requestID] = localContribution
             requestForgetGenerations.set(
                 registry.generation(for: message.sender.id),
@@ -611,7 +639,8 @@ final class PeerDiscoveryService: ObservableObject {
                     requestID: message.requestID,
                     publicKey: identity.signingPublicKey,
                     contribution: localContribution
-                )
+                ),
+                senderModel: localModel
             )
             send(challenge, over: connection)
             publishStatus("Negotiating a security code with \(message.sender.name)…")
@@ -626,10 +655,15 @@ final class PeerDiscoveryService: ObservableObject {
                 return
             }
             peerCommitments[message.requestID] = peerCommitment
+            if let model = message.senderModel {
+                // validatedOutboundPeer binds this model to the tracked peer.
+                requestPeerModels[message.requestID] = model
+            }
             let reveal = PairingEnvelope.reveal(
                 to: request,
                 from: identity,
-                contribution: localContribution
+                contribution: localContribution,
+                senderModel: localModel
             )
             send(reveal, over: connection)
             publishStatus("Waiting for \(expectedPeer.name) to confirm the code…")
@@ -649,6 +683,10 @@ final class PeerDiscoveryService: ObservableObject {
                   let localContribution = localContributions[message.requestID] else {
                 rejectUnexpected(message, on: connection)
                 return
+            }
+            if let model = message.senderModel {
+                // The request sender and signing key were checked above.
+                requestPeerModels[message.requestID] = model
             }
             peerContributions[message.requestID] = peerContribution
             let verificationCode = PairingVerificationCode.make(
@@ -673,7 +711,8 @@ final class PeerDiscoveryService: ObservableObject {
             let confirmation = PairingEnvelope.confirmation(
                 to: request,
                 from: identity,
-                contribution: localContribution
+                contribution: localContribution,
+                senderModel: localModel
             )
             send(confirmation, over: connection)
 
@@ -690,6 +729,10 @@ final class PeerDiscoveryService: ObservableObject {
                   let localContribution = localContributions[message.requestID] else {
                 rejectUnexpected(message, on: connection)
                 return
+            }
+            if let model = message.senderModel {
+                // validatedOutboundPeer binds this model to the tracked peer.
+                requestPeerModels[message.requestID] = model
             }
             peerContributions[message.requestID] = peerContribution
             let verificationCode = PairingVerificationCode.make(
@@ -713,6 +756,10 @@ final class PeerDiscoveryService: ObservableObject {
                 rejectUnexpected(message, on: connection)
                 return
             }
+            if let model = message.senderModel {
+                // validatedSessionPeer binds this model to the paired peer.
+                requestPeerModels[message.requestID] = model
+            }
             guard message.accepted == true else {
                 publishStatus("\(message.sender.name) declined pairing")
                 finish(requestID: message.requestID)
@@ -735,6 +782,10 @@ final class PeerDiscoveryService: ObservableObject {
                 rejectUnexpected(message, on: connection)
                 return
             }
+            if let model = message.senderModel {
+                // validatedSessionPeer binds this model to the paired peer.
+                requestPeerModels[message.requestID] = model
+            }
             remotelyCompletedRequestIDs.insert(message.requestID)
             beginCompletionIfMutuallyAccepted(requestID: message.requestID)
             beginCompletionAcknowledgement(requestID: message.requestID)
@@ -749,6 +800,10 @@ final class PeerDiscoveryService: ObservableObject {
                   remotelyCompletedRequestIDs.contains(message.requestID) else {
                 rejectUnexpected(message, on: connection)
                 return
+            }
+            if let model = message.senderModel {
+                // validatedSessionPeer binds this model to the paired peer.
+                requestPeerModels[message.requestID] = model
             }
             // Receiving this signed acknowledgement proves that the peer
             // received our completion, even if Network.framework has not yet
@@ -826,7 +881,7 @@ final class PeerDiscoveryService: ObservableObject {
         }
         requestMessages.removeValue(forKey: requestID)
         requestTargets.removeValue(forKey: requestID)
-        requestModels.removeValue(forKey: requestID)
+        requestPeerModels.removeValue(forKey: requestID)
         localContributions.removeValue(forKey: requestID)
         requestForgetGenerations.remove(for: requestID)
         peerCommitments.removeValue(forKey: requestID)
@@ -995,9 +1050,10 @@ final class PeerDiscoveryService: ObservableObject {
             return
         }
         completionSendStartedRequestIDs.insert(requestID)
-        let completionMessage = PairingEnvelope.completion(
-            to: request,
-            from: identity
+            let completionMessage = PairingEnvelope.completion(
+                to: request,
+                from: identity,
+                senderModel: localModel
         )
         send(
             completionMessage,
@@ -1035,7 +1091,8 @@ final class PeerDiscoveryService: ObservableObject {
         completionAcknowledgementSendStartedRequestIDs.insert(requestID)
         let acknowledgement = PairingEnvelope.completionAcknowledgement(
             to: request,
-            from: identity
+            from: identity,
+            senderModel: localModel
         )
         send(
             acknowledgement,
@@ -1075,7 +1132,7 @@ final class PeerDiscoveryService: ObservableObject {
         guard savePairing(
             with: peer,
             expectedRegistryGeneration: completionGuard.generation,
-            model: requestModels[requestID]
+            model: requestPeerModels[requestID]
         ) else {
             return
         }

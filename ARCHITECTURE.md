@@ -6,8 +6,8 @@
 
 The repository implements discovery, mutual pairing, a persistent encrypted
 session, validated keyboard and mouse forwarding, explicit receiver consent and
-safe local-return controls, a sequential macOS setup checklist, and configurable
-BenQ monitor switching.
+safe local-return controls, a sequential macOS setup checklist, and native
+DDC/CI monitor input switching.
 
 ```mermaid
 flowchart LR
@@ -24,7 +24,7 @@ flowchart LR
         IA["CGEventTap capture<br/>Input Monitoring"]
         OA["CGEvent injection<br/>Accessibility"]
         NA["ControlRequestNotifier<br/>native Allow / Deny / Review"]
-        MA["MonitorController<br/>m1ddc or OSD fallback"]
+        MA["MonitorController<br/>native IOAVService / IOI2C<br/>or OSD fallback"]
         UIA --> DA
         UIA --> PermA
         UIA --> LoginA
@@ -149,12 +149,37 @@ flowchart LR
     Input["Keyboard + mouse"] -->|"CGEventTap"| Control["Encrypted MacKVM control session"]
     Control -->|"CGEvent injection"| Target["Active Mac"]
     Control -->|"control lifecycle"| DDC["MonitorController"]
-    DDC -->|"m1ddc on Apple Silicon<br/>or manual OSD"| Monitor
+    DDC -->|"native DDC/CI<br/>IOAVService or IOI2C"| Monitor
 ```
 
 Recommended wiring is USB-C for the Apple Silicon Mac and USB-C/Thunderbolt 3
 to HDMI for the 2019 Intel Mac. MA270U's USB-C input carries video, data, and
 up to 90 W power.
+
+### Native DDC/CI transport
+
+`MonitorController` never shells out to a helper. `NativeDDCService` calls the
+small `MacKVMNativeDDC` bridge on its serial queue, and the bridge exposes only
+bounded display names, selectors, and success/error results to Swift:
+
+```mermaid
+flowchart LR
+    MC["MonitorController"] --> SW["NativeDDCService"]
+    SW --> C["MacKVMNativeDDC"]
+    C -->|"Apple Silicon"| AV["IOAVService\nDCPAVServiceProxy"]
+    C -->|"Intel"| I2C["IOI2C\nIOFramebuffer bus"]
+    AV --> VCP["DDC/CI Set VCP 0x60"]
+    I2C --> VCP
+    VCP --> M["External monitor"]
+```
+
+Discovery is limited to 32 online external displays. Each display is selected
+by a `native-ddc:` identifier derived from CoreGraphics/EDID vendor, model and
+serial values; numeric display indexes are never sent to IOKit. The bridge
+allow-lists the five input-source values used by the app and bounds all error
+text before it returns to the UI. If the display transport is unavailable or
+the monitor rejects DDC/CI, switching ends with a diagnostic and the user can
+choose the monitor OSD explicitly.
 
 ### Physical input topology (P0)
 
@@ -197,8 +222,8 @@ remote control remains available in either mode.
   hardened runtime and the release verifier checks it; Apple notarization is
   still required before distribution outside the developer's own Macs.
 - Complete the real-hardware section in [`MANUAL_TEST.md`](MANUAL_TEST.md):
-  verify MA270U input-source VCP commands on the M5 Pro USB-C connection, the
-  Intel HDMI OSD fallback, and the optional physical USB switch. Software
+  verify native DDC/CI input-source VCP commands on both the M5 Pro and Intel
+  connections, the OSD fallback, and the optional physical USB switch. Software
   cannot prove those behaviors without the monitor, two Macs, and macOS privacy
   prompts.
 
@@ -215,7 +240,7 @@ SecureSessionService    authenticated encrypted message channel
 InputCaptureService     CGEventTap capture and Input Monitoring state
 RemoteInputSink         validated CGEvent injection and Accessibility state
 ControlRequestNotifier  native incoming-control notification and stale-action guard
-MonitorController       MA270U discovery, stable DDC/CI selection, diagnostics, OSD fallback
+MonitorController       DDC-capable display discovery, stable native selection, diagnostics, OSD fallback
 PairingRegistry         paired-peer persistence
 PairedPeerProfile        friendly name, model, connection time, key fingerprint
 DeviceCredentialsStore  Keychain identity persistence
@@ -332,12 +357,11 @@ behavior are covered by the automated test suite.
 10. Under **Nearby Macs**, select **Pair** on one Mac.
 11. Compare the six-digit security code shown on both Macs. Verify the peer name
    on each Mac, then press **Accept** on both Macs only when the codes match.
-12. Install `m1ddc` on the M5 Pro Mac with `brew install m1ddc`. Select
-    **Detect MA270U** and choose the display explicitly identified as MA270U
-    before selecting the **M5 / USB-C preset**; use **Intel / HDMI preset** on
-    the 2019 Mac. Test
-    **Show this Mac** and **Show other Mac**. Leave DDC disabled and use the
-    MA270U OSD if the physical test fails.
+12. On either Mac, select **Detect DDC-capable displays** and choose the
+    intended display explicitly before selecting the matching preset. Native
+    DDC/CI uses `IOAVService` on Apple Silicon and `IOI2C` on Intel. Test
+    **Show this Mac** and **Show other Mac**. If the display does not expose
+    DDC/CI, follow the diagnostic and use the monitor OSD.
 13. Select **Connect** on one Mac. When the encrypted session is connected,
     choose **Request control of other Mac** on the Mac whose keyboard and mouse
     you are using.

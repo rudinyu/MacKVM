@@ -33,7 +33,7 @@ Release check (from the M5 Pro) is also available:
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist && shasum -a 256 -c MacKVM-0.7.1-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-0.8.0-universal.dmg.sha256)
 ```
 
 Expected: the app reports both `arm64` and `x86_64`, and an ad-hoc signature
@@ -49,9 +49,8 @@ and report the hardened runtime before notarization is attempted.
    in all later steps.
 3. Make the MA270U the main display in macOS on both Macs.
 4. In the MA270U OSD, enable DDC/CI if that setting is available.
-5. Install `m1ddc` on the M5 Pro Mac with `brew install m1ddc`.
-6. Select **Detect MA270U** on the M5 Pro Mac and choose the display explicitly
-   identified as MA270U with its stable identifier.
+5. On either Mac, select **Detect DDC-capable displays** and choose the
+   intended external display explicitly.
 7. Select **M5 / USB-C preset** on the M5 Pro Mac.
 8. Select **Intel / HDMI preset** on the Intel Mac.
 
@@ -60,16 +59,16 @@ Expected:
 - **Show this Mac** on the M5 Pro selects USB-C.
 - **Show other Mac** on the M5 Pro selects HDMI 1.
 - A reconnect or additional display does not silently redirect DDC to display
-  number 1; the selected MA270U remains visibly verified.
-- If an older installation saved display number 1, detecting the MA270U
-  replaces it with the stable identifier before automatic switching.
-- If a saved stable identifier is not present, detection does not replace it
-  with a different MA270U; select a new display explicitly before enabling DDC.
+  number 1; the selected native DDC display remains visibly verified.
+- If an older installation saved display number 1, detecting a display can
+  replace it with the stable native selector before automatic switching.
+- If a saved stable selector is not present, detection does not replace it with
+  a different display; select a new display explicitly before enabling DDC.
 - After launching MacKVM at login, a native Allow action can switch the
-  previously selected MA270U even if its menu has not been opened first; it
-  waits for MA270U verification rather than silently losing the first route.
-- A non-MA270U display is visibly marked and cannot be reported as a verified
-  MA270U or silently enable automatic switching.
+  previously selected display even if its menu has not been opened first; it
+  waits for native DDC verification rather than silently losing the first route.
+- A display that does not expose a native DDC selector cannot silently enable
+  automatic switching.
 - A failed DDC command finishes within about five seconds and tells the user
   which input to select through the OSD, including a useful DDC diagnostic.
 
@@ -207,7 +206,7 @@ Expected:
 2. Repeat using **Return input to this Mac**.
 3. From the receiving Mac, select **Stop remote control** while a key and a
    mouse button are held by the controlling Mac.
-4. Repeat while DDC is disabled or `m1ddc` is unavailable.
+4. Repeat while DDC/CI is disabled or unavailable and confirm the OSD fallback.
 5. Quit MacKVM while the monitor shows the other Mac.
 6. Repeat step 5 while this Mac is receiving remote control.
 
@@ -320,6 +319,6 @@ Record the macOS version and result for each item:
 | Keyboard/mouse |  |  |  |
 | Control consent / receiver stop |  |  |  |
 | Emergency return |  |  |  |
-| MA270U detection / stable ID |  | N/A (`m1ddc`) |  |
-| MA270U DDC switch |  | N/A (`m1ddc`) |  |
+| DDC-capable display detection / stable ID |  |  |  |
+| Native DDC/CI switch |  |  |  |
 | Manual OSD fallback |  |  |  |

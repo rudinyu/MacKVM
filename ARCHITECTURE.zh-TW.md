@@ -5,7 +5,7 @@
 ## 系統範圍
 
 MacKVM 是 macOS 選單列工具，實作附近裝置探索、雙方配對、持久化加密連線、
-鍵盤與滑鼠轉送、接收端明確同意、安全返回、權限設定檢查與 BenQ MA270U 輸入切換。
+鍵盤與滑鼠轉送、接收端明確同意、安全返回、權限設定檢查與原生 DDC/CI 螢幕輸入切換。
 
 ```mermaid
 flowchart LR
@@ -16,7 +16,7 @@ flowchart LR
     E --> C
     A --> F["PairedPeerProfile\n名稱／型號／時間／指紋"]
     C --> F
-    A --> G["MonitorController\nm1ddc 或 OSD"]
+    A --> G["MonitorController\nIOAVService／IOI2C 或 OSD"]
 ```
 
 ## 主要元件
@@ -31,7 +31,8 @@ flowchart LR
 - `ControlCoordinator`：控制請求、Allow／Deny／Stop、session generation 與輸入狀態。
 - `InputCaptureService`／`RemoteInputSink`：擷取與驗證鍵盤、滑鼠、滾輪事件。
 - `ControlRequestNotifier`：選單關閉時顯示帶有 request ID 與 nonce 的原生通知。
-- `MonitorController`：在 Apple Silicon 執行 m1ddc，並提供 MA270U OSD 手動備援。
+- `MonitorController`：探索支援 DDC/CI 的顯示器；Apple Silicon 使用 `IOAVService`、
+  Intel 使用 `IOI2C`，並提供螢幕 OSD 手動備援。
 
 ## 配對與安全連線流程
 
@@ -70,13 +71,35 @@ flowchart LR
     USB --> Monitor
     Keyboard["鍵盤與滑鼠"] -->|"M5 Pro 或 MA270U USB hub"| Apple
     Apple -->|"加密控制"| Intel
-    Apple -->|"m1ddc"| Monitor
+    Apple -->|"原生 DDC/CI\nIOAVService／IOI2C"| Monitor
 ```
 
 HDMI 只傳送影像，不會把 MA270U USB hub 上游給 Intel host。因此目前建議選
 **One keyboard on M5 Pro (USB-C)**，讓 M5 Pro 發起控制、Intel Mac 接收控制。
 只有在實體 USB switch 讓兩台 Mac 都看到裝置時，才選
 **External USB switch (bidirectional)**；app 無法從軟體驗證 switch 是否存在。
+
+### 原生 DDC/CI 傳輸
+
+`MonitorController` 不會啟動外部工具。`NativeDDCService` 在序列佇列呼叫
+`MacKVMNativeDDC` 原生 bridge，只把有界的顯示器名稱、識別碼與成功／錯誤結果交給
+Swift：
+
+```mermaid
+flowchart LR
+    MC["MonitorController"] --> SW["NativeDDCService"]
+    SW --> C["MacKVMNativeDDC"]
+    C -->|"Apple Silicon"| AV["IOAVService\nDCPAVServiceProxy"]
+    C -->|"Intel"| I2C["IOI2C\nIOFramebuffer bus"]
+    AV --> VCP["DDC/CI Set VCP 0x60"]
+    I2C --> VCP
+    VCP --> M["外接螢幕"]
+```
+
+探索最多處理 32 台線上外接螢幕。每台螢幕使用從 CoreGraphics／EDID 廠商、型號與序號
+建立的 `native-ddc:` 識別碼；不會把可能變動的數字索引送進 IOKit。bridge 只允許 app
+使用的五個輸入來源值，錯誤文字也會限制長度。若線材或螢幕沒有 DDC/CI，介面顯示
+診斷，使用者可明確改用 OSD。
 
 ## 連線與輸入狀態
 
@@ -109,7 +132,7 @@ stateDiagram-v2
 
 ## 使用步驟
 
-請先依照[繁體中文安裝指南](INSTALL.zh-TW.md)完成架構對應的 app、權限、MA270U
+請先依照[繁體中文安裝指南](INSTALL.zh-TW.md)完成架構對應的 app、權限、DDC/CI
 輸入來源與配對。日常操作時，在 **Paired device information** 查看或修改名稱，
 需要回報問題按 **Copy support information**；要停止控制則使用
 **Return input to this Mac**、**Stop remote control** 或

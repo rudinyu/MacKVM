@@ -22,11 +22,9 @@ MacKVM 是 macOS 選單列 app，讓 14 吋 M5 Pro MacBook Pro 與 2019 Intel Ma
 ./scripts/build-app.sh --arch x86_64
 ```
 
-若要自動切換螢幕，在 M5 Pro 安裝：
-
-```sh
-brew install m1ddc
-```
+MacKVM 使用原生 IOKit DDC/CI：Apple Silicon 走 `IOAVService`，Intel 走 `IOI2C`，
+不需要安裝螢幕工具或 Homebrew 套件。螢幕與線材需提供 VESA DDC/CI；若 OSD 有此
+選項，請先開啟。
 
 建立本機測試 DMG：
 
@@ -51,9 +49,10 @@ notarization。
 
 ## 螢幕設定
 
-1. 在兩台 Mac 都把 MA270U 設為主要顯示器。
-2. M5 Pro 按 **Detect MA270U**，選取驗證過的 MA270U，再使用 **M5 / USB-C preset**。
-3. Intel Mac 使用 **Intel / HDMI preset**。
+1. 在兩台 Mac 都把外接螢幕設為主要顯示器。
+2. 在任一台 Mac 按 **Detect DDC-capable displays**，選取要控制的螢幕，再使用相符
+   的輸入預設。
+3. M5 Pro 與 Intel Mac 在驗證顯示器後都使用原生 DDC/CI。
 4. 用 **Show this Mac** 與 **Show other Mac** 測試；DDC/CI 失敗時查看診斷並用
    MA270U OSD 手動切換。
 

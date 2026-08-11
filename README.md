@@ -42,25 +42,21 @@ The current MVP provides:
   actions, so the receiver can respond while the menu is closed;
 - local input suppression while controlling and an emergency
   `Control-Option-Command-Escape` return shortcut;
-- configurable BenQ MA270U input switching through `m1ddc`, including display
-  discovery, stable display-ID selection, DDC diagnostics, and a manual OSD
-  fallback.
+- native DDC/CI input switching through IOKit on both Apple Silicon and Intel,
+  including display discovery, stable display selection, diagnostics, and a
+  manual OSD fallback when the monitor or cable does not expose DDC/CI.
 
 ## Requirements
 
 - macOS 13 or later
 - Swift 6 toolchain (Xcode is preferred when installed)
-- `m1ddc` on the Apple Silicon Mac for automatic monitor switching (optional)
+- An external monitor and cable that expose VESA DDC/CI (enable DDC/CI in the
+  monitor OSD when the option is available)
 
-Install the optional DDC helper on the M5 Pro Mac:
-
-```sh
-brew install m1ddc
-```
-
-The upstream tool supports external displays connected to Apple Silicon by
-USB-C/DisplayPort Alt Mode, but not Intel Macs. MacKVM therefore keeps manual
-MA270U OSD switching available at all times.
+MacKVM sends the input-source VCP command directly through IOKit: Apple
+Silicon uses the display's `IOAVService`, while Intel uses the display's
+`IOI2C` interface. No Homebrew helper or external executable is required, and
+both architectures use the same automatic switching flow.
 
 ## How to build
 
@@ -99,7 +95,7 @@ The package is built from a fresh staging directory and writes a portable
 SHA-256 sidecar next to the DMG. Verify the pair from the `dist` directory:
 
 ```sh
-(cd dist && shasum -a 256 -c MacKVM-0.7.1-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-0.8.0-universal.dmg.sha256)
 ```
 
 For distribution to another Mac, sign with a Developer ID Application
@@ -131,10 +127,11 @@ DEVELOPER_DIR=/path/to/Xcode.app/Contents/Developer \
   ./scripts/regenerate-app-icon.sh
 ```
 
-Run the Swift test suite before packaging:
+Run the Swift test suite with the full Xcode toolchain before packaging:
 
 ```sh
-swift test
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  swift test --disable-sandbox
 ```
 
 The app bundle is the supported launch path because it contains the Bonjour
@@ -178,14 +175,14 @@ In the MacKVM menu:
    cannot originate a control request in this mode. If both Macs really see
    the devices through an external USB switch, select **External USB switch
    (bidirectional)** on both Macs and test both directions first.
-2. On the M5 Pro Mac, select **Detect MA270U** and choose the detected display
-   explicitly identified as **MA270U**. MacKVM saves its stable m1ddc
-   identifier rather than assuming display number 1; an unrecognized display
-   cannot enable automatic switching.
+2. On either Mac, select **Detect DDC-capable displays** and choose the display
+   explicitly. MacKVM saves a stable native DDC selector rather than assuming
+   display number 1; a display that is not rediscovered cannot enable automatic
+   switching.
 3. On the M5 Pro Mac, select **M5 / USB-C preset**. This sets this Mac to
-   USB-C (VCP 27), the other Mac to HDMI 1 (VCP 17), and enables DDC.
+   USB-C (VCP 27), the other Mac to HDMI 1 (VCP 17), and enables native DDC.
 4. On the 2019 Intel Mac, select **Intel / HDMI preset**. This sets the local
-   route to HDMI 1 and keeps automatic DDC off.
+   route to HDMI 1 and enables native DDC on Intel as well.
 5. If the Intel Mac uses HDMI 2, change both matching input pickers to HDMI 2.
 6. Use **Show this Mac** and **Show other Mac** to verify switching before
    starting remote control. If it fails, read the **DDC diagnostic**, enable
@@ -240,9 +237,8 @@ the devices visible to both Macs.
 
 This keeps DDC/CI communication on the more reliable USB-C connection.
 
-The input values and command syntax follow the
-[m1ddc project documentation](https://github.com/waydabber/m1ddc). BenQ lists
-two HDMI 2.0 ports and one USB-C video/data/90 W port in the
+The input-source VCP values follow the VESA DDC/CI convention. BenQ lists two
+HDMI 2.0 ports and one USB-C video/data/90 W port in the
 [MA270U specifications](https://www.benq.com/en-us/monitor/home/ma270u/spec.html).
 
 ## Documentation
@@ -251,5 +247,6 @@ two HDMI 2.0 ports and one USB-C video/data/90 W port in the
 - [English architecture](ARCHITECTURE.md) · [繁體中文架構](ARCHITECTURE.zh-TW.md)
 - [English acceptance test](MANUAL_TEST.md) · [繁體中文驗收](MANUAL_TEST.zh-TW.md)
 - [English security status](SECURITY.md) · [繁體中文安全說明](SECURITY.zh-TW.md)
+- [English roadmap](ROADMAP.md) · [繁體中文路線圖](ROADMAP.zh-TW.md)
 - [English HTML manual](docs/USER_MANUAL.html) · [繁體中文 HTML 使用手冊](docs/USER_MANUAL.zh-TW.html)
 - [English Markdown manual](docs/USER_MANUAL.md) · [繁體中文 Markdown 手冊](docs/USER_MANUAL.zh-TW.md)

@@ -24,11 +24,9 @@ Build on the M5 Pro and copy the matching app to `/Applications`:
 ./scripts/build-app.sh --arch x86_64
 ```
 
-Install the optional display helper on the M5 Pro:
-
-```sh
-brew install m1ddc
-```
+MacKVM uses native IOKit DDC/CI: `IOAVService` on Apple Silicon and `IOI2C`
+on Intel. No display helper or Homebrew package is required. The monitor and
+connection must expose VESA DDC/CI; enable it in the monitor OSD when needed.
 
 For a local DMG:
 
@@ -53,10 +51,11 @@ If a permission was previously denied, use the matching **Settings** button.
 
 ## Monitor setup
 
-1. Set the MA270U as the main display on both Macs.
-2. On the M5 Pro select **Detect MA270U**, choose the verified display, and use
-   **M5 / USB-C preset**.
-3. On the Intel Mac use **Intel / HDMI preset**.
+1. Set the monitor as the main display on both Macs.
+2. On either Mac select **Detect DDC-capable displays**, choose the intended
+   display, and use the matching input preset.
+3. Both the M5 Pro and Intel Mac use native DDC/CI after their display is
+   verified.
 4. Use **Show this Mac** and **Show other Mac** to verify switching. If DDC/CI
    fails, read the diagnostic and use the MA270U OSD.
 

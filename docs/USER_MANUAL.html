@@ -43,7 +43,7 @@
 <body>
   <main>
     <header>
-      <div class="badge">MacKVM 0.7.1</div>
+      <div class="badge">MacKVM 0.8.0</div>
       <h1>MacKVM User Manual</h1>
       <p class="lede">A macOS menu-bar tool for sharing one keyboard, mouse, and BenQ MA270U display between two MacBook Pro computers.</p>
       <p><a href="USER_MANUAL.zh-TW.html" lang="zh-Hant">繁體中文版</a> · <a href="USER_MANUAL.md">Markdown version</a></p>
@@ -93,7 +93,7 @@
       <p>Create and verify a DMG:</p>
       <pre><code>./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist &amp;&amp; shasum -a 256 -c MacKVM-0.7.1-universal.dmg.sha256)</code></pre>
+(cd dist &amp;&amp; shasum -a 256 -c MacKVM-0.8.0-universal.dmg.sha256)</code></pre>
       <p>The DMG is built from a clean staging directory and produces a portable SHA-256 sidecar. Ad-hoc signing is for local testing; distribution requires Developer ID, hardened runtime, and Apple notarization.</p>
     </section>
 
@@ -118,12 +118,12 @@
       </table>
       <ol>
         <li>Enable DDC/CI in the MA270U OSD if the option is available.</li>
-        <li>On the M5 Pro, install the optional helper with <code>brew install m1ddc</code>.</li>
-        <li>Select <strong>Detect MA270U</strong> and choose the display explicitly identified as MA270U. MacKVM stores its stable m1ddc identifier instead of assuming display number 1.</li>
-        <li>Choose <strong>M5 / USB-C preset</strong> on the M5 Pro and <strong>Intel / HDMI preset</strong> on the Intel Mac.</li>
+        <li>MacKVM uses native IOKit DDC/CI: <code>IOAVService</code> on Apple Silicon and <code>IOI2C</code> on Intel. No Homebrew helper is required.</li>
+        <li>Select <strong>Detect DDC-capable displays</strong> on either Mac and choose the intended display explicitly. MacKVM stores its stable native selector instead of assuming display number 1.</li>
+        <li>Choose <strong>M5 / USB-C preset</strong> on the M5 Pro and <strong>Intel / HDMI preset</strong> on the Intel Mac; both can use automatic native DDC/CI.</li>
         <li>Use <strong>Show this Mac</strong> and <strong>Show other Mac</strong> before starting control. If DDC fails, read <strong>DDC diagnostic</strong> and use the OSD as a fallback.</li>
       </ol>
-      <p>If the Intel Mac uses HDMI 2, select HDMI 2 consistently in both input pickers. Intel Macs do not run automatic <code>m1ddc</code> switching.</p>
+      <p>If the Intel Mac uses HDMI 2, select HDMI 2 consistently in both input pickers. The monitor and cable must expose DDC/CI; otherwise use the monitor OSD.</p>
     </section>
 
     <section id="permissions">
@@ -195,13 +195,13 @@
       <h3>No control notification</h3>
       <p>Enable <strong>Control request notifications</strong> in the setup checklist and check System Settings → Notifications → MacKVM. When notifications are disabled, the request remains in the menu and the keyboard icon shows a warning.</p>
       <h3>The monitor does not switch</h3>
-      <p>Install <code>m1ddc</code> on the M5 Pro, confirm USB-C and DDC/CI, select the verified MA270U display, and read the DDC diagnostic. Use the OSD manually when needed.</p>
+      <p>Confirm the monitor and cable expose DDC/CI, select <strong>Detect DDC-capable displays</strong>, and read the DDC diagnostic if switching fails. Use the OSD manually when needed.</p>
       <h3>The identity or Keychain is inconsistent</h3>
       <p>Use <strong>Reset this Mac identity</strong> only when the old identity should be discarded. It removes local pairings; after relaunch both Macs must be paired again.</p>
     </section>
 
     <footer>
-      <p>MacKVM User Manual · Version 0.7.1 · Updated 2026-08-11</p>
+      <p>MacKVM User Manual · Version 0.8.0 · Updated 2026-08-11</p>
     </footer>
   </main>
 </body>

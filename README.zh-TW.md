@@ -18,7 +18,8 @@ MacKVM 是原生 macOS 選單列應用程式，讓兩台位於同一本機網路
 - Local Network、Input Monitoring、Accessibility 的循序設定檢查。
 - Launch MacKVM at Login、通知 Allow／Deny／Review、斷線安全返回與自動重連。
 - 防止 HDMI-only Intel Mac 誤宣稱具備雙向實體輸入的拓撲模式。
-- BenQ MA270U 的 m1ddc 輸入切換、穩定顯示器識別碼、DDC 診斷與 OSD 備援。
+- 透過 IOKit 原生 DDC/CI 在 Apple Silicon 與 Intel 切換螢幕輸入、探索支援 DDC 的
+  顯示器、保存穩定識別碼、顯示診斷，並在螢幕不支援時提供 OSD 備援。
 
 ## 硬體接法
 
@@ -32,11 +33,10 @@ MacKVM 是原生 macOS 選單列應用程式，讓兩台位於同一本機網路
 
 - macOS 13 或更新版本。
 - Swift 6 toolchain；若要使用完整 Xcode 產物可安裝 Xcode。
-- M5 Pro 可選擇安裝 `m1ddc` 以自動切換 MA270U：
+- 外接螢幕與線材需提供 VESA DDC/CI；若螢幕 OSD 有 DDC/CI 選項，請先開啟。
 
-  ```sh
-  brew install m1ddc
-  ```
+MacKVM 在 Apple Silicon 透過 `IOAVService`、在 Intel 透過 `IOI2C` 直接傳送 DDC/CI
+指令，不需要 Homebrew 工具或其他外部執行檔，兩種架構都能使用自動切換。
 
 ## 建置與打包
 
@@ -65,8 +65,8 @@ Developer ID Application、hardened runtime，並在公開發佈前完成 Apple 
    按 **Allow** 才會開始遠端輸入。
 5. 在 **Paired device information** 查看或修改友善名稱；型號、最後成功連線時間
    與金鑰指紋會保存到本機。需要回報問題時按 **Copy support information**。
-6. 在 M5 Pro 選取 **Detect MA270U**，確認顯示器為 MA270U 後套用 **M5 / USB-C
-   preset**；Intel Mac 套用 **Intel / HDMI preset**。
+6. 在任一台 Mac 選取 **Detect DDC-capable displays**，明確選取要控制的外接螢幕；
+   M5 Pro 套用 **M5 / USB-C preset**，Intel Mac 套用 **Intel / HDMI preset**。
 7. 若通知被停用，仍可從選單列鍵盤圖示開啟選單並處理控制請求。
 
 ## 文件
@@ -75,5 +75,6 @@ Developer ID Application、hardened runtime，並在公開發佈前完成 Apple 
 - [繁體中文架構](ARCHITECTURE.zh-TW.md) · [English architecture](ARCHITECTURE.md)
 - [繁體中文驗收清單](MANUAL_TEST.zh-TW.md) · [English acceptance test](MANUAL_TEST.md)
 - [繁體中文安全說明](SECURITY.zh-TW.md) · [English security status](SECURITY.md)
+- [繁體中文路線圖](ROADMAP.zh-TW.md) · [English roadmap](ROADMAP.md)
 - [English HTML manual](docs/USER_MANUAL.html) · [繁體中文 HTML 使用手冊](docs/USER_MANUAL.zh-TW.html)
 - [English Markdown manual](docs/USER_MANUAL.md) · [繁體中文 Markdown 手冊](docs/USER_MANUAL.zh-TW.md)

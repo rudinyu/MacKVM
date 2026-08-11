@@ -16,6 +16,10 @@ final class SecureSessionProtocolTests: XCTestCase {
             [.handshake(fixture.initiatorHandshake)]
         )
         XCTAssertTrue(buffer.isEmpty)
+        XCTAssertEqual(
+            fixture.initiatorHandshake.senderModel,
+            "MacBookPro18,3"
+        )
     }
 
     func testHandshakeRejectsWrongSigningKey() throws {
@@ -225,12 +229,14 @@ final class SecureSessionProtocolTests: XCTestCase {
                 sessionID: sessionID,
                 role: .initiator,
                 sender: initiator,
+                senderModel: "MacBookPro18,3",
                 ephemeralKey: initiatorEphemeralKey
             ),
             responderHandshake: .make(
                 sessionID: sessionID,
                 role: .responder,
                 sender: responder,
+                senderModel: "MacBookPro18,4",
                 ephemeralKey: responderEphemeralKey
             )
         )
