@@ -33,7 +33,7 @@ Release check (from the M5 Pro) is also available:
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist && shasum -a 256 -c MacKVM-0.9.0-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-0.9.1-universal.dmg.sha256)
 ```
 
 Expected: the app reports both `arm64` and `x86_64`, and an ad-hoc signature
@@ -185,17 +185,29 @@ Expected:
     letters, numbers, and symbol keys, including combinations that need Shift,
     Option, and Caps Lock on at least one of the two layouts.
 15. Still on differing layouts, use a Cmd-modified shortcut that involves a
-    remapped key (for example Cmd-C to copy selected text) on the controlling
-    Mac.
-16. Still on differing layouts, type a character that exists on the
+    remappable key (for example Cmd-C to copy selected text) on the
+    controlling Mac.
+16. Still on differing layouts, turn Caps Lock on on the controlling Mac, then
+    repeat the same Cmd-modified shortcut from step 15.
+17. Still on differing layouts, hold a remappable letter key on the
+    controlling Mac long enough for macOS's own key-repeat to kick in, release
+    Shift partway through the hold without releasing the letter key, then
+    release the letter key.
+18. Still on differing layouts, type a character that exists on the
     controller's layout but has no equivalent on the receiver's layout (a
     layout-specific symbol is usually easiest to find), then request control
     again from the same Mac.
-17. Restore both Macs to the same keyboard layout before continuing to the
+19. Restore both Macs to the same keyboard layout before continuing to the
     next section.
-18. While controlling, press and hold a volume key, then a brightness key, on
+20. If an older MacKVM build (from before cross-layout remapping) is
+    available, pair it with a current build, set the two Macs to differing
+    keyboard layouts, and request control from either side.
+21. If ISO or JIS keyboard hardware is available, set the two Macs to
+    differing layouts including that hardware and type its layout-specific
+    keys (for example the ISO key next to the left Shift key) during control.
+22. While controlling, press and hold a volume key, then a brightness key, on
     the controlling Mac's physical keyboard.
-19. While controlling, press the power key and Caps Lock on the controlling
+23. While controlling, press the power key and Caps Lock on the controlling
     Mac's physical keyboard.
 
 Expected:
@@ -223,13 +235,27 @@ Expected:
   receiver's layout. Keys outside the remapped set — arrows, Return, Tab,
   Delete, Escape, Space, function keys, and modifiers — behave identically to
   same-layout control.
-- The Cmd-modified shortcut in step 15 fires its normal action (for example
-  the selection is copied) rather than typing the shortcut's letter as plain
-  text.
-- The unmappable character in step 16 ends remote input safely — a clear
+- The Cmd-modified shortcut in steps 15 and 16 fires its normal action (for
+  example the selection is copied) both with and without Caps Lock on. Caps
+  Lock must not change which shortcut fires (no Command-Shift-C in place of
+  Command-C): Cmd-held keys bypass remapping entirely and inject with the
+  sender's own keycode and flags, so this must behave identically to
+  same-layout control regardless of the two Macs' keyboard layouts.
+- In step 17, the receiving Mac shows the repeated character only for as long
+  as the key is actually held, and releasing the key leaves nothing stuck
+  down or still repeating — releasing Shift mid-hold must not change which
+  local key eventually receives the release.
+- The unmappable character in step 18 ends remote input safely — a clear
   status message, no stuck key or mouse button, local input still works
   immediately afterward — rather than injecting the wrong character, and a
   fresh control request from the same Mac succeeds normally afterward.
+- In step 20, the current build denies the older build's request before the
+  consent prompt when the layouts differ (status names the version gap)
+  rather than granting it and ending control on the first remappable
+  keystroke; requests with matching layouts, or from the older build acting
+  as receiver, are unaffected.
+- In step 21, the ISO/JIS-specific keys type the correct character, not
+  whatever an ANSI interpretation of the same position would produce.
 - The volume and brightness keys in step 18 change the setting only on the
   receiving Mac, with its own on-screen indicator; the controlling Mac's own
   volume/brightness is unaffected.

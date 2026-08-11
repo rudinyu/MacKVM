@@ -1,4 +1,4 @@
-import Carbon.HIToolbox
+import Carbon
 import Foundation
 import MacKVMCore
 
@@ -100,12 +100,13 @@ private struct CarbonUnicodeLayoutTranslator: UnicodeLayoutCharacterProviding {
                 keyCode,
                 UInt16(kUCKeyActionDown),
                 keyModifiers,
-                // The keyboard-type parameter only matters for the legacy
-                // KCHR resource format. `kTISPropertyUnicodeKeyLayoutData`
-                // is always the modern UCHR format, which ignores it, so a
-                // fixed 0 avoids depending on the low-memory-globals API
-                // that would otherwise supply it.
-                0,
+                // A modern `uchr` resource can still bundle distinct
+                // sub-tables for ANSI/ISO/JIS hardware (they differ in the
+                // position or presence of keys like the ISO "section" key),
+                // selected by keyboard type. A fixed value here silently
+                // picked the wrong sub-table on ISO/JIS hardware; the real
+                // hardware type is required.
+                UInt32(LMGetKbdType()),
                 OptionBits(kUCKeyTranslateNoDeadKeysBit),
                 &deadKeyState,
                 chars.count,

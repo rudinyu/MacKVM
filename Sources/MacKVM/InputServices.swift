@@ -855,6 +855,17 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
             return activeKeyRemap.removeValue(forKey: remoteKeyCode)
                 ?? .identity(keyCode: remoteKeyCode)
         }
+        // A key held down auto-repeats as further keyDown events for the
+        // same physical key before its keyUp arrives. Reusing the first
+        // resolution for every repeat — rather than recomputing and
+        // overwriting it — keeps the whole press pinned to one local key
+        // even if a modifier changes mid-hold; recomputing per repeat could
+        // retarget a live press to a different local key and leave the
+        // original one stuck down, since only one target per remote keyCode
+        // is tracked.
+        if let existing = activeKeyRemap[remoteKeyCode] {
+            return existing
+        }
         let target = computeKeyInjectionTarget(
             for: input,
             remoteKeyCode: remoteKeyCode
@@ -869,6 +880,21 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
         for input: RemoteInputEvent,
         remoteKeyCode: UInt16
     ) -> KeyInjectionTarget? {
+        let modifierFlags = CGEventFlags(rawValue: input.modifierFlags)
+        guard !modifierFlags.contains(.maskCommand),
+              !modifierFlags.contains(.maskControl) else {
+            // Command/Control select an application shortcut by logical key,
+            // not by the character the key types, so remapping them is the
+            // wrong operation, not just an unnecessary one: the reverse map
+            // is keyed by character, and the sender's character reflects
+            // Shift/Option/Caps Lock, none of which the shortcut cares
+            // about. Recomputing them to match a character the receiver
+            // never asked for could turn, for example, Command-C into
+            // Command-Shift-C. These keys inject with the sender's own
+            // keycode and flags unchanged, exactly as before cross-layout
+            // remapping existed.
+            return .identity(keyCode: remoteKeyCode)
+        }
         guard let remoteLayout = input.keyboardLayoutIdentifier,
               let localLayout = CarbonKeyboardLayout.currentIdentifier(),
               remoteLayout != localLayout,
@@ -1057,11 +1083,10 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
         remap: KeyInjectionTarget? = nil
     ) -> CGEventFlags {
         if let remap, case .remapped(let target) = remap {
-            // Command and Control pass through unchanged from the sender:
-            // they select an application shortcut rather than a character,
-            // so remapping them would break the shortcut. Shift, Option, and
-            // Caps Lock are replaced with whatever this local layout needs
-            // to produce the sender's character, which may differ from what
+            // computeKeyInjectionTarget never returns .remapped while
+            // Command or Control is held, so only Shift/Option/Caps Lock
+            // need replacing here with whatever this local layout needs to
+            // produce the sender's character, which may differ from what
             // the sender itself held.
             var flags = CGEventFlags(rawValue: input.modifierFlags)
             flags.remove([.maskShift, .maskAlternate, .maskAlphaShift])

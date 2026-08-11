@@ -55,7 +55,10 @@ final class ControlProtocolTests: XCTestCase {
             ControlMessageCodec.encode(message)
         )
 
-        XCTAssertEqual(decoded.protocolVersion, 1)
+        XCTAssertEqual(
+            decoded.protocolVersion,
+            ControlMessage.currentProtocolVersion
+        )
         XCTAssertEqual(decoded.minimumProtocolVersion, 1)
         XCTAssertEqual(
             decoded.keyboardLayoutIdentifier,
@@ -70,10 +73,16 @@ final class ControlProtocolTests: XCTestCase {
                 remoteMinimumVersion: 1
             )
         )
-        XCTAssertFalse(
+        XCTAssertTrue(
             ControlProtocolCompatibility.isCompatible(
                 remoteVersion: 2,
                 remoteMinimumVersion: 2
+            )
+        )
+        XCTAssertFalse(
+            ControlProtocolCompatibility.isCompatible(
+                remoteVersion: 3,
+                remoteMinimumVersion: 3
             )
         )
         XCTAssertFalse(

@@ -2,7 +2,7 @@
 
 # MacKVM 開發路線圖
 
-本路線圖以 0.9.0 程式碼為基準。配對、公開金鑰釘選、加密連線、輸入驗證、
+本路線圖以 0.9.1 程式碼為基準。配對、公開金鑰釘選、加密連線、輸入驗證、
 接收端明確同意、權限引導與有界佇列已完成；後續項目主要改善日常使用體驗。
 
 ## 目前狀態
@@ -68,15 +68,30 @@ MacKVM 現在透過原生 IOKit bridge 探索外接顯示器，直接傳送 DDC/
      的 `keyDown` 現在會帶上寄送端配置產生的字元；接收端配置不同時，建立一份
      `KeyboardLayoutReverseMap`（每次配置變更才重建一次），查出本機哪個按鍵＋
      Shift／Option／Caps Lock 組合能產生相同字元，而不是照搬寄送端的 keyCode。
-     Cmd／Control 原樣保留，應用程式快捷鍵不受影響。`ControlCoordinator` 不再因為
-     配置不同就在請求階段直接拒絕；只有在某個按鍵真的在本機配置上找不到對應時，
-     才會中止連線（沿用原本的保底行為）。
+     按住 Cmd 或 Control 的按鍵完全跳過重映射，照寄送端原本的 keyCode／flags 注入
+     ——這類按鍵是靠邏輯按鍵選快捷鍵，不是靠字元，重映射反而會出錯（例如寄送端
+     Caps Lock 剛好開著，Cmd-C 可能被誤植成 Cmd-Shift-C）。`ControlCoordinator`
+     只有在請求方的協定版本低於支援重映射的 v2 時，才會因配置不同直接拒絕（v1
+     peer 不會送字元欄位，硬放行只會在第一個可重映射按鍵時中斷連線）；v2 peer
+     配置不同不會被拒絕，交給 `RemoteInputSink` 處理，只有在某個按鍵真的在本機
+     配置上找不到對應時才會中止連線（沿用原本的保底行為）。按住某鍵觸發的
+     macOS 自動連發（auto-repeat）會沿用第一次 keyDown 算出的結果，不會每次
+     連發都重算——避免連發中途修飾鍵改變導致目標按鍵被換掉，原本按下的鍵收不到
+     對應的放開事件而卡住。
+
+  第一版上線前的 review 抓到 4 個真實的問題，都已修正：v1 peer 配置不同時會先
+  授權、第一個可重映射按鍵才中斷（改用上述協定版本檢查修正）；auto-repeat 可能
+  換掉重映射目標導致卡鍵（改用上述「沿用第一次結果」修正）；Cmd／Control 快捷鍵
+  可能被 Caps Lock 或 Option 影響變成別的快捷鍵（改用上述「完全跳過重映射」修正）；
+  `UCKeyTranslate` 原本固定傳入鍵盤類型 `0`，在 ISO／JIS 等非 ANSI 實體鍵盤上會
+  悄悄選錯對應表（改成讀取 `LMGetKbdType()`）。
 
   reverse-map 的查表邏輯已有
   [`KeyboardLayoutRemapTests.swift`](Tests/MacKVMCoreTests/KeyboardLayoutRemapTests.swift)
   搭配假配置驗證；`UCKeyTranslate`／`TISCopyCurrentKeyboardLayoutInputSource`
   本身沒有實機無法測試，仍需要在兩台真正使用不同實體配置（不只是切輸入法）的 Mac
-  上實測，確認 Shift／Option／Caps Lock 組合與 Cmd 快捷鍵都正確。
+  上實測，確認 Shift／Option／Caps Lock 組合、按住連發、Cmd 快捷鍵不受重映射影響
+  都正確；有 ISO／JIS 實體鍵盤的話也一併驗證。
 
 ## 剩餘的 P0／P1
 

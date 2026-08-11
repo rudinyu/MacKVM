@@ -485,7 +485,19 @@ final class ControlCoordinator: ObservableObject {
         // A differing keyboard layout no longer denies the request outright:
         // RemoteInputSink resolves each remappable key to its equivalent on
         // this layout, and ends control only if a specific key turns out to
-        // have no equivalent here.
+        // have no equivalent here. That resolution needs the character field
+        // a v1 peer never sends, so a v1 peer would otherwise be granted
+        // control only to have it end on its first remappable keystroke.
+        // Denying it here, before the consent prompt, is strictly better for
+        // that one case; a v2 peer with a differing layout is unaffected.
+        if let remoteLayout = message.keyboardLayoutIdentifier,
+           let localLayout = keyboardLayoutIdentifier(),
+           remoteLayout != localLayout,
+           (message.protocolVersion ?? 1) < 2 {
+            sendResponse(kind: .controlDenied, for: request)
+            status = "Denied control: the other Mac's keyboard layout differs and its MacKVM version cannot remap it"
+            return
+        }
         guard !isRemoteInputTearingDown else {
             sendResponse(kind: .controlDenied, for: request)
             status = "Denied a control request while remote input is returning locally"

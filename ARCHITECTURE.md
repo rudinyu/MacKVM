@@ -263,21 +263,31 @@ must grant control again rather than silently resuming input suppression.
 Control requests carry a protocol-version range and the current macOS
 physical-keyboard-layout identifier (from `TISCopyCurrentKeyboardLayoutInputSource`,
 so switching an input method like Zhuyin on or off is not a layout change). A
-mismatched protocol-version range is still denied before the receiver's
-consent prompt; a differing keyboard layout is not, since `RemoteInputSink`
-resolves it instead. Each `keyDown` for a letter, digit, or symbol key also
-carries the character the sender's own layout and modifier state produced for
-it. When the receiver's layout differs, it looks up which local key and
-Shift/Option/Caps Lock combination produce that same character — built once
-per layout change into a `KeyboardLayoutReverseMap` — and injects that key
-instead of the sender's keycode, which would mean something else under a
-different layout; Command and Control pass through unmodified so application
-shortcuts still work. A key with no equivalent on the receiver's layout ends
-remote input safely rather than injecting the wrong character. Keys outside
-that letter/digit/symbol set (arrows, Return, Tab, Delete, Escape, Space,
-function keys, and every modifier) occupy the same physical position on every
-layout and are injected by keycode exactly as before. Missing identifiers
-remain accepted for legacy peers, while new peers use the negotiation fields.
+mismatched protocol-version range is denied before the receiver's consent
+prompt, as is a differing keyboard layout when the requesting peer's version
+is below the v2 that added character-based remapping — that peer would never
+send the character field remapping needs, so admitting it would only grant
+control to end it on the first remappable keystroke. A v2 peer's differing
+layout is not denied, since `RemoteInputSink` resolves it instead. Each
+`keyDown` for a letter, digit, or symbol key also carries the character the
+sender's own layout and modifier state produced for it. When the receiver's
+layout differs, it looks up which local key and Shift/Option/Caps Lock
+combination produce that same character — built once per layout change into a
+`KeyboardLayoutReverseMap`, and reused for the rest of a held key's auto-repeat
+so a modifier changing mid-hold cannot retarget a live press to a different
+local key — and injects that key instead of the sender's keycode, which would
+mean something else under a different layout. A key held with Command or
+Control bypasses remapping entirely: those select an application shortcut by
+logical key, not by the character the key types, and remapping them could
+turn (for example) Command-C into Command-Shift-C when the sender's Caps Lock
+happens to be on, so they inject with the sender's own keycode and flags
+unchanged, exactly as every key did before remapping existed. A key with no
+equivalent on the receiver's layout ends remote input safely rather than
+injecting the wrong character. Keys outside that letter/digit/symbol set
+(arrows, Return, Tab, Delete, Escape, Space, function keys, and every
+modifier) occupy the same physical position on every layout and are injected
+by keycode exactly as before. Missing identifiers remain accepted for legacy
+peers, while new peers use the negotiation fields.
 
 If the local identity/keychain pair becomes inconsistent, the bootstrap error
 view exposes an explicit reset operation. It deletes the Keychain key and
