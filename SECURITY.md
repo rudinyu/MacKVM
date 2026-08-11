@@ -35,7 +35,11 @@ key-confirmation packet, so replaying a captured signed hello is insufficient.
 Remote input messages are decoded with a 16 KiB limit and strict event-specific
 field validation before injection. Pointer coordinates and scroll values are
 bounded, and injected events carry a private source marker so a listening peer
-does not retransmit them. macOS still requires explicit Input Monitoring
+does not retransmit them. System-defined (media, volume, and brightness) keys
+are restricted to a fixed allowlist that a peer cannot extend: the power key is
+excluded so a remote request can never open the shutdown dialog or sleep the
+receiving Mac, and caps lock is excluded because it already travels as an
+ordinary keyboard event. macOS still requires explicit Input Monitoring
 permission to capture local input and Accessibility permission to inject remote
 input. Pairing and secure-session wire frames are capped at 64 KiB, encrypted
 session plaintext is capped at 32 KiB, and partial frames expire after five

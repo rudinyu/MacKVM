@@ -30,7 +30,11 @@ final class ControlCoordinatorTests: XCTestCase {
         )
     }
 
-    func testMismatchedKeyboardLayoutIsDeniedBeforeConsentPrompt() {
+    /// A differing keyboard layout used to be denied here, before the
+    /// consent prompt. RemoteInputSink now resolves each remappable key to
+    /// its local equivalent instead, so admission no longer depends on the
+    /// two layouts matching.
+    func testMismatchedKeyboardLayoutNoLongerBlocksConsentPrompt() {
         let fixture = makeFixture(
             keyboardLayoutIdentifier: "com.apple.keylayout.US"
         )
@@ -43,13 +47,15 @@ final class ControlCoordinatorTests: XCTestCase {
         )
         drainMainQueue()
 
-        XCTAssertNil(fixture.coordinator.pendingIncomingControlRequest)
-        XCTAssertTrue(
+        XCTAssertEqual(
+            fixture.coordinator.pendingIncomingControlRequest?.id,
+            requestID
+        )
+        XCTAssertFalse(
             fixture.transport.sentMessages.contains(
                 controlMessage(.controlDenied, requestID)
             )
         )
-        XCTAssertTrue(fixture.coordinator.status.contains("keyboard layouts"))
     }
 
     func testInboundAdmissionOverflowDisconnectsTransport() {

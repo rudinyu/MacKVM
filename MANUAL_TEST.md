@@ -176,9 +176,27 @@ Expected:
 11. Disable MacKVM notifications in System Settings, request control again, and
    confirm the request remains available in the menu.
 12. Repeat with the Intel Mac controlling the M5 Pro Mac.
-13. Change the keyboard input source on one Mac while control is active, then
-    press a key. Restore the same input source on both Macs and request control
-    again.
+13. While control is active, toggle an input method on the controlling Mac (for
+    example enable Zhuyin, type a letter, then switch back to English) without
+    changing its underlying physical keyboard layout. Press keys throughout.
+14. Set the two Macs to genuinely different physical keyboard layouts in
+    **System Settings → Keyboard → Input Sources** (for example US on one,
+    Dvorak or a European ABC layout on the other). Request control, then type
+    letters, numbers, and symbol keys, including combinations that need Shift,
+    Option, and Caps Lock on at least one of the two layouts.
+15. Still on differing layouts, use a Cmd-modified shortcut that involves a
+    remapped key (for example Cmd-C to copy selected text) on the controlling
+    Mac.
+16. Still on differing layouts, type a character that exists on the
+    controller's layout but has no equivalent on the receiver's layout (a
+    layout-specific symbol is usually easiest to find), then request control
+    again from the same Mac.
+17. Restore both Macs to the same keyboard layout before continuing to the
+    next section.
+18. While controlling, press and hold a volume key, then a brightness key, on
+    the controlling Mac's physical keyboard.
+19. While controlling, press the power key and Caps Lock on the controlling
+    Mac's physical keyboard.
 
 Expected:
 
@@ -196,9 +214,28 @@ Expected:
 - Four-click sequences are delivered.
 - Disconnect/end paths release every held key and mouse button.
 - A second inbound control request is denied without disturbing the active one.
-- Different keyboard layout identifiers deny control before the receiver's
-  consent prompt; a layout change during control ends remote input and releases
-  held state.
+- Toggling an input method (step 13) does not end control and does not change
+  which characters are typed; a differing keyboard layout no longer denies the
+  control request at all.
+- With genuinely different physical layouts (step 14), each typed character
+  matches what the controller intended, including Shift/Option/Caps
+  Lock-modified keys, not whatever the sender's keycode means on the
+  receiver's layout. Keys outside the remapped set — arrows, Return, Tab,
+  Delete, Escape, Space, function keys, and modifiers — behave identically to
+  same-layout control.
+- The Cmd-modified shortcut in step 15 fires its normal action (for example
+  the selection is copied) rather than typing the shortcut's letter as plain
+  text.
+- The unmappable character in step 16 ends remote input safely — a clear
+  status message, no stuck key or mouse button, local input still works
+  immediately afterward — rather than injecting the wrong character, and a
+  fresh control request from the same Mac succeeds normally afterward.
+- The volume and brightness keys in step 18 change the setting only on the
+  receiving Mac, with its own on-screen indicator; the controlling Mac's own
+  volume/brightness is unaffected.
+- The power key in step 19 has no effect on either Mac — no shutdown or sleep
+  dialog appears on the receiver. Caps Lock toggles correctly and only once
+  per physical press.
 
 ## 7. Safe return and monitor routing
 
@@ -317,6 +354,8 @@ Record the macOS version and result for each item:
 | Paired profile / support copy |  |  |  |
 | Secure reconnect |  |  |  |
 | Keyboard/mouse |  |  |  |
+| Media/system keys |  |  |  |
+| Cross-layout keyboard remap |  |  |  |
 | Control consent / receiver stop |  |  |  |
 | Emergency return |  |  |  |
 | DDC-capable display detection / stable ID |  |  |  |

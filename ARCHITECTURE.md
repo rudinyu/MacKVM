@@ -260,12 +260,24 @@ path or Bonjour update. A deliberate Disconnect, Forget, or app stop clears the
 desired peer. Reconnection returns both Macs to a local-input state; the user
 must grant control again rather than silently resuming input suppression.
 
-Control requests carry a protocol-version range and the current macOS keyboard
-input-source identifier. A mismatched range or layout is denied before the
-receiver's consent prompt. Keyboard events repeat the layout identifier, so a
-layout change during an active session ends remote input safely instead of
-silently producing the wrong characters. Missing identifiers remain accepted
-for legacy peers, while new peers use the negotiation fields.
+Control requests carry a protocol-version range and the current macOS
+physical-keyboard-layout identifier (from `TISCopyCurrentKeyboardLayoutInputSource`,
+so switching an input method like Zhuyin on or off is not a layout change). A
+mismatched protocol-version range is still denied before the receiver's
+consent prompt; a differing keyboard layout is not, since `RemoteInputSink`
+resolves it instead. Each `keyDown` for a letter, digit, or symbol key also
+carries the character the sender's own layout and modifier state produced for
+it. When the receiver's layout differs, it looks up which local key and
+Shift/Option/Caps Lock combination produce that same character — built once
+per layout change into a `KeyboardLayoutReverseMap` — and injects that key
+instead of the sender's keycode, which would mean something else under a
+different layout; Command and Control pass through unmodified so application
+shortcuts still work. A key with no equivalent on the receiver's layout ends
+remote input safely rather than injecting the wrong character. Keys outside
+that letter/digit/symbol set (arrows, Return, Tab, Delete, Escape, Space,
+function keys, and every modifier) occupy the same physical position on every
+layout and are injected by keycode exactly as before. Missing identifiers
+remain accepted for legacy peers, while new peers use the negotiation fields.
 
 If the local identity/keychain pair becomes inconsistent, the bootstrap error
 view exposes an explicit reset operation. It deletes the Keychain key and

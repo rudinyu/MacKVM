@@ -482,13 +482,10 @@ final class ControlCoordinator: ObservableObject {
             status = "Denied control: the other Mac uses an incompatible protocol"
             return
         }
-        if let remoteLayout = message.keyboardLayoutIdentifier,
-           let localLayout = keyboardLayoutIdentifier(),
-           remoteLayout != localLayout {
-            sendResponse(kind: .controlDenied, for: request)
-            status = "Denied control: keyboard layouts differ (\(remoteLayout) vs \(localLayout))"
-            return
-        }
+        // A differing keyboard layout no longer denies the request outright:
+        // RemoteInputSink resolves each remappable key to its equivalent on
+        // this layout, and ends control only if a specific key turns out to
+        // have no equivalent here.
         guard !isRemoteInputTearingDown else {
             sendResponse(kind: .controlDenied, for: request)
             status = "Denied a control request while remote input is returning locally"

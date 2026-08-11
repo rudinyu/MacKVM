@@ -1,3 +1,4 @@
+import AppKit
 import ApplicationServices
 import Combine
 import CoreGraphics
@@ -5,28 +6,78 @@ import Foundation
 import MacKVMCore
 
 enum KeyboardLayoutIdentifier {
-    private static let inputSourceKey =
-        "AppleCurrentKeyboardLayoutInputSourceID"
-
+    /// Delegates to the physical-layout lookup in `CarbonKeyboardLayout`.
+    /// Switching an input method (for example toggling Zhuyin on and off)
+    /// does not change this value, since it identifies the hardware layout
+    /// beneath the input method rather than the input method itself.
     static func current() -> String? {
-        let configured = UserDefaults.standard.string(forKey: inputSourceKey)
-            ?? Locale.current.identifier
-        let trimmed = configured.trimmingCharacters(
-            in: .whitespacesAndNewlines
-        )
-        guard !trimmed.isEmpty,
-              trimmed.utf8.count <= 256,
-              trimmed.unicodeScalars.allSatisfy({
-                  $0.value >= 0x20 && $0.value != 0x7F
-              }) else {
-            return nil
-        }
-        return trimmed
+        CarbonKeyboardLayout.currentIdentifier()
     }
 }
 
 private enum InjectedEventMarker {
     static let value: Int64 = 0x4D_4B_56_4D
+}
+
+/// Media, brightness, and illumination keys are delivered as `NSSystemDefined`
+/// events, which `CGEventType` has no case for. The tap mask and the dispatch
+/// below therefore both work from the raw event type, and the payload is read
+/// through `NSEvent`, the only API that exposes `data1`.
+private enum SystemDefinedEvent {
+    /// `NSEvent.EventType.systemDefined`.
+    static let cgEventTypeRawValue: UInt32 = 14
+    /// `NX_SUBTYPE_AUX_CONTROL_BUTTONS`, the media/brightness key subtype.
+    static let auxControlSubtype: Int16 = 8
+    private static let keyDownState = 0x0A
+    private static let keyUpState = 0x0B
+
+    /// Reads a media key from a captured event. Any subtype, key code, or key
+    /// state outside the supported set returns nil and is simply not
+    /// forwarded, which also keeps unrelated system events off the wire.
+    static func decode(_ event: CGEvent) -> (key: MediaKey, isPressed: Bool)? {
+        guard let nsEvent = NSEvent(cgEvent: event),
+              nsEvent.subtype.rawValue == auxControlSubtype else {
+            return nil
+        }
+        let data1 = nsEvent.data1
+        guard let key = MediaKey(
+            rawValue: Int((data1 & 0xFFFF_0000) >> 16)
+        ) else {
+            return nil
+        }
+        switch Int((data1 & 0x0000_FF00) >> 8) {
+        case keyDownState:
+            return (key, true)
+        case keyUpState:
+            return (key, false)
+        default:
+            return nil
+        }
+    }
+
+    static func makeEvent(
+        key: MediaKey,
+        isPressed: Bool,
+        flags: CGEventFlags
+    ) -> CGEvent? {
+        let keyState = isPressed ? keyDownState : keyUpState
+        let data1 = (key.rawValue << 16) | (keyState << 8)
+        return NSEvent.otherEvent(
+            with: .systemDefined,
+            location: .zero,
+            // Modifiers are preserved because macOS uses them: Shift-Option
+            // with a volume key performs a quarter-step adjustment.
+            modifierFlags: NSEvent.ModifierFlags(
+                rawValue: UInt(flags.rawValue)
+            ),
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: 0,
+            context: nil,
+            subtype: auxControlSubtype,
+            data1: data1,
+            data2: -1
+        )?.cgEvent
+    }
 }
 
 private enum VirtualKeyCode {
@@ -252,6 +303,23 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
             }
             return true
         }
+        if type.rawValue == SystemDefinedEvent.cgEventTypeRawValue {
+            guard let (key, isPressed) = SystemDefinedEvent.decode(event) else {
+                // An unrecognized system-defined event (a subtype or key
+                // outside the allowlist) is dropped rather than forwarded,
+                // and is not treated as consumed local input.
+                return false
+            }
+            onEvent?(
+                RemoteInputEvent(
+                    kind: .systemDefined,
+                    isPressed: isPressed,
+                    modifierFlags: event.flags.rawValue,
+                    mediaKey: key
+                )
+            )
+            return suppressesLocalEvents
+        }
         guard let remoteEvent = makeRemoteEvent(type: type, event: event) else {
             // A duplicate Caps Lock flagsChanged edge is intentionally not
             // forwarded, but it must still be consumed while local input is
@@ -311,6 +379,9 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
         case .otherMouseDragged:
             return pointerEvent(.otherMouseDragged, event: event, flags: flags)
         case .scrollWheel:
+            // A phase value of 0 means "no phase" on this platform, and the
+            // failable initializers map it to nil. A mouse wheel therefore
+            // keeps producing exactly the payload it produced before.
             return RemoteInputEvent(
                 kind: .scroll,
                 modifierFlags: flags,
@@ -319,6 +390,18 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
                 ),
                 scrollDeltaY: event.getDoubleValueField(
                     .scrollWheelEventPointDeltaAxis1
+                ),
+                scrollPhase: ScrollPhase(
+                    rawValue: Int(
+                        event.getIntegerValueField(.scrollWheelEventScrollPhase)
+                    )
+                ),
+                scrollMomentumPhase: ScrollMomentumPhase(
+                    rawValue: Int(
+                        event.getIntegerValueField(
+                            .scrollWheelEventMomentumPhase
+                        )
+                    )
                 )
             )
         case .tapDisabledByTimeout:
@@ -363,11 +446,25 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
                 key: CGKeyCode(keyCode)
             )
         }
+        // Only keyDown carries a character, and only for keys whose meaning
+        // actually depends on the layout; see RemoteInputEvent.character.
+        let character: String?
+        if kind == .keyDown, RemappableKeyCodes.all.contains(keyCode) {
+            character = CarbonKeyboardLayout.currentTranslator()?.character(
+                forKeyCode: keyCode,
+                shift: event.flags.contains(.maskShift),
+                option: event.flags.contains(.maskAlternate),
+                capsLock: event.flags.contains(.maskAlphaShift)
+            )
+        } else {
+            character = nil
+        }
         return RemoteInputEvent(
             kind: kind,
             keyCode: keyCode,
             isPressed: isPressed,
             modifierFlags: flags,
+            character: character,
             keyboardLayoutIdentifier: keyboardLayoutIdentifier
         )
     }
@@ -414,10 +511,40 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
             .otherMouseDown, .otherMouseUp, .otherMouseDragged,
             .scrollWheel
         ]
-        return eventTypes.reduce(CGEventMask(0)) {
+        let mask = eventTypes.reduce(CGEventMask(0)) {
             $0 | (CGEventMask(1) << $1.rawValue)
         }
+        // NSSystemDefined (media/brightness keys) has no CGEventType case, so
+        // its bit is added from the raw event-type number directly.
+        return mask
+            | (CGEventMask(1) << SystemDefinedEvent.cgEventTypeRawValue)
     }()
+}
+
+/// Where a received keyDown/keyUp should actually be injected. `.identity`
+/// covers the overwhelming common case (matching layouts, or a key outside
+/// `RemappableKeyCodes.all`): inject the sender's own keyCode unchanged,
+/// exactly as before this feature existed. `.remapped` carries the local key
+/// and modifier combination a `KeyboardLayoutReverseMap` lookup found for the
+/// sender's character.
+private enum KeyInjectionTarget {
+    case identity(keyCode: UInt16)
+    case remapped(RemappedKeyTarget)
+
+    var keyCode: UInt16 {
+        switch self {
+        case .identity(let keyCode):
+            return keyCode
+        case .remapped(let target):
+            return target.keyCode
+        }
+    }
+}
+
+private enum RemoteInputSinkError: Error {
+    /// A remappable key arrived under a differing keyboard layout with no
+    /// local key producing the same character.
+    case unmappableKey
 }
 
 final class RemoteInputSink: ObservableObject, ControlInputSink {
@@ -436,6 +563,15 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
     private var pressedKeyCodes: Set<UInt16> = []
     private var pressedMouseButtons: Set<Int> = []
     private var capsLockRemoteInputPolicy = CapsLockRemoteInputPolicy()
+    // Rebuilt only when the local layout identifier changes; building it
+    // enumerates every remappable key, so it must not happen per keystroke.
+    private var reverseMapLayoutIdentifier: String?
+    private var reverseMap: KeyboardLayoutReverseMap?
+    // Resolved once at keyDown, by the sender's physical keyCode, and reused
+    // as-is at the matching keyUp. This guarantees a press and its release
+    // always target the same local key even if a modifier changes, or the
+    // reverse map is rebuilt, while the key is held.
+    private var activeKeyRemap: [UInt16: KeyInjectionTarget] = [:]
     private let inputAdmission = BoundedAdmissionGate(
         // Remote input opens only after Accessibility is confirmed and the
         // serial injection queue has entered the active-control generation.
@@ -547,21 +683,22 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
             }
             do {
                 let validatedInput = try input.validated()
-                guard validatedInput.keyboardLayoutIdentifier == nil
-                    || validatedInput.keyboardLayoutIdentifier
-                        == KeyboardLayoutIdentifier.current() else {
-                    isAcceptingRemoteInput = false
-                    invalidateInputAdmission()
-                    releaseAllInputsOnQueue()
-                    publish(
-                        status: "Remote control ended: keyboard layout changed"
-                    )
-                    DispatchQueue.main.async { [weak self] in
-                        self?.onControlFailure?(.keyboardLayoutMismatch)
-                    }
-                    return
-                }
                 try inject(validatedInput)
+            } catch RemoteInputSinkError.unmappableKey {
+                // A differing keyboard layout is no longer fatal by itself
+                // (see resolveKeyInjectionTarget); this only fires once a
+                // specific key turns out to have no equivalent on this
+                // layout, which the roadmap's remap design accepts as the
+                // fallback rather than silently dropping one keystroke.
+                isAcceptingRemoteInput = false
+                invalidateInputAdmission()
+                releaseAllInputsOnQueue()
+                publish(
+                    status: "Remote control ended: keyboard layout changed"
+                )
+                DispatchQueue.main.async { [weak self] in
+                    self?.onControlFailure?(.keyboardLayoutMismatch)
+                }
             } catch {
                 publish(status: "Rejected invalid remote input")
             }
@@ -581,20 +718,48 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
             return
         }
         let event: CGEvent?
+        var keyInjectionTarget: KeyInjectionTarget?
         switch input.kind {
-        case .keyDown, .keyUp, .flagsChanged:
+        case .keyDown, .keyUp:
+            guard let remoteKeyCode = input.keyCode else {
+                throw RemoteInputError.invalidFields
+            }
+            guard let target = resolveKeyInjectionTarget(
+                for: input,
+                remoteKeyCode: remoteKeyCode
+            ) else {
+                throw RemoteInputSinkError.unmappableKey
+            }
+            keyInjectionTarget = target
+            let keyDown = input.kind == .keyDown
+            event = CGEvent(
+                keyboardEventSource: eventSource,
+                virtualKey: CGKeyCode(target.keyCode),
+                keyDown: keyDown
+            )
+
+        case .flagsChanged:
             guard let keyCode = input.keyCode else {
                 throw RemoteInputError.invalidFields
             }
-            let keyDown = try keyDownState(for: input, keyCode: keyCode)
+            let keyDown = keyDownState(for: input, keyCode: keyCode)
             event = CGEvent(
                 keyboardEventSource: eventSource,
                 virtualKey: CGKeyCode(keyCode),
                 keyDown: keyDown
             )
-            if input.kind == .flagsChanged {
-                event?.type = .flagsChanged
+            event?.type = .flagsChanged
+
+        case .systemDefined:
+            guard let mediaKey = input.mediaKey,
+                  let isPressed = input.isPressed else {
+                throw RemoteInputError.invalidFields
             }
+            event = SystemDefinedEvent.makeEvent(
+                key: mediaKey,
+                isPressed: isPressed,
+                flags: CGEventFlags(rawValue: input.modifierFlags)
+            )
 
         case .mouseMoved, .leftMouseDown, .leftMouseUp, .leftMouseDragged,
              .rightMouseDown, .rightMouseUp, .rightMouseDragged,
@@ -630,41 +795,108 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
                 wheel2: clampedWheelValue(deltaX),
                 wheel3: 0
             )
+            // Restore the trackpad phases so the receiver reproduces macOS
+            // inertia. Omitted phases leave the platform default of 0, which
+            // is what a mouse wheel and a legacy peer both mean.
+            if let scrollPhase = input.scrollPhase {
+                event?.setIntegerValueField(
+                    .scrollWheelEventScrollPhase,
+                    value: Int64(scrollPhase.rawValue)
+                )
+            }
+            if let scrollMomentumPhase = input.scrollMomentumPhase {
+                event?.setIntegerValueField(
+                    .scrollWheelEventMomentumPhase,
+                    value: Int64(scrollMomentumPhase.rawValue)
+                )
+            }
         }
 
         guard let event else {
             throw RemoteInputError.invalidFields
         }
-        event.flags = eventFlags(for: input)
+        event.flags = eventFlags(for: input, remap: keyInjectionTarget)
         event.setIntegerValueField(
             .eventSourceUserData,
             value: InjectedEventMarker.value
         )
         event.post(tap: .cghidEventTap)
-        trackPressedState(input)
+        trackPressedState(input, injectedKeyCode: keyInjectionTarget?.keyCode)
         if !hasPublishedInputActivity {
             hasPublishedInputActivity = true
             publish(status: "Remote input active")
         }
     }
 
+    /// flagsChanged is an edge event, and the aggregate modifier mask cannot
+    /// distinguish left/right variants, so this uses the tracked state
+    /// supplied by the sender when available. keyDown/keyUp never call this:
+    /// their pressed state is simply which of the two kinds arrived.
     private func keyDownState(
         for input: RemoteInputEvent,
         keyCode: UInt16
-    ) throws -> Bool {
-        switch input.kind {
-        case .keyDown:
-            return true
-        case .keyUp:
-            return false
-        case .flagsChanged:
-            // flagsChanged is an edge event. The aggregate modifier mask
-            // cannot distinguish left/right variants, so use the tracked
-            // state supplied by the sender when available.
-            return input.isPressed ?? !pressedKeyCodes.contains(keyCode)
-        default:
-            throw RemoteInputError.invalidFields
+    ) -> Bool {
+        input.isPressed ?? !pressedKeyCodes.contains(keyCode)
+    }
+
+    /// Chooses where a keyDown/keyUp should actually be injected. Returns nil
+    /// only when the sender's key is remappable, the layouts genuinely
+    /// differ, and this layout has no key that produces the same character —
+    /// the one case `inject` treats as fatal.
+    private func resolveKeyInjectionTarget(
+        for input: RemoteInputEvent,
+        remoteKeyCode: UInt16
+    ) -> KeyInjectionTarget? {
+        if input.kind == .keyUp {
+            // Reusing the keyDown's resolution, rather than recomputing it,
+            // is what guarantees a press and its release always target the
+            // same local key regardless of modifier or layout changes in
+            // between.
+            return activeKeyRemap.removeValue(forKey: remoteKeyCode)
+                ?? .identity(keyCode: remoteKeyCode)
         }
+        let target = computeKeyInjectionTarget(
+            for: input,
+            remoteKeyCode: remoteKeyCode
+        )
+        if let target {
+            activeKeyRemap[remoteKeyCode] = target
+        }
+        return target
+    }
+
+    private func computeKeyInjectionTarget(
+        for input: RemoteInputEvent,
+        remoteKeyCode: UInt16
+    ) -> KeyInjectionTarget? {
+        guard let remoteLayout = input.keyboardLayoutIdentifier,
+              let localLayout = CarbonKeyboardLayout.currentIdentifier(),
+              remoteLayout != localLayout,
+              RemappableKeyCodes.all.contains(remoteKeyCode) else {
+            return .identity(keyCode: remoteKeyCode)
+        }
+        guard let character = input.character else {
+            // The sender could not translate this key on its own layout
+            // (for example, an ISO key with no glyph there); there is
+            // nothing to look up on this one either.
+            return nil
+        }
+        refreshReverseMapIfNeeded(for: localLayout)
+        guard let target = reverseMap?.target(for: character) else {
+            return nil
+        }
+        return .remapped(target)
+    }
+
+    private func refreshReverseMapIfNeeded(for localLayout: String) {
+        guard reverseMapLayoutIdentifier != localLayout else { return }
+        guard let translator = CarbonKeyboardLayout.currentTranslator() else {
+            reverseMap = nil
+            reverseMapLayoutIdentifier = nil
+            return
+        }
+        reverseMap = KeyboardLayoutReverseMap(translator: translator)
+        reverseMapLayoutIdentifier = localLayout
     }
 
     private func inputWithInferredCapsLockState(
@@ -698,14 +930,22 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
         )
     }
 
-    private func trackPressedState(_ input: RemoteInputEvent) {
+    /// `injectedKeyCode` is the key actually posted to the receiver's HID
+    /// stack, which is the sender's `keyCode` unchanged unless a layout
+    /// remap chose a different local key. Teardown releases whatever this
+    /// records, so tracking anything else here would leave the real injected
+    /// key stuck down after control ends.
+    private func trackPressedState(
+        _ input: RemoteInputEvent,
+        injectedKeyCode: UInt16? = nil
+    ) {
         switch input.kind {
         case .keyDown:
-            if let keyCode = input.keyCode {
+            if let keyCode = injectedKeyCode ?? input.keyCode {
                 pressedKeyCodes.insert(keyCode)
             }
         case .keyUp:
-            if let keyCode = input.keyCode {
+            if let keyCode = injectedKeyCode ?? input.keyCode {
                 pressedKeyCodes.remove(keyCode)
             }
         case .flagsChanged:
@@ -795,6 +1035,9 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
         }
         pressedMouseButtons.removeAll()
         capsLockRemoteInputPolicy.reset()
+        // Nothing here is a stuck-key risk to clear: every key it names was
+        // already released above by the loop that drains pressedKeyCodes.
+        activeKeyRemap.removeAll()
     }
 
     private func markAndPost(
@@ -809,7 +1052,24 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
         event.post(tap: .cghidEventTap)
     }
 
-    private func eventFlags(for input: RemoteInputEvent) -> CGEventFlags {
+    private func eventFlags(
+        for input: RemoteInputEvent,
+        remap: KeyInjectionTarget? = nil
+    ) -> CGEventFlags {
+        if let remap, case .remapped(let target) = remap {
+            // Command and Control pass through unchanged from the sender:
+            // they select an application shortcut rather than a character,
+            // so remapping them would break the shortcut. Shift, Option, and
+            // Caps Lock are replaced with whatever this local layout needs
+            // to produce the sender's character, which may differ from what
+            // the sender itself held.
+            var flags = CGEventFlags(rawValue: input.modifierFlags)
+            flags.remove([.maskShift, .maskAlternate, .maskAlphaShift])
+            if target.shift { flags.insert(.maskShift) }
+            if target.option { flags.insert(.maskAlternate) }
+            if target.capsLock { flags.insert(.maskAlphaShift) }
+            return flags
+        }
         guard input.kind == .flagsChanged,
               let keyCode = input.keyCode else {
             return CGEventFlags(rawValue: input.modifierFlags)

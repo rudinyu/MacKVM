@@ -178,4 +178,235 @@ final class RemoteInputProtocolTests: XCTestCase {
             XCTAssertEqual(error as? RemoteInputError, .invalidFields)
         }
     }
+
+    func testScrollCarriesTrackpadPhases() throws {
+        let event = RemoteInputEvent(
+            kind: .scroll,
+            scrollDeltaX: 0,
+            scrollDeltaY: 12,
+            scrollPhase: .changed
+        )
+
+        XCTAssertEqual(
+            try RemoteInputCodec.decode(RemoteInputCodec.encode(event)),
+            event
+        )
+    }
+
+    func testScrollCarriesMomentumPhase() throws {
+        let event = RemoteInputEvent(
+            kind: .scroll,
+            scrollDeltaX: 0,
+            scrollDeltaY: 3,
+            scrollMomentumPhase: .continue
+        )
+
+        XCTAssertEqual(
+            try RemoteInputCodec.decode(RemoteInputCodec.encode(event)),
+            event
+        )
+    }
+
+    /// A wheel-only mouse and a peer built before this field existed both send
+    /// no phase, so the absent-phase payload has to stay byte-identical.
+    func testScrollWithoutPhasesOmitsTheFields() throws {
+        let event = RemoteInputEvent(
+            kind: .scroll,
+            scrollDeltaX: 0,
+            scrollDeltaY: 1
+        )
+        let encoded = try RemoteInputCodec.encode(event)
+        let json = try XCTUnwrap(String(data: encoded, encoding: .utf8))
+
+        XCTAssertFalse(json.contains("scrollPhase"))
+        XCTAssertFalse(json.contains("scrollMomentumPhase"))
+        XCTAssertEqual(try RemoteInputCodec.decode(encoded), event)
+    }
+
+    func testLegacyScrollPayloadWithoutPhasesStillDecodes() throws {
+        let legacy = Data(
+            #"{"kind":"scroll","modifierFlags":0,"scrollDeltaX":0,"scrollDeltaY":5}"#
+                .utf8
+        )
+
+        let decoded = try RemoteInputCodec.decode(legacy)
+
+        XCTAssertNil(decoded.scrollPhase)
+        XCTAssertNil(decoded.scrollMomentumPhase)
+        XCTAssertEqual(decoded.scrollDeltaY, 5)
+    }
+
+    func testRejectsScrollPhaseOnNonScrollEvents() {
+        let keyEvent = RemoteInputEvent(
+            kind: .keyDown,
+            keyCode: 12,
+            scrollPhase: .began
+        )
+        let pointerEvent = RemoteInputEvent(
+            kind: .leftMouseDown,
+            location: NormalizedPoint(x: 0.25, y: 0.75),
+            buttonNumber: 0,
+            clickCount: 1,
+            scrollMomentumPhase: .begin
+        )
+
+        for event in [keyEvent, pointerEvent] {
+            XCTAssertThrowsError(try RemoteInputCodec.encode(event)) { error in
+                XCTAssertEqual(error as? RemoteInputError, .invalidFields)
+            }
+        }
+    }
+
+    func testRejectsUnknownScrollPhaseValue() {
+        let unknownPhase = Data(
+            #"{"kind":"scroll","modifierFlags":0,"scrollDeltaX":0,"scrollDeltaY":1,"scrollPhase":64}"#
+                .utf8
+        )
+
+        XCTAssertThrowsError(try RemoteInputCodec.decode(unknownPhase))
+    }
+
+    func testSystemDefinedEventRoundTrips() throws {
+        let event = RemoteInputEvent(
+            kind: .systemDefined,
+            isPressed: true,
+            modifierFlags: 0,
+            mediaKey: .soundUp
+        )
+
+        XCTAssertEqual(
+            try RemoteInputCodec.decode(RemoteInputCodec.encode(event)),
+            event
+        )
+    }
+
+    func testSystemDefinedEventRequiresMediaKeyAndPressedState() {
+        let missingKey = RemoteInputEvent(
+            kind: .systemDefined,
+            isPressed: true
+        )
+        let missingPressedState = RemoteInputEvent(
+            kind: .systemDefined,
+            mediaKey: .mute
+        )
+
+        for event in [missingKey, missingPressedState] {
+            XCTAssertThrowsError(try RemoteInputCodec.encode(event)) { error in
+                XCTAssertEqual(error as? RemoteInputError, .invalidFields)
+            }
+        }
+    }
+
+    func testSystemDefinedEventRejectsUnrelatedFields() {
+        let withLocation = RemoteInputEvent(
+            kind: .systemDefined,
+            isPressed: true,
+            location: NormalizedPoint(x: 0.1, y: 0.1),
+            mediaKey: .play
+        )
+        let withKeyCode = RemoteInputEvent(
+            kind: .systemDefined,
+            keyCode: 12,
+            isPressed: true,
+            mediaKey: .play
+        )
+        let withLayoutIdentifier = RemoteInputEvent(
+            kind: .systemDefined,
+            isPressed: true,
+            mediaKey: .play,
+            keyboardLayoutIdentifier: "com.apple.keylayout.US"
+        )
+
+        for event in [withLocation, withKeyCode, withLayoutIdentifier] {
+            XCTAssertThrowsError(try RemoteInputCodec.encode(event)) { error in
+                XCTAssertEqual(error as? RemoteInputError, .invalidFields)
+            }
+        }
+    }
+
+    func testRejectsMediaKeyOnNonSystemDefinedEvents() {
+        let event = RemoteInputEvent(
+            kind: .keyDown,
+            keyCode: 12,
+            mediaKey: .mute
+        )
+
+        XCTAssertThrowsError(try RemoteInputCodec.encode(event)) { error in
+            XCTAssertEqual(error as? RemoteInputError, .invalidFields)
+        }
+    }
+
+    func testRejectsUnknownMediaKeyValue() {
+        // 6 is the power key's NX code, deliberately excluded from MediaKey.
+        let powerKey = Data(
+            #"{"kind":"systemDefined","modifierFlags":0,"isPressed":true,"mediaKey":6}"#
+                .utf8
+        )
+
+        XCTAssertThrowsError(try RemoteInputCodec.decode(powerKey))
+    }
+
+    func testKeyDownCarriesCharacter() throws {
+        let event = RemoteInputEvent(
+            kind: .keyDown,
+            keyCode: 0,
+            character: "a"
+        )
+
+        XCTAssertEqual(
+            try RemoteInputCodec.decode(RemoteInputCodec.encode(event)),
+            event
+        )
+    }
+
+    func testKeyUpRejectsCharacter() {
+        let event = RemoteInputEvent(
+            kind: .keyUp,
+            keyCode: 0,
+            character: "a"
+        )
+
+        XCTAssertThrowsError(try RemoteInputCodec.encode(event)) { error in
+            XCTAssertEqual(error as? RemoteInputError, .invalidFields)
+        }
+    }
+
+    func testFlagsChangedRejectsCharacter() {
+        let event = RemoteInputEvent(
+            kind: .flagsChanged,
+            keyCode: 56,
+            character: "a"
+        )
+
+        XCTAssertThrowsError(try RemoteInputCodec.encode(event)) { error in
+            XCTAssertEqual(error as? RemoteInputError, .invalidFields)
+        }
+    }
+
+    func testCharacterMustBeExactlyOneScalar() {
+        let empty = RemoteInputEvent(kind: .keyDown, keyCode: 0, character: "")
+        let multiple = RemoteInputEvent(
+            kind: .keyDown,
+            keyCode: 0,
+            character: "ab"
+        )
+
+        for event in [empty, multiple] {
+            XCTAssertThrowsError(try RemoteInputCodec.encode(event)) { error in
+                XCTAssertEqual(error as? RemoteInputError, .invalidFields)
+            }
+        }
+    }
+
+    func testCharacterRejectsControlCharacters() {
+        let event = RemoteInputEvent(
+            kind: .keyDown,
+            keyCode: 51,
+            character: "\u{7F}"
+        )
+
+        XCTAssertThrowsError(try RemoteInputCodec.encode(event)) { error in
+            XCTAssertEqual(error as? RemoteInputError, .invalidFields)
+        }
+    }
 }

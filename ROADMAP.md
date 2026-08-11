@@ -22,9 +22,9 @@ request/consent round trip for every switch, and maps only one display.
 
 | Area | Current behavior | Starting point |
 | --- | --- | --- |
-| Forwarded input | Keyboard, mouse, and scroll only (14 event kinds) | [`RemoteInputProtocol.swift:3`](Sources/MacKVMCore/RemoteInputProtocol.swift:3) |
+| Forwarded input | Keyboard (with cross-layout remapping), mouse, scroll (with phase/momentum), and an allowlisted set of media keys; no clipboard yet | [`RemoteInputProtocol.swift:3`](Sources/MacKVMCore/RemoteInputProtocol.swift:3) |
 | Switching | Menu → Request → remote Allow, with a 15-second window | [`ControlCoordinator.swift:163`](Sources/MacKVM/ControlCoordinator.swift:163) |
-| Pointer mapping | Main display only; other screens clamp to its edge | [`InputServices.swift:894`](Sources/MacKVM/InputServices.swift:894) |
+| Pointer mapping | Main display only; other screens clamp to its edge | [`InputServices.swift:1154`](Sources/MacKVM/InputServices.swift:1154) |
 | Peer count | One peer at a time, arbitrated by UUID comparison | [`PeerArbitration.swift:4`](Sources/MacKVMCore/PeerArbitration.swift:4) |
 | Monitor switching | Native DDC/CI through IOAVService (Apple Silicon) or IOI2C (Intel); OSD fallback when unavailable | [`Sources/MacKVM/NativeDDCService.swift`](Sources/MacKVM/NativeDDCService.swift) |
 
@@ -34,10 +34,10 @@ request/consent round trip for every switch, and maps only one display.
 | --- | --- | --- | --- | --- |
 | F1 | Clipboard sync | High | Medium | P0 |
 | F2 | Edge crossing and pre-authorized peers | High | Medium | P0 |
-| F3 | Media and system key forwarding | High | Low | P0 |
+| F3 | Media and system key forwarding | High | Low | **Done** |
 | F4 | Multi-display mapping | Medium | Medium | P1 |
-| F5 | Scroll fidelity | Medium | Low | P1 |
-| F6 | Keyboard layout remapping | Medium | Medium | P1 |
+| F5 | Scroll fidelity | Medium | Low | **Done** |
+| F6 | Keyboard layout remapping | Medium | Medium | **Done** |
 | F7 | Native DDC without external helper | Medium | Medium | **Done** |
 | F8 | Three or more Macs | Low | High | P2 |
 | F9 | Notarized release and updates | Low | Medium | P2 |
@@ -103,18 +103,17 @@ built in explicit layers:
 per-session consent to a one-time authorization, leaving the local network and
 the pinned key as the trust boundary.
 
-### F3. Media and system key forwarding
+### F3. Media and system key forwarding — completed
 
-The capture mask in
-[`InputServices.swift:409`](Sources/MacKVM/InputServices.swift:409) covers only
-key, mouse, and scroll events. Volume, brightness, play/pause, and Mission
-Control keys therefore do nothing on the target Mac, which users notice within
-minutes.
-
-These arrive as `NSSystemDefined` (type 14) events. Add a
-`RemoteInputKind.systemDefined` carrying the subtype and key code, and validate
-it against a known media-key subtype allowlist rather than permitting arbitrary
-system event injection.
+`RemoteInputKind.systemDefined` now carries an allowlisted `MediaKey`
+(volume, brightness, play/pause, track skip, keyboard illumination — 13 keys
+in total). The capture side reads `NSSystemDefined` (raw `CGEventType` 14,
+which has no named case) via `NSEvent(cgEvent:)` to get at `subtype`/`data1`,
+and only forwards `NX_SUBTYPE_AUX_CONTROL_BUTTONS` events whose key code is on
+the allowlist. The power key and Caps Lock are deliberately excluded — the
+former so a remote peer can never open the shutdown dialog or sleep the
+receiving Mac, the latter because it already travels as an ordinary
+`flagsChanged` edge. See [`SECURITY.md`](SECURITY.md) for the full rationale.
 
 ## P1 — fidelity and reach
 
@@ -131,24 +130,50 @@ format, but `ControlProtocolCompatibility`
 ([`ControlProtocol.swift:129`](Sources/MacKVMCore/ControlProtocol.swift:129))
 already reserves a version range, so a v2 negotiation path exists.
 
-### F5. Scroll fidelity
+### F5. Scroll fidelity — completed
 
-Scroll capture in
-[`InputServices.swift:313`](Sources/MacKVM/InputServices.swift:313) sends pixel
-deltas with no phase information, so remote scrolling feels rigid and lacks
-macOS inertia. Carrying `scrollWheelEventScrollPhase` and
-`scrollWheelEventMomentumPhase` is a small change with a large effect on feel.
+`RemoteInputEvent` now carries optional `scrollPhase` and
+`scrollMomentumPhase` fields mirroring `CGScrollPhase` and
+`CGMomentumScrollPhase`. A missing field means "no phase," so a plain mouse
+wheel and a legacy peer both produce exactly the payload they always did;
+only a trackpad's phased scroll stream adds the extra fields, letting the
+receiver reproduce macOS inertia instead of discrete steps.
 
-### F6. Keyboard layout remapping
+### F6. Keyboard layout remapping — completed
 
-A layout change currently terminates remote input
-([`InputServices.swift:550`](Sources/MacKVM/InputServices.swift:550)). For
-anyone switching between Traditional Chinese and English input sources, that
-means changing input method drops the session.
+Two problems here turned out to be separate, and both are fixed:
 
-Translate key codes to characters with `UCKeyTranslate` on the sending side and
-resolve them back to key codes on the receiver. Keep the current abort behavior
-as the fallback for characters that cannot be mapped.
+- **False disconnects from toggling an input method.** The old layout
+  identifier came from a UserDefaults key that reflects the active *input
+  method* (for example `com.apple.inputmethod.TCIM.Zhuyin`), not the
+  underlying keyboard hardware layout, so switching Zhuyin on or off looked
+  like a layout change. `KeyboardLayoutIdentifier.current()` now reads
+  `TISCopyCurrentKeyboardLayoutInputSource`
+  ([`CarbonKeyboardLayout.swift`](Sources/MacKVM/CarbonKeyboardLayout.swift)),
+  which returns the physical layout beneath any input method, so toggling an
+  IME no longer touches this value at all.
+- **Genuinely different physical layouts.** Each `keyDown` for a letter,
+  digit, or symbol key (`RemappableKeyCodes.all` in
+  [`KeyboardLayoutRemap.swift`](Sources/MacKVMCore/KeyboardLayoutRemap.swift) —
+  arrows, Return, Tab, and every modifier are excluded, since those keys mean
+  the same thing on every layout) now carries the character the sender's own
+  layout produced for it. When the receiver's layout differs, it builds a
+  `KeyboardLayoutReverseMap` once per layout change and looks up which local
+  key and Shift/Option/Caps Lock combination reproduce that character, rather
+  than injecting the sender's keycode under a meaning it doesn't have
+  locally. Command and Control pass through unchanged so application
+  shortcuts still resolve correctly. `ControlCoordinator` no longer denies a
+  request over a layout mismatch at all; ending the session — the original
+  fallback behavior — now happens only when a specific key turns out to have
+  no equivalent on the receiver's layout.
+
+The reverse-map lookup logic is exercised by
+[`KeyboardLayoutRemapTests.swift`](Tests/MacKVMCoreTests/KeyboardLayoutRemapTests.swift)
+against a stub layout; the `UCKeyTranslate`/`TISCopyCurrentKeyboardLayoutInputSource`
+calls themselves are not testable without real hardware and still need
+verification: type through a genuinely different physical layout (not just a
+different input method) on both Macs and confirm the right characters land,
+including Shift/Option/Caps Lock combinations and Cmd-modified shortcuts.
 
 ### F7. Native DDC without an external helper — completed
 
@@ -196,15 +221,14 @@ checklist far easier to complete.
 
 ## Suggested order
 
-Start with **F1 and F3**. Both are self-contained, leave the control state
-machine untouched, and have clear verification paths. Together they are a
-useful rehearsal for adding a protocol message kind and confirm the version
-negotiation machinery works in practice.
+F3, F5, F6, and F7 are done. **F1** is next: it is self-contained, leaves the
+control state machine untouched, and — now that F3/F5/F6 have each added a
+protocol field and shipped safely — is a well-rehearsed shape of change to
+make.
 
-Take **F2** next. It is the step that changes how the product feels, but
-because it modifies the consent model it deserves its own design note covering
-the security tradeoff before any code is written.
+Take **F2** after that. It is the step that changes how the product feels
+most, but because it modifies the consent model it deserves its own design
+note covering the security tradeoff before any code is written.
 
-Order **F6** and **F7** by actual usage: F6 first if input sources are switched
-frequently, F7 first if manually pressing the monitor's OSD for the Intel Mac
-is the larger daily annoyance.
+**F4** is the only P1 item left, and only matters once a MacBook runs with its
+lid open rather than both Macs driving the MA270U as their main display.

@@ -24,7 +24,8 @@ The current MVP provides:
 - a persistent authenticated session using signed ephemeral P-256 key exchange,
   directional HKDF keys, ChaChaPoly encryption, and replay-protected counters.
 - validated keyboard, mouse, and scroll event forwarding over that encrypted
-  session;
+  session, including trackpad scroll phase and momentum for native inertia and
+  an allowlisted set of media, volume, and brightness keys;
 - a sequential Local Network, Input Monitoring, and Accessibility setup
   checklist that prevents overlapping macOS permission prompts and refreshes
   when MacKVM becomes active again;
@@ -36,8 +37,10 @@ The current MVP provides:
   from claiming bidirectional input unless an external USB switch is present;
 - network-path monitoring with bounded automatic reconnect after Wi-Fi,
   sleep/wake, or peer-service interruptions;
-- keyboard-layout and control-protocol compatibility checks before consent,
-  with a safe identity-reset path when the local Keychain identity is damaged;
+- a control-protocol compatibility check before consent, cross-layout keyboard
+  remapping so typing keys still produce the right characters when the two
+  Macs use different keyboard layouts, and a safe identity-reset path when the
+  local Keychain identity is damaged;
 - native macOS incoming-control notifications with Allow, Deny, and Review
   actions, so the receiver can respond while the menu is closed;
 - local input suppression while controlling and an emergency

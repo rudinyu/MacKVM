@@ -24,7 +24,12 @@ let package = Package(
         .target(name: "MacKVMCore"),
         .executableTarget(
             name: "MacKVM",
-            dependencies: ["MacKVMCore", "MacKVMNativeDDC"]
+            dependencies: ["MacKVMCore", "MacKVMNativeDDC"],
+            linkerSettings: [
+                // CarbonKeyboardLayout.swift uses TIS/UCKeyTranslate for
+                // cross-layout keyboard remapping.
+                .linkedFramework("Carbon")
+            ]
         ),
         .testTarget(
             name: "MacKVMCoreTests",

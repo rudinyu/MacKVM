@@ -4,6 +4,7 @@ public enum RemoteInputKind: String, Codable, CaseIterable, Sendable {
     case keyDown
     case keyUp
     case flagsChanged
+    case systemDefined
     case mouseMoved
     case leftMouseDown
     case leftMouseUp
@@ -27,6 +28,52 @@ public struct NormalizedPoint: Codable, Equatable, Sendable {
     }
 }
 
+/// The macOS system-defined (NX) keys MacKVM is willing to forward. This enum
+/// is the allowlist itself: an unlisted code fails to decode, so a peer cannot
+/// ask the receiver to synthesize an arbitrary system key.
+///
+/// Three groups are deliberately excluded:
+/// - the power key (6), because a remote peer must not be able to open the
+///   shutdown dialog or sleep the receiving Mac;
+/// - caps lock (4), which already travels as a `flagsChanged` edge and would
+///   otherwise toggle twice;
+/// - eject, num lock, help, and the legacy contrast/mirror keys, which have no
+///   role in sharing a keyboard and mouse.
+public enum MediaKey: Int, Codable, CaseIterable, Sendable {
+    case soundUp = 0
+    case soundDown = 1
+    case brightnessUp = 2
+    case brightnessDown = 3
+    case mute = 7
+    case play = 16
+    case next = 17
+    case previous = 18
+    case fast = 19
+    case rewind = 20
+    case illuminationUp = 21
+    case illuminationDown = 22
+    case illuminationToggle = 23
+}
+
+/// Mirrors `CGScrollPhase`. The platform's `none` value (0) is represented by
+/// a missing field so a mouse wheel, which reports no phase at all, and a
+/// legacy peer that never sends the field decode identically.
+public enum ScrollPhase: Int, Codable, CaseIterable, Sendable {
+    case began = 1
+    case changed = 2
+    case ended = 4
+    case cancelled = 8
+    case mayBegin = 128
+}
+
+/// Mirrors `CGMomentumScrollPhase`, the inertia that continues after a
+/// trackpad flick is released. `none` (0) is likewise a missing field.
+public enum ScrollMomentumPhase: Int, Codable, CaseIterable, Sendable {
+    case begin = 1
+    case `continue` = 2
+    case end = 3
+}
+
 public struct RemoteInputEvent: Codable, Equatable, Sendable {
     public let kind: RemoteInputKind
     public let keyCode: UInt16?
@@ -39,6 +86,25 @@ public struct RemoteInputEvent: Codable, Equatable, Sendable {
     public let clickCount: Int?
     public let scrollDeltaX: Double?
     public let scrollDeltaY: Double?
+    /// Trackpad scroll and momentum phases. Both stay optional: a legacy peer
+    /// omits them, and a plain mouse wheel reports neither. Forwarding them
+    /// lets the receiver reproduce macOS inertia instead of discrete steps.
+    public let scrollPhase: ScrollPhase?
+    public let scrollMomentumPhase: ScrollMomentumPhase?
+    /// Media, brightness, and keyboard-illumination key for `systemDefined`
+    /// events. It uses its own field rather than `keyCode` because NX key
+    /// codes and virtual key codes are different namespaces that overlap: NX
+    /// code 16 is Play, while virtual key code 16 is the letter Y.
+    public let mediaKey: MediaKey?
+    /// The character `keyCode` produces under the sender's own keyboard
+    /// layout and current Shift/Option/Caps Lock state. It is attached only
+    /// to `keyDown`, never `keyUp`: the receiver resolves a `keyDown` to a
+    /// local key once and remembers that choice for the matching `keyUp`, so
+    /// a modifier released mid-press cannot change which physical key gets
+    /// released. It exists so a receiver on a different keyboard layout can
+    /// find the local key that produces the same character instead of
+    /// injecting a keycode that means something else there.
+    public let character: String?
     /// Input-source identifier for keyboard events. It remains optional so a
     /// legacy peer can still send mouse input and older keyboard events.
     public let keyboardLayoutIdentifier: String?
@@ -53,6 +119,10 @@ public struct RemoteInputEvent: Codable, Equatable, Sendable {
         clickCount: Int? = nil,
         scrollDeltaX: Double? = nil,
         scrollDeltaY: Double? = nil,
+        scrollPhase: ScrollPhase? = nil,
+        scrollMomentumPhase: ScrollMomentumPhase? = nil,
+        mediaKey: MediaKey? = nil,
+        character: String? = nil,
         keyboardLayoutIdentifier: String? = nil
     ) {
         self.kind = kind
@@ -64,12 +134,16 @@ public struct RemoteInputEvent: Codable, Equatable, Sendable {
         self.clickCount = clickCount
         self.scrollDeltaX = scrollDeltaX
         self.scrollDeltaY = scrollDeltaY
+        self.scrollPhase = scrollPhase
+        self.scrollMomentumPhase = scrollMomentumPhase
+        self.mediaKey = mediaKey
+        self.character = character
         self.keyboardLayoutIdentifier = keyboardLayoutIdentifier
     }
 
     public func validated() throws -> RemoteInputEvent {
         switch kind {
-        case .keyDown, .keyUp:
+        case .keyDown:
             guard keyCode != nil,
                   isPressed == nil,
                   location == nil,
@@ -77,6 +151,29 @@ public struct RemoteInputEvent: Codable, Equatable, Sendable {
                   clickCount == nil,
                   scrollDeltaX == nil,
                   scrollDeltaY == nil,
+                  hasNoScrollPhase,
+                  mediaKey == nil,
+                  validCharacter,
+                  validKeyboardLayoutIdentifier else {
+                throw RemoteInputError.invalidFields
+            }
+
+        case .keyUp:
+            // The receiver resolves a layout remap once, at keyDown, and
+            // reuses it here by the physical keyCode alone. A character on
+            // keyUp would be redundant at best and, if it ever disagreed
+            // with the keyDown's, a source of a keyUp targeting a different
+            // local key than the one that was pressed.
+            guard keyCode != nil,
+                  isPressed == nil,
+                  location == nil,
+                  buttonNumber == nil,
+                  clickCount == nil,
+                  scrollDeltaX == nil,
+                  scrollDeltaY == nil,
+                  hasNoScrollPhase,
+                  mediaKey == nil,
+                  character == nil,
                   validKeyboardLayoutIdentifier else {
                 throw RemoteInputError.invalidFields
             }
@@ -88,7 +185,31 @@ public struct RemoteInputEvent: Codable, Equatable, Sendable {
                   clickCount == nil,
                   scrollDeltaX == nil,
                   scrollDeltaY == nil,
+                  hasNoScrollPhase,
+                  mediaKey == nil,
+                  character == nil,
                   validKeyboardLayoutIdentifier else {
+                throw RemoteInputError.invalidFields
+            }
+
+        case .systemDefined:
+            // An explicit pressed state is required: unlike a virtual key,
+            // there is no separate keyUp event kind to fall back on, and the
+            // receiver must never guess an edge for a key it will inject.
+            guard mediaKey != nil,
+                  isPressed != nil,
+                  keyCode == nil,
+                  location == nil,
+                  buttonNumber == nil,
+                  clickCount == nil,
+                  scrollDeltaX == nil,
+                  scrollDeltaY == nil,
+                  hasNoScrollPhase,
+                  character == nil,
+                  // Media keys are layout independent, so they must not carry
+                  // a layout identifier that would strand them behind the
+                  // receiver's layout-mismatch check.
+                  keyboardLayoutIdentifier == nil else {
                 throw RemoteInputError.invalidFields
             }
 
@@ -100,6 +221,9 @@ public struct RemoteInputEvent: Codable, Equatable, Sendable {
                   clickCount == nil,
                   scrollDeltaX == nil,
                   scrollDeltaY == nil,
+                  hasNoScrollPhase,
+                  mediaKey == nil,
+                  character == nil,
                   keyboardLayoutIdentifier == nil else {
                 throw RemoteInputError.invalidFields
             }
@@ -125,6 +249,8 @@ public struct RemoteInputEvent: Codable, Equatable, Sendable {
                   isPressed == nil,
                   buttonNumber == nil,
                   clickCount == nil,
+                  mediaKey == nil,
+                  character == nil,
                   keyboardLayoutIdentifier == nil,
                   let scrollDeltaX,
                   let scrollDeltaY,
@@ -136,6 +262,25 @@ public struct RemoteInputEvent: Codable, Equatable, Sendable {
             }
         }
         return self
+    }
+
+    /// Scroll phases describe a scroll stream and must never ride along with a
+    /// key or pointer event, where the receiver would set them on an injected
+    /// CGEvent that has no scroll semantics.
+    private var hasNoScrollPhase: Bool {
+        scrollPhase == nil && scrollMomentumPhase == nil
+    }
+
+    /// Exactly one Unicode scalar, excluding control characters. UCKeyTranslate
+    /// with dead keys disabled never produces a composed grapheme cluster, so
+    /// anything wider is unexpected input rather than a legitimate character.
+    private var validCharacter: Bool {
+        guard let character else { return true }
+        guard character.unicodeScalars.count == 1,
+              let scalar = character.unicodeScalars.first else {
+            return false
+        }
+        return scalar.value >= 0x20 && scalar.value != 0x7F
     }
 
     private var validKeyboardLayoutIdentifier: Bool {
@@ -173,7 +318,10 @@ public struct RemoteInputEvent: Codable, Equatable, Sendable {
               (0...255).contains(clickCount),
               keyboardLayoutIdentifier == nil,
               scrollDeltaX == nil,
-              scrollDeltaY == nil else {
+              scrollDeltaY == nil,
+              hasNoScrollPhase,
+              mediaKey == nil,
+              character == nil else {
             throw RemoteInputError.invalidFields
         }
         return true
