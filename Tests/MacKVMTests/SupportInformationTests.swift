@@ -9,7 +9,7 @@ final class SupportInformationTests: XCTestCase {
         let firstFingerprint = String(repeating: "AA:", count: 31) + "AA"
         let secondFingerprint = String(repeating: "BB:", count: 31) + "BB"
         let output = SupportInformationFormatter.make(
-            appVersion: "0.7.0",
+            appVersion: "0.7.1",
             appBuild: "12",
             operatingSystem: "macOS 15.6",
             localFriendlyName: "Office Mac",
@@ -52,7 +52,7 @@ final class SupportInformationTests: XCTestCase {
 
     func testSanitizesLineBreaksInSupportFields() {
         let output = SupportInformationFormatter.make(
-            appVersion: "0.7.0",
+            appVersion: "0.7.1",
             appBuild: "12",
             operatingSystem: "macOS\n15.6",
             localFriendlyName: "Office\rMac",

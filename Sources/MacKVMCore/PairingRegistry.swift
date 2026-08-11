@@ -89,7 +89,7 @@ public final class PairingRegistry {
             lastConnectedAt: date,
             signingPublicKey: publicKey
         )
-        persistProfiles([peerID: profile], mergingWith: loadStoredProfiles())
+        mergeAndPersistProfiles([peerID: profile], into: loadStoredProfiles())
         return true
     }
 
@@ -115,7 +115,7 @@ public final class PairingRegistry {
             lastConnectedAt: existing?.lastConnectedAt,
             signingPublicKey: publicKey
         )
-        persistProfiles([peerID: profile], mergingWith: loadStoredProfiles())
+        mergeAndPersistProfiles([peerID: profile], into: loadStoredProfiles())
         return true
     }
 
@@ -196,15 +196,21 @@ public final class PairingRegistry {
         var peers = loadPairedPeers()
         peers[peer.id] = peer.signingPublicKey
         persist(peers)
-        let existing = loadProfiles(for: peers)[peer.id]
+        // `loadProfiles` supplies a display fallback for peers that have no
+        // stored profile. That fallback must not replace the name received
+        // during a new pairing, so only reuse a validated persisted profile.
+        let existing = storedProfile(
+            for: peer.id,
+            publicKey: peer.signingPublicKey
+        )
         let profile = PairedPeerProfile(
             peerID: peer.id,
-            friendlyName: peer.name,
+            friendlyName: existing?.friendlyName ?? peer.name,
             model: preferredModel(model, existing: existing?.model),
             lastConnectedAt: existing?.lastConnectedAt,
             signingPublicKey: peer.signingPublicKey
         )
-        persistProfiles([peer.id: profile], mergingWith: loadStoredProfiles())
+        mergeAndPersistProfiles([peer.id: profile], into: loadStoredProfiles())
     }
 
     private func persist(_ peers: [UUID: Data]) {
@@ -231,12 +237,12 @@ public final class PairingRegistry {
     private func loadProfiles(
         for peers: [UUID: Data]
     ) -> [UUID: PairedPeerProfile] {
-        let storedProfiles = loadStoredProfiles()
         return peers.reduce(into: [:]) { result, entry in
             let (peerID, publicKey) = entry
-            if let profile = storedProfiles[peerID.uuidString],
-               profile.peerID == peerID,
-               profile.signingPublicKey == publicKey {
+            if let profile = storedProfile(
+                for: peerID,
+                publicKey: publicKey
+            ) {
                 result[peerID] = profile
             } else {
                 result[peerID] = PairedPeerProfile(
@@ -249,9 +255,21 @@ public final class PairingRegistry {
         }
     }
 
-    private func persistProfiles(
+    private func storedProfile(
+        for peerID: UUID,
+        publicKey: Data
+    ) -> PairedPeerProfile? {
+        let profile = loadStoredProfiles()[peerID.uuidString]
+        guard profile?.peerID == peerID,
+              profile?.signingPublicKey == publicKey else {
+            return nil
+        }
+        return profile
+    }
+
+    private func mergeAndPersistProfiles(
         _ profiles: [UUID: PairedPeerProfile],
-        mergingWith existing: [String: PairedPeerProfile] = [:]
+        into existing: [String: PairedPeerProfile] = [:]
     ) {
         var merged = existing
         profiles.forEach { merged[$0.key.uuidString] = $0.value }
