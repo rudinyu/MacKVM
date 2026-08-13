@@ -7,8 +7,8 @@ import MacKVMCore
 /// passes — is testable with a fake layout instead of whatever keyboard
 /// layout happens to be active on the machine running the test. The
 /// production implementation, `CarbonKeyboardLayoutProvider`, additionally
-/// marshals its calls onto the main thread; see that type's documentation
-/// for why.
+/// keeps a notification-driven identifier cache and marshals Carbon map
+/// construction onto the main thread; see that type's documentation for why.
 protocol KeyboardLayoutProviding {
     func currentIdentifier() -> String?
     /// Returns a reverse map whose Carbon/TIS work has already completed on
@@ -17,37 +17,183 @@ protocol KeyboardLayoutProviding {
     func currentReverseMap() -> KeyboardLayoutReverseMap?
 }
 
-/// `RemoteInputSink` calls this from its private background injection queue,
-/// never from the main thread — `CarbonKeyboardLayout`'s capture-side callers
-/// are already on the main thread and call it directly, without going
-/// through this type, since `DispatchQueue.main.sync` from the main thread
-/// itself would deadlock.
-///
-/// Text Input Source (TIS) functions are not documented thread-safe, and the
-/// capture side already calls the same underlying APIs from the main thread
-/// (inside the event tap callback) while typing is live. Marshaling every
-/// call from the injection queue onto the main thread too, rather than
-/// calling Carbon concurrently from both, is what removes that risk instead
-/// of merely making it less likely to be hit.
+/// `RemoteInputSink` calls this from its private background injection queue.
+/// The layout identifier is served from a lock-protected cache so every
+/// keyDown does not need a main-thread round trip. macOS posts
+/// `kTISNotifySelectedKeyboardInputSourceChanged` through the distributed
+/// notification center when the selected source changes. The observer first
+/// invalidates the cache on the posting thread, then schedules the Carbon
+/// refresh on the main thread. Once that notification has been delivered, if
+/// an input arrives in the interval before the main refresh,
+/// `currentIdentifier()` performs that same refresh synchronously before
+/// returning, so a pending callback can never make an old layout appear
+/// current. The reverse map is still built synchronously on the main thread
+/// because its exhaustive `TISGetInputSourceProperty`/`UCKeyTranslate` work
+/// must not run concurrently with the capture-side Carbon calls. As with any
+/// notification-driven cache, the OS can only invalidate this value once its
+/// distributed notification reaches the process; eliminating that separate
+/// delivery window would require a Carbon query for every keyDown.
 struct CarbonKeyboardLayoutProvider: KeyboardLayoutProviding {
-    func currentIdentifier() -> String? {
-        DispatchQueue.main.sync {
-            CarbonKeyboardLayout.currentIdentifier()
+    private let identifierCache: CarbonKeyboardLayoutIdentifierCache
+
+    init() {
+        if Thread.isMainThread {
+            identifierCache = CarbonKeyboardLayoutIdentifierCache()
+        } else {
+            identifierCache = DispatchQueue.main.sync {
+                CarbonKeyboardLayoutIdentifierCache()
+            }
         }
     }
 
+    func currentIdentifier() -> String? {
+        identifierCache.currentIdentifier()
+    }
+
     func currentReverseMap() -> KeyboardLayoutReverseMap? {
-        DispatchQueue.main.sync {
-            guard let translator = CarbonKeyboardLayout.currentTranslator() else {
-                return nil
-            }
-            // UCKeyTranslate/TISGetInputSourceProperty is performed while
-            // still on the main thread. Returning the finished value, rather
-            // than a translator that the caller will invoke later, is what
-            // prevents Carbon from being accessed concurrently by the input
-            // capture and injection paths.
-            return KeyboardLayoutReverseMap(translator: translator)
+        if Thread.isMainThread {
+            return buildReverseMapOnMain()
         }
+        return DispatchQueue.main.sync { buildReverseMapOnMain() }
+    }
+
+    private func buildReverseMapOnMain() -> KeyboardLayoutReverseMap? {
+        guard let translator = CarbonKeyboardLayout.currentTranslator() else {
+            return nil
+        }
+        // UCKeyTranslate/TISGetInputSourceProperty is performed while still
+        // on the main thread. Returning the finished value, rather than a
+        // translator that the caller will invoke later, is what prevents
+        // Carbon from being accessed concurrently by the input capture and
+        // injection paths.
+        return KeyboardLayoutReverseMap(translator: translator)
+    }
+}
+
+/// Maintains the current physical keyboard-layout identifier without making
+/// the injection queue synchronously call Carbon for every new keyDown. The
+/// identifier source is injected so the generation and stale-refresh logic
+/// can be tested without depending on a particular host's TIS state.
+/// `TISGetInputSourceProperty` is called once during main-thread
+/// initialization and when a notification invalidates the cache. The
+/// notification observer itself only flips the invalidation bit, so it is
+/// safe for it to run on the posting thread; all Carbon reads remain on the
+/// main thread. Background readers copy the short String under the lock and
+/// immediately continue while the cache is fresh.
+final class CarbonKeyboardLayoutIdentifierCache {
+    private let lock = NSLock()
+    private let identifierSource: () -> String?
+    private var identifier: String?
+    // Start stale so the observer is installed before the first Carbon read.
+    // This prevents an input-source change in between those two operations
+    // from being missed permanently.
+    private var needsRefresh = true
+    private var invalidationGeneration: UInt64 = 0
+    private var notificationToken: NSObjectProtocol?
+
+    init(
+        identifierSource: @escaping () -> String? = {
+            CarbonKeyboardLayout.currentIdentifier()
+        }
+    ) {
+        precondition(Thread.isMainThread)
+        self.identifierSource = identifierSource
+        let notificationName = Notification.Name(
+            kTISNotifySelectedKeyboardInputSourceChanged as String
+        )
+        notificationToken = DistributedNotificationCenter.default().addObserver(
+            forName: notificationName,
+            object: nil,
+            // Do not enqueue invalidation on `.main`: an input event could
+            // otherwise observe the old identifier while this callback is
+            // waiting behind other main-thread work. The callback does no
+            // Carbon work and only marks the value stale before scheduling
+            // the main-thread refresh.
+            queue: nil
+        ) { [weak self] _ in
+            self?.invalidate()
+        }
+        // The observer is live before the initial lookup. A transiently
+        // unavailable TIS source leaves the cache stale, so later reads retry
+        // instead of permanently publishing nil.
+        _ = refreshOnMainThread()
+    }
+
+    deinit {
+        if let notificationToken {
+            DistributedNotificationCenter.default().removeObserver(
+                notificationToken
+            )
+        }
+    }
+
+    func currentIdentifier() -> String? {
+        lock.lock()
+        let stale = needsRefresh
+        let cachedIdentifier = identifier
+        lock.unlock()
+
+        guard stale else { return cachedIdentifier }
+        return refreshSynchronouslyOnMainThread()
+    }
+
+    /// Marks the cached identifier stale. Production calls this from the
+    /// distributed-notification callback; keeping the transition explicit
+    /// also lets deterministic tests model a notification at any point in a
+    /// refresh without depending on the system notification daemon.
+    func invalidate() {
+        lock.lock()
+        needsRefresh = true
+        invalidationGeneration &+= 1
+        lock.unlock()
+
+        DispatchQueue.main.async { [weak self] in
+            _ = self?.refreshOnMainThread()
+        }
+    }
+
+    private func refreshSynchronouslyOnMainThread() -> String? {
+        if Thread.isMainThread {
+            return refreshOnMainThread()
+        }
+        return DispatchQueue.main.sync {
+            refreshOnMainThread()
+        }
+    }
+
+    @discardableResult
+    private func refreshOnMainThread() -> String? {
+        precondition(Thread.isMainThread)
+
+        lock.lock()
+        guard needsRefresh else {
+            let cachedIdentifier = identifier
+            lock.unlock()
+            return cachedIdentifier
+        }
+        let generation = invalidationGeneration
+        lock.unlock()
+
+        let nextIdentifier = identifierSource()
+        lock.lock()
+        guard let nextIdentifier else {
+            // Keep the previous value (if any) but leave the cache stale. A
+            // subsequent scheduled refresh or key event will retry Carbon.
+            lock.unlock()
+            return nil
+        }
+        identifier = nextIdentifier
+        // A second layout notification may arrive while Carbon is being
+        // queried. Preserve that newer invalidation so the queued refresh
+        // cannot accidentally mark its older result as current.
+        let isCurrentGeneration = invalidationGeneration == generation
+        if isCurrentGeneration { needsRefresh = false }
+        let refreshedIdentifier = identifier
+        lock.unlock()
+        // Do not let a caller use the result from an older generation. The
+        // next queued refresh will publish the newer identifier; returning
+        // nil here makes the remapping path fail closed for this one event.
+        return isCurrentGeneration ? refreshedIdentifier : nil
     }
 }
 

@@ -106,6 +106,23 @@ final class RemoteInputSinkKeyRemapTests: XCTestCase {
         XCTAssertNil(sink.resolveKeyInjectionTarget(for: input, remoteKeyCode: 6))
     }
 
+    func testUnavailableLocalLayoutIsUnmappable() {
+        let sink = RemoteInputSink(
+            keyboardLayoutProvider: FakeKeyboardLayoutProvider(
+                identifier: nil,
+                reverseMap: nil
+            )
+        )
+        let input = RemoteInputEvent(
+            kind: .keyDown,
+            keyCode: 6,
+            character: "z",
+            keyboardLayoutIdentifier: "com.apple.keylayout.US"
+        )
+
+        XCTAssertNil(sink.resolveKeyInjectionTarget(for: input, remoteKeyCode: 6))
+    }
+
     func testCharacterWithNoLocalEquivalentIsUnmappable() {
         let sink = RemoteInputSink(keyboardLayoutProvider: germanLayoutProvider())
         let input = RemoteInputEvent(

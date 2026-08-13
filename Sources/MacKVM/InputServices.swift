@@ -873,9 +873,11 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
     }
 
     /// Chooses where a keyDown/keyUp should actually be injected. Returns nil
-    /// only when the sender's key is remappable, the layouts genuinely
-    /// differ, and this layout has no key that produces the same character —
-    /// the one case `inject` treats as fatal.
+    /// when a remappable key cannot be resolved safely — either because the
+    /// layouts differ and this layout has no equivalent character, or because
+    /// the local layout identifier is temporarily unavailable. `inject`
+    /// treats either case as fatal so it never posts a key under an unknown
+    /// layout.
     func resolveKeyInjectionTarget(
         for input: RemoteInputEvent,
         remoteKeyCode: UInt16
@@ -914,9 +916,18 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
         remoteKeyCode: UInt16
     ) -> KeyInjectionTarget? {
         guard let remoteLayout = input.keyboardLayoutIdentifier,
-              let localLayout = keyboardLayoutProvider.currentIdentifier(),
-              remoteLayout != localLayout,
               RemappableKeyCodes.all.contains(remoteKeyCode) else {
+            return .identity(keyCode: remoteKeyCode)
+        }
+        // A sender that supplied a layout identifier needs a known local
+        // identifier before we can safely decide that the raw key code is
+        // already correct. If Carbon is temporarily unavailable, declining
+        // this remappable event is safer than injecting a key under an
+        // unknown layout and producing the wrong character or shortcut.
+        guard let localLayout = keyboardLayoutProvider.currentIdentifier() else {
+            return nil
+        }
+        guard remoteLayout != localLayout else {
             return .identity(keyCode: remoteKeyCode)
         }
         guard let character = input.character else {
