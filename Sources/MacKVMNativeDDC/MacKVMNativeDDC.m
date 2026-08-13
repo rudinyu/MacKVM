@@ -580,8 +580,17 @@ MacKVMNativeDDCListRef MacKVMNativeDDCCreateList(
         return NULL;
     }
 
+    // With a non-NULL output buffer, CoreGraphics stores at most
+    // kMacKVMNativeDDCMaxDisplays entries but may still report the total
+    // number of online displays. Never index beyond the fixed array when a
+    // host has more online displays than this native bridge retains.
+    CGDisplayCount storedDisplayCount = displayCount;
+    if (storedDisplayCount > kMacKVMNativeDDCMaxDisplays) {
+        storedDisplayCount = kMacKVMNativeDDCMaxDisplays;
+    }
+
     for (CGDisplayCount index = 0;
-         index < displayCount && list->count < kMacKVMNativeDDCMaxDisplays;
+         index < storedDisplayCount && list->count < kMacKVMNativeDDCMaxDisplays;
          index += 1) {
         CGDirectDisplayID displayID = displayIDs[index];
         if (!isExternalDisplay(displayID)) {
