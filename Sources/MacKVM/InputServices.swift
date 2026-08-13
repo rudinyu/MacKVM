@@ -937,12 +937,12 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
 
     func refreshReverseMapIfNeeded(for localLayout: String) {
         guard reverseMapLayoutIdentifier != localLayout else { return }
-        guard let translator = keyboardLayoutProvider.currentTranslator() else {
+        guard let map = keyboardLayoutProvider.currentReverseMap() else {
             reverseMap = nil
             reverseMapLayoutIdentifier = nil
             return
         }
-        reverseMap = KeyboardLayoutReverseMap(translator: translator)
+        reverseMap = map
         reverseMapLayoutIdentifier = localLayout
     }
 

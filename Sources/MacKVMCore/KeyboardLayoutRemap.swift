@@ -47,7 +47,7 @@ public struct RemappedKeyTarget: Equatable, Sendable {
 /// exhaustively translating every remappable key under every Shift/Option/Caps
 /// Lock combination. Building is `O(key count × 8)`, cheap enough to redo
 /// whenever the local layout changes.
-public struct KeyboardLayoutReverseMap {
+public struct KeyboardLayoutReverseMap: Sendable {
     private let table: [String: RemappedKeyTarget]
 
     /// Modifier combinations in preference order: unmodified first, then

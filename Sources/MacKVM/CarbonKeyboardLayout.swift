@@ -11,7 +11,10 @@ import MacKVMCore
 /// for why.
 protocol KeyboardLayoutProviding {
     func currentIdentifier() -> String?
-    func currentTranslator() -> UnicodeLayoutCharacterProviding?
+    /// Returns a reverse map whose Carbon/TIS work has already completed on
+    /// the provider's platform-safe thread. Callers may perform lookups on a
+    /// background queue without touching the underlying input source again.
+    func currentReverseMap() -> KeyboardLayoutReverseMap?
 }
 
 /// `RemoteInputSink` calls this from its private background injection queue,
@@ -33,9 +36,17 @@ struct CarbonKeyboardLayoutProvider: KeyboardLayoutProviding {
         }
     }
 
-    func currentTranslator() -> UnicodeLayoutCharacterProviding? {
+    func currentReverseMap() -> KeyboardLayoutReverseMap? {
         DispatchQueue.main.sync {
-            CarbonKeyboardLayout.currentTranslator()
+            guard let translator = CarbonKeyboardLayout.currentTranslator() else {
+                return nil
+            }
+            // UCKeyTranslate/TISGetInputSourceProperty is performed while
+            // still on the main thread. Returning the finished value, rather
+            // than a translator that the caller will invoke later, is what
+            // prevents Carbon from being accessed concurrently by the input
+            // capture and injection paths.
+            return KeyboardLayoutReverseMap(translator: translator)
         }
     }
 }
@@ -94,7 +105,9 @@ enum CarbonKeyboardLayout {
 /// Wraps one `TISInputSource`'s Unicode layout data and exposes it through
 /// `UnicodeLayoutCharacterProviding`, isolating every unsafe-pointer and
 /// Carbon-modifier-bit detail behind the same small interface
-/// `KeyboardLayoutReverseMap` already builds against in tests.
+/// `KeyboardLayoutReverseMap` already builds against in tests. The provider
+/// constructs that map before returning it so no Carbon/TIS call is deferred
+/// to the background injection queue.
 private struct CarbonUnicodeLayoutTranslator: UnicodeLayoutCharacterProviding {
     let inputSource: TISInputSource
 

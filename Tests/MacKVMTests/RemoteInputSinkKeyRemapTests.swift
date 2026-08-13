@@ -30,10 +30,10 @@ private struct FakeLayout: UnicodeLayoutCharacterProviding {
 
 private struct FakeKeyboardLayoutProvider: KeyboardLayoutProviding {
     let identifier: String?
-    let translator: (any UnicodeLayoutCharacterProviding)?
+    let reverseMap: KeyboardLayoutReverseMap?
 
     func currentIdentifier() -> String? { identifier }
-    func currentTranslator() -> UnicodeLayoutCharacterProviding? { translator }
+    func currentReverseMap() -> KeyboardLayoutReverseMap? { reverseMap }
 }
 
 /// Covers `RemoteInputSink`'s cross-layout key-remap resolution — the logic
@@ -48,13 +48,14 @@ final class RemoteInputSinkKeyRemapTests: XCTestCase {
     /// Only the receiver's ("German") side is modeled, since that's the
     /// only side `computeKeyInjectionTarget` ever looks up against.
     private func germanLayoutProvider() -> FakeKeyboardLayoutProvider {
-        FakeKeyboardLayoutProvider(
+        let translator = FakeLayout(table: [
+            .init(keyCode: 16, shift: false, option: false, capsLock: false): "z",
+            .init(keyCode: 16, shift: true, option: false, capsLock: false): "Z",
+            .init(keyCode: 6, shift: false, option: false, capsLock: false): "y"
+        ])
+        return FakeKeyboardLayoutProvider(
             identifier: "com.apple.keylayout.German",
-            translator: FakeLayout(table: [
-                .init(keyCode: 16, shift: false, option: false, capsLock: false): "z",
-                .init(keyCode: 16, shift: true, option: false, capsLock: false): "Z",
-                .init(keyCode: 6, shift: false, option: false, capsLock: false): "y"
-            ])
+            reverseMap: KeyboardLayoutReverseMap(translator: translator)
         )
     }
 
@@ -62,7 +63,9 @@ final class RemoteInputSinkKeyRemapTests: XCTestCase {
         let sink = RemoteInputSink(
             keyboardLayoutProvider: FakeKeyboardLayoutProvider(
                 identifier: "com.apple.keylayout.US",
-                translator: FakeLayout(table: [:])
+                reverseMap: KeyboardLayoutReverseMap(
+                    translator: FakeLayout(table: [:])
+                )
             )
         )
         let input = RemoteInputEvent(
