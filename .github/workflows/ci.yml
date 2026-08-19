@@ -4,10 +4,14 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   build-test-and-package:
     runs-on: macos-15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - name: Build, test, and package
-        run: ./.codex/ci.sh
+      - name: Build and test app bundles
+        run: ./scripts/ci.sh

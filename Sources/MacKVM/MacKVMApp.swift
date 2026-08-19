@@ -1,49 +1,147 @@
 import AppKit
+import Carbon
 import Combine
 import MacKVMCore
 import SwiftUI
 
 @main
 struct MacKVMApp: App {
+    @NSApplicationDelegateAdaptor(MacKVMApplicationDelegate.self)
+    private var applicationDelegate
     @StateObject private var bootstrap = AppBootstrap()
 
     var body: some Scene {
         MenuBarExtra {
-            if let discovery = bootstrap.discovery,
-               let secureSession = bootstrap.secureSession,
-               let inputCapture = bootstrap.inputCapture,
-               let inputSink = bootstrap.inputSink,
-               let control = bootstrap.control,
-               let monitor = bootstrap.monitor {
-                MacKVMMenuView(
-                    discovery: discovery,
-                    secureSession: secureSession,
-                    inputCapture: inputCapture,
-                    inputSink: inputSink,
-                    control: control,
-                    monitor: monitor,
-                    inputTopology: bootstrap.inputTopology,
-                    launchAtLogin: bootstrap.launchAtLogin,
-                    bootstrap: bootstrap
-                )
-            } else {
-                BootstrapErrorView(
-                    message: bootstrap.errorMessage
-                        ?? "MacKVM could not load its device key.",
-                    onResetIdentity: bootstrap.canResetIdentity
-                        ? { bootstrap.resetIdentity() } : nil,
-                    recoveryMessage: bootstrap.recoveryMessage
-                )
-            }
+            appContent
         } label: {
             if let control = bootstrap.control {
                 MacKVMMenuBarLabel(control: control)
             } else {
-                Label("MacKVM", systemImage: "keyboard")
+                Label("MacKVM", systemImage: MacKVMBranding.menuBarSymbolName)
             }
         }
         .menuBarExtraStyle(.window)
+
+        // Pairing and remote input do not require a monitor. Keep a normal
+        // window and Dock entry available instead of forcing every action
+        // through the menu-bar item.
+        Window("MacKVM", id: "main") {
+            appContent
+        }
+        .defaultSize(width: 440, height: 760)
     }
+
+    @ViewBuilder
+    private var appContent: some View {
+        if let discovery = bootstrap.discovery,
+           let secureSession = bootstrap.secureSession,
+           let inputCapture = bootstrap.inputCapture,
+           let inputSink = bootstrap.inputSink,
+           let control = bootstrap.control,
+           let monitor = bootstrap.monitor {
+            MacKVMMenuView(
+                discovery: discovery,
+                secureSession: secureSession,
+                inputCapture: inputCapture,
+                inputSink: inputSink,
+                control: control,
+                monitor: monitor,
+                inputTopology: bootstrap.inputTopology,
+                launchAtLogin: bootstrap.launchAtLogin,
+                bootstrap: bootstrap
+            )
+        } else {
+            BootstrapErrorView(
+                message: bootstrap.errorMessage
+                    ?? "MacKVM could not load its device key.",
+                onResetIdentity: bootstrap.canResetIdentity
+                    ? { bootstrap.resetIdentity() } : nil,
+                recoveryMessage: bootstrap.recoveryMessage,
+                onQuit: { bootstrap.requestTermination() }
+            )
+        }
+    }
+}
+
+/// SwiftUI's default termination handling does not know about the control
+/// teardown sequence. Keep the delegate deliberately small and let the
+/// bootstrap object own the ordering of input release, network shutdown, and
+/// the final local monitor route.
+private final class MacKVMApplicationDelegate: NSObject, NSApplicationDelegate {
+    private var terminationInProgress = false
+    private var launchedAsLoginItem = false
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        // Login Items deliver the initial kAEOpenApplication event before a
+        // newly registered handler can observe it. Read the event currently
+        // being processed instead of installing a late handler.
+        launchedAsLoginItem = NSAppleEventManager.shared()
+            .currentAppleEvent?
+            .paramDescriptor(forKeyword: keyAELaunchedAsLogInItem) != nil
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        guard launchedAsLoginItem else { return }
+        // Login-item startup should restore the background service without
+        // stealing focus or opening a full control window. The menu-bar item
+        // remains available, and a Dock activation can reopen the window.
+        DispatchQueue.main.async { [weak self] in
+            guard self?.launchedAsLoginItem == true else { return }
+            self?.mainWindow()?.orderOut(nil)
+        }
+    }
+
+    func applicationShouldHandleReopen(
+        _ sender: NSApplication,
+        hasVisibleWindows flag: Bool
+    ) -> Bool {
+        guard !flag else { return true }
+        DispatchQueue.main.async { [weak self, weak sender] in
+            guard let window = self?.mainWindow() else { return }
+            window.makeKeyAndOrderFront(nil)
+            sender?.activate(ignoringOtherApps: true)
+        }
+        return true
+    }
+
+    private func mainWindow() -> NSWindow? {
+        NSApplication.shared.windows.first {
+            $0.identifier?.rawValue == "main"
+                || ($0.title == "MacKVM" && $0.canBecomeKey)
+        }
+    }
+
+    func applicationShouldTerminate(
+        _ sender: NSApplication
+    ) -> NSApplication.TerminateReply {
+        guard !terminationInProgress else { return .terminateLater }
+        guard let handler = MacKVMApplicationTermination.handler else {
+            return .terminateNow
+        }
+
+        terminationInProgress = true
+        handler { [weak self, weak sender] in
+            // The bootstrap-error handler completes synchronously. Defer the
+            // reply until after this delegate returns `.terminateLater`, or
+            // AppKit may treat the reply as occurring before deferred
+            // termination was registered and leave the app running.
+            DispatchQueue.main.async {
+                self?.terminationInProgress = false
+                sender?.reply(toApplicationShouldTerminate: true)
+            }
+        }
+        return .terminateLater
+    }
+}
+
+private enum MacKVMApplicationTermination {
+    static var handler: ((@escaping () -> Void) -> Void)?
+}
+
+private enum MacKVMBranding {
+    // Paired rectangles communicate KVM/display sharing without implying
+    // that MacKVM is a keyboard utility.
+    static let menuBarSymbolName = "rectangle.on.rectangle"
 }
 
 /// The menu-bar state remains visible even when macOS notification alerts are
@@ -97,7 +195,7 @@ private struct MacKVMMenuBarLabel: View {
             pendingIncomingControlRequest: control.pendingIncomingControlRequest
         )
         HStack(spacing: 2) {
-            Image(systemName: "keyboard")
+            Image(systemName: MacKVMBranding.menuBarSymbolName)
             if let image = status.pendingIndicatorSystemImage {
                 Image(systemName: image)
             }
@@ -140,7 +238,13 @@ private final class AppBootstrap: ObservableObject {
     let canResetIdentity: Bool
     @Published private(set) var networkServicesStarted = false
     @Published private(set) var recoveryMessage: String?
+    /// Shared by the menu-bar scene and the normal window. Both surfaces can
+    /// invoke the combined DDC-and-control action, so a view-local `@State`
+    /// would not prevent cross-scene double activation.
+    @Published private(set) var combinedControlRequestInFlight = false
+    private var combinedControlRequestGeneration: UInt64 = 0
     private var controlRequestObservation: AnyCancellable?
+    private var terminationCleanupStarted = false
 
     init() {
         do {
@@ -169,6 +273,9 @@ private final class AppBootstrap: ObservableObject {
                 },
                 keyboardLayoutIdentifier: { [weak inputCapture] in
                     inputCapture?.keyboardLayoutIdentifier
+                },
+                seamlessControlAuthorized: { [weak discovery] peerID in
+                    discovery?.seamlessControlAuthorized(for: peerID) ?? false
                 }
             )
             control.onControllingStarted = { monitor.switchToRemote() }
@@ -196,11 +303,60 @@ private final class AppBootstrap: ObservableObject {
             self.control = control
             self.monitor = monitor
             self.controlRequestNotifier = controlRequestNotifier
+            // Keep the dedicated switch shortcut available even when the
+            // menu-bar window is closed. The active capture tap handles it
+            // while sharing; an event tap or Carbon registered hot key handles
+            // the idle and receiving sides without leaking it to other apps.
             errorMessage = nil
             canResetIdentity = false
+            inputCapture.onSwitchControl = { [weak self] in
+                guard let self else { return }
+                if self.combinedControlRequestInFlight {
+                    // The combined action may already have routed the monitor
+                    // remotely while its control request is still suspended
+                    // waiting for the peer's grant. Let the same global
+                    // shortcut cancel that pending request and restore the
+                    // local display instead of silently ignoring the user's
+                    // only active return path.
+                    self.cancelCombinedControlRequest()
+                    if self.control?.state == .suspended
+                        || self.control?.state == .controlling {
+                        self.control?.stopControl(
+                            reason: "Hotkey cancelled keyboard and mouse sharing"
+                        )
+                    }
+                    self.monitor?.switchToLocal()
+                    return
+                }
+                guard let control = self.control else { return }
+                if control.isReceivingControl
+                    || control.state == .controlling
+                    || control.state == .suspended {
+                    control.toggleControlFromHotKey()
+                } else if let monitor = self.monitor,
+                          monitor.automationEnabled,
+                          monitor.isDisplaySelectorVerified {
+                    // An idle shortcut follows the same display-first route
+                    // as the primary Share button. Otherwise the suppressing
+                    // input tap could start before native DDC has moved the
+                    // monitor to the remote Mac.
+                    self.startCombinedControlRequest()
+                } else {
+                    control.toggleControlFromHotKey()
+                }
+            }
+            inputCapture.startHotKeyMonitoring()
+            discovery.onPairingCompleted = { [weak secureSession] peerID in
+                // Pairing pins trust; immediately establish the encrypted
+                // session so the user can request keyboard/mouse control
+                // without a second manual Connect action. New pairings also
+                // enable the receiver's local seamless-control authorization;
+                // the per-peer setting can restore explicit Allow prompts.
+                secureSession?.connect(to: peerID)
+            }
             // A notification action can arrive before the menu is opened.
-            // Start MA270U discovery here so the saved selector is verified
-            // for that headless control path as well.
+            // Start native DDC/CI discovery here so the saved selector is
+            // verified for that headless control path as well.
             monitor.refreshDetectedDisplays()
             controlRequestNotifier.onAction = { [weak self] action, requestID in
                 switch action {
@@ -225,6 +381,10 @@ private final class AppBootstrap: ObservableObject {
             ) {
                 startNetworkServices()
             }
+            MacKVMApplicationTermination.handler = { [weak self] completion in
+                self?.shutdownForTermination(completion: completion)
+                    ?? completion()
+            }
         } catch {
             discovery = nil
             secureSession = nil
@@ -235,7 +395,116 @@ private final class AppBootstrap: ObservableObject {
             controlRequestNotifier = nil
             errorMessage = "Could not access the device key: \(error.localizedDescription)"
             canResetIdentity = error is DeviceCredentialError
+            MacKVMApplicationTermination.handler = { completion in
+                completion()
+            }
         }
+    }
+
+    func requestTermination() {
+        NSApplication.shared.terminate(nil)
+    }
+
+    func beginCombinedControlRequest() -> UInt64? {
+        guard !combinedControlRequestInFlight else { return nil }
+        combinedControlRequestGeneration &+= 1
+        combinedControlRequestInFlight = true
+        return combinedControlRequestGeneration
+    }
+
+    func isCurrentCombinedControlRequest(_ generation: UInt64) -> Bool {
+        combinedControlRequestInFlight
+            && combinedControlRequestGeneration == generation
+    }
+
+    func endCombinedControlRequest(_ generation: UInt64) {
+        guard combinedControlRequestGeneration == generation else { return }
+        combinedControlRequestInFlight = false
+    }
+
+    /// Invalidates an asynchronous display route before starting a competing
+    /// local/remote route. Its completion must not start keyboard sharing
+    /// after the user has changed the requested display destination.
+    func cancelCombinedControlRequest() {
+        guard combinedControlRequestInFlight else { return }
+        combinedControlRequestGeneration &+= 1
+        combinedControlRequestInFlight = false
+    }
+
+    /// Starts the display-first share flow used by both the main button and
+    /// the global shortcut. Input capture is not allowed to begin until native
+    /// DDC reports that the remote input has been selected.
+    func startCombinedControlRequest() {
+        guard let monitor, let control,
+              control.canRequestControl(),
+              let requestGeneration = beginCombinedControlRequest() else {
+            return
+        }
+        monitor.switchToRemoteAndReportSuccess { [weak self] switched in
+            guard let self else { return }
+            guard self.isCurrentCombinedControlRequest(requestGeneration) else {
+                return
+            }
+            guard switched else {
+                self.endCombinedControlRequest(requestGeneration)
+                return
+            }
+
+            var rejectionCompletionCalled = false
+            let requestStarted = control.requestControl(
+                displayAlreadyRemote: true
+            ) { [weak self, weak monitor] granted in
+                rejectionCompletionCalled = true
+                guard let self else { return }
+                let ownsRoute = self.isCurrentCombinedControlRequest(
+                    requestGeneration
+                )
+                self.endCombinedControlRequest(requestGeneration)
+                if !granted && ownsRoute {
+                    monitor?.switchToLocal()
+                }
+            }
+            if !requestStarted && !rejectionCompletionCalled {
+                // Keep a safe fallback if a future guard returns false without
+                // invoking the request completion.
+                self.endCombinedControlRequest(requestGeneration)
+                monitor.switchToLocal()
+            }
+        }
+    }
+
+    /// Performs the same ordered shutdown for every app-level termination
+    /// path, including Cmd-Q, the Dock, and the application menu.
+    func shutdownForTermination(completion: @escaping () -> Void) {
+        guard !terminationCleanupStarted else {
+            // NSApplication normally asks only once. If a second request does
+            // arrive while cleanup is in progress, do not start a second
+            // monitor route; the first request owns the final reply.
+            return
+        }
+        terminationCleanupStarted = true
+        controlRequestNotifier?.clearAllControlRequestNotifications()
+
+        guard let control, let monitor else {
+            discovery?.stop()
+            secureSession?.stop()
+            completion()
+            return
+        }
+
+        let cancelledMonitorRoutes = monitor.beginTermination()
+        control.stopForQuit { [weak self] in
+            guard let self else {
+                completion()
+                return
+            }
+            self.discovery?.stop()
+            self.secureSession?.stop()
+            monitor.switchToLocalForTermination {
+                completion()
+            }
+        }
+        cancelledMonitorRoutes.forEach { $0() }
     }
 
     func resetIdentity() {
@@ -319,6 +588,7 @@ private struct BootstrapErrorView: View {
     let message: String
     let onResetIdentity: (() -> Void)?
     let recoveryMessage: String?
+    let onQuit: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -341,7 +611,7 @@ private struct BootstrapErrorView: View {
                     .foregroundStyle(.secondary)
             }
             Button("Quit") {
-                NSApplication.shared.terminate(nil)
+                onQuit()
             }
         }
         .padding(16)
@@ -351,7 +621,7 @@ private struct BootstrapErrorView: View {
 
 private struct MacKVMMenuView: View {
     private static let menuWidth: CGFloat = 400
-    private static let menuHeight: CGFloat = 640
+    private static let menuHeight: CGFloat = 700
     @ObservedObject var discovery: PeerDiscoveryService
     @ObservedObject var secureSession: SecureSessionService
     @ObservedObject var inputCapture: InputCaptureService
@@ -361,9 +631,12 @@ private struct MacKVMMenuView: View {
     @ObservedObject var inputTopology: InputTopologyController
     @ObservedObject var launchAtLogin: LaunchAtLoginController
     @ObservedObject var bootstrap: AppBootstrap
+    @Environment(\.openWindow) private var openWindow
     @AppStorage(OnboardingDefaults.localNetworkAccessReviewedKey)
     private var localNetworkAccessReviewed = false
     @State private var awaitingLocalNetworkResponse = false
+    @State private var supportCopyStatus: String?
+    @State private var editingFriendlyNames: [UUID: String] = [:]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -383,7 +656,14 @@ private struct MacKVMMenuView: View {
                         Divider()
                     }
 
+                    if let confirmation = discovery.pendingPairingConfirmation {
+                        pairingConfirmationSection(confirmation)
+                        Divider()
+                    }
+
                     peerSection
+                    Divider()
+                    supportSection
                     Divider()
                     inputSection
                     Divider()
@@ -403,21 +683,7 @@ private struct MacKVMMenuView: View {
                     .lineLimit(2)
                 Spacer()
                 Button("Quit") {
-                    bootstrap.clearControlRequestNotifications()
-                    // Latch the final local-route intent first, but do not
-                    // resolve a cancelled receiver monitor route until the
-                    // coordinator has recorded its quit teardown. Otherwise
-                    // that completion could make it release remote input a
-                    // second time before `stopForQuit` can observe it.
-                    let cancelledMonitorRoutes = monitor.beginTermination()
-                    control.stopForQuit {
-                        discovery.stop()
-                        secureSession.stop()
-                        monitor.switchToLocalForTermination {
-                            NSApplication.shared.terminate(nil)
-                        }
-                    }
-                    cancelledMonitorRoutes.forEach { $0() }
+                    bootstrap.requestTermination()
                 }
             }
             .padding(16)
@@ -440,8 +706,15 @@ private struct MacKVMMenuView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("MacKVM")
-                .font(.headline)
+            HStack {
+                Text("MacKVM")
+                    .font(.headline)
+                Spacer()
+                Button("Open window") {
+                    openWindow(id: "main")
+                }
+                .font(.caption)
+            }
             Text("This Mac: \(discovery.identity.name)")
                 .font(.subheadline)
             Text(String(discovery.identity.id.uuidString.prefix(8)))
@@ -621,7 +894,7 @@ private struct MacKVMMenuView: View {
             ForEach(discovery.pendingRequests) { request in
                 VStack(alignment: .leading, spacing: 6) {
                     Text(request.peer.name)
-                    Text("Confirm both Macs show \(request.verificationCode)")
+                    Text("Verify this code matches the initiating Mac: \(request.verificationCode)")
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                     HStack {
@@ -634,6 +907,30 @@ private struct MacKVMMenuView: View {
                             discovery.respond(to: request, accepted: false)
                         }
                     }
+                }
+            }
+        }
+    }
+
+    private func pairingConfirmationSection(
+        _ confirmation: PendingPairingConfirmation
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Confirm pairing")
+                .font(.subheadline.weight(.semibold))
+            Text(
+                "Compare this code with \(confirmation.peer.name) before confirming:"
+            )
+                .font(.caption)
+            Text(confirmation.verificationCode)
+                .font(.title2.monospacedDigit().weight(.semibold))
+            HStack {
+                Button("Confirm code") {
+                    discovery.confirmPairing(requestID: confirmation.id)
+                }
+                .buttonStyle(.borderedProminent)
+                Button("Cancel") {
+                    discovery.declinePairing(requestID: confirmation.id)
                 }
             }
         }
@@ -656,7 +953,7 @@ private struct MacKVMMenuView: View {
                 ForEach(discovery.peers) { peer in
                     HStack {
                         Image(systemName: "laptopcomputer")
-                        Text(peer.name)
+                        Text(displayName(for: peer))
                         Spacer()
                         switch discovery.trustState(for: peer) {
                         case .paired:
@@ -697,7 +994,10 @@ private struct MacKVMMenuView: View {
                 ForEach(unavailablePairedPeerIDs, id: \.self) { peerID in
                     HStack {
                         Image(systemName: "laptopcomputer.slash")
-                        Text("Mac \(peerID.uuidString.prefix(8))")
+                        Text(
+                            discovery.pairedPeerProfile(for: peerID)?.friendlyName
+                                ?? "Mac \(peerID.uuidString.prefix(8))"
+                        )
                             .font(.caption.monospaced())
                         Spacer()
                         if secureSession.connectedPeerID == peerID {
@@ -715,6 +1015,204 @@ private struct MacKVMMenuView: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    private var supportSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Paired device information")
+                .font(.subheadline.weight(.semibold))
+
+            Text("This Mac: \(discovery.localModel)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if pairedProfiles.isEmpty {
+                Text("No paired devices yet.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(pairedProfiles) { profile in
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "laptopcomputer")
+                            TextField(
+                                "Friendly name",
+                                text: friendlyNameBinding(for: profile)
+                            )
+                            .textFieldStyle(.roundedBorder)
+                            Button("Save") {
+                                saveFriendlyName(for: profile)
+                            }
+                            .disabled(
+                                (editingFriendlyNames[profile.peerID]
+                                    ?? profile.friendlyName)
+                                    .trimmingCharacters(
+                                        in: .whitespacesAndNewlines
+                                    ).isEmpty
+                            )
+                        }
+                        Text("Model: \(profile.model)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Text(
+                            "Last connected: \(displayDate(profile.lastConnectedAt))"
+                        )
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        Text("Key fingerprint: \(profile.keyFingerprint)")
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .lineLimit(2)
+                        Toggle(
+                            "Automatically allow control from this Mac",
+                            isOn: seamlessControlAuthorizationBinding(
+                                for: profile
+                            )
+                        )
+                        .font(.caption)
+                        Text(
+                            "This is a one-time local authorization for this pinned Mac."
+                        )
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            Button("Copy support information") {
+                copySupportInformation()
+            }
+            if let supportCopyStatus {
+                Text(supportCopyStatus)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var pairedProfiles: [PairedPeerProfile] {
+        let persistedProfiles = discovery.pairedPeerProfiles
+        let profiles = discovery.pairedPeerIDs.compactMap { peerID -> PairedPeerProfile? in
+            if let profile = persistedProfiles[peerID] {
+                return profile
+            }
+            guard let publicKey = discovery.pairedPublicKey(for: peerID) else {
+                return nil
+            }
+            // Pairings created by older releases predate profile storage. Do
+            // not use Bonjour TXT as a default here: it is unsigned and the
+            // user could save it unchanged. A signed pairing or secure
+            // handshake will replace this fallback with the peer's name.
+            return PairedPeerProfile(
+                peerID: peerID,
+                friendlyName: "Mac \(peerID.uuidString.prefix(8))",
+                model: nil,
+                signingPublicKey: publicKey
+            )
+        }
+        return profiles.sorted {
+            let nameComparison = $0.friendlyName.localizedStandardCompare(
+                $1.friendlyName
+            )
+            if nameComparison != .orderedSame {
+                return nameComparison == .orderedAscending
+            }
+            return $0.peerID.uuidString < $1.peerID.uuidString
+        }
+    }
+
+    private func displayName(for peer: DiscoveredPeer) -> String {
+        discovery.pairedPeerProfile(for: peer.identity.id)?.friendlyName
+            ?? peer.name
+    }
+
+    private func friendlyNameBinding(
+        for profile: PairedPeerProfile
+    ) -> Binding<String> {
+        Binding(
+            get: {
+                editingFriendlyNames[profile.peerID] ?? profile.friendlyName
+            },
+            set: { editingFriendlyNames[profile.peerID] = $0 }
+        )
+    }
+
+    private func saveFriendlyName(for profile: PairedPeerProfile) {
+        let candidate = editingFriendlyNames[profile.peerID]
+            ?? profile.friendlyName
+        if discovery.updateFriendlyName(
+            for: profile.peerID,
+            friendlyName: candidate
+        ) {
+            editingFriendlyNames.removeValue(forKey: profile.peerID)
+        }
+    }
+
+    private func seamlessControlAuthorizationBinding(
+        for profile: PairedPeerProfile
+    ) -> Binding<Bool> {
+        Binding(
+            get: {
+                discovery.pairedPeerProfile(
+                    for: profile.peerID
+                )?.seamlessControlAuthorized ?? false
+            },
+            set: { authorized in
+                _ = discovery.updateSeamlessControlAuthorization(
+                    for: profile.peerID,
+                    authorized: authorized
+                )
+            }
+        )
+    }
+
+    private func displayDate(_ date: Date?) -> String {
+        guard let date else { return String(localized: "Never") }
+        return date.formatted(date: .abbreviated, time: .shortened)
+    }
+
+    private func copySupportInformation() {
+        let peerInfo = pairedProfiles.map { profile in
+            SupportPeerInfo(
+                peerID: profile.peerID,
+                friendlyName: profile.friendlyName,
+                model: profile.model,
+                lastConnectedAt: profile.lastConnectedAt,
+                keyFingerprint: profile.keyFingerprint
+            )
+        }
+        let localFingerprint = PeerKeyFingerprint.string(
+            for: discovery.identity.signingPublicKey
+        )
+        let info = SupportInformationFormatter.make(
+            appVersion: appVersion,
+            appBuild: appBuild,
+            operatingSystem: ProcessInfo.processInfo.operatingSystemVersionString,
+            localFriendlyName: discovery.identity.name,
+            localModel: discovery.localModel,
+            localKeyFingerprint: localFingerprint,
+            peers: peerInfo,
+            connectionStatus: secureSession.status,
+            connectedPeerID: secureSession.connectedPeerID
+        )
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        if pasteboard.setString(info, forType: .string) {
+            supportCopyStatus = String(localized: "Support information copied")
+        } else {
+            supportCopyStatus = String(localized: "Could not copy support information")
+        }
+    }
+
+    private var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString")
+            as? String ?? "Unknown"
+    }
+
+    private var appBuild: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+            ?? "Unknown"
     }
 
     private var unavailablePairedPeerIDs: [UUID] {
@@ -743,6 +1241,9 @@ private struct MacKVMMenuView: View {
                 title: "Accessibility",
                 granted: inputSink.hasAccessibilityPermission
             )
+            Text("The controlling Mac needs Input Monitoring and Accessibility; the receiving Mac needs Accessibility.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
 
             if let request = control.pendingIncomingControlRequest {
                 incomingControlRequestSection(request)
@@ -751,7 +1252,7 @@ private struct MacKVMMenuView: View {
                     Text("This Mac is receiving remote control.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Button("Stop remote control") {
+                    Button(returnKeyboardAndMouseTitle) {
                         control.endReceivingControl()
                     }
                     .buttonStyle(.borderedProminent)
@@ -761,11 +1262,11 @@ private struct MacKVMMenuView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else if control.state == .controlling || control.state == .suspended {
-                Button("Return input to this Mac") {
+                Button("Return keyboard and mouse to this Mac") {
                     control.stopControl()
                 }
             } else {
-                Button("Request control of other Mac") {
+                Button("Request keyboard and mouse control") {
                     control.requestControl()
                 }
                 .disabled(
@@ -775,9 +1276,22 @@ private struct MacKVMMenuView: View {
                         || !inputTopology.allowsLocalControl
                         || control.isReceivingControl
                         || control.isRemoteInputTearingDown
-                        || !setupState.isReadyForInputSharing
+                        || bootstrap.combinedControlRequestInFlight
                 )
             }
+
+            if control.state == .controlling {
+                Label(
+                    "Press Control-Option-Command-Escape to interrupt sharing and return the keyboard and mouse to this Mac.",
+                    systemImage: "escape"
+                )
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            Text("Control-Option-Command-K toggles keyboard and mouse sharing. Escape is the emergency local-return shortcut.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
 
             Text("State: \(control.state.rawValue)")
                 .font(.caption2.monospaced())
@@ -849,14 +1363,18 @@ private struct MacKVMMenuView: View {
 
     private var monitorSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("BenQ MA270U input")
+            Text("Monitor input")
                 .font(.subheadline.weight(.semibold))
+
+            Text("External display switching is optional; pairing and remote control work without an external display.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             Toggle("Automatic DDC/CI switching", isOn: $monitor.automationEnabled)
                 .disabled(!monitor.supportsAutomaticDDCSwitching)
 
             if !monitor.supportsAutomaticDDCSwitching {
-                Text("This Intel Mac uses the MA270U OSD input menu. Automatic DDC/CI runs only on the Apple Silicon Mac connected by USB-C.")
+                Text("This Mac does not expose a native DDC/CI transport; use the monitor OSD input menu.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -881,65 +1399,122 @@ private struct MacKVMMenuView: View {
                 }
             }
 
-            if monitor.supportsAutomaticDDCSwitching {
-                Button("Detect MA270U") {
-                    monitor.refreshDetectedDisplays()
-                }
-
-                if monitor.detectedDisplays.isEmpty {
-                    Text("No detected DDC display yet. Connect the MA270U by USB-C, then detect it.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(monitor.detectedDisplays) { display in
-                        Button {
-                            monitor.selectDisplay(display)
-                        } label: {
-                            HStack {
-                                Image(
-                                    systemName: display.matches(
-                                        selector: monitor.displaySelector
-                                    ) ? "checkmark.circle.fill" : "display"
-                                )
-                                Text(display.displayName)
-                                    .lineLimit(1)
-                                Spacer()
-                                if !display.isLikelyMA270U {
-                                    Text("Not MA270U")
-                                        .font(.caption2)
-                                        .foregroundStyle(.orange)
-                                }
-                            }
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(
-                            display.matches(selector: monitor.displaySelector)
-                                ? Color.green : Color.primary
-                        )
-                    }
-                }
-
-                if monitor.isDisplaySelectorVerified {
-                    Label("Selected MA270U verified", systemImage: "checkmark.shield.fill")
-                        .font(.caption2)
-                        .foregroundStyle(.green)
-                } else {
-                    Text("Only a detected MA270U can enable automatic switching. Do not select a different display unless you have confirmed its model.")
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
-                }
-
-                TextField("m1ddc UUID (must match detected MA270U)", text: $monitor.displaySelector)
-                TextField("m1ddc executable path", text: $monitor.executablePath)
+            Button("Detect DDC-capable displays") {
+                monitor.refreshDetectedDisplays()
             }
+
+            if monitor.detectedDisplays.isEmpty {
+                Text("No DDC-capable display detected yet. Connect an external display, then detect it.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(monitor.detectedDisplays) { display in
+                    Button {
+                        monitor.selectDisplay(display)
+                    } label: {
+                        HStack {
+                            Image(
+                                systemName: display.matches(
+                                    selector: monitor.displaySelector
+                                ) ? "checkmark.circle.fill" : "display"
+                            )
+                            Text(display.displayName)
+                                .lineLimit(1)
+                            Spacer()
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(
+                        display.matches(selector: monitor.displaySelector)
+                            ? Color.green : Color.primary
+                    )
+                }
+            }
+
+            if monitor.isDisplaySelectorVerified {
+                Label("Selected DDC display verified", systemImage: "checkmark.shield.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.green)
+            } else {
+                Text("Only a detected DDC-capable display can enable automatic switching.")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            }
+
+            TextField("Native DDC display selector", text: $monitor.displaySelector)
 
             HStack {
                 Button("Show this Mac") {
-                    monitor.switchToLocal()
+                    let hadCombinedRequest =
+                        bootstrap.combinedControlRequestInFlight
+                    bootstrap.cancelCombinedControlRequest()
+                    // Selecting the local display is also an explicit request
+                    // to return the shared keyboard and mouse. Otherwise the
+                    // monitor could show M5 while its input tap kept sending
+                    // events to the other Mac.
+                    if control.isReceivingControl {
+                        control.endReceivingControl(
+                            reason: "Returned input to this Mac",
+                            restoreMonitor: false
+                        ) {
+                            monitor.switchToLocal()
+                        }
+                    } else if control.state == .controlling
+                        || control.state == .suspended {
+                        let wasWaitingForGrant = control.state == .suspended
+                        control.stopControl(
+                            reason: "Returned input to this Mac"
+                        )
+                        if hadCombinedRequest && wasWaitingForGrant {
+                            // The cancelled pre-routed request no longer owns
+                            // its completion, so this manual action owns the
+                            // single local DDC restoration.
+                            monitor.switchToLocal()
+                        }
+                    } else {
+                        monitor.switchToLocal()
+                    }
                 }
                 Button("Show other Mac") {
-                    monitor.switchToRemote()
+                    let shouldCancelWaitingControl =
+                        bootstrap.combinedControlRequestInFlight
+                            && control.state == .suspended
+                    bootstrap.cancelCombinedControlRequest()
+                    if shouldCancelWaitingControl {
+                        // Stop the stale request before selecting the remote
+                        // route; its invalidated completion cannot switch the
+                        // display back to this Mac afterward.
+                        control.stopControl(
+                            reason: "Display route changed; input stayed local"
+                        )
+                    }
+                    if control.isReceivingControl {
+                        // The receiver's normal teardown restores the
+                        // controller's display route and returns the shared
+                        // keyboard/mouse to the controller.
+                        control.endReceivingControl(
+                            reason: "Returned input to the other Mac"
+                        )
+                    } else {
+                        monitor.switchToRemote()
+                    }
                 }
+            }
+
+            if inputTopology.allowsLocalControl {
+                Button(shareKeyboardAndMouseTitle) {
+                    bootstrap.startCombinedControlRequest()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(
+                    !canRequestControl
+                        || bootstrap.combinedControlRequestInFlight
+                )
+                Text(
+                    "This switches the display, then shares the keyboard and mouse. Control-Option-Command-K toggles sharing; Control-Option-Command-Escape interrupts and returns them to this Mac."
+                )
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
 
             Text(monitor.status)
@@ -956,6 +1531,44 @@ private struct MacKVMMenuView: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    /// Do not switch the monitor before the request guards can succeed. A
+    /// disconnected or permission-blocked controller should remain on its
+    /// current display while it fixes setup, rather than switching away with
+    /// no control request sent.
+    private var canRequestControl: Bool {
+        inputTopology.allowsLocalControl
+            && monitor.automationEnabled
+            && monitor.isDisplaySelectorVerified
+            && inputCapture.hasInputMonitoringPermission
+            && inputSink.hasAccessibilityPermission
+            && secureSession.connectedPeerID != nil
+            && control.state == .connected
+            && control.pendingIncomingControlRequest == nil
+            && !control.isReceivingControl
+            && !control.isRemoteInputTearingDown
+    }
+
+    private var connectedPeerName: String {
+        guard let peerID = secureSession.connectedPeerID else {
+            return "the other Mac"
+        }
+        return peerDisplayName(for: peerID, from: discovery)
+    }
+
+    private var shareKeyboardAndMouseTitle: String {
+        String(
+            format: String(localized: "Share keyboard and mouse with %@"),
+            connectedPeerName
+        )
+    }
+
+    private var returnKeyboardAndMouseTitle: String {
+        String(
+            format: String(localized: "Return keyboard and mouse to %@"),
+            connectedPeerName
+        )
     }
 
     private var startupSection: some View {

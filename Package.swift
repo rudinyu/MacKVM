@@ -11,10 +11,25 @@ let package = Package(
         .executable(name: "MacKVM", targets: ["MacKVM"])
     ],
     targets: [
+        .target(
+            name: "MacKVMNativeDDC",
+            path: "Sources/MacKVMNativeDDC",
+            publicHeadersPath: "include",
+            linkerSettings: [
+                .linkedFramework("CoreDisplay"),
+                .linkedFramework("CoreGraphics"),
+                .linkedFramework("IOKit")
+            ]
+        ),
         .target(name: "MacKVMCore"),
         .executableTarget(
             name: "MacKVM",
-            dependencies: ["MacKVMCore"]
+            dependencies: ["MacKVMCore", "MacKVMNativeDDC"],
+            linkerSettings: [
+                // CarbonKeyboardLayout.swift uses TIS/UCKeyTranslate for
+                // cross-layout keyboard remapping.
+                .linkedFramework("Carbon")
+            ]
         ),
         .testTarget(
             name: "MacKVMCoreTests",

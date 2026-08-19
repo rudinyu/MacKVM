@@ -7,6 +7,7 @@ import Network
 struct DiscoveredPeer: Identifiable {
     let id: String
     let identity: PeerIdentity
+    let model: String
     let endpoint: NWEndpoint
 
     var name: String { identity.name }
@@ -16,6 +17,43 @@ struct PendingPairingRequest: Identifiable {
     let id: UUID
     let peer: PeerIdentity
     let verificationCode: String
+}
+
+/// The initiator must compare the displayed code with the receiving Mac
+/// before it sends its signed acceptance. Keeping this state separate from an
+/// incoming request makes the consent direction explicit in the UI and keeps
+/// an attacker who only spoofs Bonjour metadata from being pinned silently.
+struct PendingPairingConfirmation: Identifiable {
+    let id: UUID
+    let peer: PeerIdentity
+    let verificationCode: String
+}
+
+/// Work captured after the signed pairing completion has crossed the close
+/// barrier. Registry persistence can touch UserDefaults and compete with
+/// SwiftUI reads, so it must not run on the Network.framework queue. Keeping
+/// the peer and generation in one immutable job also lets the completion
+/// callback re-check revocation before publishing trust to the UI.
+private final class PairingPersistenceJob: @unchecked Sendable {
+    let requestID: UUID
+    let peer: PeerIdentity
+    let expectedRegistryGeneration: UInt64
+    let model: String?
+    let lifecycleEpoch: UInt64
+
+    init(
+        requestID: UUID,
+        peer: PeerIdentity,
+        expectedRegistryGeneration: UInt64,
+        model: String?,
+        lifecycleEpoch: UInt64
+    ) {
+        self.requestID = requestID
+        self.peer = peer
+        self.expectedRegistryGeneration = expectedRegistryGeneration
+        self.model = model
+        self.lifecycleEpoch = lifecycleEpoch
+    }
 }
 
 enum DiscoveredPeerTrust {
@@ -36,11 +74,26 @@ final class PeerDiscoveryService: ObservableObject {
     @Published private(set) var pairedPeerIDs: Set<UUID>
     @Published private(set) var status = "Starting…"
     @Published private(set) var activeVerificationCode: String?
+    @Published private(set) var pendingPairingConfirmation:
+        PendingPairingConfirmation?
+
+    /// Called after both sides have recorded the signed pairing completion.
+    /// The app wires this to the secure-session connector so a user does not
+    /// have to rediscover a newly paired Mac and press Connect before using
+    /// the shared keyboard. A newly completed pairing enables the receiver's
+    /// local seamless-control authorization; an existing peer can opt out in
+    /// its paired-device settings and return to per-request Allow actions.
+    var onPairingCompleted: ((UUID) -> Void)?
 
     let identity: PeerIdentity
+    let localModel: String
 
     private static let serviceType = "_mackvm._tcp"
     private static let maximumPendingRequests = 5
+    // Bonjour is an untrusted discovery surface. The app is designed for a
+    // small set of Macs, so keep a deterministic UI/memory bound when a local
+    // advertiser publishes a large number of unique identities.
+    private static let maximumDiscoveredPeers = 64
     // New devices are not authenticated until the user compares and accepts
     // the verification code. Admit only one unsolicited unpaired request at
     // a time so cheap self-signed identities cannot hold every slot for 60s.
@@ -50,6 +103,10 @@ final class PeerDiscoveryService: ObservableObject {
     private static let maximumWireBufferLength =
         PairingWireCodec.maximumFramePayloadLength + 4
     private let queue = DispatchQueue(label: "app.mackvm.network")
+    // Serializes lifecycle invalidation with the final pairing registry write.
+    // A worker must not pass its epoch check and then race stop() before the
+    // durable trust mutation.
+    private let pairingLifecycleLock = NSLock()
     private let registry: PairingRegistry
     private let privateKey: P256.Signing.PrivateKey
     private var listener: NWListener?
@@ -58,17 +115,58 @@ final class PeerDiscoveryService: ObservableObject {
     private var unauthenticatedConnections: [ObjectIdentifier: NWConnection] = [:]
     private var requestMessages: [UUID: PairingEnvelope] = [:]
     private var requestTargets: [UUID: PeerIdentity] = [:]
+    // The model is learned only from a signed pairing message. Bonjour's TXT
+    // model remains a discovery hint and is never persisted as trust metadata.
+    private var requestPeerModels: [UUID: String] = [:]
     private var localContributions: [UUID: Data] = [:]
     private var peerCommitments: [UUID: Data] = [:]
     private var peerContributions: [UUID: Data] = [:]
+    private var pendingPairingConfirmationRequestID: UUID?
     private var locallyAcceptedRequestIDs: Set<UUID> = []
     private var remotelyAcceptedRequestIDs: Set<UUID> = []
     private var completionSendStartedRequestIDs: Set<UUID> = []
     private var locallyCompletedRequestIDs: Set<UUID> = []
     private var remotelyCompletedRequestIDs: Set<UUID> = []
     private var completionAcknowledgementSendStartedRequestIDs: Set<UUID> = []
+    // Do not cancel a pairing connection until our acknowledgement has been
+    // accepted by Network.framework. With simultaneous completions, the
+    // peer's acknowledgement can arrive while our outbound acknowledgement
+    // is still queued; cancelling at that point would leave the peer unable
+    // to persist the pairing.
+    private var completionAcknowledgementDeliveredRequestIDs: Set<UUID> = []
+    // The lower UUID sends one signed close barrier after both acknowledgement
+    // frames have crossed the connection. Both close-barrier frames stay on
+    // the TCP stream (they are not Network.framework final messages); the
+    // lower side cancels only after it receives the higher side's signed
+    // receipt. This avoids NWError 89 when macOS rejects a reply after a
+    // peer has marked its sending direction complete.
+    private var completionCloseSendStartedRequestIDs: Set<UUID> = []
+    private var completionCloseDeliveredRequestIDs: Set<UUID> = []
+    private var completionCloseReceivedRequestIDs: Set<UUID> = []
+    private var completionCloseAcknowledgementSendStartedRequestIDs: Set<UUID> = []
+    private var completionCloseAcknowledgementDeliveredRequestIDs: Set<UUID> = []
+    private var completionCloseAcknowledgementReceivedRequestIDs: Set<UUID> = []
+    // The lower-ID side waits briefly after receiving the signed receipt so
+    // the higher-ID side's non-final send can receive its contentProcessed
+    // callback before the connection is cancelled. This is a transport grace
+    // period only; persistence still requires the callback to report success.
+    private var completionCloseFinishScheduledRequestIDs: Set<UUID> = []
+    // Every current pairing frame authenticates this capability. Keep the
+    // per-request bit so completion code can fail closed if a future decoder
+    // ever admits an incomplete negotiation.
+    private var peerSupportsCompletionCloseRequestIDs: Set<UUID> = []
     private var locallyAcknowledgedByPeerRequestIDs: Set<UUID> = []
-    private var peerClosedRequestIDs: Set<UUID> = []
+    // Pairing persistence is recorded as soon as both signed completion
+    // proofs are present, but the request remains tracked until the peer has
+    // finished its side of the final-message exchange. This prevents a local
+    // `contentProcessed` callback from cancelling the connection before the
+    // peer application can consume our final acknowledgement.
+    private var pairingPersistenceRecordedRequestIDs: Set<UUID> = []
+    private var pairingPersistenceJobs: [UUID: PairingPersistenceJob] = [:]
+    // EOF can arrive before the final close-receipt send callback. Remember
+    // it so the persistence callback can release the request instead of
+    // leaving it tracked until the 60-second timeout.
+    private var peerFinishedSendingRequestIDs: Set<UUID> = []
     private var activeOutboundRequestID: UUID?
     private var receiveBuffers: [ObjectIdentifier: Data] = [:]
     private var connectionTimeouts: [ObjectIdentifier: DispatchWorkItem] = [:]
@@ -76,15 +174,69 @@ final class PeerDiscoveryService: ObservableObject {
         ConnectionAdmissionLimiter.unauthenticatedConnectionLimiter()
     private let lifecycleEpoch = EpochGuard()
     private let requestForgetGenerations = GenerationGuard<UUID>()
+    // UserDefaults-backed pairing writes must not block the network callback
+    // queue. SwiftUI reads the same registry while rebuilding the menu.
+    private let pairingPersistenceQueue = DispatchQueue(
+        label: "app.mackvm.pairing.persistence",
+        qos: .utility
+    )
 
     init(
         credentials: DeviceCredentials,
-        registry: PairingRegistry = PairingRegistry()
+        registry: PairingRegistry = PairingRegistry(),
+        localModel: String = MacHardwareInfo.currentModel
     ) {
         identity = credentials.identity
+        self.localModel = PeerMetadataValidation.validatedModel(localModel)
         privateKey = credentials.privateKey
         self.registry = registry
         pairedPeerIDs = registry.pairedPeerIDs
+    }
+
+    var pairedPeerProfiles: [UUID: PairedPeerProfile] {
+        registry.pairedPeerProfiles
+    }
+
+    func pairedPublicKey(for peerID: UUID) -> Data? {
+        registry.publicKey(for: peerID)
+    }
+
+    func pairedPeerProfile(for peerID: UUID) -> PairedPeerProfile? {
+        registry.profile(for: peerID)
+    }
+
+    func seamlessControlAuthorized(for peerID: UUID) -> Bool {
+        registry.seamlessControlAuthorized(for: peerID)
+    }
+
+    @discardableResult
+    func updateSeamlessControlAuthorization(
+        for peerID: UUID,
+        authorized: Bool
+    ) -> Bool {
+        guard registry.updateSeamlessControlAuthorization(
+            for: peerID,
+            authorized: authorized
+        ) else {
+            return false
+        }
+        objectWillChange.send()
+        return true
+    }
+
+    @discardableResult
+    func updateFriendlyName(
+        for peerID: UUID,
+        friendlyName: String
+    ) -> Bool {
+        guard registry.updateFriendlyName(
+            for: peerID,
+            friendlyName: friendlyName
+        ) else {
+            return false
+        }
+        objectWillChange.send()
+        return true
     }
 
     func start() {
@@ -113,18 +265,31 @@ final class PeerDiscoveryService: ObservableObject {
             self.unauthenticatedConnections.removeAll()
             self.requestMessages.removeAll()
             self.requestTargets.removeAll()
+            self.requestPeerModels.removeAll()
             self.requestForgetGenerations.removeAll()
             self.localContributions.removeAll()
             self.peerCommitments.removeAll()
             self.peerContributions.removeAll()
+            self.pendingPairingConfirmationRequestID = nil
             self.locallyAcceptedRequestIDs.removeAll()
             self.remotelyAcceptedRequestIDs.removeAll()
             self.completionSendStartedRequestIDs.removeAll()
             self.locallyCompletedRequestIDs.removeAll()
             self.remotelyCompletedRequestIDs.removeAll()
             self.completionAcknowledgementSendStartedRequestIDs.removeAll()
+            self.completionAcknowledgementDeliveredRequestIDs.removeAll()
+            self.completionCloseSendStartedRequestIDs.removeAll()
+            self.completionCloseDeliveredRequestIDs.removeAll()
+            self.completionCloseReceivedRequestIDs.removeAll()
+            self.completionCloseAcknowledgementSendStartedRequestIDs.removeAll()
+            self.completionCloseAcknowledgementDeliveredRequestIDs.removeAll()
+            self.completionCloseAcknowledgementReceivedRequestIDs.removeAll()
+            self.completionCloseFinishScheduledRequestIDs.removeAll()
+            self.peerSupportsCompletionCloseRequestIDs.removeAll()
             self.locallyAcknowledgedByPeerRequestIDs.removeAll()
-            self.peerClosedRequestIDs.removeAll()
+            self.pairingPersistenceRecordedRequestIDs.removeAll()
+            self.pairingPersistenceJobs.removeAll()
+            self.peerFinishedSendingRequestIDs.removeAll()
             self.activeOutboundRequestID = nil
             self.receiveBuffers.removeAll()
             self.connectionTimeouts.values.forEach { $0.cancel() }
@@ -138,6 +303,7 @@ final class PeerDiscoveryService: ObservableObject {
                 self.peers.removeAll()
                 self.pendingRequests.removeAll()
                 self.activeVerificationCode = nil
+                self.pendingPairingConfirmation = nil
                 self.status = "Discovery stopped"
             }
         }
@@ -171,9 +337,17 @@ final class PeerDiscoveryService: ObservableObject {
                 requestID: requestID,
                 publicKey: identity.signingPublicKey,
                 contribution: contribution
-            )
+            ),
+            senderModel: localModel
         )
-        let connection = NWConnection(to: peer.endpoint, using: .tcp)
+        // The browser admits peer-to-peer Bonjour results (for example an
+        // AWDL route between Macs on Wi-Fi). Use the same transport policy
+        // for the follow-up TCP connection; otherwise the M5 Pro can see the
+        // Intel Mac but Network.framework cancels the pairing connection
+        // before the first signed frame is delivered.
+        let parameters = NWParameters.tcp
+        parameters.includePeerToPeer = true
+        let connection = NWConnection(to: peer.endpoint, using: parameters)
         activeOutboundRequestID = request.requestID
         requestConnections[request.requestID] = connection
         requestMessages[request.requestID] = request
@@ -183,20 +357,55 @@ final class PeerDiscoveryService: ObservableObject {
             registry.generation(for: peer.identity.id),
             for: request.requestID
         )
+        logPairingPhase(
+            "request.created",
+            requestID: request.requestID,
+            peerID: peer.identity.id,
+            detail: "role=initiator"
+        )
 
         connection.stateUpdateHandler = { [weak self, weak connection] state in
             guard let self, let connection else { return }
             switch state {
             case .ready:
+                self.logPairingPhase(
+                    "transport.ready",
+                    requestID: request.requestID,
+                    peerID: peer.identity.id,
+                    detail: "role=initiator"
+                )
                 self.scheduleTimeout(for: connection, after: 60)
                 self.send(request, over: connection)
                 self.receive(on: connection)
                 self.publishStatus("Negotiating a security code with \(peer.name)…")
             case .failed(let error):
+                MacKVMLogger.pairing.error(
+                    "phase=transport.failed request=\(MacKVMLogger.short(request.requestID), privacy: .public) peer=\(MacKVMLogger.short(peer.identity.id), privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+                )
+                let wasPersisted = self.pairingPersistenceRecordedRequestIDs
+                    .contains(request.requestID)
                 self.finish(requestID: request.requestID)
-                self.publishStatus("Could not reach \(peer.name): \(error.localizedDescription)")
+                if !wasPersisted {
+                    self.publishStatus(
+                        "Could not reach \(peer.name): \(error.localizedDescription)"
+                    )
+                }
             case .cancelled:
+                self.logPairingPhase(
+                    "transport.cancelled",
+                    requestID: request.requestID,
+                    peerID: peer.identity.id,
+                    detail: "role=initiator"
+                )
+                let wasTracked = self.requestConnections[request.requestID] != nil
+                let wasPersisted = self.pairingPersistenceRecordedRequestIDs
+                    .contains(request.requestID)
                 self.finish(requestID: request.requestID)
+                if wasTracked, !wasPersisted {
+                    self.publishStatus(
+                        "Could not reach \(peer.name): pairing connection canceled"
+                    )
+                }
             default:
                 break
             }
@@ -211,6 +420,103 @@ final class PeerDiscoveryService: ObservableObject {
         }
     }
 
+    /// Confirms the verification code shown after the initiator receives the
+    /// responder's contribution. This is intentionally a separate user action
+    /// from pressing Pair: Bonjour exposes identity metadata to local
+    /// advertisers, while the code comparison authenticates the physical
+    /// responder the user intended to pair with.
+    func confirmPairing(requestID: UUID) {
+        queue.async { [weak self] in
+            self?.confirmPairingOnQueue(requestID: requestID, accepted: true)
+        }
+    }
+
+    func declinePairing(requestID: UUID) {
+        queue.async { [weak self] in
+            self?.confirmPairingOnQueue(requestID: requestID, accepted: false)
+        }
+    }
+
+    private func confirmPairingOnQueue(
+        requestID: UUID,
+        accepted: Bool
+    ) {
+        guard activeOutboundRequestID == requestID,
+              let connection = requestConnections[requestID],
+              let request = requestMessages[requestID],
+              let peer = requestTargets[requestID],
+              pendingPairingConfirmationRequestID == requestID else {
+            logPairingPhase(
+                "user.confirm.expired",
+                requestID: requestID,
+                detail: accepted ? "accepted=true" : "accepted=false"
+            )
+            publishStatus("The pairing confirmation has expired")
+            return
+        }
+        logPairingPhase(
+            accepted ? "user.confirm.accept" : "user.confirm.decline",
+            requestID: requestID,
+            peerID: peer.id,
+            detail: "role=initiator"
+        )
+        let decision = PairingEnvelope.decision(
+            to: request,
+            from: identity,
+            accepted: accepted,
+            senderModel: localModel
+        )
+        send(decision, over: connection) { [weak self, weak connection] sent in
+            guard let self,
+                  let connection,
+                  self.requestConnections[requestID] === connection else {
+                return
+            }
+            guard sent else {
+                self.logPairingPhase(
+                    "decision.send.failed",
+                    requestID: requestID,
+                    peerID: peer.id,
+                    detail: "role=initiator"
+                )
+                self.finish(requestID: requestID)
+                return
+            }
+            self.logPairingPhase(
+                "decision.send.confirmed",
+                requestID: requestID,
+                peerID: peer.id,
+                detail: "role=initiator"
+            )
+            guard accepted else {
+                self.finish(requestID: requestID)
+                return
+            }
+        }
+        if accepted {
+            locallyAcceptedRequestIDs.insert(requestID)
+            // Network.framework preserves send order on this connection. Do
+            // not make the completion exchange wait for the local
+            // contentProcessed callback; the peer's signed decision remains
+            // the proof that the acceptance crossed the stream.
+            beginCompletionIfMutuallyAccepted(requestID: requestID)
+            publishStatus(
+                remotelyAcceptedRequestIDs.contains(requestID)
+                    ? "Code confirmed; completing pairing with "
+                        + peer.name + "…"
+                    : "Code confirmed; waiting for " + peer.name
+                        + " to accept…"
+            )
+        } else {
+            publishStatus("Pairing declined")
+        }
+        pendingPairingConfirmationRequestID = nil
+        publishMain {
+            $0.pendingPairingConfirmation = nil
+            $0.activeVerificationCode = nil
+        }
+    }
+
     private func respondOnQueue(
         to pending: PendingPairingRequest,
         accepted: Bool
@@ -222,28 +528,55 @@ final class PeerDiscoveryService: ObservableObject {
             return
         }
 
+        logPairingPhase(
+            accepted ? "user.accept" : "user.decline",
+            requestID: pending.id,
+            peerID: pending.peer.id,
+            detail: "role=responder"
+        )
+
         let response = PairingEnvelope.decision(
             to: request,
             from: identity,
-            accepted: accepted
+            accepted: accepted,
+            senderModel: localModel
         )
         send(response, over: connection) { [weak self] sent in
             guard let self else { return }
             guard sent else {
+                self.logPairingPhase(
+                    "decision.send.failed",
+                    requestID: pending.id,
+                    peerID: pending.peer.id,
+                    detail: "role=responder"
+                )
                 self.finish(requestID: pending.id)
                 return
             }
-            if accepted {
-                self.locallyAcceptedRequestIDs.insert(pending.id)
-                self.beginCompletionIfMutuallyAccepted(requestID: pending.id)
-            } else {
+            self.logPairingPhase(
+                "decision.send.confirmed",
+                requestID: pending.id,
+                peerID: pending.peer.id,
+                detail: "role=responder"
+            )
+            if !accepted {
                 self.finish(requestID: pending.id)
             }
+        }
+        if accepted {
+            // The user action is the local acceptance. Do not make the
+            // handshake depend on Network.framework's contentProcessed
+            // callback, which may be delayed while the peer is sending its
+            // decision at the same time. A failed send still tears down the
+            // request above, and persistence remains gated by the peer's
+            // signed decision, both completions, and acknowledgement.
+            locallyAcceptedRequestIDs.insert(pending.id)
+            beginCompletionIfMutuallyAccepted(requestID: pending.id)
         }
         removePendingRequest(id: pending.id)
         publishStatus(
             accepted
-                ? "Waiting for \(pending.peer.name) to confirm"
+                ? "Accepted here; completing pairing with \(pending.peer.name)…"
                 : "Pairing request declined"
         )
     }
@@ -255,11 +588,6 @@ final class PeerDiscoveryService: ObservableObject {
         registry.revoke(peerID)
         queue.async { [weak self] in
             guard let self else { return }
-            // Keep this idempotent removal as a safety net for a completion
-            // that was already queued before revoke(); add(ifGeneration:)
-            // rejects any newer stale completion atomically with revoke().
-            registry.remove(peerID)
-
             let requestIDs = requestConnections.compactMap { requestID, _ in
                 let peer = self.requestTargets[requestID]
                     ?? self.requestMessages[requestID]?.sender
@@ -288,13 +616,19 @@ final class PeerDiscoveryService: ObservableObject {
 
     private func startListener() {
         do {
-            let listener = try NWListener(using: .tcp)
+            // Bonjour browsing and outbound pairing both allow AWDL/peer-to-peer
+            // routes. The listener must opt in as well, or the discovered
+            // peer can cancel the incoming pairing connection before ready.
+            let parameters = NWParameters.tcp
+            parameters.includePeerToPeer = true
+            let listener = try NWListener(using: parameters)
             listener.service = NWListener.Service(
                 name: identity.serviceName,
                 type: Self.serviceType,
                 txtRecord: NWTXTRecord([
                     "id": identity.id.uuidString,
                     "name": identity.name,
+                    "model": localModel,
                     "key": identity.signingPublicKey.base64EncodedString()
                 ])
             )
@@ -337,32 +671,62 @@ final class PeerDiscoveryService: ObservableObject {
         )
         browser.browseResultsChangedHandler = { [weak self, weak browser] results, _ in
             guard let self, self.browser === browser else { return }
-            let candidates: [(PeerIdentity, DiscoveredPeer)] = results.compactMap {
-                result in
+            let candidates = results.compactMap {
+                (result) -> (PeerAdvertisement, DiscoveredPeer)? in
                 guard case let .service(name, _, _, _) = result.endpoint,
                       name != self.identity.serviceName,
                       case let .bonjour(txtRecord) = result.metadata,
-                      let peerIdentity = PeerIdentityTXTCodec.decode(txtRecord),
-                      peerIdentity.id != self.identity.id else {
+                      let advertisement = PeerIdentityTXTCodec.decodeAdvertisement(
+                          txtRecord
+                      ),
+                      advertisement.identity.id != self.identity.id else {
                     return nil
                 }
                 return (
-                    peerIdentity,
+                    advertisement,
                     DiscoveredPeer(
                         id: name,
-                        identity: peerIdentity,
+                        identity: advertisement.identity,
+                        model: advertisement.model,
                         endpoint: result.endpoint
                     )
                 )
             }
+            // NWBrowser delivers a Set, whose iteration order is not stable.
+            // Order before applying the admission cap so an attacker cannot
+            // make an otherwise valid peer churn in and out of the first 64
+            // entries. Paired identities are kept ahead of unpaired ones;
+            // the remaining tie-breakers are deterministic and do not rely on
+            // Bonjour result order.
+            let orderedCandidates = candidates.sorted {
+                let lhsPaired = self.registry.contains($0.0.identity.id)
+                let rhsPaired = self.registry.contains($1.0.identity.id)
+                if lhsPaired != rhsPaired {
+                    return lhsPaired
+                }
+                let lhsID = $0.0.identity.id.uuidString
+                let rhsID = $1.0.identity.id.uuidString
+                if lhsID != rhsID {
+                    return lhsID < rhsID
+                }
+                let lhsKey = $0.0.identity.signingPublicKey
+                    .base64EncodedString()
+                let rhsKey = $1.0.identity.signingPublicKey
+                    .base64EncodedString()
+                if lhsKey != rhsKey {
+                    return lhsKey < rhsKey
+                }
+                return $0.1.id < $1.1.id
+            }
             let discoveredByID = PeerIdentityAdmission.resolve(
-                candidates,
-                identity: { $0.0 }
+                orderedCandidates,
+                maximumIdentities: Self.maximumDiscoveredPeers,
+                identity: { $0.0.identity }
             )
             let discovered = discoveredByID.values.sorted {
                 $0.1.name.localizedCaseInsensitiveCompare($1.1.name)
                     == .orderedAscending
-            }.map(\.1)
+            }.prefix(Self.maximumDiscoveredPeers).map(\.1)
             let epoch = self.currentLifecycleEpoch()
             self.publishMain(epoch: epoch) { $0.peers = discovered }
         }
@@ -387,6 +751,9 @@ final class PeerDiscoveryService: ObservableObject {
               admissionLimiter.allows(
                   eventAt: DispatchTime.now().uptimeNanoseconds
               ) else {
+            MacKVMLogger.pairing.error(
+                "phase=transport.rejected reason=admission-limit"
+            )
             connection.cancel()
             return
         }
@@ -395,9 +762,17 @@ final class PeerDiscoveryService: ObservableObject {
             guard let self, let connection else { return }
             switch state {
             case .ready:
+                self.logPairingPhase(
+                    "transport.ready",
+                    detail: "role=responder"
+                )
                 self.scheduleTimeout(for: connection, after: 10)
                 self.receive(on: connection)
             case .failed, .cancelled:
+                self.logPairingPhase(
+                    "transport.closed",
+                    detail: "role=responder"
+                )
                 self.removeConnection(connection)
             default:
                 break
@@ -473,6 +848,9 @@ final class PeerDiscoveryService: ObservableObject {
                 if receiveBuffers[connectionID, default: Data()].isEmpty {
                     handlePeerFinishedSending(connection)
                 } else {
+                    MacKVMLogger.pairing.error(
+                        "phase=receive.incomplete-frame connection=\(MacKVMLogger.short(connectionID), privacy: .public)"
+                    )
                     publishStatus("Received an incomplete pairing message")
                     connection.cancel()
                     removeConnection(connection)
@@ -481,10 +859,16 @@ final class PeerDiscoveryService: ObservableObject {
                 receive(on: connection)
             }
         } catch PairingWireError.tooManyMessages {
+            MacKVMLogger.pairing.error(
+                "phase=receive.too-many-messages connection=\(MacKVMLogger.short(connectionID), privacy: .public)"
+            )
             publishStatus("Received too many pairing messages in one delivery")
             connection.cancel()
             removeConnection(connection)
         } catch {
+            MacKVMLogger.pairing.error(
+                "phase=receive.invalid-frame connection=\(MacKVMLogger.short(connectionID), privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+            )
             publishStatus("Received an invalid pairing message")
             connection.cancel()
             removeConnection(connection)
@@ -492,6 +876,11 @@ final class PeerDiscoveryService: ObservableObject {
     }
 
     private func handle(_ message: PairingEnvelope, on connection: NWConnection) {
+        logPairingPhase(
+            "receive.\(message.kind.rawValue)",
+            requestID: message.requestID,
+            peerID: message.sender.id
+        )
         switch message.kind {
         case .request:
             guard message.sender.id != identity.id else {
@@ -532,6 +921,12 @@ final class PeerDiscoveryService: ObservableObject {
                     Self.maximumUnpairedPendingRequests
             )
             guard decision == .allow else {
+                logPairingPhase(
+                    "request.rejected",
+                    requestID: message.requestID,
+                    peerID: message.sender.id,
+                    detail: "reason=\(statusMessage(for: decision))"
+                )
                 publishStatus(statusMessage(for: decision))
                 connection.cancel()
                 return
@@ -549,10 +944,24 @@ final class PeerDiscoveryService: ObservableObject {
             scheduleTimeout(for: connection, after: 60)
             requestConnections[message.requestID] = connection
             requestMessages[message.requestID] = message
+            if message.supportsCompletionClose == true {
+                peerSupportsCompletionCloseRequestIDs.insert(message.requestID)
+            }
+            if let model = message.senderModel {
+                // The request has passed the admission policy and is now
+                // bound to this request ID and sender connection.
+                requestPeerModels[message.requestID] = model
+            }
             localContributions[message.requestID] = localContribution
             requestForgetGenerations.set(
                 registry.generation(for: message.sender.id),
                 for: message.requestID
+            )
+            logPairingPhase(
+                "request.accepted",
+                requestID: message.requestID,
+                peerID: message.sender.id,
+                detail: "role=responder"
             )
             peerCommitments[message.requestID] = peerCommitment
             let challenge = PairingEnvelope.challenge(
@@ -562,7 +971,8 @@ final class PeerDiscoveryService: ObservableObject {
                     requestID: message.requestID,
                     publicKey: identity.signingPublicKey,
                     contribution: localContribution
-                )
+                ),
+                senderModel: localModel
             )
             send(challenge, over: connection)
             publishStatus("Negotiating a security code with \(message.sender.name)…")
@@ -576,13 +986,29 @@ final class PeerDiscoveryService: ObservableObject {
                 rejectUnexpected(message, on: connection)
                 return
             }
+            recordCompletionCloseCapability(
+                from: message,
+                for: expectedPeer,
+                on: connection
+            )
             peerCommitments[message.requestID] = peerCommitment
+            if let model = message.senderModel {
+                // validatedOutboundPeer binds this model to the tracked peer.
+                requestPeerModels[message.requestID] = model
+            }
             let reveal = PairingEnvelope.reveal(
                 to: request,
                 from: identity,
-                contribution: localContribution
+                contribution: localContribution,
+                senderModel: localModel
             )
             send(reveal, over: connection)
+            logPairingPhase(
+                "reveal.sent",
+                requestID: message.requestID,
+                peerID: expectedPeer.id,
+                detail: "role=initiator"
+            )
             publishStatus("Waiting for \(expectedPeer.name) to confirm the code…")
 
         case .reveal:
@@ -600,6 +1026,15 @@ final class PeerDiscoveryService: ObservableObject {
                   let localContribution = localContributions[message.requestID] else {
                 rejectUnexpected(message, on: connection)
                 return
+            }
+            recordCompletionCloseCapability(
+                from: message,
+                for: request.sender,
+                on: connection
+            )
+            if let model = message.senderModel {
+                // The request sender and signing key were checked above.
+                requestPeerModels[message.requestID] = model
             }
             peerContributions[message.requestID] = peerContribution
             let verificationCode = PairingVerificationCode.make(
@@ -624,9 +1059,16 @@ final class PeerDiscoveryService: ObservableObject {
             let confirmation = PairingEnvelope.confirmation(
                 to: request,
                 from: identity,
-                contribution: localContribution
+                contribution: localContribution,
+                senderModel: localModel
             )
             send(confirmation, over: connection)
+            logPairingPhase(
+                "confirmation.sent",
+                requestID: message.requestID,
+                peerID: message.sender.id,
+                detail: "role=responder"
+            )
 
         case .confirmation:
             guard let expectedPeer = validatedOutboundPeer(for: message),
@@ -642,6 +1084,15 @@ final class PeerDiscoveryService: ObservableObject {
                 rejectUnexpected(message, on: connection)
                 return
             }
+            recordCompletionCloseCapability(
+                from: message,
+                for: expectedPeer,
+                on: connection
+            )
+            if let model = message.senderModel {
+                // validatedOutboundPeer binds this model to the tracked peer.
+                requestPeerModels[message.requestID] = model
+            }
             peerContributions[message.requestID] = peerContribution
             let verificationCode = PairingVerificationCode.make(
                 requestID: message.requestID,
@@ -650,13 +1101,24 @@ final class PeerDiscoveryService: ObservableObject {
                 initiatorContribution: localContribution,
                 responderContribution: peerContribution
             )
-            publishMain { $0.activeVerificationCode = verificationCode }
-            addPendingConfirmation(
+            pendingPairingConfirmationRequestID = message.requestID
+            logPairingPhase(
+                "confirmation.received.awaiting-user",
                 requestID: message.requestID,
-                peer: expectedPeer,
-                verificationCode: verificationCode
+                peerID: expectedPeer.id,
+                detail: "role=initiator"
             )
-            publishStatus("Compare code \(verificationCode) with \(expectedPeer.name)")
+            publishMain {
+                $0.activeVerificationCode = verificationCode
+                $0.pendingPairingConfirmation = PendingPairingConfirmation(
+                    id: message.requestID,
+                    peer: expectedPeer,
+                    verificationCode: verificationCode
+                )
+            }
+            publishStatus(
+                "Compare security code \(verificationCode) with \(expectedPeer.name), then confirm…"
+            )
 
         case .decision:
             guard let peer = validatedSessionPeer(for: message),
@@ -664,18 +1126,39 @@ final class PeerDiscoveryService: ObservableObject {
                 rejectUnexpected(message, on: connection)
                 return
             }
+            recordCompletionCloseCapability(
+                from: message,
+                for: peer,
+                on: connection
+            )
+            if let model = message.senderModel {
+                // validatedSessionPeer binds this model to the paired peer.
+                requestPeerModels[message.requestID] = model
+            }
             guard message.accepted == true else {
+                logPairingPhase(
+                    "decision.rejected-by-peer",
+                    requestID: message.requestID,
+                    peerID: peer.id
+                )
                 publishStatus("\(message.sender.name) declined pairing")
                 finish(requestID: message.requestID)
                 return
             }
             remotelyAcceptedRequestIDs.insert(message.requestID)
+            logPairingPhase(
+                "decision.accepted-by-peer",
+                requestID: message.requestID,
+                peerID: peer.id
+            )
             if locallyAcceptedRequestIDs.contains(message.requestID) {
                 beginCompletionIfMutuallyAccepted(
                     requestID: message.requestID
                 )
             } else {
-                publishStatus("\(peer.name) confirmed; confirm the matching code locally")
+                publishStatus(
+                    "\(peer.name) confirmed; accept this request when the code matches"
+                )
             }
 
         case .completion:
@@ -686,7 +1169,21 @@ final class PeerDiscoveryService: ObservableObject {
                 rejectUnexpected(message, on: connection)
                 return
             }
+            recordCompletionCloseCapability(
+                from: message,
+                for: peer,
+                on: connection
+            )
+            if let model = message.senderModel {
+                // validatedSessionPeer binds this model to the paired peer.
+                requestPeerModels[message.requestID] = model
+            }
             remotelyCompletedRequestIDs.insert(message.requestID)
+            logPairingPhase(
+                "completion.received",
+                requestID: message.requestID,
+                peerID: peer.id
+            )
             beginCompletionIfMutuallyAccepted(requestID: message.requestID)
             beginCompletionAcknowledgement(requestID: message.requestID)
             completePairingIfTransportConfirmed(
@@ -701,11 +1198,87 @@ final class PeerDiscoveryService: ObservableObject {
                 rejectUnexpected(message, on: connection)
                 return
             }
+            recordCompletionCloseCapability(
+                from: message,
+                for: peer,
+                on: connection
+            )
+            if let model = message.senderModel {
+                // validatedSessionPeer binds this model to the paired peer.
+                requestPeerModels[message.requestID] = model
+            }
             // Receiving this signed acknowledgement proves that the peer
             // received our completion, even if Network.framework has not yet
             // delivered the local contentProcessed callback.
             locallyCompletedRequestIDs.insert(message.requestID)
             locallyAcknowledgedByPeerRequestIDs.insert(message.requestID)
+            logPairingPhase(
+                "completion.acknowledgement.received",
+                requestID: message.requestID,
+                peerID: peer.id
+            )
+            beginCompletionCloseIfReady(requestID: message.requestID)
+            completePairingIfTransportConfirmed(
+                with: peer,
+                requestID: message.requestID
+            )
+
+        case .completionClose:
+            guard let peer = validatedSessionPeer(for: message),
+                  completionSendStartedRequestIDs.contains(message.requestID),
+                  remotelyCompletedRequestIDs.contains(message.requestID),
+                  !isCompletionCloser(peerID: peer.id) else {
+                rejectUnexpected(message, on: connection)
+                return
+            }
+            recordCompletionCloseCapability(
+                from: message,
+                for: peer,
+                on: connection
+            )
+            // The close barrier is ordered after the sender's acknowledgement
+            // on the same TCP stream. Receiving it therefore proves that our
+            // acknowledgement reached the peer before it closed its side.
+            completionCloseReceivedRequestIDs.insert(message.requestID)
+            logPairingPhase(
+                "completion.close.received",
+                requestID: message.requestID,
+                peerID: peer.id
+            )
+            beginCompletionCloseAcknowledgement(requestID: message.requestID)
+            completePairingIfTransportConfirmed(
+                with: peer,
+                requestID: message.requestID
+            )
+
+        case .completionCloseAcknowledgement:
+            guard let peer = validatedSessionPeer(for: message),
+                  completionCloseSendStartedRequestIDs.contains(
+                      message.requestID
+                  ),
+                  isCompletionCloser(peerID: peer.id) else {
+                rejectUnexpected(message, on: connection)
+                return
+            }
+            recordCompletionCloseCapability(
+                from: message,
+                for: peer,
+                on: connection
+            )
+            if let model = message.senderModel {
+                requestPeerModels[message.requestID] = model
+            }
+            // This is the peer-originated proof that the higher-ID side
+            // consumed our close barrier. Local contentProcessed on the close
+            // frame is intentionally not sufficient to persist trust.
+            completionCloseAcknowledgementReceivedRequestIDs.insert(
+                message.requestID
+            )
+            logPairingPhase(
+                "completion.close.acknowledgement.received",
+                requestID: message.requestID,
+                peerID: peer.id
+            )
             completePairingIfTransportConfirmed(
                 with: peer,
                 requestID: message.requestID
@@ -717,8 +1290,15 @@ final class PeerDiscoveryService: ObservableObject {
         _ message: PairingEnvelope,
         over connection: NWConnection,
         isFinal: Bool = false,
+        reportsError: Bool = true,
         completion: ((Bool) -> Void)? = nil
     ) {
+        logPairingPhase(
+            "send.begin.\(message.kind.rawValue)",
+            requestID: message.requestID,
+            peerID: message.sender.id,
+            detail: isFinal ? "final=true" : "final=false"
+        )
         do {
             let data = try PairingWireCodec.encode(
                 message,
@@ -730,40 +1310,166 @@ final class PeerDiscoveryService: ObservableObject {
                 isComplete: isFinal,
                 completion: .contentProcessed { [weak self] error in
                     if let error {
-                        self?.publishStatus(
-                            "Send failed: \(error.localizedDescription)"
+                        MacKVMLogger.pairing.error(
+                            "phase=send.failed kind=\(message.kind.rawValue, privacy: .public) request=\(MacKVMLogger.short(message.requestID), privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+                        )
+                        if reportsError {
+                            self?.publishStatus(
+                                "Send failed: \(error.localizedDescription)"
+                            )
+                        }
+                    } else {
+                        self?.logPairingPhase(
+                            "send.delivered.\(message.kind.rawValue)",
+                            requestID: message.requestID,
+                            peerID: message.sender.id
                         )
                     }
                     completion?(error == nil)
                 }
             )
         } catch {
+            MacKVMLogger.pairing.error(
+                "phase=send.encode-failed kind=\(message.kind.rawValue, privacy: .public) request=\(MacKVMLogger.short(message.requestID), privacy: .public)"
+            )
             publishStatus("Could not encode pairing message")
             completion?(false)
         }
     }
 
-    private func savePairing(
-        with peer: PeerIdentity,
-        expectedRegistryGeneration: UInt64
-    ) -> Bool {
-        guard registry.add(
-            peer,
-            ifGeneration: expectedRegistryGeneration
-        ) else {
-            return false
+    private func handlePairingPersistenceResult(
+        _ job: PairingPersistenceJob,
+        saved: Bool
+    ) {
+        guard let activeJob = pairingPersistenceJobs.removeValue(
+            forKey: job.requestID
+        ), activeJob === job else {
+            // stop() or a newer lifecycle already retired this job.
+            return
         }
-        publishMain { $0.pairedPeerIDs.insert(peer.id) }
-        return true
+        logPairingPhase(
+            "pairing.persist.returned",
+            requestID: job.requestID,
+            peerID: job.peer.id,
+            detail: "success=\(saved)"
+        )
+
+        guard currentLifecycleEpoch() == job.lifecycleEpoch else {
+            logPairingPhase(
+                "pairing.persist.discarded",
+                requestID: job.requestID,
+                peerID: job.peer.id,
+                detail: "lifecycle-changed"
+            )
+            return
+        }
+        guard saved else {
+            MacKVMLogger.pairing.error(
+                "phase=pairing.persist.failed request=\(MacKVMLogger.short(job.requestID), privacy: .public) peer=\(MacKVMLogger.short(job.peer.id), privacy: .public)"
+            )
+            publishStatus(
+                "Could not save pairing with \(job.peer.name); try Pair again"
+            )
+            // A failed durable write is terminal for this pairing attempt. Do
+            // not leave the connection/request tracked until the 60-second
+            // timeout, otherwise the UI appears stuck and the next attempt is
+            // rejected as a duplicate active request.
+            finish(requestID: job.requestID)
+            return
+        }
+
+        // A Forget action advances the registry generation synchronously. Do
+        // not publish a pairing or auto-connect if that happened while the
+        // background write was in flight.
+        guard registry.generation(for: job.peer.id)
+                == job.expectedRegistryGeneration,
+              registry.publicKey(for: job.peer.id)
+                == job.peer.signingPublicKey else {
+            logPairingPhase(
+                "pairing.persist.discarded",
+                requestID: job.requestID,
+                peerID: job.peer.id,
+                detail: "trust-generation-changed"
+            )
+            return
+        }
+
+        let requestIsTracked = requestTargets[job.requestID]?.id
+                == job.peer.id
+            || requestMessages[job.requestID]?.sender.id == job.peer.id
+        if requestIsTracked {
+            pairingPersistenceRecordedRequestIDs.insert(job.requestID)
+        }
+        logPairingPhase(
+            "pairing.persisted",
+            requestID: job.requestID,
+            peerID: job.peer.id
+        )
+        let peerID = job.peer.id
+        let signingPublicKey = job.peer.signingPublicKey
+        publishMain { service in
+            // Re-check at publication time so a Forget action queued between
+            // the background write and this main-queue update cannot leave a
+            // stale green Paired indicator behind.
+            guard self.registry.publicKey(for: peerID) == signingPublicKey else {
+                return
+            }
+            service.pairedPeerIDs.insert(peerID)
+        }
+        onPairingCompleted?(peerID)
+        publishStatus("Paired with \(job.peer.name)")
+
+        guard requestIsTracked else { return }
+        guard peerSupportsCompletionCloseRequestIDs.contains(job.requestID)
+        else {
+            // This should be unreachable because PairingWireCodec rejects a
+            // missing capability before the state machine sees a frame. Keep
+            // the defensive check so a future decoder cannot publish trust
+            // through a weaker EOF path.
+            finish(requestID: job.requestID, cancelConnection: true)
+            return
+        }
+        if peerFinishedSendingRequestIDs.contains(job.requestID) {
+            // EOF was observed before the persistence callback. No second EOF
+            // will arrive, so release the completed request now while leaving
+            // the already-graceful transport close untouched.
+            logPairingPhase(
+                "pairing.persist.cleanup-after-eof",
+                requestID: job.requestID,
+                peerID: peerID
+            )
+            finish(requestID: job.requestID, cancelConnection: false)
+            return
+        }
+        if isCompletionCloser(peerID: peerID) {
+            // The lower-ID side has received the peer-originated receipt;
+            // keep the stream alive briefly so the higher-ID side can observe
+            // a successful contentProcessed callback for its non-final
+            // receipt before we cancel it.
+            scheduleCompletionCloseFinish(requestID: job.requestID)
+        } else {
+            // Keep the higher-ID side tracked until the lower side receives
+            // the receipt and cancels.
+        }
     }
 
     private func finish(
         requestID: UUID,
         cancelConnection: Bool = true
     ) {
+        logPairingPhase(
+            "request.finish",
+            requestID: requestID,
+            peerID: peerIDForRequest(requestID),
+            detail: "cancelConnection=\(cancelConnection) persisted=\(pairingPersistenceRecordedRequestIDs.contains(requestID))"
+        )
         if activeOutboundRequestID == requestID {
             activeOutboundRequestID = nil
-            publishMain { $0.activeVerificationCode = nil }
+            pendingPairingConfirmationRequestID = nil
+            publishMain {
+                $0.activeVerificationCode = nil
+                $0.pendingPairingConfirmation = nil
+            }
         }
         if let connection = requestConnections.removeValue(
             forKey: requestID
@@ -775,6 +1481,7 @@ final class PeerDiscoveryService: ObservableObject {
         }
         requestMessages.removeValue(forKey: requestID)
         requestTargets.removeValue(forKey: requestID)
+        requestPeerModels.removeValue(forKey: requestID)
         localContributions.removeValue(forKey: requestID)
         requestForgetGenerations.remove(for: requestID)
         peerCommitments.removeValue(forKey: requestID)
@@ -785,8 +1492,18 @@ final class PeerDiscoveryService: ObservableObject {
         locallyCompletedRequestIDs.remove(requestID)
         remotelyCompletedRequestIDs.remove(requestID)
         completionAcknowledgementSendStartedRequestIDs.remove(requestID)
+        completionAcknowledgementDeliveredRequestIDs.remove(requestID)
+        completionCloseSendStartedRequestIDs.remove(requestID)
+        completionCloseDeliveredRequestIDs.remove(requestID)
+        completionCloseReceivedRequestIDs.remove(requestID)
+        completionCloseAcknowledgementSendStartedRequestIDs.remove(requestID)
+        completionCloseAcknowledgementDeliveredRequestIDs.remove(requestID)
+        completionCloseAcknowledgementReceivedRequestIDs.remove(requestID)
+        completionCloseFinishScheduledRequestIDs.remove(requestID)
+        peerSupportsCompletionCloseRequestIDs.remove(requestID)
         locallyAcknowledgedByPeerRequestIDs.remove(requestID)
-        peerClosedRequestIDs.remove(requestID)
+        pairingPersistenceRecordedRequestIDs.remove(requestID)
+        peerFinishedSendingRequestIDs.remove(requestID)
         removePendingRequest(id: requestID)
     }
 
@@ -804,6 +1521,13 @@ final class PeerDiscoveryService: ObservableObject {
         let requestIDs = requestConnections
             .filter { $0.value === connection }
             .map(\.key)
+        requestIDs.forEach {
+            logPairingPhase(
+                "transport.eof",
+                requestID: $0,
+                peerID: peerIDForRequest($0)
+            )
+        }
         // A peer can close before sending a pairing frame. Such a connection
         // is still tracked as unauthenticated because Network.framework does
         // not necessarily emit a second cancelled state after EOF. Release
@@ -816,17 +1540,50 @@ final class PeerDiscoveryService: ObservableObject {
             return
         }
         for requestID in requestIDs {
+            peerFinishedSendingRequestIDs.insert(requestID)
             guard remotelyCompletedRequestIDs.contains(requestID),
                   let peer = requestTargets[requestID]
                     ?? requestMessages[requestID]?.sender else {
                 finish(requestID: requestID)
                 continue
             }
-            peerClosedRequestIDs.insert(requestID)
             completePairingIfTransportConfirmed(
                 with: peer,
                 requestID: requestID
             )
+            if requestConnections[requestID] != nil {
+                if pairingPersistenceRecordedRequestIDs.contains(requestID) {
+                    // The deterministic close barrier has already completed
+                    // the signed exchange. Leave the graceful FIN alone; do
+                    // not issue a second cancellation from the EOF callback.
+                    finish(requestID: requestID, cancelConnection: false)
+                } else if peerSupportsCompletionCloseRequestIDs.contains(
+                    requestID
+                ) {
+                    if pairingPersistenceRecordedRequestIDs.contains(requestID)
+                        || completionCloseAcknowledgementDeliveredRequestIDs
+                            .contains(requestID) {
+                        // The signed close exchange is complete (or
+                        // persistence failed after the peer consumed it).
+                        // Leave the graceful FIN alone; do not issue a second
+                        // cancellation from the EOF callback.
+                        finish(requestID: requestID, cancelConnection: false)
+                    } else {
+                        // Keep the request alive until the higher-ID side's
+                        // signed close acknowledgement is accepted locally.
+                        // Releasing it here would race that callback and lose
+                        // the only peer-originated receipt proof.
+                        continue
+                    }
+                } else {
+                    // A current frame without the authenticated capability
+                    // must never enter the weaker acknowledgement/EOF path.
+                    // The wire codec normally rejects this before it reaches
+                    // the state machine; this defensive branch just releases
+                    // the transport without persisting trust.
+                    finish(requestID: requestID)
+                }
+            }
         }
     }
 
@@ -849,7 +1606,16 @@ final class PeerDiscoveryService: ObservableObject {
             guard self.isTracked(connection) else {
                 return
             }
-            self.publishStatus("Pairing request timed out")
+            let wasPersisted = self.pairingPersistenceRecordedRequestIDs
+                .contains { requestID in
+                    self.requestConnections[requestID] === connection
+                }
+            if !wasPersisted {
+                MacKVMLogger.pairing.error(
+                    "phase=pairing.timeout connection=\(MacKVMLogger.short(connectionID), privacy: .public)"
+                )
+                self.publishStatus("Pairing request timed out")
+            }
             connection.cancel()
             self.removeConnection(connection)
         }
@@ -861,27 +1627,35 @@ final class PeerDiscoveryService: ObservableObject {
         publishMain { $0.pendingRequests.removeAll { $0.id == id } }
     }
 
-    private func addPendingConfirmation(
-        requestID: UUID,
-        peer: PeerIdentity,
-        verificationCode: String
-    ) {
-        publishMain { service in
-            guard !service.pendingRequests.contains(where: { $0.id == requestID }) else {
-                return
-            }
-            service.pendingRequests.append(
-                PendingPairingRequest(
-                    id: requestID,
-                    peer: peer,
-                    verificationCode: verificationCode
-                )
-            )
-        }
-    }
-
     private func publishStatus(_ message: String) {
         publishMain { $0.status = message }
+    }
+
+    /// Logs only pairing state and short identifiers. Keep this separate from
+    /// `publishStatus`: the user-facing status can contain the six-digit code,
+    /// while the diagnostic log must never record it.
+    private func logPairingPhase(
+        _ phase: String,
+        requestID: UUID? = nil,
+        peerID: UUID? = nil,
+        detail: String? = nil
+    ) {
+        var fields = [
+            "phase=\(phase)",
+            "request=\(MacKVMLogger.short(requestID))",
+            "peer=\(MacKVMLogger.short(peerID))"
+        ]
+        if let detail {
+            fields.append("detail=\(detail)")
+        }
+        MacKVMLogger.pairing.info(
+            "\(fields.joined(separator: " "), privacy: .public)"
+        )
+    }
+
+    private func peerIDForRequest(_ requestID: UUID) -> UUID? {
+        requestTargets[requestID]?.id
+            ?? requestMessages[requestID]?.sender.id
     }
 
     private func publishMain(
@@ -897,6 +1671,8 @@ final class PeerDiscoveryService: ObservableObject {
     }
 
     private func advanceLifecycleEpoch() {
+        pairingLifecycleLock.lock()
+        defer { pairingLifecycleLock.unlock() }
         lifecycleEpoch.advance()
     }
 
@@ -934,18 +1710,49 @@ final class PeerDiscoveryService: ObservableObject {
         return expectedPeer
     }
 
+    /// Records the close-barrier capability only after the signed sender and
+    /// the request's tracked connection have both been validated. Pairing
+    /// request IDs are visible before authentication, so writing this bit
+    /// before those checks would let a second local connection poison a
+    /// legacy peer's completion path.
+    private func recordCompletionCloseCapability(
+        from message: PairingEnvelope,
+        for peer: PeerIdentity,
+        on connection: NWConnection
+    ) {
+        guard message.supportsCompletionClose == true,
+              requestConnections[message.requestID] === connection,
+              peer.id == message.sender.id,
+              peer.signingPublicKey == message.sender.signingPublicKey else {
+            return
+        }
+        peerSupportsCompletionCloseRequestIDs.insert(message.requestID)
+    }
+
     private func beginCompletionIfMutuallyAccepted(requestID: UUID) {
         guard locallyAcceptedRequestIDs.contains(requestID),
               remotelyAcceptedRequestIDs.contains(requestID),
               !completionSendStartedRequestIDs.contains(requestID),
               let connection = requestConnections[requestID],
               let request = requestMessages[requestID] else {
+            logPairingPhase(
+                "completion.waiting-for-mutual-acceptance",
+                requestID: requestID,
+                detail: "local=\(locallyAcceptedRequestIDs.contains(requestID)) remote=\(remotelyAcceptedRequestIDs.contains(requestID))"
+            )
             return
         }
         completionSendStartedRequestIDs.insert(requestID)
+        logPairingPhase(
+            "completion.send.begin",
+            requestID: requestID,
+            peerID: requestTargets[requestID]?.id
+                ?? requestMessages[requestID]?.sender.id
+        )
         let completionMessage = PairingEnvelope.completion(
-            to: request,
-            from: identity
+                to: request,
+                from: identity,
+                senderModel: localModel
         )
         send(
             completionMessage,
@@ -953,12 +1760,23 @@ final class PeerDiscoveryService: ObservableObject {
         ) { [weak self] sent in
             guard let self else { return }
             guard sent else {
+                self.logPairingPhase(
+                    "completion.send.failed",
+                    requestID: requestID,
+                    peerID: requestTargets[requestID]?.id
+                )
                 finish(requestID: requestID)
                 return
             }
             guard requestConnections[requestID] != nil else { return }
             locallyCompletedRequestIDs.insert(requestID)
+            self.logPairingPhase(
+                "completion.send.confirmed",
+                requestID: requestID,
+                peerID: requestTargets[requestID]?.id
+            )
             beginCompletionAcknowledgement(requestID: requestID)
+            beginCompletionCloseIfReady(requestID: requestID)
             guard let peer = requestTargets[requestID]
                     ?? requestMessages[requestID]?.sender else {
                 finish(requestID: requestID)
@@ -978,21 +1796,226 @@ final class PeerDiscoveryService: ObservableObject {
               ),
               let connection = requestConnections[requestID],
               let request = requestMessages[requestID] else {
+            logPairingPhase(
+                "completion.acknowledgement.waiting-for-peer-completion",
+                requestID: requestID,
+                detail: "remoteCompletion=\(remotelyCompletedRequestIDs.contains(requestID))"
+            )
             return
         }
         completionAcknowledgementSendStartedRequestIDs.insert(requestID)
+        logPairingPhase(
+            "completion.acknowledgement.send.begin",
+            requestID: requestID,
+            peerID: requestTargets[requestID]?.id
+                ?? requestMessages[requestID]?.sender.id
+        )
         let acknowledgement = PairingEnvelope.completionAcknowledgement(
             to: request,
-            from: identity
+            from: identity,
+            senderModel: localModel
+        )
+        // Do not mark this frame as Network.framework's final message. Both
+        // Macs send the acknowledgement at the same time; using
+        // `isComplete: true` on both directions can make one side cancel the
+        // TCP stream while the other side's final send is still queued,
+        // producing NWError 89 (Operation canceled) and losing the pairing.
+        // The application-level acknowledgement exchange below is the safe
+        // close barrier: once both acknowledgements have crossed the
+        // connection, `completePairingIfTransportConfirmed` closes the idle
+        // connection with no outstanding send.
+        send(
+            acknowledgement,
+            over: connection,
+            reportsError: true
+        ) { [weak self, weak connection] sent in
+            guard let self,
+                  let connection,
+                  self.requestConnections[requestID] === connection else {
+                return
+            }
+            guard sent else {
+                self.logPairingPhase(
+                    "completion.acknowledgement.send.failed",
+                    requestID: requestID,
+                    peerID: requestTargets[requestID]?.id
+                )
+                self.finish(requestID: requestID)
+                return
+            }
+            self.completionAcknowledgementDeliveredRequestIDs.insert(
+                requestID
+            )
+            self.logPairingPhase(
+                "completion.acknowledgement.send.confirmed",
+                requestID: requestID,
+                peerID: self.requestTargets[requestID]?.id
+            )
+            self.beginCompletionCloseIfReady(requestID: requestID)
+            guard let peer = self.requestTargets[requestID]
+                    ?? self.requestMessages[requestID]?.sender else {
+                self.finish(requestID: requestID)
+                return
+            }
+            self.completePairingIfTransportConfirmed(
+                with: peer,
+                requestID: requestID
+            )
+        }
+    }
+
+    /// Chooses one side to close the stream so the two close-barrier frames
+    /// cannot race. The lower UUID sends `completionClose` only after both
+    /// signed completion acknowledgements have been sent and received. The
+    /// frame is application-level (not `isComplete: true`), so the higher UUID
+    /// can return a signed receipt on the same live connection.
+    private func beginCompletionCloseIfReady(requestID: UUID) {
+        guard locallyAcceptedRequestIDs.contains(requestID),
+              remotelyAcceptedRequestIDs.contains(requestID),
+              locallyCompletedRequestIDs.contains(requestID),
+              remotelyCompletedRequestIDs.contains(requestID),
+              locallyAcknowledgedByPeerRequestIDs.contains(requestID),
+              completionAcknowledgementDeliveredRequestIDs.contains(requestID),
+              let connection = requestConnections[requestID],
+              let request = requestMessages[requestID],
+              let peer = requestTargets[requestID]
+                ?? requestMessages[requestID]?.sender,
+              peerSupportsCompletionCloseRequestIDs.contains(requestID),
+              isCompletionCloser(peerID: peer.id),
+              !completionCloseSendStartedRequestIDs.contains(requestID) else {
+            logPairingPhase(
+                "completion.close.waiting",
+                requestID: requestID,
+                peerID: peerIDForRequest(requestID),
+                detail: "localCompletion=\(locallyCompletedRequestIDs.contains(requestID)) remoteCompletion=\(remotelyCompletedRequestIDs.contains(requestID)) peerAck=\(locallyAcknowledgedByPeerRequestIDs.contains(requestID)) localAckSent=\(completionAcknowledgementDeliveredRequestIDs.contains(requestID)) closeCap=\(peerSupportsCompletionCloseRequestIDs.contains(requestID))"
+            )
+            return
+        }
+        completionCloseSendStartedRequestIDs.insert(requestID)
+        logPairingPhase(
+            "completion.close.send.begin",
+            requestID: requestID,
+            peerID: peer.id
+        )
+        let close = PairingEnvelope.completionClose(
+            to: request,
+            from: identity,
+            senderModel: localModel
+        )
+        send(
+            close,
+            over: connection
+        ) { [weak self, weak connection] sent in
+            guard let self,
+                  let connection,
+                  self.requestConnections[requestID] === connection else {
+                return
+            }
+            guard sent else {
+                self.logPairingPhase(
+                    "completion.close.send.failed",
+                    requestID: requestID,
+                    peerID: self.peerIDForRequest(requestID)
+                )
+                self.finish(requestID: requestID)
+                return
+            }
+            self.completionCloseDeliveredRequestIDs.insert(requestID)
+            self.logPairingPhase(
+                "completion.close.send.confirmed",
+                requestID: requestID,
+                peerID: peer.id
+            )
+            guard let peer = self.requestTargets[requestID]
+                    ?? self.requestMessages[requestID]?.sender else {
+                self.finish(requestID: requestID)
+                return
+            }
+            self.completePairingIfTransportConfirmed(
+                with: peer,
+                requestID: requestID
+            )
+        }
+    }
+
+    /// The higher-ID participant answers the close barrier with a signed
+    /// application-level receipt. Keeping this message non-final lets the
+    /// lower-ID sender receive it before either side tears down the stream.
+    private func beginCompletionCloseAcknowledgement(requestID: UUID) {
+        guard completionCloseReceivedRequestIDs.contains(requestID),
+              peerSupportsCompletionCloseRequestIDs.contains(requestID),
+              !completionCloseAcknowledgementSendStartedRequestIDs.contains(
+                  requestID
+              ),
+              let connection = requestConnections[requestID],
+              let request = requestMessages[requestID] else {
+            logPairingPhase(
+                "completion.close.acknowledgement.waiting",
+                requestID: requestID,
+                peerID: peerIDForRequest(requestID),
+                detail: "closeReceived=\(completionCloseReceivedRequestIDs.contains(requestID)) closeCap=\(peerSupportsCompletionCloseRequestIDs.contains(requestID))"
+            )
+            return
+        }
+        completionCloseAcknowledgementSendStartedRequestIDs.insert(requestID)
+        logPairingPhase(
+            "completion.close.acknowledgement.send.begin",
+            requestID: requestID,
+            peerID: peerIDForRequest(requestID)
+        )
+        let acknowledgement = PairingEnvelope.completionCloseAcknowledgement(
+            to: request,
+            from: identity,
+            senderModel: localModel
         )
         send(
             acknowledgement,
             over: connection,
-            isFinal: true
-        ) { [weak self] sent in
-            guard let self, !sent else { return }
-            finish(requestID: requestID)
+            // The lower-ID peer waits for a short grace period after receiving
+            // this signed receipt before cancelling. Do not surface that
+            // expected teardown as a "no response" status.
+            reportsError: false
+        ) { [weak self, weak connection] sent in
+            guard let self,
+                  let connection,
+                  self.requestConnections[requestID] === connection else {
+                return
+            }
+            guard sent else {
+                self.logPairingPhase(
+                    "completion.close.acknowledgement.send.failed",
+                    requestID: requestID,
+                    peerID: self.peerIDForRequest(requestID)
+                )
+                self.finish(requestID: requestID)
+                return
+            }
+            // The lower-ID peer waits for the grace period above before
+            // cancelling. A receipt is accepted only when Network.framework
+            // reports successful delivery; a failed send leaves the higher
+            // side unpaired.
+            self.completionCloseAcknowledgementDeliveredRequestIDs.insert(
+                requestID
+            )
+            self.logPairingPhase(
+                "completion.close.acknowledgement.send.confirmed",
+                requestID: requestID,
+                peerID: self.peerIDForRequest(requestID)
+            )
+            guard let peer = self.requestTargets[requestID]
+                    ?? self.requestMessages[requestID]?.sender else {
+                self.finish(requestID: requestID)
+                return
+            }
+            self.completePairingIfTransportConfirmed(
+                with: peer,
+                requestID: requestID
+            )
         }
+    }
+
+    private func isCompletionCloser(peerID: UUID) -> Bool {
+        identity.id.uuidString < peerID.uuidString
     }
 
     private func completePairingIfTransportConfirmed(
@@ -1001,7 +2024,18 @@ final class PeerDiscoveryService: ObservableObject {
     ) {
         guard let trackedPeer = requestTargets[requestID]
                 ?? requestMessages[requestID]?.sender,
-              trackedPeer.id == peer.id else {
+              trackedPeer.id == peer.id,
+              // A current pairing must prove the signed close capability.
+              // Treating a missing marker as a legacy fallback would let an
+              // on-path relay strip the extension and recreate the weaker
+              // acknowledgement/EOF persistence path.
+              peerSupportsCompletionCloseRequestIDs.contains(requestID) else {
+            return
+        }
+        guard !pairingPersistenceRecordedRequestIDs.contains(requestID) else {
+            return
+        }
+        guard pairingPersistenceJobs[requestID] == nil else {
             return
         }
         let completionGuard = PairingCompletionGuard(
@@ -1009,25 +2043,117 @@ final class PeerDiscoveryService: ObservableObject {
             peerID: trackedPeer.id,
             generation: requestForgetGenerations.current(for: requestID)
         )
-        guard locallyAcceptedRequestIDs.contains(requestID),
-              remotelyAcceptedRequestIDs.contains(requestID),
-              locallyCompletedRequestIDs.contains(requestID),
-              remotelyCompletedRequestIDs.contains(requestID),
-              locallyAcknowledgedByPeerRequestIDs.contains(requestID),
-              peerClosedRequestIDs.contains(requestID),
+        let closeReceived = completionCloseReceivedRequestIDs.contains(
+            requestID
+        )
+        let acknowledgementDelivered =
+            completionAcknowledgementDeliveredRequestIDs.contains(requestID)
+                || closeReceived
+        let closeBarrierConfirmedByPeer: Bool
+        if isCompletionCloser(peerID: peer.id) {
+            // Lower-ID sender waits for the higher-ID peer's signed receipt.
+            // A local close `contentProcessed` callback alone is deliberately
+            // not accepted as proof of delivery.
+            closeBarrierConfirmedByPeer =
+                completionCloseAcknowledgementReceivedRequestIDs.contains(
+                    requestID
+                )
+        } else {
+            // The higher-ID side has peer-originated proof when it receives
+            // the close barrier, and only persists after its signed receipt
+            // has also been accepted locally.
+            closeBarrierConfirmedByPeer = closeReceived
+                && completionCloseAcknowledgementDeliveredRequestIDs
+                    .contains(requestID)
+        }
+        logPairingPhase(
+            "completion.gate",
+            requestID: requestID,
+            peerID: trackedPeer.id,
+            detail: "localAccepted=\(locallyAcceptedRequestIDs.contains(requestID)) remoteAccepted=\(remotelyAcceptedRequestIDs.contains(requestID)) localCompletion=\(locallyCompletedRequestIDs.contains(requestID)) remoteCompletion=\(remotelyCompletedRequestIDs.contains(requestID)) peerAck=\(locallyAcknowledgedByPeerRequestIDs.contains(requestID)) ackDelivered=\(acknowledgementDelivered) closeConfirmed=\(closeBarrierConfirmedByPeer) closeCap=true"
+        )
+        guard PairingCompletionPolicy.allowsPersistence(
+                  localAccepted: locallyAcceptedRequestIDs.contains(requestID),
+                  remoteAccepted: remotelyAcceptedRequestIDs.contains(requestID),
+                  localCompletionSent: locallyCompletedRequestIDs.contains(requestID),
+                  remoteCompletionReceived: remotelyCompletedRequestIDs.contains(requestID),
+                  acknowledgementReceived: locallyAcknowledgedByPeerRequestIDs.contains(requestID),
+                  acknowledgementDelivered: acknowledgementDelivered,
+                  closeBarrierConfirmedByPeer: closeBarrierConfirmedByPeer
+              ),
               completionGuard.permits(
                   currentGeneration: registry.generation(for: peer.id)
               ) else {
+            logPairingPhase(
+                "completion.gate.blocked",
+                requestID: requestID,
+                peerID: peer.id
+            )
             return
         }
-        guard savePairing(
-            with: peer,
-            expectedRegistryGeneration: completionGuard.generation
-        ) else {
-            return
+        let job = PairingPersistenceJob(
+            requestID: requestID,
+            peer: peer,
+            expectedRegistryGeneration: completionGuard.generation,
+            model: requestPeerModels[requestID],
+            lifecycleEpoch: currentLifecycleEpoch()
+        )
+        pairingPersistenceJobs[requestID] = job
+        logPairingPhase(
+            "pairing.persist.begin",
+            requestID: requestID,
+            peerID: peer.id,
+            detail: "generation=\(completionGuard.generation)"
+        )
+        pairingPersistenceQueue.async { [weak self] in
+            MacKVMLogger.pairing.info(
+                "phase=pairing.persist.worker.begin request=\(MacKVMLogger.short(job.requestID), privacy: .public) peer=\(MacKVMLogger.short(job.peer.id), privacy: .public)"
+            )
+            guard let self else {
+                return
+            }
+            self.pairingLifecycleLock.lock()
+            guard self.lifecycleEpoch.current() == job.lifecycleEpoch else {
+                self.pairingLifecycleLock.unlock()
+                MacKVMLogger.pairing.info(
+                    "phase=pairing.persist.worker.skipped request=\(MacKVMLogger.short(job.requestID), privacy: .public) peer=\(MacKVMLogger.short(job.peer.id), privacy: .public) detail=lifecycle-changed"
+                )
+                return
+            }
+            // This is the only potentially slow part of completion. Keep it
+            // away from the Network.framework queue so a UserDefaults/UI
+            // lock cannot deadlock the pairing handshake.
+            let saved = self.registry.add(
+                job.peer,
+                ifGeneration: job.expectedRegistryGeneration,
+                model: job.model,
+                // Pairing success is not published until the pinned key and
+                // profile are durable. This work is already off the network
+                // queue, so waiting here cannot recreate the UI/UserDefaults
+                // deadlock that caused the original completion stall.
+                persistImmediately: true
+            )
+            self.pairingLifecycleLock.unlock()
+            MacKVMLogger.pairing.info(
+                "phase=pairing.persist.worker.completed request=\(MacKVMLogger.short(job.requestID), privacy: .public) peer=\(MacKVMLogger.short(job.peer.id), privacy: .public) success=\(saved)"
+            )
+            self.queue.async { [weak self] in
+                self?.handlePairingPersistenceResult(job, saved: saved)
+            }
         }
-        publishStatus("Paired with \(peer.name)")
-        finish(requestID: requestID, cancelConnection: false)
+    }
+
+    private func scheduleCompletionCloseFinish(requestID: UUID) {
+        guard !completionCloseFinishScheduledRequestIDs.contains(requestID)
+        else { return }
+        completionCloseFinishScheduledRequestIDs.insert(requestID)
+        queue.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let self,
+                  self.requestConnections[requestID] != nil,
+                  self.pairingPersistenceRecordedRequestIDs.contains(requestID)
+            else { return }
+            self.finish(requestID: requestID, cancelConnection: true)
+        }
     }
 
     private func rejectUnexpected(
@@ -1039,7 +2165,7 @@ final class PeerDiscoveryService: ObservableObject {
         if requestConnections[message.requestID] === connection {
             finish(requestID: message.requestID)
         } else {
-            cleanup(connection)
+            removeConnection(connection)
         }
     }
 

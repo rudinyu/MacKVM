@@ -23,19 +23,27 @@ public enum MonitorInputSource: Int, CaseIterable, Codable, Sendable {
     }
 }
 
-public enum M1DDCCommand {
-    public static func arguments(
-        displaySelector: String,
-        input: MonitorInputSource
-    ) -> [String] {
-        let selector = displaySelector.trimmingCharacters(
-            in: .whitespacesAndNewlines
-        )
-        if selector.isEmpty {
-            return ["set", "input", String(input.rawValue)]
-        }
-        return [
-            "display", selector, "set", "input", String(input.rawValue)
+/// The native bridge sends a VESA DDC/CI Set VCP packet for input source
+/// (VCP 0x60). Keeping the packet layout here makes the protocol testable
+/// without requiring a physical monitor in CI; IOKit performs the transport.
+public enum NativeDDCCommand {
+    public static func setInputPacket(
+        for input: MonitorInputSource
+    ) -> [UInt8] {
+        var packet: [UInt8] = [
+            0x51, // DDC/CI source address byte
+            0x84, // Set VCP feature
+            0x03, // payload length
+            0x60, // Input Source VCP code
+            0x00, // high byte of the new value
+            UInt8(input.rawValue),
+            0x00 // checksum, filled below
         ]
+        var checksum: UInt8 = 0x6E // 8-bit write address
+        for byte in packet[0..<6] {
+            checksum ^= byte
+        }
+        packet[6] = checksum
+        return packet
     }
 }

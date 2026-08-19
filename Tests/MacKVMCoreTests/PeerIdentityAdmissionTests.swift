@@ -80,6 +80,27 @@ final class PeerIdentityAdmissionTests: XCTestCase {
         XCTAssertEqual(resolved[unique.id]?.1, "unique")
     }
 
+    func testResolveBoundsUntrustedIdentityCount() {
+        let candidates = (0..<3).map { index in
+            (
+                PeerIdentity(
+                    name: "Mac \(index)",
+                    signingPublicKey: P256.Signing.PrivateKey()
+                        .publicKey.x963Representation
+                ),
+                index
+            )
+        }
+
+        let resolved = PeerIdentityAdmission.resolve(
+            candidates,
+            maximumIdentities: 2,
+            identity: { $0.0 }
+        )
+
+        XCTAssertEqual(resolved.count, 2)
+    }
+
     func testResolvePinnedKeepsTrustedEndpointsAndDropsConflictingTXTKeys() {
         let pinnedKey = P256.Signing.PrivateKey()
         let conflictingKey = P256.Signing.PrivateKey()
@@ -113,5 +134,34 @@ final class PeerIdentityAdmissionTests: XCTestCase {
             resolved[identity.id]?.map(\.1),
             ["trusted endpoint", "second trusted endpoint"]
         )
+    }
+
+    func testResolvePinnedPrioritizesPreferredEndpointBeforeBoundedFallback() {
+        let key = P256.Signing.PrivateKey()
+        let identity = PeerIdentity(
+            name: "Trusted Mac",
+            signingPublicKey: key.publicKey.x963Representation
+        )
+        let candidates = (0..<8).map { index in
+            (
+                PeerIdentity(
+                    id: identity.id,
+                    name: "Spoof \(index)",
+                    signingPublicKey: identity.signingPublicKey
+                ),
+                "spoofed endpoint \(index)"
+            )
+        } + [(identity, "known-good endpoint")]
+
+        let resolved = PeerIdentityAdmission.resolvePinned(
+            candidates,
+            pinnedKeys: [identity.id: identity.signingPublicKey],
+            maximumCandidatesPerID: 8,
+            preferred: { $0.1 == "known-good endpoint" },
+            identity: { $0.0 }
+        )
+
+        XCTAssertEqual(resolved[identity.id]?.first?.1, "known-good endpoint")
+        XCTAssertEqual(resolved[identity.id]?.count, 8)
     }
 }

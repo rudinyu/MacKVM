@@ -37,6 +37,7 @@ protocol ControlInputCapture: AnyObject {
     var isCapturing: Bool { get }
     var onEvent: ((RemoteInputEvent) -> Void)? { get set }
     var onEmergencyStop: (() -> Void)? { get set }
+    var onSwitchControl: (() -> Void)? { get set }
 
     func refreshPermission()
     func startCapture(suppressingLocalEvents: Bool)
@@ -87,11 +88,14 @@ final class ControlCoordinator: ObservableObject {
     private let inputSink: any ControlInputSink
     private let localControlAllowed: () -> Bool
     private let keyboardLayoutIdentifier: () -> String?
+    private let seamlessControlAuthorized: (UUID) -> Bool
     private var machine = ControlSessionStateMachine()
     private var connectionObservation: AnyCancellable?
     private var requestTimeout: DispatchWorkItem?
     private var incomingRequestTimeout: DispatchWorkItem?
     private var activeOutboundRequestID: UUID?
+    private var activeControlRequestCompletion: ((Bool) -> Void)?
+    private var activeControlDisplayAlreadyRemote = false
     private var activeInboundControlRequest: IncomingControlRequest?
     private var preparingIncomingControlRequest: IncomingControlRequest?
     private var receiverTeardown: ReceiverTeardown?
@@ -114,7 +118,8 @@ final class ControlCoordinator: ObservableObject {
         inputCapture: any ControlInputCapture,
         inputSink: any ControlInputSink,
         localControlAllowed: @escaping () -> Bool = { true },
-        keyboardLayoutIdentifier: @escaping () -> String? = { nil }
+        keyboardLayoutIdentifier: @escaping () -> String? = { nil },
+        seamlessControlAuthorized: @escaping (UUID) -> Bool = { _ in false }
     ) {
         self.localID = localID
         self.secureSession = secureSession
@@ -122,6 +127,7 @@ final class ControlCoordinator: ObservableObject {
         self.inputSink = inputSink
         self.localControlAllowed = localControlAllowed
         self.keyboardLayoutIdentifier = keyboardLayoutIdentifier
+        self.seamlessControlAuthorized = seamlessControlAuthorized
         // Treat the initial publisher value as describing the gate's initial
         // generation. If authentication races that first nil delivery, the
         // nil event must not invalidate the newer authenticated generation.
@@ -137,6 +143,9 @@ final class ControlCoordinator: ObservableObject {
         }
         inputCapture.onEmergencyStop = { [weak self] in
             self?.stopControl(reason: "Emergency shortcut returned input locally")
+        }
+        inputCapture.onSwitchControl = { [weak self] in
+            self?.toggleControlFromHotKey()
         }
         inputSink.onControlFailure = { [weak self] failure in
             self?.remoteInputSinkFailed(failure)
@@ -160,43 +169,74 @@ final class ControlCoordinator: ObservableObject {
             }
     }
 
-    func requestControl() {
-        guard !isStoppingForQuit else { return }
+    /// Performs the same side-effect-free admission checks used immediately
+    /// before sending a control request. App-level routes (including the
+    /// display-first global shortcut) call this before changing the monitor,
+    /// so a disconnected or permission-blocked request cannot move the
+    /// physical display and then fail.
+    @discardableResult
+    func canRequestControl() -> Bool {
+        guard !isStoppingForQuit else {
+            return false
+        }
         guard localControlAllowed() else {
             status = "This Mac has no physical keyboard/mouse path in the selected topology"
-            return
+            return false
         }
         guard !isRemoteInputTearingDown else {
             status = "Wait for remote input to finish returning locally"
-            return
+            return false
         }
         guard secureSession.connectedPeerID != nil else {
             status = "Connect to a paired Mac first"
-            return
+            return false
         }
         guard pendingIncomingControlRequest == nil,
               preparingIncomingControlRequest == nil else {
             status = "Respond to the incoming control request first"
-            return
+            return false
         }
         guard !isReceivingControl else {
             status = "This Mac is currently being controlled"
-            return
+            return false
+        }
+        guard state == .connected else {
+            status = "Control can only start from the connected state"
+            return false
         }
         inputCapture.refreshPermission()
         guard inputCapture.hasInputMonitoringPermission else {
             status = "Input Monitoring permission is required"
-            return
+            return false
         }
+        // The controlling Mac uses an active CGEvent tap so local events can
+        // be suppressed while they are forwarded. macOS requires
+        // Accessibility for that active filter in addition to Input
+        // Monitoring; the receiving Mac performs the same preflight before it
+        // grants the request.
         inputSink.refreshPermission()
         guard inputSink.hasAccessibilityPermission else {
             status = "Accessibility permission is required to control another Mac"
-            return
+            return false
+        }
+        return true
+    }
+
+    @discardableResult
+    func requestControl(
+        displayAlreadyRemote: Bool = false,
+        completion: ((Bool) -> Void)? = nil
+    ) -> Bool {
+        guard canRequestControl() else {
+            completion?(false)
+            return false
         }
         do {
             let requestID = UUID()
             state = try machine.handle(.requestControl)
             activeOutboundRequestID = requestID
+            activeControlRequestCompletion = completion
+            activeControlDisplayAlreadyRemote = displayAlreadyRemote
             status = "Waiting for the other Mac to grant control…"
             send(
                 ControlMessage.requestControl(
@@ -205,9 +245,37 @@ final class ControlCoordinator: ObservableObject {
                 )
             )
             scheduleRequestTimeout()
+            return true
         } catch {
             status = "Control can only start from the connected state"
+            completion?(false)
+            return false
         }
+    }
+
+    /// Toggles the keyboard/mouse route from the dedicated global shortcut.
+    /// The same shortcut works on either Mac: a controller returns input
+    /// locally, while a receiver ends the incoming session and restores the
+    /// controller's display route. An idle Mac starts the normal request
+    /// flow; the app layer may additionally pre-route the monitor first.
+    func toggleControlFromHotKey() {
+        if isReceivingControl {
+            endReceivingControl(
+                reason: "Hotkey returned keyboard and mouse to this Mac"
+            )
+            return
+        }
+        if state == .controlling || state == .suspended {
+            stopControl(reason: "Hotkey returned keyboard and mouse locally")
+            return
+        }
+        _ = requestControl()
+    }
+
+    private func completeActiveControlRequest(_ succeeded: Bool) {
+        guard let completion = activeControlRequestCompletion else { return }
+        activeControlRequestCompletion = nil
+        completion(succeeded)
     }
 
     func stopControl(reason: String = "Control returned locally") {
@@ -216,6 +284,13 @@ final class ControlCoordinator: ObservableObject {
             return
         }
         let wasControlling = state == .controlling
+        let wasWaitingForControlGrant = state == .suspended
+        // A combined request has already switched the monitor before it
+        // enters the suspended state. Its request completion owns the local
+        // DDC restoration when that request is cancelled or times out. Keep
+        // the normal stop callback for requests that have not been
+        // pre-routed, but do not enqueue a second restoration operation.
+        let displayWasAlreadyRemote = activeControlDisplayAlreadyRemote
         requestTimeout?.cancel()
         requestTimeout = nil
         inputCapture.stopCapture()
@@ -224,6 +299,7 @@ final class ControlCoordinator: ObservableObject {
             _ = try? machine.handle(.stopControl)
             state = machine.state
             activeOutboundRequestID = nil
+            activeControlDisplayAlreadyRemote = false
             if let requestID {
                 send(
                     ControlMessage(
@@ -233,7 +309,11 @@ final class ControlCoordinator: ObservableObject {
                 )
             }
         }
-        if wasControlling {
+        if wasWaitingForControlGrant {
+            completeActiveControlRequest(false)
+        }
+        if wasControlling
+            || (wasWaitingForControlGrant && !displayWasAlreadyRemote) {
             onControllingStopped?()
         }
         status = reason
@@ -294,16 +374,23 @@ final class ControlCoordinator: ObservableObject {
     /// Ends a remote-control session from the receiving Mac. It immediately
     /// stops accepting new events; held keys and buttons are released before
     /// the peer is notified that control has ended.
-    func endReceivingControl(reason: String = "Remote control ended locally") {
+    func endReceivingControl(
+        reason: String = "Remote control ended locally",
+        restoreMonitor: Bool = true,
+        completion: (() -> Void)? = nil
+    ) {
         guard !isStoppingForQuit else { return }
         guard let request = activeInboundControlRequest,
               isReceivingControl else {
+            completion?()
             return
         }
         finishReceivingControl(
             request,
             reason: reason,
-            notifyPeer: true
+            notifyPeer: true,
+            restoreMonitor: restoreMonitor,
+            completion: completion
         )
     }
 
@@ -319,11 +406,13 @@ final class ControlCoordinator: ObservableObject {
         incomingRequestTimeout = nil
         inputCapture.stopCapture()
 
+        let wasWaitingForControlGrant = state == .suspended
         if state == .controlling || state == .suspended {
             let requestID = activeOutboundRequestID
             _ = try? machine.handle(.stopControl)
             state = machine.state
             activeOutboundRequestID = nil
+            activeControlDisplayAlreadyRemote = false
             if let requestID {
                 send(
                     ControlMessage(
@@ -332,6 +421,9 @@ final class ControlCoordinator: ObservableObject {
                     )
                 )
             }
+        }
+        if wasWaitingForControlGrant {
+            completeActiveControlRequest(false)
         }
 
         if let request = pendingIncomingControlRequest {
@@ -417,17 +509,24 @@ final class ControlCoordinator: ObservableObject {
             _ = try? machine.handle(.stopControl)
             state = machine.state
             activeOutboundRequestID = nil
+            activeControlDisplayAlreadyRemote = false
+            completeActiveControlRequest(false)
             status = "The other Mac denied control"
         case .endControl:
             if message.requestID == activeOutboundRequestID,
                state == .controlling || state == .suspended {
                 let wasControlling = state == .controlling
+                let wasWaitingForControlGrant = state == .suspended
                 requestTimeout?.cancel()
                 requestTimeout = nil
                 inputCapture.stopCapture()
                 _ = try? machine.handle(.stopControl)
                 state = machine.state
                 activeOutboundRequestID = nil
+                activeControlDisplayAlreadyRemote = false
+                if wasWaitingForControlGrant {
+                    completeActiveControlRequest(false)
+                }
                 if wasControlling {
                     onControllingStopped?()
                 }
@@ -482,11 +581,20 @@ final class ControlCoordinator: ObservableObject {
             status = "Denied control: the other Mac uses an incompatible protocol"
             return
         }
+        // A differing keyboard layout no longer denies the request outright:
+        // RemoteInputSink resolves each remappable key to its equivalent on
+        // this layout, and ends control only if a specific key turns out to
+        // have no equivalent here. That resolution needs the character field
+        // a v1 peer never sends, so a v1 peer would otherwise be granted
+        // control only to have it end on its first remappable keystroke.
+        // Denying it here, before the consent prompt, is strictly better for
+        // that one case; a v2 peer with a differing layout is unaffected.
         if let remoteLayout = message.keyboardLayoutIdentifier,
            let localLayout = keyboardLayoutIdentifier(),
-           remoteLayout != localLayout {
+           remoteLayout != localLayout,
+           (message.protocolVersion ?? 1) < 2 {
             sendResponse(kind: .controlDenied, for: request)
-            status = "Denied control: keyboard layouts differ (\(remoteLayout) vs \(localLayout))"
+            status = "Denied control: the other Mac's keyboard layout differs and its MacKVM version cannot remap it"
             return
         }
         guard !isRemoteInputTearingDown else {
@@ -543,6 +651,15 @@ final class ControlCoordinator: ObservableObject {
             }
         }
         pendingIncomingControlRequest = request
+        if seamlessControlAuthorized(peerID) {
+            // This is a local, receiver-side one-time authorization for the
+            // already authenticated pinned peer. Keep the same acceptance
+            // path so Accessibility checks, session freshness, teardown, and
+            // the grant response remain identical to a user click.
+            status = "Automatically allowing control for this paired Mac"
+            acceptIncomingControlRequest(requestID)
+            return
+        }
         status = "The other Mac requests control — choose Allow or Deny"
         scheduleIncomingRequestTimeout(for: request)
         onIncomingControlRequest?(request)
@@ -592,6 +709,7 @@ final class ControlCoordinator: ObservableObject {
                 _ = try? machine.handle(.stopControl)
                 state = machine.state
                 activeOutboundRequestID = nil
+                activeControlDisplayAlreadyRemote = false
                 if let requestID {
                     send(
                         ControlMessage(
@@ -600,10 +718,16 @@ final class ControlCoordinator: ObservableObject {
                         )
                     )
                 }
+                completeActiveControlRequest(false)
                 status = "Could not capture input; control stayed local"
                 return
             }
-            onControllingStarted?()
+            let displayAlreadyRemote = activeControlDisplayAlreadyRemote
+            activeControlDisplayAlreadyRemote = false
+            if !displayAlreadyRemote {
+                onControllingStarted?()
+            }
+            completeActiveControlRequest(true)
             status = "Controlling the other Mac — ⌃⌥⌘Esc returns locally"
         } catch {
             if let requestID = activeOutboundRequestID {
@@ -615,6 +739,8 @@ final class ControlCoordinator: ObservableObject {
                 )
             }
             activeOutboundRequestID = nil
+            activeControlDisplayAlreadyRemote = false
+            completeActiveControlRequest(false)
             status = "Ignored an unexpected control grant"
         }
     }
@@ -653,11 +779,16 @@ final class ControlCoordinator: ObservableObject {
                 ?? inboundAdmission.currentGeneration()
         }
         let wasControlling = state == .controlling
+        let wasWaitingForControlGrant = state == .suspended
         requestTimeout?.cancel()
         requestTimeout = nil
         incomingRequestTimeout?.cancel()
         incomingRequestTimeout = nil
         activeOutboundRequestID = nil
+        activeControlDisplayAlreadyRemote = false
+        if wasWaitingForControlGrant {
+            completeActiveControlRequest(false)
+        }
         pendingIncomingControlRequest = nil
         preparingIncomingControlRequest = nil
         if wasControlling {
@@ -724,6 +855,8 @@ final class ControlCoordinator: ObservableObject {
         _ = try? machine.handle(.stopControl)
         state = machine.state
         activeOutboundRequestID = nil
+        activeControlDisplayAlreadyRemote = false
+        completeActiveControlRequest(false)
         status = "Yielded a simultaneous request to the other Mac"
     }
 

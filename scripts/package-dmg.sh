@@ -81,8 +81,13 @@ if [[ "$require_developer_id" == true && -z "$signing_identity" ]]; then
 fi
 
 if [[ "$requested_arch" == universal ]]; then
-  ./scripts/build-app.sh --arch arm64
-  ./scripts/build-app.sh --arch x86_64
+  if [[ -n "$signing_identity" ]]; then
+    ./scripts/build-app.sh --arch arm64 --sign "$signing_identity"
+    ./scripts/build-app.sh --arch x86_64 --sign "$signing_identity"
+  else
+    ./scripts/build-app.sh --arch arm64
+    ./scripts/build-app.sh --arch x86_64
+  fi
   app_dir="$project_root/dist/universal/MacKVM.app"
   rm -rf "$app_dir"
   mkdir -p "$project_root/dist/universal"
@@ -92,12 +97,16 @@ if [[ "$requested_arch" == universal ]]; then
     "$project_root/dist/x86_64/MacKVM.app/Contents/MacOS/MacKVM" \
     -output "$app_dir/Contents/MacOS/MacKVM"
 else
-  ./scripts/build-app.sh --arch "$requested_arch"
+  if [[ -n "$signing_identity" ]]; then
+    ./scripts/build-app.sh --arch "$requested_arch" --sign "$signing_identity"
+  else
+    ./scripts/build-app.sh --arch "$requested_arch"
+  fi
   app_dir="$project_root/dist/$requested_arch/MacKVM.app"
 fi
 
 if [[ -n "$signing_identity" ]]; then
-  codesign --force --deep --sign "$signing_identity" "$app_dir"
+  codesign --force --deep --options runtime --sign "$signing_identity" "$app_dir"
 else
   codesign --force --deep --sign - "$app_dir"
 fi

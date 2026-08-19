@@ -5,10 +5,17 @@ project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$project_root"
 
 usage() {
-  echo "Usage: $0 [--arch native|arm64|x86_64]" >&2
+  cat >&2 <<'EOF'
+Usage: scripts/build-app.sh [--arch native|arm64|x86_64]
+       [--sign SIGNING_IDENTITY]
+
+Without --sign, the app is ad-hoc signed for local testing. A non-ad-hoc
+identity is signed with the hardened runtime enabled.
+EOF
 }
 
 requested_arch="native"
+signing_identity=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --arch)
@@ -22,6 +29,22 @@ while [[ $# -gt 0 ]]; do
     --arch=*)
       requested_arch="${1#--arch=}"
       if [[ -z "$requested_arch" ]]; then
+        usage
+        exit 2
+      fi
+      shift
+      ;;
+    --sign)
+      if [[ $# -lt 2 || -z "$2" ]]; then
+        usage
+        exit 2
+      fi
+      signing_identity="$2"
+      shift 2
+      ;;
+    --sign=*)
+      signing_identity="${1#--sign=}"
+      if [[ -z "$signing_identity" ]]; then
         usage
         exit 2
       fi
@@ -99,6 +122,21 @@ if [[ ! -f "$app_icon" || ! -f "$compiled_assets" ]]; then
   exit 1
 fi
 
+# Recreate the bundle from a clean, explicitly validated output path. Reusing
+# an old app directory would allow stale nested files or Finder sidecars to be
+# copied into a later signed release. Keep this removal narrowly scoped to the
+# three paths owned by this build script.
+case "$app_dir" in
+  "$project_root/dist/MacKVM.app"|\
+  "$project_root/dist/arm64/MacKVM.app"|\
+  "$project_root/dist/x86_64/MacKVM.app")
+    ;;
+  *)
+    echo "Refusing to replace an unexpected app path: $app_dir" >&2
+    exit 1
+    ;;
+esac
+rm -rf -- "$app_dir"
 mkdir -p "$executable_dir" "$resources_dir"
 install -m 755 "$binary_path" \
   "$executable_dir/MacKVM"
@@ -116,7 +154,11 @@ for localization_dir in "$project_root"/Resources/*.lproj; do
     "$resources_dir/$(basename "$localization_dir")"
 done
 
-codesign --force --deep --sign - "$app_dir"
+if [[ -n "$signing_identity" ]]; then
+  codesign --force --deep --options runtime --sign "$signing_identity" "$app_dir"
+else
+  codesign --force --deep --sign - "$app_dir"
+fi
 codesign --verify --deep --strict "$app_dir"
 if ! lipo "$executable_dir/MacKVM" -verify_arch "$target_arch"; then
   echo "Built binary at $executable_dir/MacKVM does not contain $target_arch." >&2

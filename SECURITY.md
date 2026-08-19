@@ -1,5 +1,7 @@
 # Security status
 
+[繁體中文](SECURITY.zh-TW.md) · [Installation guide](INSTALL.md) · [HTML manual](docs/USER_MANUAL.html)
+
 MacKVM is an early local-network prototype. The current pairing handshake:
 
 - requires explicit acceptance on both Macs before either peer is pinned;
@@ -33,7 +35,11 @@ key-confirmation packet, so replaying a captured signed hello is insufficient.
 Remote input messages are decoded with a 16 KiB limit and strict event-specific
 field validation before injection. Pointer coordinates and scroll values are
 bounded, and injected events carry a private source marker so a listening peer
-does not retransmit them. macOS still requires explicit Input Monitoring
+does not retransmit them. System-defined (media, volume, and brightness) keys
+are restricted to a fixed allowlist that a peer cannot extend: the power key is
+excluded so a remote request can never open the shutdown dialog or sleep the
+receiving Mac, and caps lock is excluded because it already travels as an
+ordinary keyboard event. macOS still requires explicit Input Monitoring
 permission to capture local input and Accessibility permission to inject remote
 input. Pairing and secure-session wire frames are capped at 64 KiB, encrypted
 session plaintext is capped at 32 KiB, and partial frames expire after five
@@ -43,16 +49,25 @@ message admission limits before decoding, including a 16-message cap per
 pairing transport delivery. Pre-consent pairing keeps a separate one-request
 unpaired budget and reserves the final global slot for an already-paired peer.
 Secure Bonjour discovery filters candidates against the pinned key, retains a
-bounded set of same-key endpoints, and tries the next endpoint after a failed
-signed handshake. If the control or injection queue
+bounded set of same-key endpoints, prefers the last endpoint that completed an
+authenticated handshake, and advances to the next endpoint after any failed
+or cleanly closed unauthenticated attempt. If the control or injection queue
 cannot keep up, MacKVM tears down that session and releases all tracked keys
 and mouse buttons instead of silently dropping a state-changing transition.
 
 Input is never suppressed merely because the encrypted transport connected.
 The controller first sends a control request, and the receiving Mac grants it
-only while Accessibility permission is available. Simultaneous requests use
-the paired UUIDs for deterministic arbitration. During control,
+only while Accessibility permission is available. A newly completed pairing
+also enables the receiver-side `seamlessControlAuthorized` flag for that
+pinned peer, so the same authenticated request can use the normal acceptance
+path without another prompt. This is a local one-time authorization, not a
+wire-level claim; it is revocable per peer from **Paired device information**,
+and Forget/key revocation removes it with the profile. Users who require
+per-session consent can turn it off. Simultaneous requests use the paired UUIDs
+for deterministic arbitration. During control,
 `Control-Option-Command-Escape` is consumed locally as an emergency return;
+`Control-Option-Command-K` is also consumed locally as the explicit
+keyboard/mouse route toggle;
 disconnect and control-end paths synthesize key-up and mouse-up events on the
 receiver to avoid stuck input.
 

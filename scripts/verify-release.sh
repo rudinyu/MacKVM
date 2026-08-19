@@ -120,6 +120,10 @@ if [[ "$require_developer_id" == true ]]; then
     echo "Developer ID Application authority was not found in the signature." >&2
     exit 1
   }
+  grep -Eq 'CodeDirectory .*flags=0x[0-9a-fA-F]+\([^)]*runtime' <<<"$signature_details" || {
+    echo "Hardened runtime was not enabled for the Developer ID signature." >&2
+    exit 1
+  }
 fi
 
 echo "Verified $app_path ($archs; ${bundle_identifier})"

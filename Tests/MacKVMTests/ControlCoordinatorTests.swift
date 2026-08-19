@@ -30,7 +30,161 @@ final class ControlCoordinatorTests: XCTestCase {
         )
     }
 
-    func testMismatchedKeyboardLayoutIsDeniedBeforeConsentPrompt() {
+    func testSeamlessAuthorizationAutomaticallyGrantsControl() {
+        let fixture = makeFixture(seamlessControlAuthorized: true)
+        let requestID = UUID()
+
+        fixture.transport.deliver(controlMessage(.requestControl, requestID))
+        drainMainQueue()
+
+        XCTAssertNil(fixture.coordinator.pendingIncomingControlRequest)
+        XCTAssertTrue(fixture.coordinator.isReceivingControl)
+        XCTAssertEqual(fixture.sink.beginCount, 1)
+        XCTAssertEqual(
+            fixture.transport.sentMessages.last,
+            controlMessage(.controlGranted, requestID)
+        )
+        XCTAssertTrue(
+            fixture.coordinator.status.contains("Automatically allowing")
+                || fixture.coordinator.status.contains("Remote control granted")
+        )
+    }
+
+    func testStoppingAWaitingControlRequestRestoresTheLocalRoute() {
+        let fixture = makeFixture()
+        var routeRestoreCount = 0
+        fixture.coordinator.onControllingStopped = {
+            routeRestoreCount += 1
+        }
+
+        XCTAssertTrue(fixture.coordinator.requestControl())
+        XCTAssertEqual(fixture.coordinator.state, .suspended)
+
+        fixture.coordinator.stopControl()
+
+        XCTAssertEqual(routeRestoreCount, 1)
+        XCTAssertEqual(fixture.coordinator.state, .connected)
+    }
+
+    func testSwitchHotKeyStartsControlWhenConnected() {
+        let fixture = makeFixture()
+
+        fixture.capture.onSwitchControl?()
+
+        XCTAssertEqual(fixture.coordinator.state, .suspended)
+        XCTAssertEqual(fixture.transport.sentMessages.count, 1)
+        XCTAssertEqual(
+            fixture.transport.sentMessages.first?.kind,
+            .requestControl
+        )
+    }
+
+    func testSwitchHotKeyReturnsControlLocally() {
+        let fixture = makeFixture()
+        XCTAssertTrue(fixture.coordinator.requestControl())
+        guard let requestID = fixture.transport.sentMessages.first?.requestID
+        else {
+            XCTFail("requestControl did not send a request")
+            return
+        }
+        fixture.transport.deliver(controlMessage(.controlGranted, requestID))
+        drainMainQueue()
+
+        fixture.capture.onSwitchControl?()
+
+        XCTAssertEqual(fixture.coordinator.state, .connected)
+        XCTAssertTrue(
+            fixture.transport.sentMessages.contains(
+                controlMessage(.endControl, requestID)
+            )
+        )
+    }
+
+    func testStoppingActiveControlRestoresTheLocalRoute() {
+        let fixture = makeFixture()
+        var routeRestoreCount = 0
+        fixture.coordinator.onControllingStopped = {
+            routeRestoreCount += 1
+        }
+
+        XCTAssertTrue(fixture.coordinator.requestControl())
+        guard let requestID = fixture.transport.sentMessages.first?.requestID
+        else {
+            XCTFail("requestControl did not send a request")
+            return
+        }
+        fixture.transport.deliver(controlMessage(.controlGranted, requestID))
+        drainMainQueue()
+
+        XCTAssertEqual(fixture.coordinator.state, .controlling)
+        fixture.coordinator.stopControl(reason: "Returned input to this Mac")
+
+        XCTAssertEqual(routeRestoreCount, 1)
+        XCTAssertEqual(fixture.coordinator.state, .connected)
+        XCTAssertTrue(
+            fixture.transport.sentMessages.contains(
+                controlMessage(.endControl, requestID)
+            )
+        )
+    }
+
+    func testPreRoutedControlSkipsDuplicateStartRouteButRestoresOnStop() {
+        let fixture = makeFixture()
+        var routeStartCount = 0
+        var routeRestoreCount = 0
+        fixture.coordinator.onControllingStarted = {
+            routeStartCount += 1
+        }
+        fixture.coordinator.onControllingStopped = {
+            routeRestoreCount += 1
+        }
+
+        XCTAssertTrue(
+            fixture.coordinator.requestControl(displayAlreadyRemote: true)
+        )
+        guard let requestID = fixture.transport.sentMessages.first?.requestID
+        else {
+            XCTFail("requestControl did not send a request")
+            return
+        }
+        fixture.transport.deliver(controlMessage(.controlGranted, requestID))
+        drainMainQueue()
+
+        XCTAssertEqual(fixture.coordinator.state, .controlling)
+        XCTAssertEqual(routeStartCount, 0)
+
+        fixture.coordinator.stopControl()
+
+        XCTAssertEqual(routeRestoreCount, 1)
+        XCTAssertEqual(fixture.coordinator.state, .connected)
+    }
+
+    func testCancellingPreRoutedWaitingControlUsesRequestCompletionForRestore() {
+        let fixture = makeFixture()
+        var routeRestoreCount = 0
+        var completionResult: Bool?
+        fixture.coordinator.onControllingStopped = {
+            routeRestoreCount += 1
+        }
+
+        XCTAssertTrue(
+            fixture.coordinator.requestControl(displayAlreadyRemote: true) {
+                completionResult = $0
+            }
+        )
+
+        fixture.coordinator.stopControl()
+
+        XCTAssertEqual(completionResult, false)
+        XCTAssertEqual(routeRestoreCount, 0)
+        XCTAssertEqual(fixture.coordinator.state, .connected)
+    }
+
+    /// A differing keyboard layout used to be denied here, before the
+    /// consent prompt. RemoteInputSink now resolves each remappable key to
+    /// its local equivalent instead, so admission no longer depends on the
+    /// two layouts matching.
+    func testMismatchedKeyboardLayoutNoLongerBlocksConsentPrompt() {
         let fixture = makeFixture(
             keyboardLayoutIdentifier: "com.apple.keylayout.US"
         )
@@ -43,13 +197,70 @@ final class ControlCoordinatorTests: XCTestCase {
         )
         drainMainQueue()
 
+        XCTAssertEqual(
+            fixture.coordinator.pendingIncomingControlRequest?.id,
+            requestID
+        )
+        XCTAssertFalse(
+            fixture.transport.sentMessages.contains(
+                controlMessage(.controlDenied, requestID)
+            )
+        )
+    }
+
+    /// A v1 peer never sends the RemoteInputEvent.character field remapping
+    /// needs, so admitting it under a differing layout would only grant
+    /// control to end it on the first remappable keystroke. Denying it here
+    /// instead, before the consent prompt, is the one case where a layout
+    /// mismatch is still denied outright.
+    func testMismatchedKeyboardLayoutFromLegacyPeerIsDeniedBeforeConsentPrompt() {
+        let fixture = makeFixture(
+            keyboardLayoutIdentifier: "com.apple.keylayout.US"
+        )
+        let requestID = UUID()
+        fixture.transport.deliver(
+            ControlMessage(
+                kind: .requestControl,
+                requestID: requestID,
+                protocolVersion: 1,
+                minimumProtocolVersion: 1,
+                keyboardLayoutIdentifier: "com.apple.keylayout.ABC"
+            )
+        )
+        drainMainQueue()
+
         XCTAssertNil(fixture.coordinator.pendingIncomingControlRequest)
         XCTAssertTrue(
             fixture.transport.sentMessages.contains(
                 controlMessage(.controlDenied, requestID)
             )
         )
-        XCTAssertTrue(fixture.coordinator.status.contains("keyboard layouts"))
+        XCTAssertTrue(fixture.coordinator.status.contains("keyboard layout"))
+    }
+
+    /// The legacy-peer gate above is specifically about a *differing*
+    /// layout, not about the peer's version by itself: a v1 peer with a
+    /// matching layout has nothing to remap and must be admitted normally.
+    func testMatchingKeyboardLayoutFromLegacyPeerIsNotDenied() {
+        let fixture = makeFixture(
+            keyboardLayoutIdentifier: "com.apple.keylayout.US"
+        )
+        let requestID = UUID()
+        fixture.transport.deliver(
+            ControlMessage(
+                kind: .requestControl,
+                requestID: requestID,
+                protocolVersion: 1,
+                minimumProtocolVersion: 1,
+                keyboardLayoutIdentifier: "com.apple.keylayout.US"
+            )
+        )
+        drainMainQueue()
+
+        XCTAssertEqual(
+            fixture.coordinator.pendingIncomingControlRequest?.id,
+            requestID
+        )
     }
 
     func testInboundAdmissionOverflowDisconnectsTransport() {
@@ -309,7 +520,7 @@ final class ControlCoordinatorTests: XCTestCase {
         XCTAssertTrue(fixture.coordinator.isRemoteInputTearingDown)
         XCTAssertFalse(fixture.coordinator.isReceivingControl)
 
-        fixture.coordinator.requestControl()
+        XCTAssertFalse(fixture.coordinator.requestControl())
         XCTAssertEqual(fixture.coordinator.state, .connected)
 
         let secondRequestID = UUID()
@@ -541,11 +752,45 @@ final class ControlCoordinatorTests: XCTestCase {
         )
     }
 
+    func testControllingMacNeedsInputMonitoringAndAccessibility() {
+        let fixture = makeFixture()
+        fixture.sink.hasAccessibilityPermission = false
+
+        XCTAssertFalse(fixture.coordinator.requestControl())
+
+        XCTAssertEqual(fixture.coordinator.state, .connected)
+        XCTAssertTrue(fixture.transport.sentMessages.isEmpty)
+        XCTAssertTrue(
+            fixture.coordinator.status.contains("Accessibility")
+        )
+    }
+
+    func testControlRequestCompletionReportsRemoteDenial() {
+        let fixture = makeFixture()
+        var outcomes: [Bool] = []
+
+        XCTAssertTrue(
+            fixture.coordinator.requestControl { outcomes.append($0) }
+        )
+        guard let requestID = fixture.transport.sentMessages.first?.requestID
+        else {
+            XCTFail("requestControl did not send a request")
+            return
+        }
+
+        fixture.transport.deliver(controlMessage(.controlDenied, requestID))
+        drainMainQueue()
+
+        XCTAssertEqual(outcomes, [false])
+        XCTAssertEqual(fixture.coordinator.state, .connected)
+    }
+
     private func makeFixture(
         localID: UUID = UUID(),
         remoteID: UUID = UUID(),
         initiallyConnected: Bool = true,
-        keyboardLayoutIdentifier: String? = nil
+        keyboardLayoutIdentifier: String? = nil,
+        seamlessControlAuthorized: Bool = false
     ) -> Fixture {
         let transport = FakeControlTransport(
             connectedPeerID: initiallyConnected ? remoteID : nil
@@ -557,7 +802,8 @@ final class ControlCoordinatorTests: XCTestCase {
             secureSession: transport,
             inputCapture: capture,
             inputSink: sink,
-            keyboardLayoutIdentifier: { keyboardLayoutIdentifier }
+            keyboardLayoutIdentifier: { keyboardLayoutIdentifier },
+            seamlessControlAuthorized: { _ in seamlessControlAuthorized }
         )
         drainMainQueue()
         transport.sentMessages.removeAll()
@@ -665,6 +911,7 @@ private final class FakeInputCapture: ControlInputCapture {
     var isCapturing = false
     var onEvent: ((RemoteInputEvent) -> Void)?
     var onEmergencyStop: (() -> Void)?
+    var onSwitchControl: (() -> Void)?
     private(set) var startCount = 0
     private(set) var stopCount = 0
 

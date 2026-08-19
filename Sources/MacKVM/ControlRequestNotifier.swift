@@ -137,9 +137,9 @@ final class ControlRequestNotifier: NSObject, UNUserNotificationCenterDelegate {
                 )
             case .menuBarIndicator:
                 // `MacKVMMenuBarLabel` observes the coordinator's pending
-                // request and visibly adds its warning symbol. This works for
-                // the LSUIElement menu-bar app, which has no Dock icon to
-                // bounce, and does not open a permission sheet mid-request.
+                // request and visibly adds its warning symbol. Keep the
+                // request in the menu-bar and main-window UI without opening
+                // a permission sheet mid-request.
                 break
             }
         }

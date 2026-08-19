@@ -24,8 +24,12 @@ public enum PeerIdentityAdmission {
     /// ordering unable to select a key for a conflicting identity.
     public static func resolve<S: Sequence>(
         _ candidates: S,
+        maximumIdentities: Int? = nil,
         identity: (S.Element) -> PeerIdentity
     ) -> [UUID: S.Element] {
+        if let maximumIdentities, maximumIdentities <= 0 {
+            return [:]
+        }
         var accepted: [UUID: S.Element] = [:]
         var acceptedIdentities: [UUID: PeerIdentity] = [:]
         var conflictingIDs = Set<UUID>()
@@ -34,6 +38,11 @@ public enum PeerIdentityAdmission {
             let candidateIdentity = identity(candidate)
             let id = candidateIdentity.id
             guard !conflictingIDs.contains(id) else { continue }
+            if acceptedIdentities[id] == nil,
+               let maximumIdentities,
+               acceptedIdentities.count >= maximumIdentities {
+                continue
+            }
             switch collision(
                 for: candidateIdentity,
                 existing: acceptedIdentities[id]
@@ -60,22 +69,41 @@ public enum PeerIdentityAdmission {
         _ candidates: S,
         pinnedKeys: [UUID: Data],
         maximumCandidatesPerID: Int = 8,
+        preferred: ((S.Element) -> Bool)? = nil,
         identity: (S.Element) -> PeerIdentity
     ) -> [UUID: [S.Element]] {
         guard maximumCandidatesPerID > 0 else { return [:] }
 
-        var accepted: [UUID: [S.Element]] = [:]
+        var preferredCandidates: [UUID: S.Element] = [:]
+        var fallbackCandidates: [UUID: [S.Element]] = [:]
         for candidate in candidates {
             let candidateIdentity = identity(candidate)
             guard pinnedKeys[candidateIdentity.id]
                     == candidateIdentity.signingPublicKey else {
                 continue
             }
-            guard accepted[candidateIdentity.id, default: []].count
-                    < maximumCandidatesPerID else {
-                continue
+            let id = candidateIdentity.id
+            if preferred?(candidate) == true {
+                // Keep the most recently observed preferred route without
+                // allowing duplicate TXT records to grow this map.
+                preferredCandidates[id] = candidate
+            } else if fallbackCandidates[id, default: []].count
+                        < maximumCandidatesPerID {
+                fallbackCandidates[id, default: []].append(candidate)
             }
-            accepted[candidateIdentity.id, default: []].append(candidate)
+        }
+
+        var accepted: [UUID: [S.Element]] = [:]
+        let ids = Set(preferredCandidates.keys).union(fallbackCandidates.keys)
+        for id in ids {
+            var candidatesForID: [S.Element] = []
+            if let preferredCandidate = preferredCandidates[id] {
+                candidatesForID.append(preferredCandidate)
+            }
+            if let fallback = fallbackCandidates[id] {
+                candidatesForID.append(contentsOf: fallback)
+            }
+            accepted[id] = Array(candidatesForID.prefix(maximumCandidatesPerID))
         }
         return accepted
     }

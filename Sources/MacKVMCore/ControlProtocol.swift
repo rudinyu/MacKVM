@@ -126,8 +126,16 @@ public struct ControlMessage: Codable, Equatable, Sendable {
 /// A small version range is enough for control-message negotiation.  A
 /// missing range is treated as the legacy v1 peer so upgrades remain
 /// compatible with the released protocol.
+///
+/// v2 adds character-based keyboard remapping: a v2 keyDown carries the
+/// character its own layout produced, which a v2 receiver uses to find the
+/// same character on a differing local layout. `minimumCompatibleVersion`
+/// stays at 1 so a v1 peer remains fully compatible for same-layout control
+/// and every non-remappable key; `ControlCoordinator` separately denies a
+/// request only when the two layouts actually differ and the peer's version
+/// shows it cannot supply the character field remapping needs.
 public enum ControlProtocolCompatibility {
-    public static let currentVersion = 1
+    public static let currentVersion = 2
     public static let minimumCompatibleVersion = 1
 
     public static func isCompatible(

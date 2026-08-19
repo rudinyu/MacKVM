@@ -17,4 +17,51 @@ final class PeerDiscoveryServiceTests: XCTestCase {
             )
         )
     }
+
+    func testPairingCompletionRequiresSignedTransportAcknowledgement() {
+        XCTAssertTrue(
+            PairingCompletionPolicy.allowsPersistence(
+                localAccepted: true,
+                remoteAccepted: true,
+                localCompletionSent: true,
+                remoteCompletionReceived: true,
+                acknowledgementReceived: true,
+                acknowledgementDelivered: true,
+                closeBarrierConfirmedByPeer: true
+            )
+        )
+        XCTAssertFalse(
+            PairingCompletionPolicy.allowsPersistence(
+                localAccepted: true,
+                remoteAccepted: true,
+                localCompletionSent: true,
+                remoteCompletionReceived: true,
+                acknowledgementReceived: false,
+                acknowledgementDelivered: true,
+                closeBarrierConfirmedByPeer: true
+            )
+        )
+        XCTAssertFalse(
+            PairingCompletionPolicy.allowsPersistence(
+                localAccepted: true,
+                remoteAccepted: true,
+                localCompletionSent: true,
+                remoteCompletionReceived: true,
+                acknowledgementReceived: true,
+                acknowledgementDelivered: false,
+                closeBarrierConfirmedByPeer: true
+            )
+        )
+        XCTAssertFalse(
+            PairingCompletionPolicy.allowsPersistence(
+                localAccepted: true,
+                remoteAccepted: true,
+                localCompletionSent: true,
+                remoteCompletionReceived: true,
+                acknowledgementReceived: true,
+                acknowledgementDelivered: true,
+                closeBarrierConfirmedByPeer: false
+            )
+        )
+    }
 }
