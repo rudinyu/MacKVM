@@ -30,6 +30,156 @@ final class ControlCoordinatorTests: XCTestCase {
         )
     }
 
+    func testSeamlessAuthorizationAutomaticallyGrantsControl() {
+        let fixture = makeFixture(seamlessControlAuthorized: true)
+        let requestID = UUID()
+
+        fixture.transport.deliver(controlMessage(.requestControl, requestID))
+        drainMainQueue()
+
+        XCTAssertNil(fixture.coordinator.pendingIncomingControlRequest)
+        XCTAssertTrue(fixture.coordinator.isReceivingControl)
+        XCTAssertEqual(fixture.sink.beginCount, 1)
+        XCTAssertEqual(
+            fixture.transport.sentMessages.last,
+            controlMessage(.controlGranted, requestID)
+        )
+        XCTAssertTrue(
+            fixture.coordinator.status.contains("Automatically allowing")
+                || fixture.coordinator.status.contains("Remote control granted")
+        )
+    }
+
+    func testStoppingAWaitingControlRequestRestoresTheLocalRoute() {
+        let fixture = makeFixture()
+        var routeRestoreCount = 0
+        fixture.coordinator.onControllingStopped = {
+            routeRestoreCount += 1
+        }
+
+        XCTAssertTrue(fixture.coordinator.requestControl())
+        XCTAssertEqual(fixture.coordinator.state, .suspended)
+
+        fixture.coordinator.stopControl()
+
+        XCTAssertEqual(routeRestoreCount, 1)
+        XCTAssertEqual(fixture.coordinator.state, .connected)
+    }
+
+    func testSwitchHotKeyStartsControlWhenConnected() {
+        let fixture = makeFixture()
+
+        fixture.capture.onSwitchControl?()
+
+        XCTAssertEqual(fixture.coordinator.state, .suspended)
+        XCTAssertEqual(fixture.transport.sentMessages.count, 1)
+        XCTAssertEqual(
+            fixture.transport.sentMessages.first?.kind,
+            .requestControl
+        )
+    }
+
+    func testSwitchHotKeyReturnsControlLocally() {
+        let fixture = makeFixture()
+        XCTAssertTrue(fixture.coordinator.requestControl())
+        guard let requestID = fixture.transport.sentMessages.first?.requestID
+        else {
+            XCTFail("requestControl did not send a request")
+            return
+        }
+        fixture.transport.deliver(controlMessage(.controlGranted, requestID))
+        drainMainQueue()
+
+        fixture.capture.onSwitchControl?()
+
+        XCTAssertEqual(fixture.coordinator.state, .connected)
+        XCTAssertTrue(
+            fixture.transport.sentMessages.contains(
+                controlMessage(.endControl, requestID)
+            )
+        )
+    }
+
+    func testStoppingActiveControlRestoresTheLocalRoute() {
+        let fixture = makeFixture()
+        var routeRestoreCount = 0
+        fixture.coordinator.onControllingStopped = {
+            routeRestoreCount += 1
+        }
+
+        XCTAssertTrue(fixture.coordinator.requestControl())
+        guard let requestID = fixture.transport.sentMessages.first?.requestID
+        else {
+            XCTFail("requestControl did not send a request")
+            return
+        }
+        fixture.transport.deliver(controlMessage(.controlGranted, requestID))
+        drainMainQueue()
+
+        XCTAssertEqual(fixture.coordinator.state, .controlling)
+        fixture.coordinator.stopControl(reason: "Returned input to this Mac")
+
+        XCTAssertEqual(routeRestoreCount, 1)
+        XCTAssertEqual(fixture.coordinator.state, .connected)
+        XCTAssertTrue(
+            fixture.transport.sentMessages.contains(
+                controlMessage(.endControl, requestID)
+            )
+        )
+    }
+
+    func testPreRoutedControlSkipsDuplicateStartRouteButRestoresOnStop() {
+        let fixture = makeFixture()
+        var routeStartCount = 0
+        var routeRestoreCount = 0
+        fixture.coordinator.onControllingStarted = {
+            routeStartCount += 1
+        }
+        fixture.coordinator.onControllingStopped = {
+            routeRestoreCount += 1
+        }
+
+        XCTAssertTrue(
+            fixture.coordinator.requestControl(displayAlreadyRemote: true)
+        )
+        guard let requestID = fixture.transport.sentMessages.first?.requestID
+        else {
+            XCTFail("requestControl did not send a request")
+            return
+        }
+        fixture.transport.deliver(controlMessage(.controlGranted, requestID))
+        drainMainQueue()
+
+        XCTAssertEqual(fixture.coordinator.state, .controlling)
+        XCTAssertEqual(routeStartCount, 0)
+
+        fixture.coordinator.stopControl()
+
+        XCTAssertEqual(routeRestoreCount, 1)
+        XCTAssertEqual(fixture.coordinator.state, .connected)
+    }
+
+    func testCancellingPreRoutedWaitingControlUsesRequestCompletionForRestore() {
+        let fixture = makeFixture()
+        var routeRestoreCount = 0
+        var completionResult: Bool?
+        fixture.coordinator.onControllingStopped = {
+            routeRestoreCount += 1
+        }
+
+        XCTAssertTrue(
+            fixture.coordinator.requestControl(displayAlreadyRemote: true) {
+                completionResult = $0
+            }
+        )
+
+        fixture.coordinator.stopControl()
+
+        XCTAssertEqual(completionResult, false)
+        XCTAssertEqual(routeRestoreCount, 0)
+        XCTAssertEqual(fixture.coordinator.state, .connected)
+    }
+
     /// A differing keyboard layout used to be denied here, before the
     /// consent prompt. RemoteInputSink now resolves each remappable key to
     /// its local equivalent instead, so admission no longer depends on the
@@ -370,7 +520,7 @@ final class ControlCoordinatorTests: XCTestCase {
         XCTAssertTrue(fixture.coordinator.isRemoteInputTearingDown)
         XCTAssertFalse(fixture.coordinator.isReceivingControl)
 
-        fixture.coordinator.requestControl()
+        XCTAssertFalse(fixture.coordinator.requestControl())
         XCTAssertEqual(fixture.coordinator.state, .connected)
 
         let secondRequestID = UUID()
@@ -602,11 +752,45 @@ final class ControlCoordinatorTests: XCTestCase {
         )
     }
 
+    func testControllingMacNeedsInputMonitoringAndAccessibility() {
+        let fixture = makeFixture()
+        fixture.sink.hasAccessibilityPermission = false
+
+        XCTAssertFalse(fixture.coordinator.requestControl())
+
+        XCTAssertEqual(fixture.coordinator.state, .connected)
+        XCTAssertTrue(fixture.transport.sentMessages.isEmpty)
+        XCTAssertTrue(
+            fixture.coordinator.status.contains("Accessibility")
+        )
+    }
+
+    func testControlRequestCompletionReportsRemoteDenial() {
+        let fixture = makeFixture()
+        var outcomes: [Bool] = []
+
+        XCTAssertTrue(
+            fixture.coordinator.requestControl { outcomes.append($0) }
+        )
+        guard let requestID = fixture.transport.sentMessages.first?.requestID
+        else {
+            XCTFail("requestControl did not send a request")
+            return
+        }
+
+        fixture.transport.deliver(controlMessage(.controlDenied, requestID))
+        drainMainQueue()
+
+        XCTAssertEqual(outcomes, [false])
+        XCTAssertEqual(fixture.coordinator.state, .connected)
+    }
+
     private func makeFixture(
         localID: UUID = UUID(),
         remoteID: UUID = UUID(),
         initiallyConnected: Bool = true,
-        keyboardLayoutIdentifier: String? = nil
+        keyboardLayoutIdentifier: String? = nil,
+        seamlessControlAuthorized: Bool = false
     ) -> Fixture {
         let transport = FakeControlTransport(
             connectedPeerID: initiallyConnected ? remoteID : nil
@@ -618,7 +802,8 @@ final class ControlCoordinatorTests: XCTestCase {
             secureSession: transport,
             inputCapture: capture,
             inputSink: sink,
-            keyboardLayoutIdentifier: { keyboardLayoutIdentifier }
+            keyboardLayoutIdentifier: { keyboardLayoutIdentifier },
+            seamlessControlAuthorized: { _ in seamlessControlAuthorized }
         )
         drainMainQueue()
         transport.sentMessages.removeAll()
@@ -726,6 +911,7 @@ private final class FakeInputCapture: ControlInputCapture {
     var isCapturing = false
     var onEvent: ((RemoteInputEvent) -> Void)?
     var onEmergencyStop: (() -> Void)?
+    var onSwitchControl: (() -> Void)?
     private(set) var startCount = 0
     private(set) var stopCount = 0
 

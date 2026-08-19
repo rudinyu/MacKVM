@@ -4,13 +4,14 @@
 
 MacKVM is the native macOS client for the RemoteMac self-hosted relay.
 
-MacKVM is a native macOS menu bar app for sharing one keyboard, mouse, and
-monitor between two Macs on the same local network.
+MacKVM is a native macOS app with both a menu-bar entry and a regular window
+for sharing one keyboard, mouse, and optional monitor switching between two
+Macs on the same local network.
 
 The current MVP provides:
 
-- a native high-resolution app icon and an always-visible keyboard icon in the
-  macOS menu bar while MacKVM is running; it adds a warning symbol for a
+- a native high-resolution app icon, a KVM/display-sharing icon in the macOS
+  menu bar, and a regular Dock/window entry; it adds a warning symbol for a
   pending incoming control request;
 - a persistent local device identity;
 - Bonjour discovery on the local network;
@@ -19,6 +20,8 @@ The current MVP provides:
 - persistent public-key pinning for paired devices;
 - persistent paired-device profiles with editable friendly names, detected Mac
   models, last successful connection times, and SHA-256 key fingerprints;
+- per-paired-Mac seamless control authorization, enabled when pairing
+  completes and revocable from **Paired device information**;
 - a **Copy support information** action that exports public diagnostics without
   private keys, credentials, or network endpoints;
 - a persistent authenticated session using signed ephemeral P-256 key exchange,
@@ -44,7 +47,9 @@ The current MVP provides:
 - native macOS incoming-control notifications with Allow, Deny, and Review
   actions, so the receiver can respond while the menu is closed;
 - local input suppression while controlling and an emergency
-  `Control-Option-Command-Escape` return shortcut;
+  `Control-Option-Command-Escape` return shortcut, plus a
+  `Control-Option-Command-K` toggle shortcut for sharing and returning the
+  keyboard and mouse;
 - native DDC/CI input switching through IOKit on both Apple Silicon and Intel,
   including display discovery, stable display selection, diagnostics, and a
   manual OSD fallback when the monitor or cable does not expose DDC/CI.
@@ -53,8 +58,8 @@ The current MVP provides:
 
 - macOS 13 or later
 - Swift 6 toolchain (Xcode is preferred when installed)
-- An external monitor and cable that expose VESA DDC/CI (enable DDC/CI in the
-  monitor OSD when the option is available)
+- An external monitor and cable that expose VESA DDC/CI are optional; they are
+  required only for automatic monitor input switching.
 
 MacKVM sends the input-source VCP command directly through IOKit: Apple
 Silicon uses the display's `IOAVService`, while Intel uses the display's
@@ -98,7 +103,7 @@ The package is built from a fresh staging directory and writes a portable
 SHA-256 sidecar next to the DMG. Verify the pair from the `dist` directory:
 
 ```sh
-(cd dist && shasum -a 256 -c MacKVM-0.9.5-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-0.11.0-universal.dmg.sha256)
 ```
 
 For distribution to another Mac, sign with a Developer ID Application
@@ -139,12 +144,13 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
 
 The app bundle is the supported launch path because it contains the Bonjour
 and Local Network privacy metadata required by macOS. Run it on both Macs while
-they are connected to the same local network. For pointer mapping, set the
-MA270U as the main display on both Macs.
+they are connected to the same local network. Pairing and remote input do not
+require an external display; only pointer mapping and DDC switching do.
 
 Before the first launch, copy the matching app into `/Applications`. MacKVM
-appears as a keyboard icon in the menu bar rather than as a regular Dock app.
-Open that menu and complete **Set up this Mac** on each computer:
+appears with a KVM/display-sharing icon in the menu bar and as a regular Dock
+app with a full control window. Open either entry and complete **Set up this
+Mac** on each computer:
 
 1. Select **Enable Local Network**, answer the macOS prompt, then select
    **I handled the macOS prompt**.
@@ -160,10 +166,15 @@ Open that menu and complete **Set up this Mac** on each computer:
    control request, so it does not consume the 15-second consent window.
 6. Enable **Launch MacKVM at Login** in the menu if the menu-bar icon should
    return automatically after signing in.
+   Login-item launches keep the full window hidden so startup does not steal
+   focus; open it from the KVM menu-bar icon or activate MacKVM from the Dock.
 7. In **Paired device information**, review or edit a paired Mac's friendly
    name. The model, last successful connection time, and public-key fingerprint
    are retained across relaunches. Select **Copy support information** when
    reporting an issue; the copied text contains only public diagnostic values.
+   A newly paired Mac is automatically authorized for seamless control on this
+   Mac; turn off **Automatically allow control from this Mac** there if each
+   control request should require Allow again.
 
 The menu follows the Mac's language and includes English and Traditional
 Chinese resources. The three required macOS permission descriptions are also
@@ -190,26 +201,54 @@ In the MacKVM menu:
 6. Use **Show this Mac** and **Show other Mac** to verify switching before
    starting remote control. If it fails, read the **DDC diagnostic**, enable
    DDC/CI in the MA270U OSD, and use the OSD input menu as the fallback.
+   On the M5 Pro, **Share keyboard and mouse with [Intel Mac]** combines the
+   display route with the control request; the Intel Mac selects **Allow**
+   unless seamless control was enabled for the paired M5 Pro.
 
-When one Mac selects **Request control of other Mac**, the receiving Mac must
-select **Allow** or **Deny**. If its MacKVM menu is closed, macOS shows a
+After the receiving Mac accepts the matching code, the initiating Mac must
+compare the same code and select **Confirm code**. Both signed decisions are
+required before MacKVM automatically attempts to connect the encrypted
+session. If the session remains idle, select **Connect** on a paired row. When
+one Mac selects **Request keyboard and mouse control**, the
+controlling Mac must have both Input Monitoring and Accessibility so its
+active event tap can capture and suppress the physical input. The receiving
+Mac must also have Accessibility before it selects **Allow** or **Deny**. If its MacKVM menu is closed, macOS shows a
 native notification with **Allow**, **Deny**, and **Review in MacKVM** instead.
 **Review in MacKVM** opens an explicit Allow/Deny dialog. Each action is checked
 against the live request ID and a fresh device-local notification nonce, so an
 expired notification cannot start control. **Allow** requires macOS
 authentication when the receiver is locked. Only the explicit **Enable** setup
 action can show the optional macOS notification-permission prompt; otherwise
-MacKVM falls back to a visible menu-bar warning and the menu controls. It can always
-select **Stop remote control** to release
-injected keys/buttons and return control locally. If macOS notifications are
-disabled, its keyboard menu-bar icon shows a warning symbol and the same
+MacKVM falls back to a visible menu-bar warning and the window/menu controls. It can always
+select **Return keyboard and mouse to [M5 Mac]** to release injected
+keys/buttons and return control to the controller. If macOS notifications are
+disabled, its KVM menu-bar icon shows a warning symbol and the same
 request remains in the menu.
+
+After pairing, the receiving Mac enables seamless control for that pinned peer
+by default, so the first request does not depend on seeing the receiving
+display or sharing a second keyboard. This is a local one-time authorization,
+not a wire-level grant; disable it from **Paired device information** to return
+to per-request Allow prompts. Selecting **Show this Mac** stops any active or
+waiting remote-control request before restoring the local display and keyboard.
+
+For the MA270U wiring, the M5 Pro is the controller because the physical
+keyboard and mouse are connected to it. After sharing starts, press
+**Control-Option-Command-Escape** on the M5 Pro at any time to interrupt the
+session and return the keyboard and mouse locally. To switch back from the
+Intel Mac, open its MacKVM menu and select **Return keyboard and mouse to [M5
+Mac]**; the Intel receiver releases input and the monitor route returns to the
+M5 Pro.
+The global **Control-Option-Command-K** shortcut toggles sharing without
+opening the menu: it starts a request while idle and returns input while
+controlling or receiving.
 
 After an authenticated transport loss, MacKVM releases local input immediately
 and retries the last user-selected peer with a bounded 0/1/2/4…30-second
 backoff. A deliberate **Disconnect**, **Forget**, or **Quit** clears that
-reconnect intent. Pairing is not repeated, but control consent must be granted
-again after a reconnect. If the keyboard layout changes while control is live,
+reconnect intent. Pairing is not repeated; a paired peer with seamless control
+authorization can resume control without another prompt, while an opted-out
+peer must be granted again. If the keyboard layout changes while control is live,
 the receiver stops remote input and asks both users to choose the same macOS
 input source before trying again.
 

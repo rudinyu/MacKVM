@@ -3,7 +3,7 @@
 [Architecture](ARCHITECTURE.md) · [Installation guide](INSTALL.md) ·
 [Security status](SECURITY.md) · [繁體中文](ROADMAP.zh-TW.md)
 
-This roadmap is written against the 0.9.5 source tree. Every gap below was
+This roadmap is written against the 0.11.0 source tree. Every gap below was
 confirmed in code rather than inferred from the documentation, and each item
 records the files a change would start from.
 
@@ -23,7 +23,7 @@ request/consent round trip for every switch, and maps only one display.
 | Area | Current behavior | Starting point |
 | --- | --- | --- |
 | Forwarded input | Keyboard (with cross-layout remapping), mouse, scroll (with phase/momentum), and an allowlisted set of media keys; no clipboard yet | [`RemoteInputProtocol.swift:3`](Sources/MacKVMCore/RemoteInputProtocol.swift:3) |
-| Switching | Menu → Request → remote Allow, with a 15-second window | [`ControlCoordinator.swift:163`](Sources/MacKVM/ControlCoordinator.swift:163) |
+| Switching | Menu → Request → local one-time authorization for newly paired peers; Allow/Deny remains available when revoked | [`ControlCoordinator.swift:163`](Sources/MacKVM/ControlCoordinator.swift:163) |
 | Pointer mapping | Main display only; other screens clamp to its edge | [`InputServices.swift:1154`](Sources/MacKVM/InputServices.swift:1154) |
 | Peer count | One peer at a time, arbitrated by UUID comparison | [`PeerArbitration.swift:4`](Sources/MacKVMCore/PeerArbitration.swift:4) |
 | Monitor switching | Native DDC/CI through IOAVService (Apple Silicon) or IOI2C (Intel); OSD fallback when unavailable | [`Sources/MacKVM/NativeDDCService.swift`](Sources/MacKVM/NativeDDCService.swift) |
@@ -77,31 +77,34 @@ backpressure work against `InboundPayloadBudget`.
 
 ### F2. Edge crossing and pre-authorized peers
 
-Every switch today runs the full request and consent exchange with a
-15-second timeout, and the receiving Mac must press **Allow**. That friction
-dominates daily use.
+Edge crossing is still missing, but the per-peer pre-authorization layer is now
+implemented. New pairings enable a receiver-side one-time authorization by
+default, and the receiver can revoke it from **Paired device information**.
+When it is disabled, the existing 15-second request and explicit **Allow**
+flow remains in place. This removes the display/input deadlock for daily use
+without moving consent into the wire protocol.
 
 The goal is switching by pushing the pointer past the screen edge. This
 conflicts directly with the current per-session consent model, so it should be
 built in explicit layers:
 
-1. Add a per-peer `seamlessControlAuthorized` flag to
+1. The per-peer `seamlessControlAuthorized` flag in
    [`PairedPeerProfile.swift`](Sources/MacKVMCore/PairedPeerProfile.swift),
-   granted once by the receiver and revocable at any time from the existing
-   **Paired device information** menu section.
+   enabled by a completed pairing and revocable at any time from the existing
+   **Paired device information** menu section, is complete.
 2. When the flag is set, `handleControlRequest`
    ([`ControlCoordinator.swift:468`](Sources/MacKVM/ControlCoordinator.swift:468))
    takes a fast path that grants without prompting. Without the flag, the
-   current flow is unchanged.
+   current flow is unchanged. This layer is complete.
 3. Detect edge dwell in `InputCaptureService.pointerEvent` and trigger a
    control request from there; `MonitorController` follows with the DDC input
    switch.
 4. The `⌃⌥⌘Esc` emergency return must keep working in seamless mode. It is the
    only escape hatch and cannot be traded away for latency.
 
-`SECURITY.md` must state plainly that enabling seamless mode downgrades
-per-session consent to a one-time authorization, leaving the local network and
-the pinned key as the trust boundary.
+`SECURITY.md` states plainly that enabling seamless mode downgrades per-session
+consent to a one-time authorization, leaving the local network and the pinned
+key as the trust boundary.
 
 ### F3. Media and system key forwarding — completed
 

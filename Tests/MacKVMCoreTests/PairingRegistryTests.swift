@@ -20,11 +20,27 @@ final class PairingRegistryTests: XCTestCase {
         super.tearDown()
     }
 
-    func testAddAndRemovePairing() {
-        let registry = PairingRegistry(
+    private func waitForPersistence(
+        timeout: TimeInterval = 2,
+        where condition: () -> Bool
+    ) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        XCTAssertTrue(condition())
+    }
+
+    private func makeRegistry(storageKey: String) -> PairingRegistry {
+        PairingRegistry(
             defaults: defaults,
-            storageKey: "paired"
+            storageKey: storageKey,
+            persistenceApplicationID: suiteName
         )
+    }
+
+    func testAddAndRemovePairing() {
+        let registry = makeRegistry(storageKey: "paired")
         let peerID = UUID()
         let peer = PeerIdentity(
             id: peerID,
@@ -45,10 +61,7 @@ final class PairingRegistryTests: XCTestCase {
     }
 
     func testRemoveAllClearsEveryPairing() {
-        let registry = PairingRegistry(
-            defaults: defaults,
-            storageKey: "all"
-        )
+        let registry = makeRegistry(storageKey: "all")
         let peers = (0..<3).map { index in
             PeerIdentity(
                 name: "Mac \(index)",
@@ -65,10 +78,7 @@ final class PairingRegistryTests: XCTestCase {
     }
 
     func testRevocationGenerationRejectsAStaleAdd() {
-        let registry = PairingRegistry(
-            defaults: defaults,
-            storageKey: "generation"
-        )
+        let registry = makeRegistry(storageKey: "generation")
         let peer = PeerIdentity(
             name: "Desk Mac",
             signingPublicKey: P256.Signing.PrivateKey()
@@ -89,6 +99,22 @@ final class PairingRegistryTests: XCTestCase {
         XCTAssertTrue(registry.contains(peer.id))
     }
 
+    func testRevocationIsDurableBeforeReturning() {
+        let peer = PeerIdentity(
+            name: "Forget Me",
+            signingPublicKey: P256.Signing.PrivateKey()
+                .publicKey.x963Representation
+        )
+        let registry = makeRegistry(storageKey: "durable-revocation")
+        registry.add(peer)
+
+        registry.revoke(peer.id)
+
+        let reloaded = makeRegistry(storageKey: "durable-revocation")
+        XCTAssertFalse(reloaded.contains(peer.id))
+        XCTAssertNil(reloaded.profile(for: peer.id))
+    }
+
     func testPairingsPersistAcrossRegistryInstances() {
         let peerID = UUID()
         let peer = PeerIdentity(
@@ -97,15 +123,12 @@ final class PairingRegistryTests: XCTestCase {
             signingPublicKey: P256.Signing.PrivateKey()
                 .publicKey.x963Representation
         )
-        PairingRegistry(
-            defaults: defaults,
-            storageKey: "paired"
-        ).add(peer)
+        makeRegistry(storageKey: "paired").add(peer)
+        waitForPersistence {
+            self.defaults.data(forKey: "paired") != nil
+        }
 
-        let reloaded = PairingRegistry(
-            defaults: defaults,
-            storageKey: "paired"
-        )
+        let reloaded = makeRegistry(storageKey: "paired")
 
         XCTAssertEqual(reloaded.pairedPeerIDs, [peerID])
         XCTAssertEqual(
@@ -124,10 +147,7 @@ final class PairingRegistryTests: XCTestCase {
         )
         let firstConnection = Date(timeIntervalSince1970: 1_700_000_000)
         let secondConnection = Date(timeIntervalSince1970: 1_700_000_123)
-        let registry = PairingRegistry(
-            defaults: defaults,
-            storageKey: "profiles"
-        )
+        let registry = makeRegistry(storageKey: "profiles")
 
         registry.add(peer, model: "MacBookPro18,3")
         XCTAssertEqual(registry.profile(for: peerID)?.friendlyName, "M5 Pro")
@@ -159,19 +179,132 @@ final class PairingRegistryTests: XCTestCase {
             )
         )
 
-        let reloaded = PairingRegistry(
-            defaults: defaults,
-            storageKey: "profiles"
-        )
+        waitForPersistence {
+            guard let data = self.defaults.data(forKey: "profiles.profiles"),
+                  let profiles = try? JSONDecoder().decode(
+                      [String: PairedPeerProfile].self,
+                      from: data
+                  ) else {
+                return false
+            }
+            return profiles.values.contains {
+                $0.friendlyName == "Studio M5"
+                    && $0.model == "MacBookPro18,4"
+                    && $0.lastConnectedAt == secondConnection
+            }
+        }
+
+        let reloaded = makeRegistry(storageKey: "profiles")
         let profile = reloaded.profile(for: peerID)
         XCTAssertEqual(profile?.friendlyName, "Studio M5")
         XCTAssertEqual(profile?.model, "MacBookPro18,4")
         XCTAssertEqual(profile?.lastConnectedAt, secondConnection)
+        XCTAssertTrue(profile?.seamlessControlAuthorized ?? false)
         XCTAssertEqual(
             profile?.keyFingerprint,
             PeerKeyFingerprint.string(for: peer.signingPublicKey)
         )
         XCTAssertEqual(profile?.keyFingerprint.split(separator: ":").count, 32)
+    }
+
+    func testSeamlessControlAuthorizationIsPerPeerAndPersists() {
+        let first = PeerIdentity(
+            name: "M5 Pro",
+            signingPublicKey: P256.Signing.PrivateKey()
+                .publicKey.x963Representation
+        )
+        let second = PeerIdentity(
+            name: "Intel Mac",
+            signingPublicKey: P256.Signing.PrivateKey()
+                .publicKey.x963Representation
+        )
+        let registry = makeRegistry(storageKey: "seamless")
+        registry.add(first)
+        registry.add(second)
+        XCTAssertTrue(
+            registry.updateSeamlessControlAuthorization(
+                for: second.id,
+                authorized: false
+            )
+        )
+
+        XCTAssertTrue(registry.seamlessControlAuthorized(for: first.id))
+        XCTAssertFalse(registry.seamlessControlAuthorized(for: second.id))
+        XCTAssertTrue(
+            registry.updateSeamlessControlAuthorization(
+                for: first.id,
+                authorized: true
+            )
+        )
+
+        XCTAssertTrue(registry.seamlessControlAuthorized(for: first.id))
+        XCTAssertFalse(registry.seamlessControlAuthorized(for: second.id))
+
+        let reloaded = makeRegistry(storageKey: "seamless")
+        XCTAssertTrue(reloaded.seamlessControlAuthorized(for: first.id))
+
+        reloaded.revoke(first.id)
+        XCTAssertFalse(reloaded.seamlessControlAuthorized(for: first.id))
+    }
+
+    func testReplacingSigningKeyDoesNotReuseTheOldProfileAuthorization() {
+        let peerID = UUID()
+        let first = PeerIdentity(
+            id: peerID,
+            name: "Old Mac",
+            signingPublicKey: P256.Signing.PrivateKey()
+                .publicKey.x963Representation
+        )
+        let replacement = PeerIdentity(
+            id: peerID,
+            name: "Replacement Mac",
+            signingPublicKey: P256.Signing.PrivateKey()
+                .publicKey.x963Representation
+        )
+        let registry = makeRegistry(storageKey: "profile-key-replacement")
+
+        registry.add(first)
+        XCTAssertTrue(
+            registry.updateSeamlessControlAuthorization(
+                for: peerID,
+                authorized: false
+            )
+        )
+
+        registry.add(replacement)
+
+        XCTAssertEqual(
+            registry.profile(for: peerID)?.friendlyName,
+            replacement.name
+        )
+        XCTAssertTrue(registry.seamlessControlAuthorized(for: peerID))
+        XCTAssertEqual(
+            registry.profile(for: peerID)?.signingPublicKey,
+            replacement.signingPublicKey
+        )
+    }
+
+    func testLegacyProfileDefaultsSeamlessAuthorizationToFalse() throws {
+        let peerID = UUID()
+        let publicKey = P256.Signing.PrivateKey()
+            .publicKey.x963Representation
+        let legacyProfile = PairedPeerProfile(
+            peerID: peerID,
+            friendlyName: "Legacy Mac",
+            model: "MacBookPro16,1",
+            signingPublicKey: publicKey
+        )
+        let encoded = try JSONEncoder().encode(legacyProfile)
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+        var withoutNewField = object
+        withoutNewField.removeValue(forKey: "seamlessControlAuthorized")
+        let decoded = try JSONDecoder().decode(
+            PairedPeerProfile.self,
+            from: JSONSerialization.data(withJSONObject: withoutNewField)
+        )
+        XCTAssertFalse(decoded.seamlessControlAuthorized)
     }
 
     func testLegacyPairingWithoutProfileDoesNotSynthesizePersistentMetadata() throws {
@@ -183,10 +316,7 @@ final class PairingRegistryTests: XCTestCase {
             forKey: "legacy"
         )
 
-        let registry = PairingRegistry(
-            defaults: defaults,
-            storageKey: "legacy"
-        )
+        let registry = makeRegistry(storageKey: "legacy")
 
         XCTAssertTrue(registry.contains(peerID))
         XCTAssertNil(registry.profile(for: peerID))
@@ -212,10 +342,7 @@ final class PairingRegistryTests: XCTestCase {
             signingPublicKey: P256.Signing.PrivateKey()
                 .publicKey.x963Representation
         )
-        let registry = PairingRegistry(
-            defaults: defaults,
-            storageKey: "legacy-profile"
-        )
+        let registry = makeRegistry(storageKey: "legacy-profile")
 
         registry.add(peer)
         let generatedName = "Mac \(peerID.uuidString.prefix(8))"
@@ -244,10 +371,7 @@ final class PairingRegistryTests: XCTestCase {
             signingPublicKey: P256.Signing.PrivateKey()
                 .publicKey.x963Representation
         )
-        let registry = PairingRegistry(
-            defaults: defaults,
-            storageKey: "profile-removal"
-        )
+        let registry = makeRegistry(storageKey: "profile-removal")
         registry.add(peer, model: "MacBookPro16,1")
         XCTAssertNotNil(registry.profile(for: peer.id))
 
@@ -258,10 +382,7 @@ final class PairingRegistryTests: XCTestCase {
     }
 
     func testConcurrentAddsPreserveEveryPeer() {
-        let registry = PairingRegistry(
-            defaults: defaults,
-            storageKey: "concurrent"
-        )
+        let registry = makeRegistry(storageKey: "concurrent")
         let peers = (0..<32).map { index in
             PeerIdentity(
                 name: "Mac \(index)",
@@ -287,6 +408,40 @@ final class PairingRegistryTests: XCTestCase {
         XCTAssertEqual(registry.pairedPeerIDs, Set(peers.map(\.id)))
     }
 
+    func testAsynchronousAddPublishesTrustBeforeTheDefaultsWriteCompletes() {
+        let peer = PeerIdentity(
+            name: "Async Pairing Mac",
+            signingPublicKey: P256.Signing.PrivateKey()
+                .publicKey.x963Representation
+        )
+        let registry = makeRegistry(storageKey: "async-pairing")
+
+        XCTAssertTrue(
+            registry.add(
+                peer,
+                ifGeneration: registry.generation(for: peer.id),
+                persistImmediately: false
+            )
+        )
+        XCTAssertEqual(registry.publicKey(for: peer.id), peer.signingPublicKey)
+        XCTAssertEqual(registry.profile(for: peer.id)?.friendlyName, peer.name)
+
+        let persisted = expectation(description: "asynchronous pairing write")
+        DispatchQueue.global().async {
+            for _ in 0..<200 {
+                if self.defaults.data(forKey: "async-pairing") != nil {
+                    persisted.fulfill()
+                    return
+                }
+                usleep(10_000)
+            }
+        }
+        wait(for: [persisted], timeout: 3)
+
+        let reloaded = makeRegistry(storageKey: "async-pairing")
+        XCTAssertEqual(reloaded.publicKey(for: peer.id), peer.signingPublicKey)
+    }
+
     func testCorruptPreferencesWithCaseVariantUUIDsDoNotCrash() throws {
         let peerID = UUID()
         let firstKey = P256.Signing.PrivateKey().publicKey.x963Representation
@@ -297,10 +452,7 @@ final class PairingRegistryTests: XCTestCase {
         ]
         defaults.set(try JSONEncoder().encode(stored), forKey: "corrupt")
 
-        let registry = PairingRegistry(
-            defaults: defaults,
-            storageKey: "corrupt"
-        )
+        let registry = makeRegistry(storageKey: "corrupt")
 
         XCTAssertNoThrow(_ = registry.pairedPeers)
         XCTAssertTrue(registry.pairedPeerIDs.isEmpty)

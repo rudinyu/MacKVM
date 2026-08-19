@@ -43,9 +43,9 @@
 <body>
   <main>
     <header>
-      <div class="badge">MacKVM 0.9.5</div>
+      <div class="badge">MacKVM 0.11.0</div>
       <h1>MacKVM 使用手冊</h1>
-      <p class="lede">讓兩台 MacBook Pro 共用一組鍵盤、滑鼠與 BenQ MA270U 螢幕的 macOS 選單列工具。</p>
+      <p class="lede">提供選單列入口與一般控制視窗，讓兩台 MacBook Pro 共用一組鍵盤、滑鼠，並可選擇切換 BenQ MA270U 螢幕的 macOS app。</p>
       <p><a href="USER_MANUAL.html" lang="en">English Version</a> · <a href="USER_MANUAL.zh-TW.md">Markdown 版本</a></p>
     </header>
 
@@ -74,7 +74,7 @@
       <ul>
         <li>兩台 Mac 都需 macOS 13 或更新版本，並連接到同一個本機網路。</li>
         <li>兩台 Mac 都要安裝並執行 MacKVM。</li>
-        <li>在兩台 Mac 的「顯示器」設定中，將 MA270U 設為主要顯示器。</li>
+        <li>外接螢幕不是配對或遠端控制的必要條件；只有 DDC 切換與跨螢幕指標定位才需要。</li>
       </ul>
       <div class="notice">
         <strong>首次開啟提示：</strong>目前 app 使用 ad-hoc 簽章，並非 Apple Developer ID 公證版本。若 macOS 阻擋，請在 Finder 對 <code>MacKVM.app</code> 按右鍵，選擇「打開」，再於提示視窗確認。
@@ -85,9 +85,10 @@
       <h2>2. 安裝與啟動</h2>
       <ol>
         <li>將正確架構的 <code>MacKVM.app</code> 複製到該 Mac 的 <code>/Applications</code>。</li>
-        <li>雙擊開啟。MacKVM 不會顯示在 Dock，而是在螢幕右上方選單列顯示鍵盤圖示。</li>
-        <li>點擊鍵盤圖示開啟 MacKVM 選單。</li>
+        <li>雙擊開啟。MacKVM 會顯示在 Dock 並提供一般控制視窗，也會在選單列顯示 KVM／雙螢幕圖示。</li>
+        <li>可從 Dock 視窗或選單列圖示開啟控制。</li>
         <li>若希望登入後自動啟動，在選單中啟用 <strong>Launch MacKVM at Login</strong>。</li>
+        <li>由登入項目自動啟動時會隱藏完整視窗以免搶走焦點；需要時可從選單列圖示或 Dock 重新開啟。</li>
       </ol>
       <p>若你需要在 M5 Pro 上自行重建兩個版本：</p>
       <pre><code>cd MacKVM
@@ -96,7 +97,7 @@
       <p>要建立 DMG，可使用：</p>
       <pre><code>./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist &amp;&amp; shasum -a 256 -c MacKVM-0.9.5-universal.dmg.sha256)</code></pre>
+(cd dist &amp;&amp; shasum -a 256 -c MacKVM-0.11.0-universal.dmg.sha256)</code></pre>
       <p>DMG 會從乾淨的暫存目錄建立，並在旁邊產生可攜式 SHA-256 檔案；驗證結果應顯示 <strong>OK</strong>。</p>
       <p>未提供 Developer ID 時是 ad-hoc 簽章，只適合本機測試；跨電腦散布前請用
         <code>--sign "Developer ID Application: …" --require-developer-id</code>，
@@ -135,7 +136,7 @@
         <li>MacKVM 使用原生 IOKit DDC/CI：Apple Silicon 走 <code>IOAVService</code>，Intel 走 <code>IOI2C</code>，不需要 Homebrew 工具。</li>
         <li>在任一台 Mac 按 <strong>Detect DDC-capable displays</strong>，明確選取要控制的螢幕。MacKVM 保存原生穩定識別碼，不會假設螢幕永遠是編號 1。</li>
         <li>在 M5 Pro 選擇 <strong>M5 / USB-C preset</strong>；在 Intel Mac 選擇 <strong>Intel / HDMI preset</strong>，兩種架構都能使用原生自動 DDC/CI。</li>
-        <li>先以 <strong>Show this Mac</strong> 與 <strong>Show other Mac</strong> 確認切換，再開始遠端控制。失敗時先閱讀 <strong>DDC diagnostic</strong>。</li>
+        <li>先以 <strong>Show this Mac</strong> 與 <strong>Show other Mac</strong> 確認切換。M5 Pro 可按 <strong>Share keyboard and mouse with [Intel Mac]</strong> 一次切換畫面並分享鍵盤滑鼠；Intel Mac 只有在未啟用該配對裝置的無縫控制時才需按 <strong>Allow</strong>。失敗時先閱讀 <strong>DDC diagnostic</strong>。</li>
       </ol>
       <p>若 Intel Mac 接在 HDMI 2，請將所有對應的輸入選擇改成 HDMI 2。螢幕與線材必須提供 DDC/CI；切換失敗時請查看診斷並用螢幕 OSD 手動選擇輸入來源。</p>
     </section>
@@ -159,9 +160,9 @@
       <ol>
         <li>確認兩台 Mac 都開著 MacKVM，並在選單的 <strong>Nearby Macs</strong> 看見對方。</li>
         <li>在其中一台按 <strong>Pair</strong>。</li>
-        <li>比較兩邊的六位數驗證碼是否相同，並確認各自顯示的「對方」裝置名稱正確後，兩邊都按 <strong>Accept</strong>。</li>
-        <li>配對完成後按 <strong>Connect</strong>。</li>
-        <li>在控制端選擇 <strong>Request control of other Mac</strong>。接收端即使沒有打開 MacKVM 選單，也會收到 macOS 原生通知，提供 <strong>Allow</strong>、<strong>Deny</strong> 與 <strong>Review in MacKVM</strong>。通知未開啟時，鍵盤形狀的選單列圖示會加上驚嘆號，提醒你打開選單處理。Review 會開啟明確的 Allow/Deny 對話框；螢幕鎖定時按 Allow 必須先通過 macOS 驗證。只有按 Allow 後，才可使用本機鍵盤及滑鼠操作另一台 Mac。</li>
+        <li>比較兩邊的六位數驗證碼是否相同，並確認各自顯示的「對方」裝置名稱正確。接收端在驗證碼相同時按 <strong>Accept</strong>；發起端比對相同驗證碼後按 <strong>Confirm code</strong>。</li>
+        <li>兩邊的簽署決定都完成後，MacKVM 會自動嘗試建立加密連線；若狀態仍是 idle，請在已配對裝置列按 <strong>Connect</strong>。</li>
+        <li>鍵盤與滑鼠接在 M5 Pro 時，請按 <strong>Share keyboard and mouse with [Intel Mac]</strong>。新配對的接收端會自動允許該已釘選 Mac；若要每次都確認，請在 <strong>Paired device information</strong> 關閉 <strong>Automatically allow control from this Mac</strong>，之後接收端才需按 <strong>Allow</strong>。未啟用時，即使沒有打開 MacKVM 選單，也會收到 macOS 原生通知，提供 <strong>Allow</strong>、<strong>Deny</strong> 與 <strong>Review in MacKVM</strong>。Review 會開啟明確的 Allow/Deny 對話框；螢幕鎖定時按 Allow 必須先通過 macOS 驗證。</li>
       </ol>
       <p>第一次配對後，裝置的公開金鑰會被保存。若看到不預期的裝置名稱或驗證碼不一致，請按 <strong>Decline</strong>。</p>
     </section>
@@ -169,7 +170,8 @@
     <section id="profiles">
       <h2>7. 裝置資料與支援資訊</h2>
       <p>配對後，MacKVM 會在本機保存每台裝置的友善名稱、Bonjour 提供的 Mac
-        型號、最後一次成功完成加密連線的時間，以及固定的 SHA-256 公開金鑰指紋。</p>
+        型號、最後一次成功完成加密連線的時間，以及固定的 SHA-256 公開金鑰指紋。新配對
+        的 Mac 預設會啟用無縫控制，也可在每台配對裝置旁關閉。</p>
       <ol>
         <li>在選單的 <strong>已配對裝置資訊</strong> 查看裝置資料。</li>
         <li>可在 <strong>Friendly name</strong> 欄位輸入容易辨識的名稱並按
@@ -185,14 +187,15 @@
     <section id="daily">
       <h2>8. 日常操作與安全返回</h2>
       <ul>
-        <li>控制另一台 Mac 時，本機鍵盤與滑鼠輸入會被轉送；接收端按 Allow 前，不會開始抑制本機輸入。</li>
+        <li>控制另一台 Mac 時，本機鍵盤與滑鼠輸入會被轉送；除非該已釘選 Mac 已啟用無縫控制，否則接收端按 Allow 前不會開始抑制本機輸入。</li>
         <li>通知中的按鈕會帶著該次請求的識別碼與一次性的本機 nonce；請求逾時、取消或連線中斷後，舊通知的按鈕不會重新啟動控制。</li>
-        <li>要結束控制，按選單的 <strong>Return input to this Mac</strong>。</li>
-        <li>接收端也可按 <strong>Stop remote control</strong>，立即停止注入、釋放可能按住的按鍵／滑鼠按鈕，並通知控制端。</li>
-        <li>緊急停止快捷鍵：<strong>Control-Option-Command-Escape</strong>。</li>
+        <li>控制端按 <strong>Return keyboard and mouse to this Mac</strong> 可結束共享。</li>
+        <li>要從 Intel Mac 切回 M5 Pro，接收端按 <strong>Return keyboard and mouse to [M5 Mac]</strong>，會立即停止注入、釋放可能按住的按鍵／滑鼠按鈕，並通知控制端。</li>
+        <li>M5 Pro 的緊急停止快捷鍵：<strong>Control-Option-Command-Escape</strong>；全域 <strong>Control-Option-Command-K</strong> 不必開啟選單即可切換分享，閒置時開始請求、控制中或接收中返回本機／控制端。</li>
         <li>網路中斷時，MacKVM 會立刻把鍵盤與滑鼠控制歸還本機，並釋放可能按住的按鍵和滑鼠按鈕。</li>
         <li>如果是已連線的 peer 暫時離線，MacKVM 會以 0／1／2／4…30 秒的退避
-          自動重連；重新連線後仍須再次按 <strong>Allow</strong>，不會靜默恢復輸入抑制。
+          自動重連；已啟用無縫控制的配對裝置不需再次按 <strong>Allow</strong>，關閉授權的
+          裝置才會重新要求控制同意。
           手動 <strong>Disconnect</strong>、<strong>Forget</strong> 或退出 app 會清除重連意圖。</li>
         <li>控制請求會比較兩台 Mac 的協定版本和鍵盤輸入來源。配置不同時會在
           Allow 前拒絕；控制中途切換輸入法也會停止遠端輸入，請在兩台選相同輸入來源
@@ -211,7 +214,7 @@
         <li>使用 <strong>One keyboard on M5 Pro (USB-C)</strong> 時，把鍵盤與滑鼠接到 M5 Pro 或 MA270U USB hub。確認 M5 Pro 可以發起控制，Intel Mac 可以接收控制，而 Intel Mac 的發起按鈕停用。</li>
         <li>若使用實體 USB switch，兩台都選 <strong>External USB switch (bidirectional)</strong>，先確認兩個 macOS 都看得到鍵盤與滑鼠，再測試雙向控制。</li>
         <li>觀察 MA270U OSD：USB-C 應顯示 M5 Pro，HDMI 1（或你選定的 HDMI 輸入）應顯示 Intel Mac。DDC/CI 失敗時，改用 OSD 手動切換並記錄診斷文字。</li>
-        <li>控制中測試 <strong>Stop remote control</strong>、緊急快捷鍵、拔插網路與退出 app；確認本機輸入恢復，沒有按鍵或滑鼠按鈕卡住。</li>
+        <li>控制中測試 <strong>Return keyboard and mouse to [M5 Mac]</strong>、緊急快捷鍵、拔插網路與退出 app；確認本機輸入恢復，沒有按鍵或滑鼠按鈕卡住。</li>
       </ol>
     </section>
 
@@ -220,9 +223,9 @@
       <h3>看不到另一台 Mac</h3>
       <p>確認兩台都在同一 Wi-Fi／乙太網路、MacKVM 正在執行，並在 Set up this Mac 完成本機網路步驟。公司或訪客網路可能阻擋 Bonjour 探索。</p>
       <h3>無法控制，或按鍵沒有反應</h3>
-      <p>確認兩台 Mac 都已授權 Input Monitoring 和 Accessibility，且兩台裝置已完成配對並顯示已連線。</p>
+      <p>確認控制端已授權 Input Monitoring 與 Accessibility（active event tap 需要兩者）、接收端已授權 Accessibility，兩台裝置已完成配對並顯示已連線。配對本身不會授予控制權：請在接有實體鍵盤與滑鼠的 M5 Pro 按 Share keyboard and mouse，再在接收端按 Allow。</p>
       <h3>收不到控制請求通知</h3>
-      <p>建議先在 Set up this Mac 的 <strong>Control request notifications</strong> 按 Enable。若之前拒絕，請到「系統設定 → 通知 → MacKVM」開啟通知。通知被停用時，請求仍會保留在 MacKVM 選單中，鍵盤選單列圖示也會加上驚嘆號提醒你處理。</p>
+      <p>建議先在 Set up this Mac 的 <strong>Control request notifications</strong> 按 Enable。若之前拒絕，請到「系統設定 → 通知 → MacKVM」開啟通知。通知被停用時，請求仍會保留在 MacKVM 選單／視窗中，KVM 選單列圖示也會加上驚嘆號提醒你處理。</p>
       <h3>螢幕沒有自動切換</h3>
       <p>確認螢幕與線材提供 DDC/CI，按 <strong>Detect DDC-capable displays</strong> 並明確選取螢幕；仍失敗時查看 DDC diagnostic，然後用螢幕 OSD 手動選 USB-C 或 HDMI。</p>
       <h3>登入後沒有出現圖示</h3>
@@ -234,7 +237,7 @@
     </section>
 
     <footer>
-      <p>MacKVM 使用手冊 · 對應版本 0.9.5 · 最後更新 2026-08-13</p>
+      <p>MacKVM 使用手冊 · 對應版本 0.11.0 · 最後更新 2026-08-17</p>
     </footer>
   </main>
 </body>

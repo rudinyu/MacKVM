@@ -32,6 +32,10 @@ public struct PairedPeerProfile: Codable, Equatable, Sendable, Identifiable {
     public var friendlyName: String
     public var model: String
     public var lastConnectedAt: Date?
+    /// A local, receiver-side one-time consent for this pinned peer. This is
+    /// deliberately stored beside (and validated against) the pinned public
+    /// key; it is never sent over the control protocol.
+    public var seamlessControlAuthorized: Bool
     public let signingPublicKey: Data
 
     public var id: UUID { peerID }
@@ -45,6 +49,7 @@ public struct PairedPeerProfile: Codable, Equatable, Sendable, Identifiable {
         friendlyName: String,
         model: String? = nil,
         lastConnectedAt: Date? = nil,
+        seamlessControlAuthorized: Bool = false,
         signingPublicKey: Data
     ) {
         self.peerID = peerID
@@ -52,6 +57,7 @@ public struct PairedPeerProfile: Codable, Equatable, Sendable, Identifiable {
             ?? "Mac \(peerID.uuidString.prefix(8))"
         self.model = PeerMetadataValidation.validatedModel(model)
         self.lastConnectedAt = lastConnectedAt
+        self.seamlessControlAuthorized = seamlessControlAuthorized
         self.signingPublicKey = signingPublicKey
     }
 
@@ -60,6 +66,7 @@ public struct PairedPeerProfile: Codable, Equatable, Sendable, Identifiable {
         case friendlyName
         case model
         case lastConnectedAt
+        case seamlessControlAuthorized
         case signingPublicKey
     }
 
@@ -78,6 +85,10 @@ public struct PairedPeerProfile: Codable, Equatable, Sendable, Identifiable {
             Date.self,
             forKey: .lastConnectedAt
         )
+        let seamlessControlAuthorized = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .seamlessControlAuthorized
+        ) ?? false
         let signingPublicKey = try container.decode(
             Data.self,
             forKey: .signingPublicKey
@@ -87,6 +98,7 @@ public struct PairedPeerProfile: Codable, Equatable, Sendable, Identifiable {
             friendlyName: friendlyName,
             model: model,
             lastConnectedAt: lastConnectedAt,
+            seamlessControlAuthorized: seamlessControlAuthorized,
             signingPublicKey: signingPublicKey
         )
     }

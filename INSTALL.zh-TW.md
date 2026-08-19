@@ -40,7 +40,7 @@ Intel Mac。建置腳本會驗證 Mach-O 架構與 ad-hoc 簽章。
 ./scripts/verify-release.sh \
   --app dist/universal/MacKVM.app \
   --arch universal
-(cd dist && shasum -a 256 -c MacKVM-0.9.5-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-0.11.0-universal.dmg.sha256)
 ```
 
 ad-hoc 簽章只適合本機測試。要提供給其他 Mac，請使用 Developer ID Application、
@@ -65,8 +65,12 @@ hardened runtime，並完成 Apple notarization：
 6. 第一次控制前，可按 **Enable** 開啟控制請求通知。
 7. 可選擇開啟 **Launch MacKVM at Login**。
 
-MacKVM 會以鍵盤圖示常駐在選單列，不會顯示在 Dock。正常使用時必須開啟 app
-bundle，不要使用 `swift run`，因為 app bundle 包含 Bonjour 與本機網路隱私權資訊。
+MacKVM 會以 KVM／雙螢幕圖示常駐在選單列，也會顯示在 Dock 並提供一般控制視窗。
+正常使用時必須開啟 app bundle，不要使用 `swift run`，因為 app bundle 包含 Bonjour
+與本機網路隱私權資訊。沒有外接螢幕仍可配對與遠端控制；DDC 切換與跨螢幕指標定位
+才需要螢幕。
+若由登入項目自動啟動，MacKVM 會隱藏完整視窗以免登入時搶走焦點；需要時可從選單列
+KVM 圖示或 Dock 重新開啟。
 
 ## 設定螢幕與實體輸入路徑
 
@@ -81,6 +85,8 @@ bundle，不要使用 `swift run`，因為 app bundle 包含 Bonjour 與本機�
    (USB-C)**；HDMI 不會傳送 USB 資料。
 7. 用 **Show this Mac** 與 **Show other Mac** 測試切換。DDC/CI 失敗時查看診斷文字，
    並使用 MA270U OSD 手動選擇輸入。
+   在 M5 Pro 可按 **Share keyboard and mouse with [Intel Mac]**，一次切換畫面並分享
+   鍵盤與滑鼠；Intel Mac 只有在未啟用該配對裝置的無縫控制時才需按 **Allow**。
 
 只有在兩台 Mac 都透過實體 USB switch 看見鍵盤與滑鼠後，才選
 **External USB switch (bidirectional)**。
@@ -90,22 +96,33 @@ bundle，不要使用 `swift run`，因為 app bundle 包含 Bonjour 與本機�
 1. 完成本機網路步驟後，在兩台 Mac 開啟 MacKVM 選單。
 2. 在 **Nearby Macs** 其中一台按 **Pair**。
 3. 比對兩邊的六位數驗證碼與對方裝置名稱。
-4. 只有驗證碼相同時，才在兩台按 **Accept**。
-5. 在任一台按 **Connect**。
-6. 在要使用鍵盤與滑鼠的 Mac 按 **Request control of other Mac**。
-7. 在接收端按 **Allow**。選單關閉時，可用 macOS 原生通知的 Allow／Deny／Review；
-   Review 會開啟 MacKVM 的明確核准對話框。
-8. 用 **Return input to this Mac**、**Stop remote control**，或
-   `Control-Option-Command-Escape` 結束控制。
+4. 接收端確認驗證碼相同後按 **Accept**；發起端比對相同驗證碼後按
+   **Confirm code**。
+5. 兩邊的簽署決定都完成後，MacKVM 會自動嘗試建立加密連線；若狀態仍是 idle，
+   可在已配對裝置列按 **Connect**。
+6. 新配對的接收端會自動啟用該已釘選 Mac 的無縫控制。若要每次控制都重新按
+   **Allow**，請在 **Paired device information** 關閉
+   **Automatically allow control from this Mac**。
+7. 在 M5 Pro 按 **Share keyboard and mouse with [Intel Mac]**。這會先把 MA270U
+   切到 Intel Mac，再開始鍵盤與滑鼠控制請求。
+8. 若接收端已啟用無縫控制，請求會自動核准；否則在接收端按 **Allow**。選單關閉時，
+   可用 macOS 原生通知的 Allow／Deny／Review；Review 會開啟 MacKVM 的明確核准對話框。
+9. M5 Pro 可隨時按 `Control-Option-Command-Escape` 中斷共享。要從 Intel Mac
+   切回 M5 Pro，請在 Intel Mac 按 **Return keyboard and mouse to [M5 Mac]**；
+   控制端也可按 **Return keyboard and mouse to this Mac**。全域
+   `Control-Option-Command-K` 不必開啟選單即可切換：閒置時開始請求，控制中或接收中
+   會把鍵盤與滑鼠返回本機／控制端。
 
-連線中斷後 MacKVM 會以有上限的退避時間重連，但必須重新取得控制同意。
-**Disconnect**、**Forget** 與 **Quit** 會清除重連意圖。
+連線中斷後 MacKVM 會以有上限的退避時間重連；已啟用無縫控制的配對裝置不需再次按
+Allow，關閉該選項的裝置才需要重新取得控制同意。**Disconnect**、**Forget** 與
+**Quit** 會清除重連意圖。
 
 ## 裝置資料與支援資訊
 
 在 **Paired device information** 編輯並儲存友善名稱。MacKVM 會在重新啟動後保留
 友善名稱、對方廣播的型號、最後成功完成驗證連線的時間，以及已釘選公開金鑰的
 SHA-256 指紋。
+新配對的 Mac 預設會啟用無縫控制；可在這裡關閉每台配對裝置的授權。
 
 遇到問題時按 **Copy support information**。支援報告包含公開的版本、作業系統、
 裝置、指紋與連線狀態資料，不包含私密金鑰、密碼、憑證或網路端點。

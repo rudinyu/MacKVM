@@ -9,6 +9,8 @@ public enum PairingMessageKind: String, Codable, Sendable {
     case decision
     case completion
     case completionAcknowledgement
+    case completionClose
+    case completionCloseAcknowledgement
 }
 
 public struct PairingEnvelope: Codable, Equatable, Sendable {
@@ -22,6 +24,12 @@ public struct PairingEnvelope: Codable, Equatable, Sendable {
     public let verificationCommitment: Data?
     public let verificationContribution: Data?
     public let accepted: Bool?
+    /// Signed capability marker for the current pairing protocol. It is kept
+    /// outside the legacy base signature so the base identity fields remain
+    /// stable, but the marker itself is mandatory and authenticated by a
+    /// separate extension signature. A missing marker is rejected rather than
+    /// treated as a downgradeable legacy mode.
+    public let supportsCompletionClose: Bool?
 
     public init(
         kind: PairingMessageKind,
@@ -30,7 +38,8 @@ public struct PairingEnvelope: Codable, Equatable, Sendable {
         senderModel: String? = nil,
         verificationCommitment: Data? = nil,
         verificationContribution: Data? = nil,
-        accepted: Bool? = nil
+        accepted: Bool? = nil,
+        supportsCompletionClose: Bool? = true
     ) {
         self.kind = kind
         self.requestID = requestID
@@ -41,6 +50,7 @@ public struct PairingEnvelope: Codable, Equatable, Sendable {
         self.verificationCommitment = verificationCommitment
         self.verificationContribution = verificationContribution
         self.accepted = accepted
+        self.supportsCompletionClose = supportsCompletionClose
     }
 
     public static func request(
@@ -143,6 +153,41 @@ public struct PairingEnvelope: Codable, Equatable, Sendable {
             senderModel: senderModel
         )
     }
+
+    /// A final, ordered close barrier sent by the deterministic lower-ID
+    /// participant after both completion acknowledgements have crossed the
+    /// connection. The peer can persist only after receiving this frame; TCP
+    /// ordering then proves that its own acknowledgement was received before
+    /// the close barrier was sent.
+    public static func completionClose(
+        to message: PairingEnvelope,
+        from sender: PeerIdentity,
+        senderModel: String? = nil
+    ) -> PairingEnvelope {
+        PairingEnvelope(
+            kind: .completionClose,
+            requestID: message.requestID,
+            sender: sender,
+            senderModel: senderModel
+        )
+    }
+
+    /// A signed receipt returned by the higher-ID participant after it has
+    /// consumed the close barrier. The lower-ID participant persists only
+    /// after receiving this peer-originated proof, never on local
+    /// `contentProcessed` alone.
+    public static func completionCloseAcknowledgement(
+        to message: PairingEnvelope,
+        from sender: PeerIdentity,
+        senderModel: String? = nil
+    ) -> PairingEnvelope {
+        PairingEnvelope(
+            kind: .completionCloseAcknowledgement,
+            requestID: message.requestID,
+            sender: sender,
+            senderModel: senderModel
+        )
+    }
 }
 
 public enum PairingWireCodec {
@@ -161,6 +206,13 @@ public enum PairingWireCodec {
         _ message: PairingEnvelope,
         signingWith privateKey: P256.Signing.PrivateKey
     ) throws -> Data {
+        // The completion-close barrier is part of the current pairing
+        // protocol. Never emit a frame that can be interpreted as a weaker
+        // legacy exchange; otherwise an on-path relay could strip the
+        // capability extension without invalidating the base signature.
+        guard message.supportsCompletionClose == true else {
+            throw PairingWireError.unsupportedCapability
+        }
         // Keep the legacy signed message bytes unchanged. Model metadata is
         // an optional separately signed extension so older peers can ignore
         // the additional fields and still verify the base signature.
@@ -170,7 +222,8 @@ public enum PairingWireCodec {
             sender: message.sender,
             verificationCommitment: message.verificationCommitment,
             verificationContribution: message.verificationContribution,
-            accepted: message.accepted
+            accepted: message.accepted,
+            supportsCompletionClose: nil
         )
         let messageData = try canonicalData(for: baseMessage)
         let signature = try privateKey.signature(for: messageData)
@@ -190,11 +243,29 @@ public enum PairingWireCodec {
         } else {
             modelSignature = nil
         }
+        let completionFeatureSignature: Data?
+        if message.supportsCompletionClose == true {
+            let featureData = try canonicalData(
+                for: PairingFeatureExtension(
+                    kind: message.kind,
+                    requestID: message.requestID,
+                    senderID: message.sender.id,
+                    supportsCompletionClose: true
+                )
+            )
+            completionFeatureSignature = try privateKey.signature(
+                for: featureData
+            ).derRepresentation
+        } else {
+            completionFeatureSignature = nil
+        }
         let signedEnvelope = SignedPairingEnvelope(
             message: baseMessage,
             signature: signature.derRepresentation,
             senderModel: message.senderModel,
-            senderModelSignature: modelSignature
+            senderModelSignature: modelSignature,
+            supportsCompletionClose: message.supportsCompletionClose,
+            completionFeatureSignature: completionFeatureSignature
         )
         let payload = try CanonicalJSON.encoder().encode(signedEnvelope)
         do {
@@ -290,6 +361,32 @@ public enum PairingWireCodec {
         default:
             throw PairingWireError.invalidModel
         }
+        guard signedEnvelope.supportsCompletionClose == true else {
+            // Do not accept an absent marker as a legacy capability. The
+            // current protocol requires an authenticated close barrier; an
+            // old peer or a stripped extension must fail closed instead of
+            // silently selecting the weaker acknowledgement/EOF path.
+            throw PairingWireError.unsupportedCapability
+        }
+        guard let featureSignatureData =
+                signedEnvelope.completionFeatureSignature,
+              let featureSignature = try? P256.Signing.ECDSASignature(
+                  derRepresentation: featureSignatureData
+              ) else {
+            throw PairingWireError.invalidSignature
+        }
+        let featureData = try canonicalData(
+            for: PairingFeatureExtension(
+                kind: signedEnvelope.message.kind,
+                requestID: signedEnvelope.message.requestID,
+                senderID: signedEnvelope.message.sender.id,
+                supportsCompletionClose: true
+            )
+        )
+        guard publicKey.isValidSignature(featureSignature, for: featureData)
+        else {
+            throw PairingWireError.invalidSignature
+        }
         // Reconstruct the authenticated message only after both signatures
         // have been verified. Callers must never consume an unsigned model.
         let message = signedEnvelope.message
@@ -300,7 +397,8 @@ public enum PairingWireCodec {
             senderModel: model,
             verificationCommitment: message.verificationCommitment,
             verificationContribution: message.verificationContribution,
-            accepted: message.accepted
+            accepted: message.accepted,
+            supportsCompletionClose: true
         )
     }
 
@@ -312,6 +410,7 @@ public enum PairingWireCodec {
 public enum PairingWireError: Error, Equatable {
     case payloadTooLarge
     case tooManyMessages
+    case unsupportedCapability
     case invalidSignature
     case invalidIdentityName
     case invalidModel
@@ -322,6 +421,8 @@ private struct SignedPairingEnvelope: Codable {
     let signature: Data
     let senderModel: String?
     let senderModelSignature: Data?
+    let supportsCompletionClose: Bool?
+    let completionFeatureSignature: Data?
 }
 
 private struct PairingModelExtension: Codable {
@@ -329,6 +430,13 @@ private struct PairingModelExtension: Codable {
     let requestID: UUID
     let senderID: UUID
     let model: String
+}
+
+private struct PairingFeatureExtension: Codable {
+    let kind: PairingMessageKind
+    let requestID: UUID
+    let senderID: UUID
+    let supportsCompletionClose: Bool
 }
 
 public enum PairingVerificationCode {

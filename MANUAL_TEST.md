@@ -33,7 +33,7 @@ Release check (from the M5 Pro) is also available:
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist && shasum -a 256 -c MacKVM-0.9.5-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-0.11.0-universal.dmg.sha256)
 ```
 
 Expected: the app reports both `arm64` and `x86_64`, and an ad-hoc signature
@@ -77,7 +77,7 @@ Expected:
 1. Leave **Physical input path** set to **One keyboard on M5 Pro (USB-C)**.
 2. Connect the keyboard and mouse to the M5 Pro directly or through the
    MA270U USB hub. Do not assume the Intel HDMI cable carries USB data.
-3. On the Intel Mac, verify that **Request control of other Mac** is disabled
+3. On the Intel Mac, verify that **Request keyboard and mouse control** is disabled
    in this mode, while the Intel Mac can still receive remote control.
 4. If an external USB switch is installed, select **External USB switch
    (bidirectional)** on both Macs and verify that both macOS systems see the
@@ -127,15 +127,17 @@ Expected:
 1. Confirm each Mac appears under **Nearby Macs**.
 2. Press **Pair** on one Mac.
 3. Confirm both Macs show the same six-digit code and peer name.
-4. Press **Accept** on both Macs.
-5. Repeat from a clean pairing state while pressing **Pair** on both Macs at
-   nearly the same time.
+4. On the receiving Mac, press **Accept** once. On the initiating Mac, press
+   **Confirm code** after comparing the same code.
+5. Repeat from a clean pairing state with **Pair** pressed on only one Mac and
+   both signed decisions completed.
 
 Expected:
 
 - A peer with a matching accepted code becomes **Paired** on both Macs.
 - A code mismatch or decline never creates trust.
-- Simultaneous Pair actions converge to one request and one code.
+- The initiating Mac's Pair and Confirm code actions plus the receiving Mac's
+  Accept action converge to one request and one code.
 - **Forget** removes the pinned key; reconnect is blocked until pairing again.
 
 ## 5. Secure reconnect
@@ -150,71 +152,82 @@ Expected:
 - The status reports an encrypted session with only the paired UUID.
 - A transport loss immediately restores local input and releases remote keys
   and mouse buttons.
-- Reconnect succeeds without repeating pairing.
+- Reconnect succeeds without repeating pairing; seamless-authorized peers can
+  resume control without another Allow prompt.
 
 ## 6. Keyboard and mouse control
 
-1. On the receiving Mac, close the MacKVM menu, then from the M5 Pro request
-   control of the Intel Mac.
-2. Verify the Intel Mac receives a native macOS notification naming the M5 Pro
+1. After pairing, open **Paired device information** on the receiver and verify
+   **Automatically allow control from this Mac** is enabled for the paired
+   controller.
+2. Close the receiver menu, then from the M5 Pro request control of the Intel
+   Mac. Verify control starts without a second Allow action and the monitor and
+   keyboard route agree.
+3. Turn off **Automatically allow control from this Mac** on the receiver,
+   then request control again after returning input locally.
+4. Verify the Intel Mac receives a native macOS notification naming the M5 Pro
    and offering **Allow**, **Deny**, and **Review in MacKVM**. Verify Review
    opens an explicit approval dialog, then test each action.
-3. Lock the receiving Mac and choose **Allow** from the notification; macOS
+5. Lock the receiving Mac and choose **Allow** from the notification; macOS
    must require authentication before it accepts the action.
-4. Open the menu and select **Allow**. Repeat once with **Deny** and once by
+6. Open the menu and select **Allow**. Repeat once with **Deny** and once by
    waiting for the timeout.
-5. Type, move, click, drag, scroll, and use modifier shortcuts.
-6. Rapidly click at least four times immediately after selecting **Allow**.
-7. Move the pointer onto a secondary display, if connected.
-8. Hold a modifier and mouse button, then disconnect the network.
-9. After a timeout, disconnect, or remote cancellation, tap any retained
+7. Type, move, click, drag, scroll, and use modifier shortcuts.
+8. Rapidly click at least four times immediately after selecting **Allow**.
+9. Move the pointer onto a secondary display, if connected.
+10. Hold a modifier and mouse button, then disconnect the network.
+11. After a timeout, disconnect, or remote cancellation, tap any retained
    notification action if macOS still displays it.
-10. On a Mac where notifications are not enabled, request control and verify
+12. On a Mac where notifications are not enabled, request control and verify
     that MacKVM does not open a first-time notification-permission sheet during
     the short consent window; its keyboard menu-bar icon should add a warning
     symbol and retain the menu controls instead.
-11. Disable MacKVM notifications in System Settings, request control again, and
+13. Disable MacKVM notifications in System Settings, request control again, and
    confirm the request remains available in the menu.
-12. Repeat with the Intel Mac controlling the M5 Pro Mac.
-13. While control is active, toggle an input method on the controlling Mac (for
+14. Repeat with the Intel Mac controlling the M5 Pro Mac.
+15. While control is active, toggle an input method on the controlling Mac (for
     example enable Zhuyin, type a letter, then switch back to English) without
     changing its underlying physical keyboard layout. Press keys throughout.
-14. Set the two Macs to genuinely different physical keyboard layouts in
+16. Set the two Macs to genuinely different physical keyboard layouts in
     **System Settings → Keyboard → Input Sources** (for example US on one,
-    Dvorak or a European ABC layout on the other). Request control, then type
+    Dvorak or a European ABC layout on the other). Request keyboard and mouse
+    control, then type
     letters, numbers, and symbol keys, including combinations that need Shift,
     Option, and Caps Lock on at least one of the two layouts.
-15. Still on differing layouts — ideally with one Mac set to a layout where
+17. Still on differing layouts — ideally with one Mac set to a layout where
     letter positions genuinely move, such as German QWERTZ, where Y and Z
     trade places relative to US — use Cmd-Z to undo an action on the
     controlling Mac.
-16. Still on differing layouts, turn Caps Lock on on the controlling Mac, then
+18. Still on differing layouts, turn Caps Lock on on the controlling Mac, then
     repeat the same Cmd-Z shortcut from step 15.
-17. Still on differing layouts, hold a remappable letter key on the
+19. Still on differing layouts, hold a remappable letter key on the
     controlling Mac long enough for macOS's own key-repeat to kick in, release
     Shift partway through the hold without releasing the letter key, then
     release the letter key.
-18. Still on differing layouts, type a character that exists on the
+20. Still on differing layouts, type a character that exists on the
     controller's layout but has no equivalent on the receiver's layout (a
     layout-specific symbol is usually easiest to find), then request control
     again from the same Mac.
-19. Restore both Macs to the same keyboard layout before continuing to the
+21. Restore both Macs to the same keyboard layout before continuing to the
     next section.
-20. If an older MacKVM build (from before cross-layout remapping) is
+22. If an older MacKVM build (from before cross-layout remapping) is
     available, pair it with a current build, set the two Macs to differing
     keyboard layouts, and request control from either side.
-21. If ISO or JIS keyboard hardware is available, set the two Macs to
+23. If ISO or JIS keyboard hardware is available, set the two Macs to
     differing layouts including that hardware and type its layout-specific
     keys (for example the ISO key next to the left Shift key) during control.
-22. While controlling, press and hold a volume key, then a brightness key, on
+24. While controlling, press and hold a volume key, then a brightness key, on
     the controlling Mac's physical keyboard.
-23. While controlling, press the power key and Caps Lock on the controlling
+25. While controlling, press the power key and Caps Lock on the controlling
     Mac's physical keyboard.
 
 Expected:
 
-- Input is not suppressed until the receiver grants the matching request ID.
-- The receiver never begins injection before its user selects **Allow**.
+- Input is not suppressed until the receiver grants the matching request ID or
+  the receiver-side seamless authorization is enabled for that pinned peer.
+- A newly paired peer starts without a second prompt; after the toggle is
+  disabled, the receiver never begins injection before its user selects
+  **Allow**.
 - A closed menu does not hide a request: native actions use the live request ID
   plus a fresh device-local notification nonce, while an expired/stale
   notification cannot grant or deny a later request.
@@ -226,6 +239,8 @@ Expected:
 - Pointer coordinates remain bounded to the receiving main display.
 - Four-click sequences are delivered.
 - Disconnect/end paths release every held key and mouse button.
+- Selecting **Show this Mac** while a request is active or waiting stops remote
+  capture and restores the local display and keyboard route.
 - A second inbound control request is denied without disturbing the active one.
 - Toggling an input method (step 13) does not end control and does not change
   which characters are typed; a differing keyboard layout no longer denies the
@@ -267,17 +282,26 @@ Expected:
 
 ## 7. Safe return and monitor routing
 
-1. While controlling, press **Control-Option-Command-Escape**.
-2. Repeat using **Return input to this Mac**.
-3. From the receiving Mac, select **Stop remote control** while a key and a
+1. On the M5 Pro, select **Share keyboard and mouse with [Intel Mac]** and
+   verify that the display switches before input capture starts.
+2. With the session connected and idle, press **Control-Option-Command-K** and
+   verify that the control request starts without opening the menu.
+3. While controlling, press **Control-Option-Command-K** and verify that input
+   returns locally; repeat with **Control-Option-Command-Escape**.
+4. Repeat using **Return keyboard and mouse to this Mac**.
+5. From the receiving Intel Mac, select **Return keyboard and mouse to [M5 Mac]** while a key and a
    mouse button are held by the controlling Mac.
-4. Repeat while DDC/CI is disabled or unavailable and confirm the OSD fallback.
-5. Quit MacKVM while the monitor shows the other Mac.
-6. Repeat step 5 while this Mac is receiving remote control.
+6. Repeat the hotkey test from the receiving Mac when a bidirectional USB path
+   is configured; verify it returns control to the controller.
+7. Repeat while DDC/CI is disabled or unavailable and confirm the OSD fallback.
+8. Quit MacKVM while the monitor shows the other Mac.
+9. Repeat step 8 while this Mac is receiving remote control.
 
 Expected:
 
 - The shortcut is consumed locally and immediately stops forwarding.
+- `Control-Option-Command-K` starts or ends the control route without opening
+  the menu, depending on the current state.
 - The receiving Mac can stop a live session without disconnecting or quitting;
   both held keys and mouse buttons are released before the peer is notified.
 - Keyboard and mouse return before any monitor-switch result is assumed.
@@ -363,7 +387,7 @@ or macOS privacy prompts.
    USB-C must show the M5 Pro and HDMI 1 (or the selected HDMI input) must show
    the Intel Mac. If DDC/CI fails, use the OSD manually and record the
    diagnostic text.
-5. During an active control session, test the menu-bar **Stop remote control**
+5. During an active control session, test the menu-bar **Return keyboard and mouse to [M5 Mac]**
    action, the emergency shortcut, a network unplug/reconnect, and a quit.
    Confirm the local keyboard/mouse returns and no key or mouse button remains
    stuck.

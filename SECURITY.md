@@ -57,9 +57,17 @@ and mouse buttons instead of silently dropping a state-changing transition.
 
 Input is never suppressed merely because the encrypted transport connected.
 The controller first sends a control request, and the receiving Mac grants it
-only while Accessibility permission is available. Simultaneous requests use
-the paired UUIDs for deterministic arbitration. During control,
+only while Accessibility permission is available. A newly completed pairing
+also enables the receiver-side `seamlessControlAuthorized` flag for that
+pinned peer, so the same authenticated request can use the normal acceptance
+path without another prompt. This is a local one-time authorization, not a
+wire-level claim; it is revocable per peer from **Paired device information**,
+and Forget/key revocation removes it with the profile. Users who require
+per-session consent can turn it off. Simultaneous requests use the paired UUIDs
+for deterministic arbitration. During control,
 `Control-Option-Command-Escape` is consumed locally as an emergency return;
+`Control-Option-Command-K` is also consumed locally as the explicit
+keyboard/mouse route toggle;
 disconnect and control-end paths synthesize key-up and mouse-up events on the
 receiver to avoid stuck input.
 

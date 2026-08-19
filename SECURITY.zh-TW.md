@@ -18,9 +18,15 @@ MacKVM 是使用於可信任本機網路的早期原型。安全性依賴兩台 
 
 ## 輸入控制與權限
 
-加密連線完成不等於取得控制權。控制端必須送出 request，接收端按 **Allow** 後才
-會抑制本機鍵盤／滑鼠並注入遠端事件。**Deny**、**Stop remote control**、網路中斷、
-Quit 與 `Control-Option-Command-Escape` 都會釋放按住的按鍵和滑鼠按鈕。
+加密連線完成不等於取得控制權。控制端必須送出 request，接收端通常按 **Allow** 後才
+會抑制本機鍵盤／滑鼠並注入遠端事件。新配對完成後，接收端會對該已釘選 peer 啟用
+`seamlessControlAuthorized` 本機一次性授權，讓同一條已驗證請求可沿用相同的 Accessibility
+檢查與安全接受流程而不再跳提示；使用者可在 **Paired device information** 逐台關閉。
+這個旗標不會放進網路訊息，Forget 或金鑰撤銷時會和 profile 一起移除。**Deny**、
+**Return keyboard and mouse to [M5 Mac]**、網路中斷、Quit 與
+`Control-Option-Command-Escape` 都會釋放
+按住的按鍵和滑鼠按鈕。
+`Control-Option-Command-K` 是本機消費的鍵盤／滑鼠路由切換快捷鍵，不會傳送到遠端。
 
 - Input Monitoring 只用於控制端擷取本機事件。
 - Accessibility 只用於接收端注入遠端事件。

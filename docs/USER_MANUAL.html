@@ -43,9 +43,9 @@
 <body>
   <main>
     <header>
-      <div class="badge">MacKVM 0.9.5</div>
+      <div class="badge">MacKVM 0.11.0</div>
       <h1>MacKVM User Manual</h1>
-      <p class="lede">A macOS menu-bar tool for sharing one keyboard, mouse, and BenQ MA270U display between two MacBook Pro computers.</p>
+      <p class="lede">A macOS app with a KVM menu-bar entry and full control window for sharing one keyboard, mouse, and optionally a BenQ MA270U display between two MacBook Pro computers.</p>
       <p><a href="USER_MANUAL.zh-TW.html" lang="zh-Hant">繁體中文版</a> · <a href="USER_MANUAL.md">Markdown version</a></p>
     </header>
 
@@ -74,7 +74,7 @@
       <ul>
         <li>Both Macs must run macOS 13 or later and share a trusted local network.</li>
         <li>Install and run MacKVM on both Macs.</li>
-        <li>Set the MA270U as the main display on both Macs.</li>
+        <li>An external display is optional for pairing and remote input; it is needed only for DDC switching and cross-display pointer mapping.</li>
       </ul>
       <div class="notice"><strong>First launch:</strong> local builds use an ad-hoc signature rather than an Apple Developer ID notarized signature. If macOS blocks the app, right-click <code>MacKVM.app</code> in Finder, choose <strong>Open</strong>, and confirm.</div>
     </section>
@@ -83,9 +83,10 @@
       <h2>2. Install and launch</h2>
       <ol>
         <li>Copy the matching architecture of <code>MacKVM.app</code> to <code>/Applications</code>.</li>
-        <li>Open it. MacKVM does not appear in the Dock; it appears as a keyboard icon in the menu bar.</li>
-        <li>Click the keyboard icon to open the MacKVM menu.</li>
+        <li>Open it. MacKVM appears in the Dock with a full control window and also provides a KVM/display-sharing icon in the menu bar.</li>
+        <li>Open either the Dock window or the menu-bar icon to access controls.</li>
         <li>Optionally enable <strong>Launch MacKVM at Login</strong>.</li>
+        <li>Login-item startup keeps the full window hidden so it does not steal focus; use the menu-bar icon or Dock to reopen it.</li>
       </ol>
       <p>Build both versions on the M5 Pro when needed:</p>
       <pre><code>./scripts/build-app.sh --arch arm64
@@ -93,7 +94,7 @@
       <p>Create and verify a DMG:</p>
       <pre><code>./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist &amp;&amp; shasum -a 256 -c MacKVM-0.9.5-universal.dmg.sha256)</code></pre>
+(cd dist &amp;&amp; shasum -a 256 -c MacKVM-0.11.0-universal.dmg.sha256)</code></pre>
       <p>The DMG is built from a clean staging directory and produces a portable SHA-256 sidecar. Ad-hoc signing is for local testing; distribution requires Developer ID, hardened runtime, and Apple notarization.</p>
     </section>
 
@@ -121,7 +122,7 @@
         <li>MacKVM uses native IOKit DDC/CI: <code>IOAVService</code> on Apple Silicon and <code>IOI2C</code> on Intel. No Homebrew helper is required.</li>
         <li>Select <strong>Detect DDC-capable displays</strong> on either Mac and choose the intended display explicitly. MacKVM stores its stable native selector instead of assuming display number 1.</li>
         <li>Choose <strong>M5 / USB-C preset</strong> on the M5 Pro and <strong>Intel / HDMI preset</strong> on the Intel Mac; both can use automatic native DDC/CI.</li>
-        <li>Use <strong>Show this Mac</strong> and <strong>Show other Mac</strong> before starting control. If DDC fails, read <strong>DDC diagnostic</strong> and use the OSD as a fallback.</li>
+        <li>Use <strong>Show this Mac</strong> and <strong>Show other Mac</strong> before starting control. On the M5 Pro, <strong>Share keyboard and mouse with [Intel Mac]</strong> combines the display switch with sharing; the Intel Mac selects <strong>Allow</strong> unless seamless control was enabled for the paired M5 Pro. If DDC fails, read <strong>DDC diagnostic</strong> and use the OSD as a fallback.</li>
       </ol>
       <p>If the Intel Mac uses HDMI 2, select HDMI 2 consistently in both input pickers. The monitor and cable must expose DDC/CI; otherwise use the monitor OSD.</p>
     </section>
@@ -144,16 +145,16 @@
       <ol>
         <li>Confirm both Macs show the other under <strong>Nearby Macs</strong>.</li>
         <li>Select <strong>Pair</strong> on one Mac.</li>
-        <li>Compare the six-digit security code and the displayed peer names, then select <strong>Accept</strong> on both Macs only when the codes match.</li>
-        <li>Select <strong>Connect</strong> after pairing.</li>
-        <li>On the controlling Mac select <strong>Request control of other Mac</strong>. The receiver must select <strong>Allow</strong>. With the menu closed, use the native <strong>Allow</strong>, <strong>Deny</strong>, or <strong>Review in MacKVM</strong> notification.</li>
+        <li>Compare the six-digit security code and the displayed peer names. The receiving Mac selects <strong>Accept</strong> only when the codes match; the initiating Mac selects <strong>Confirm code</strong> after comparing the same code.</li>
+        <li>After both signed decisions complete, MacKVM automatically attempts to connect the encrypted session. If it remains idle, select <strong>Connect</strong> on a paired row.</li>
+        <li>With the keyboard and mouse connected to the M5 Pro, select <strong>Share keyboard and mouse with [Intel Mac]</strong>. A newly paired receiver automatically authorizes that pinned peer. To require a prompt every time, turn off <strong>Automatically allow control from this Mac</strong> under <strong>Paired device information</strong>; the receiver then selects <strong>Allow</strong>. With the menu closed, use the native <strong>Allow</strong>, <strong>Deny</strong>, or <strong>Review in MacKVM</strong> notification.</li>
       </ol>
       <p>Review opens an explicit Allow/Deny dialog. Allow on a locked Mac requires macOS authentication. Expired notification actions cannot start a later request.</p>
     </section>
 
     <section id="profiles">
       <h2>7. Device profiles and support information</h2>
-      <p>After pairing, MacKVM stores each peer's friendly name, advertised Mac model, last authenticated connection time, and SHA-256 fingerprint of the pinned public key.</p>
+      <p>After pairing, MacKVM stores each peer's friendly name, advertised Mac model, last authenticated connection time, and SHA-256 fingerprint of the pinned public key. New pairings enable seamless control automatically; the per-peer toggle can revoke it.</p>
       <ol>
         <li>Open <strong>Paired device information</strong> to view the profile.</li>
         <li>Edit the <strong>Friendly name</strong> field and select <strong>Save</strong>; the name survives relaunch.</li>
@@ -165,11 +166,11 @@
     <section id="daily">
       <h2>8. Daily operation and safe return</h2>
       <ul>
-        <li>Input is not suppressed until the receiver selects <strong>Allow</strong>.</li>
-        <li>Use <strong>Return input to this Mac</strong> on the controller or <strong>Stop remote control</strong> on the receiver to end control.</li>
-        <li>Emergency shortcut: <strong>Control-Option-Command-Escape</strong>.</li>
+        <li>Input is not suppressed until the receiver selects <strong>Allow</strong>, unless seamless control was enabled for that pinned peer.</li>
+        <li>Use <strong>Return keyboard and mouse to this Mac</strong> on the controller. To switch back from Intel, the receiver selects <strong>Return keyboard and mouse to [M5 Mac]</strong>.</li>
+        <li>Emergency shortcut on the M5 Pro: <strong>Control-Option-Command-Escape</strong>. The global <strong>Control-Option-Command-K</strong> shortcut toggles sharing without opening the menu; it starts a request while idle and returns input while controlling or receiving.</li>
         <li>Network loss immediately returns input locally and releases held keys and mouse buttons.</li>
-        <li>A peer reconnects with bounded 0/1/2/4…30-second backoff, but control consent is required again. <strong>Disconnect</strong>, <strong>Forget</strong>, and <strong>Quit</strong> clear reconnect intent.</li>
+        <li>A peer reconnects with bounded 0/1/2/4…30-second backoff. Seamless authorization resumes control without another prompt; an opted-out peer requires fresh consent. <strong>Disconnect</strong>, <strong>Forget</strong>, and <strong>Quit</strong> clear reconnect intent.</li>
         <li>A keyboard-layout mismatch is rejected before consent; a layout change during control safely ends remote input.</li>
       </ul>
     </section>
@@ -182,7 +183,7 @@
         <li>With the one-way topology, verify the M5 Pro can request control, the Intel Mac can receive it, and the Intel request button is disabled.</li>
         <li>If using a physical USB switch, verify both Macs see the devices before testing bidirectional control.</li>
         <li>Watch the MA270U OSD while testing USB-C and HDMI switching. Record DDC diagnostics and test manual OSD fallback.</li>
-        <li>During control test Stop remote control, the emergency shortcut, network unplug/reconnect, and quitting; no key or mouse button may remain stuck.</li>
+        <li>During control test Return keyboard and mouse to [M5 Mac], the emergency shortcut, network unplug/reconnect, and quitting; no key or mouse button may remain stuck.</li>
       </ol>
     </section>
 
@@ -191,9 +192,9 @@
       <h3>The other Mac is not visible</h3>
       <p>Confirm both Macs share the same Wi-Fi or Ethernet network, MacKVM is running, and the Local Network setup step is complete. Guest or corporate networks may block Bonjour.</p>
       <h3>Control does not work</h3>
-      <p>Confirm Input Monitoring and Accessibility are granted on the appropriate Macs, both devices are paired, and the secure session shows connected.</p>
+      <p>Confirm the controlling Mac has both Input Monitoring and Accessibility for its active event tap, the receiving Mac has Accessibility, both devices are paired, and the secure session shows connected. Pairing alone does not grant control: request control on the Mac with the physical keyboard and mouse, then select Allow on the receiver.</p>
       <h3>No control notification</h3>
-      <p>Enable <strong>Control request notifications</strong> in the setup checklist and check System Settings → Notifications → MacKVM. When notifications are disabled, the request remains in the menu and the keyboard icon shows a warning.</p>
+      <p>Enable <strong>Control request notifications</strong> in the setup checklist and check System Settings → Notifications → MacKVM. When notifications are disabled, the request remains in the menu/window and the KVM icon shows a warning.</p>
       <h3>The monitor does not switch</h3>
       <p>Confirm the monitor and cable expose DDC/CI, select <strong>Detect DDC-capable displays</strong>, and read the DDC diagnostic if switching fails. Use the OSD manually when needed.</p>
       <h3>The identity or Keychain is inconsistent</h3>
@@ -201,7 +202,7 @@
     </section>
 
     <footer>
-      <p>MacKVM User Manual · Version 0.9.5 · Updated 2026-08-13</p>
+      <p>MacKVM User Manual · Version 0.11.0 · Updated 2026-08-17</p>
     </footer>
   </main>
 </body>

@@ -37,7 +37,76 @@ final class PairingProtocolTests: XCTestCase {
 
         XCTAssertEqual(decoded, [request])
         XCTAssertEqual(decoded.first?.senderModel, "MacBookPro18,3")
+        XCTAssertTrue(decoded.first?.supportsCompletionClose == true)
         XCTAssertTrue(buffer.isEmpty)
+    }
+
+    func testEnvelopeWithoutCloseCapabilityIsRejected() throws {
+        let privateKey = P256.Signing.PrivateKey()
+        let sender = PeerIdentity(
+            name: "Legacy Mac",
+            signingPublicKey: privateKey.publicKey.x963Representation
+        )
+        let legacy = PairingEnvelope(
+            kind: .completionAcknowledgement,
+            sender: sender,
+            supportsCompletionClose: nil
+        )
+
+        XCTAssertThrowsError(
+            try PairingWireCodec.encode(legacy, signingWith: privateKey)
+        ) { error in
+            XCTAssertEqual(
+                error as? PairingWireError,
+                .unsupportedCapability
+            )
+        }
+    }
+
+    func testStrippedCloseCapabilityIsRejectedEvenWhenBaseSignatureRemainsValid()
+        throws
+    {
+        let privateKey = P256.Signing.PrivateKey()
+        let sender = PeerIdentity(
+            name: "Current Mac",
+            signingPublicKey: privateKey.publicKey.x963Representation
+        )
+        let request = PairingEnvelope.request(
+            from: sender,
+            commitment: Data(repeating: 1, count: SHA256.Digest.byteCount)
+        )
+        let encoded = try PairingWireCodec.encode(
+            request,
+            signingWith: privateKey
+        )
+        var frame = encoded
+        let payloads = try LengthPrefixedFrameCodec.decodeAvailablePayloads(
+            from: &frame,
+            maximumPayloadLength: PairingWireCodec.maximumFramePayloadLength
+        )
+        let payload = try XCTUnwrap(payloads.first)
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: payload) as? [String: Any]
+        )
+        object.removeValue(forKey: "supportsCompletionClose")
+        object.removeValue(forKey: "completionFeatureSignature")
+        let strippedPayload = try JSONSerialization.data(
+            withJSONObject: object,
+            options: [.sortedKeys]
+        )
+        var strippedFrame = try LengthPrefixedFrameCodec.encode(
+            strippedPayload,
+            maximumPayloadLength: PairingWireCodec.maximumFramePayloadLength
+        )
+
+        XCTAssertThrowsError(
+            try PairingWireCodec.decodeAvailableFrames(from: &strippedFrame)
+        ) { error in
+            XCTAssertEqual(
+                error as? PairingWireError,
+                .unsupportedCapability
+            )
+        }
     }
 
     func testResponseRetainsRequestIdentifier() {
@@ -87,6 +156,33 @@ final class PairingProtocolTests: XCTestCase {
         XCTAssertEqual(acknowledgement.requestID, request.requestID)
         XCTAssertEqual(acknowledgement.sender, secondMac)
         XCTAssertNil(acknowledgement.accepted)
+    }
+
+    func testCompletionCloseRetainsRequestAndSenderIdentity() {
+        let firstMac = makeIdentity(name: "First Mac")
+        let secondMac = makeIdentity(name: "Second Mac")
+        let request = makeRequest(from: firstMac)
+
+        let close = PairingEnvelope.completionClose(
+            to: request,
+            from: secondMac
+        )
+
+        XCTAssertEqual(close.kind, .completionClose)
+        XCTAssertEqual(close.requestID, request.requestID)
+        XCTAssertEqual(close.sender, secondMac)
+        XCTAssertNil(close.accepted)
+
+        let closeAcknowledgement = PairingEnvelope.completionCloseAcknowledgement(
+            to: request,
+            from: firstMac
+        )
+        XCTAssertEqual(
+            closeAcknowledgement.kind,
+            .completionCloseAcknowledgement
+        )
+        XCTAssertEqual(closeAcknowledgement.requestID, request.requestID)
+        XCTAssertEqual(closeAcknowledgement.sender, firstMac)
     }
 
     func testWireCodecWaitsForACompleteFrame() throws {

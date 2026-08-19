@@ -12,14 +12,14 @@ DDC/CI monitor input switching.
 ```mermaid
 flowchart LR
     subgraph MacA["MacBook Pro A"]
-        UIA["SwiftUI MenuBarExtra<br/>persistent keyboard icon"]
+        UIA["SwiftUI menu bar + MacKVM window<br/>persistent KVM/display icon"]
         PermA["Guided setup checklist<br/>Local Network → Input Monitoring → Accessibility"]
         LoginA["LaunchAtLoginController<br/>SMAppService"]
         DA["PeerDiscoveryService"]
         WA["NWListener + NWBrowser"]
         KA["Keychain private key"]
         RA["PairingRegistry<br/>UserDefaults"]
-        ProfileA["PairedPeerProfile<br/>name, model, last connection, fingerprint"]
+        ProfileA["PairedPeerProfile<br/>name, model, last connection, fingerprint,<br/>seamless control authorization"]
         PA["Pairing + SecureSession<br/>P-256 + HKDF + ChaChaPoly"]
         IA["CGEventTap capture<br/>Input Monitoring"]
         OA["CGEvent injection<br/>Accessibility"]
@@ -46,7 +46,7 @@ flowchart LR
     end
 
     subgraph MacB["MacBook Pro B"]
-        UIB["SwiftUI MenuBarExtra<br/>persistent keyboard icon"]
+        UIB["SwiftUI menu bar + MacKVM window<br/>persistent KVM/display icon"]
         PermB["Guided setup checklist"]
         LoginB["LaunchAtLoginController"]
         DB["PeerDiscoveryService"]
@@ -93,8 +93,10 @@ The pairing protocol currently works as follows:
 4. Both sides derive a six-digit verification code from the contributions,
    request UUID, roles, and both public keys. The user compares the code on both
    Macs.
-5. Both Macs explicitly accept the matching code. The peer public key is pinned
-   in `PairingRegistry` only after both signed acceptance messages, signed
+5. The receiving Mac selects **Accept** and the initiating Mac selects
+   **Confirm code** after comparing the matching code. Both signed decisions
+   are required. The peer public key is pinned in `PairingRegistry` only after
+   both signed acceptance messages, signed
    completion messages, and completion acknowledgements arrive. Each
    acknowledgement closes that Mac's sending direction; the peer's half-close
    must also arrive before trust is persisted.
@@ -108,9 +110,11 @@ The pairing protocol currently works as follows:
    a fresh device-local notification nonce; `ControlRequestNotifier` checks the
    nonce against its one live notification, and `ControlCoordinator` separately
    checks the UUID against its one live request before taking any action.
-   **Review in MacKVM** opens an explicit Allow/Deny dialog. Only after
-   **Allow** is selected does
-   its injection queue become ready and return a matching grant. The controlling
+   **Review in MacKVM** opens an explicit Allow/Deny dialog. For a newly paired
+   peer, the receiver may take the local `seamlessControlAuthorized` fast path
+   and use the same acceptance routine without showing a prompt; otherwise
+   only after **Allow** is selected does its injection queue become ready and
+   return a matching grant. The controlling
    Mac then captures selected
    keyboard, mouse, and scroll events with a suppressing `CGEventTap`, validates
    and encrypts them, and sends them through the secure session. The receiver
@@ -120,10 +124,11 @@ The pairing protocol currently works as follows:
 After pairing, each Mac stores a profile beside the pinned public key. The
 profile keeps the peer's validated friendly name and advertised model, records
 the time of the last authenticated connection, and derives a display-only
-SHA-256 fingerprint from the pinned public key. The menu lets the user edit the
-friendly name and copy a support report containing these public fields plus
-version, OS, and connection status. Private keys, credentials, and endpoints
-are deliberately excluded from that report.
+SHA-256 fingerprint from the pinned public key. New pairings enable the local
+`seamlessControlAuthorized` flag; the menu lets the user revoke it per peer,
+edit the friendly name, and copy a support report containing these public
+fields plus version, OS, and connection status. Private keys, credentials, and
+endpoints are deliberately excluded from that report.
 
 ```mermaid
 stateDiagram-v2
@@ -242,23 +247,31 @@ RemoteInputSink         validated CGEvent injection and Accessibility state
 ControlRequestNotifier  native incoming-control notification and stale-action guard
 MonitorController       DDC-capable display discovery, stable native selection, diagnostics, OSD fallback
 PairingRegistry         paired-peer persistence
-PairedPeerProfile        friendly name, model, connection time, key fingerprint
+PairedPeerProfile        friendly name, model, connection time, key fingerprint,
+                         seamless control authorization
 DeviceCredentialsStore  Keychain identity persistence
 ```
 
 Input capture uses the main display bounds on each Mac. Configure the MA270U as
 the main display on both computers so normalized pointer positions map to the
-same physical screen. Control uses a request/grant exchange; the receiver must
-confirm the request before events are suppressed locally and forwarded remotely.
-The controller can press **Control–Option–Command–Escape**, while the receiver
-can use **Stop remote control** to release injected input and return control.
+same physical screen. Control uses a request/grant exchange. A newly paired
+peer can use the receiver's local one-time authorization; otherwise the
+receiver must confirm the request before events are suppressed locally and
+forwarded remotely.
+The controller can press **Control–Option–Command–Escape** to interrupt sharing,
+while the receiver can use **Return keyboard and mouse to [M5 Mac]** to release
+injected input and return control to the controller.
+The global **Control–Option–Command–K** shortcut toggles the same route: it
+starts a normal control request while idle and returns input when either side
+is actively controlling or receiving.
 
 `SecureSessionService` remembers only a user-selected paired peer for automatic
 reconnect. `NWPathMonitor` pauses attempts while the network path is unavailable
 and resumes with a bounded exponential backoff (0/1/2/4…30 seconds) after a
 path or Bonjour update. A deliberate Disconnect, Forget, or app stop clears the
-desired peer. Reconnection returns both Macs to a local-input state; the user
-must grant control again rather than silently resuming input suppression.
+desired peer. Reconnection returns both Macs to a local-input state; a peer
+with seamless authorization can be granted again automatically, while an
+opted-out peer must confirm the request again.
 
 Control requests carry a protocol-version range and the current macOS
 physical-keyboard-layout identifier (from `TISCopyCurrentKeyboardLayoutInputSource`,
@@ -365,7 +378,8 @@ behavior are covered by the automated test suite.
 
    Do not use `swift run` for normal operation: the generated `.app` carries
    the Bonjour and Local Network privacy metadata required by macOS.
-6. MacKVM appears as a keyboard icon in the menu bar. Open it and complete
+6. MacKVM appears as a KVM/display-sharing icon in the menu bar and as a
+   regular Dock app with a full control window. Open either entry and complete
    **Set up this Mac** in order: select **Enable Local Network**, answer the
    macOS prompt and select **I handled the macOS prompt**, then request Input
    Monitoring and Accessibility one at a time. Returning from System Settings
@@ -376,37 +390,47 @@ behavior are covered by the automated test suite.
    notifications**. This optional macOS alert permission should be handled
    before the first request, outside its short consent window. A control
    request never triggers this authorization sheet by itself; without alerts,
-   MacKVM adds a warning symbol beside its keyboard menu-bar icon and retains
-   the menu controls.
+   MacKVM adds a warning symbol beside its KVM menu-bar icon and retains the
+   menu and window controls.
 8. Optionally enable **Launch MacKVM at Login** so the menu-bar icon returns
    automatically after signing in.
+   Login-item startup keeps the full window hidden; the menu-bar entry and Dock
+   activation remain available to open it on demand.
 9. After the Local Network step is complete, open the MacKVM menu-bar item on
    either Mac to inspect nearby devices.
 10. Under **Nearby Macs**, select **Pair** on one Mac.
 11. Compare the six-digit security code shown on both Macs. Verify the peer name
-   on each Mac, then press **Accept** on both Macs only when the codes match.
+    on each Mac, then press **Accept** on the receiver and **Confirm code** on
+    the initiator only when the codes match.
 12. On either Mac, select **Detect DDC-capable displays** and choose the
     intended display explicitly before selecting the matching preset. Native
     DDC/CI uses `IOAVService` on Apple Silicon and `IOI2C` on Intel. Test
     **Show this Mac** and **Show other Mac**. If the display does not expose
     DDC/CI, follow the diagnostic and use the monitor OSD.
-13. Select **Connect** on one Mac. When the encrypted session is connected,
-    choose **Request control of other Mac** on the Mac whose keyboard and mouse
-    you are using.
-14. The receiving Mac must select **Allow** before input is sent only to the
-    other Mac. With the menu closed, it can use the native notification's
+13. After the receiver accepts and the initiator confirms the matching code, the
+    app automatically attempts to connect the encrypted session. If it remains idle, select **Connect** on
+    one paired row. When the encrypted session is connected, the M5 Pro uses
+    **Share keyboard and mouse with [Intel Mac]** to switch the display and
+    share the physical keyboard and mouse.
+14. The controlling Mac needs both Input Monitoring and Accessibility because
+    its active event tap suppresses local input while forwarding it. The
+    receiving Mac must select **Allow** before input is sent only to the
+    other Mac unless seamless control is enabled for that pinned peer. With the
+    menu closed, it can use the native notification's
     **Allow**, **Deny**, or **Review in MacKVM** action; Review opens an
     explicit approval dialog, Allow requires macOS authentication if the
     receiver is locked, and old/expired actions are ignored. Press
-    **Control–Option–Command–Escape** or use **Return input to
-    this Mac** on the controller; the receiver can also select **Stop remote
-    control**. If DDC cannot switch the monitor, follow the diagnostic and
+    **Control–Option–Command–Escape** or use **Return keyboard and mouse to
+    this Mac** on the controller; the receiver can also select **Return
+    keyboard and mouse to [M5 Mac]**. If DDC cannot switch the monitor, follow the diagnostic and
     select the requested input through the OSD.
 
 After an authenticated transport loss, the selected peer is retried with
-bounded backoff and no new pairing. The next control request still requires a
-fresh Allow action. Use **Disconnect** or **Forget** to clear the reconnect
-intent. If the bootstrap screen reports an identity/keychain mismatch, use its
+bounded backoff and no new pairing. A seamless-authorized peer does not need a
+fresh Allow action; an opted-out peer does. Use **Disconnect** or **Forget** to
+clear the reconnect intent. Selecting **Show this Mac** also ends an active or
+waiting remote-control request before restoring the local display and input. If
+the bootstrap screen reports an identity/keychain mismatch, use its
 explicit reset action, relaunch, and pair both Macs again.
 
 Before testing, macOS may ask for local-network access. Pairing metadata and

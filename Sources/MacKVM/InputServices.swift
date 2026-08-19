@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import Carbon
 import Combine
 import CoreGraphics
 import Foundation
@@ -17,6 +18,33 @@ enum KeyboardLayoutIdentifier {
 
 private enum InjectedEventMarker {
     static let value: Int64 = 0x4D_4B_56_4D
+}
+
+/// A deliberately uncommon, four-modifier shortcut for toggling the
+/// keyboard/mouse route without opening the menu. Escape remains the
+/// emergency return shortcut while this one is reserved for switching.
+enum KeyboardMouseSwitchHotKey {
+    static let keyCode: UInt16 = 40 // K
+    static let displayName = "Control-Option-Command-K"
+
+    static func matches(
+        keyCode: UInt16,
+        flags: CGEventFlags
+    ) -> Bool {
+        guard keyCode == Self.keyCode else { return false }
+        let required: CGEventFlags = [
+            .maskControl, .maskAlternate, .maskCommand
+        ]
+        return flags.intersection(required) == required
+    }
+
+    static func matches(_ event: NSEvent) -> Bool {
+        guard event.type == .keyDown, !event.isARepeat else { return false }
+        return matches(
+            keyCode: UInt16(event.keyCode),
+            flags: CGEventFlags(rawValue: UInt64(event.modifierFlags.rawValue))
+        )
+    }
 }
 
 /// Media, brightness, and illumination keys are delivered as `NSSystemDefined`
@@ -215,6 +243,7 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
 
     var onEvent: ((RemoteInputEvent) -> Void)?
     var onEmergencyStop: (() -> Void)?
+    var onSwitchControl: (() -> Void)?
 
     var keyboardLayoutIdentifier: String? {
         KeyboardLayoutIdentifier.current()
@@ -222,6 +251,10 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
 
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
+    private var hotKeyEventTap: CFMachPort?
+    private var hotKeyRunLoopSource: CFRunLoopSource?
+    private var registeredHotKey: EventHotKeyRef?
+    private var registeredHotKeyHandler: EventHandlerRef?
     private var suppressesLocalEvents = false
     private var capsLockCapturePolicy = CapsLockCapturePolicy()
 
@@ -229,15 +262,132 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
         hasInputMonitoringPermission = CGPreflightListenEventAccess()
     }
 
+    deinit {
+        stopHotKeyMonitoring()
+    }
+
     func refreshPermission() {
         hasInputMonitoringPermission = CGPreflightListenEventAccess()
+        stopHotKeyMonitoring()
+        startHotKeyMonitoring()
     }
 
     func requestPermission() {
         hasInputMonitoringPermission = CGRequestListenEventAccess()
+        stopHotKeyMonitoring()
+        startHotKeyMonitoring()
         status = hasInputMonitoringPermission
             ? "Input Monitoring permission granted"
             : "Enable Input Monitoring in System Settings, then return to MacKVM"
+    }
+
+    /// Installs a dedicated session event tap for the switch shortcut. Unlike
+    /// NSEvent's global monitor, a session tap can consume the event even
+    /// when another application is focused, so the shortcut cannot trigger a
+    /// second action in that application. This tap is intentionally separate
+    /// from the full input-capture tap: it remains available while idle and
+    /// while receiving control.
+    func startHotKeyMonitoring() {
+        guard hotKeyEventTap == nil,
+              registeredHotKey == nil,
+              registeredHotKeyHandler == nil else {
+            return
+        }
+        // A session event tap is the strongest path because it can consume
+        // the shortcut before a foreground application sees it. A receiver
+        // may only have Accessibility permission, however, so fall back to a
+        // Carbon registered hot key, which is global and does not require
+        // Input Monitoring.
+        guard hasInputMonitoringPermission else {
+            startCarbonHotKey()
+            return
+        }
+        guard let tap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .headInsertEventTap,
+            options: .defaultTap,
+            eventsOfInterest: Self.hotKeyEventMask,
+            callback: hotKeyEventTapCallback,
+            userInfo: Unmanaged.passUnretained(self).toOpaque()
+        ) else {
+            startCarbonHotKey()
+            return
+        }
+        guard let source = CFMachPortCreateRunLoopSource(
+            kCFAllocatorDefault,
+            tap,
+            0
+        ) else {
+            startCarbonHotKey()
+            return
+        }
+        hotKeyEventTap = tap
+        hotKeyRunLoopSource = source
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+        CGEvent.tapEnable(tap: tap, enable: true)
+    }
+
+    private func startCarbonHotKey() {
+        var eventSpec = EventTypeSpec(
+            eventClass: OSType(kEventClassKeyboard),
+            eventKind: UInt32(kEventHotKeyPressed)
+        )
+        let installStatus = InstallEventHandler(
+            GetApplicationEventTarget(),
+            registeredHotKeyEventHandler,
+            1,
+            &eventSpec,
+            Unmanaged.passUnretained(self).toOpaque(),
+            &registeredHotKeyHandler
+        )
+        guard installStatus == noErr else {
+            status = "Could not create the global switch shortcut"
+            return
+        }
+
+        let hotKeyID = EventHotKeyID(
+            signature: RegisteredSwitchHotKey.signature,
+            id: RegisteredSwitchHotKey.id
+        )
+        let registerStatus = RegisterEventHotKey(
+            UInt32(KeyboardMouseSwitchHotKey.keyCode),
+            RegisteredSwitchHotKey.modifiers,
+            hotKeyID,
+            GetApplicationEventTarget(),
+            0,
+            &registeredHotKey
+        )
+        guard registerStatus == noErr else {
+            if let registeredHotKeyHandler {
+                RemoveEventHandler(registeredHotKeyHandler)
+            }
+            registeredHotKeyHandler = nil
+            status = "Could not create the global switch shortcut"
+            return
+        }
+    }
+
+    func stopHotKeyMonitoring() {
+        if let hotKeyEventTap {
+            CGEvent.tapEnable(tap: hotKeyEventTap, enable: false)
+        }
+        if let hotKeyRunLoopSource {
+            CFRunLoopRemoveSource(
+                CFRunLoopGetMain(),
+                hotKeyRunLoopSource,
+                .commonModes
+            )
+        }
+        hotKeyRunLoopSource = nil
+        hotKeyEventTap = nil
+        if let registeredHotKey {
+            UnregisterEventHotKey(registeredHotKey)
+        }
+        if let registeredHotKeyHandler {
+            RemoveEventHandler(registeredHotKeyHandler)
+        }
+        registeredHotKey = nil
+        registeredHotKeyHandler = nil
     }
 
     func startCapture(suppressingLocalEvents: Bool = false) {
@@ -294,6 +444,13 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
                 != InjectedEventMarker.value else {
             return false
         }
+        if isSwitchShortcut(type: type, event: event) {
+            if type == .keyDown,
+               event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
+                dispatchSwitchHotKey()
+            }
+            return true
+        }
         if isEmergencyShortcut(type: type, event: event) {
             if type == .keyDown,
                event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
@@ -344,6 +501,52 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
         ]
         return event.getIntegerValueField(.keyboardEventKeycode) == 53
             && event.flags.intersection(required) == required
+    }
+
+    private func isSwitchShortcut(
+        type: CGEventType,
+        event: CGEvent
+    ) -> Bool {
+        guard type == .keyDown || type == .keyUp else { return false }
+        return KeyboardMouseSwitchHotKey.matches(
+            keyCode: UInt16(
+                event.getIntegerValueField(.keyboardEventKeycode)
+            ),
+            flags: event.flags
+        )
+    }
+
+    private func dispatchSwitchHotKey() {
+        DispatchQueue.main.async { [weak self] in
+            self?.onSwitchControl?()
+        }
+    }
+
+    fileprivate func handleRegisteredHotKey() {
+        dispatchSwitchHotKey()
+    }
+
+    fileprivate func reenableHotKeyEventTap() {
+        guard let hotKeyEventTap else { return }
+        CGEvent.tapEnable(tap: hotKeyEventTap, enable: true)
+    }
+
+    fileprivate func captureHotKey(
+        type: CGEventType,
+        event: CGEvent
+    ) -> Bool {
+        guard event.getIntegerValueField(.eventSourceUserData)
+                != InjectedEventMarker.value,
+              isSwitchShortcut(type: type, event: event) else {
+            return false
+        }
+        if type == .keyDown,
+           event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
+            dispatchSwitchHotKey()
+        }
+        // Consume both edges whenever the modifiers are still held. This
+        // keeps the foreground application from seeing a partial shortcut.
+        return true
     }
 
     private func makeRemoteEvent(
@@ -528,6 +731,11 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
         return mask
             | (CGEventMask(1) << SystemDefinedEvent.cgEventTypeRawValue)
     }()
+
+    private static let hotKeyEventMask: CGEventMask = {
+        (CGEventMask(1) << CGEventType.keyDown.rawValue)
+            | (CGEventMask(1) << CGEventType.keyUp.rawValue)
+    }()
 }
 
 /// Where a received keyDown/keyUp should actually be injected. `.identity`
@@ -573,6 +781,10 @@ enum RemoteInputSinkError: Error, Equatable {
     /// A remappable key arrived under a differing keyboard layout with no
     /// local key producing the same character.
     case unmappableKey
+    /// Carbon's notification-driven layout cache is stale. This is a
+    /// transient state while the main-thread refresh is queued; it must not
+    /// tear down an otherwise healthy remote-control session.
+    case layoutUnavailable
 }
 
 final class RemoteInputSink: ObservableObject, ControlInputSink {
@@ -593,13 +805,16 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
     private var capsLockRemoteInputPolicy = CapsLockRemoteInputPolicy()
     // Rebuilt only when the local layout identifier changes; building it
     // enumerates every remappable key, so it must not happen per keystroke.
-    private var reverseMapLayoutIdentifier: String?
-    private var reverseMap: KeyboardLayoutReverseMap?
     // Resolved once at keyDown, by the sender's physical keyCode, and reused
     // as-is at the matching keyUp. This guarantees a press and its release
-    // always target the same local key even if a modifier changes, or the
-    // reverse map is rebuilt, while the key is held.
+    // always target the same local key even if the provider refreshes its
+    // layout snapshot while the key is held.
     private var activeKeyRemap: [UInt16: KeyInjectionTarget] = [:]
+    // A key-down can arrive while the notification-driven Carbon cache is
+    // refreshing.  It is safer to drop that press than to inject it using the
+    // raw key code; the matching key-up must then be dropped as well or it
+    // could release an unrelated local key on a different layout.
+    private var droppedKeyUps: Set<UInt16> = []
     private let inputAdmission = BoundedAdmissionGate(
         // Remote input opens only after Accessibility is confirmed and the
         // serial injection queue has entered the active-control generation.
@@ -656,6 +871,7 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
             isAcceptingRemoteInput = true
             beginInputAdmission()
             capsLockRemoteInputPolicy.reset()
+            droppedKeyUps.removeAll()
             hasPublishedInputActivity = false
             publish(status: "Remote control granted")
             DispatchQueue.main.async {
@@ -717,6 +933,16 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
             do {
                 let validatedInput = try input.validated()
                 try inject(validatedInput)
+            } catch RemoteInputSinkError.layoutUnavailable {
+                // A layout-change notification can race with an input event.
+                // The provider schedules a main-thread refresh and this event
+                // is intentionally dropped; the next event will use the new
+                // cached layout. Do not end the control session for a
+                // transiently unavailable Carbon source.
+                if input.kind == .keyDown, let keyCode = input.keyCode {
+                    droppedKeyUps.insert(keyCode)
+                }
+                return
             } catch RemoteInputSinkError.unmappableKey {
                 // A differing keyboard layout is no longer fatal by itself
                 // (see resolveKeyInjectionTarget); this only fires once a
@@ -757,11 +983,22 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
             guard let remoteKeyCode = input.keyCode else {
                 throw RemoteInputError.invalidFields
             }
-            guard let target = resolveKeyInjectionTarget(
+            if input.kind == .keyUp,
+               droppedKeyUps.remove(remoteKeyCode) != nil {
+                // The corresponding key-down was intentionally dropped while
+                // the layout cache was unavailable, so this release must not
+                // be sent using a raw key code.
+                return
+            }
+            let target = try resolveKeyInjectionTargetOrThrow(
                 for: input,
                 remoteKeyCode: remoteKeyCode
-            ) else {
-                throw RemoteInputSinkError.unmappableKey
+            )
+            if input.kind == .keyDown {
+                // A later press can legitimately succeed after a transient
+                // layout refresh; its release belongs to this newly injected
+                // press, not to the previously dropped one.
+                droppedKeyUps.remove(remoteKeyCode)
             }
             keyInjectionTarget = target
             let keyDown = input.kind == .keyDown
@@ -872,16 +1109,27 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
         input.isPressed ?? !pressedKeyCodes.contains(keyCode)
     }
 
-    /// Chooses where a keyDown/keyUp should actually be injected. Returns nil
-    /// when a remappable key cannot be resolved safely — either because the
-    /// layouts differ and this layout has no equivalent character, or because
-    /// the local layout identifier is temporarily unavailable. `inject`
-    /// treats either case as fatal so it never posts a key under an unknown
-    /// layout.
+    /// Chooses where a keyDown/keyUp should actually be injected. The
+    /// best-effort API remains optional for callers that only need a lookup;
+    /// the injection path uses `resolveKeyInjectionTargetOrThrow` so it can
+    /// distinguish a transient cache refresh from a genuinely unmappable key.
     func resolveKeyInjectionTarget(
         for input: RemoteInputEvent,
         remoteKeyCode: UInt16
     ) -> KeyInjectionTarget? {
+        try? resolveKeyInjectionTargetOrThrow(
+            for: input,
+            remoteKeyCode: remoteKeyCode
+        )
+    }
+
+    /// Resolves a key for the actual injection path while preserving the
+    /// distinction between a temporarily stale layout cache and a key that
+    /// genuinely has no local equivalent.
+    func resolveKeyInjectionTargetOrThrow(
+        for input: RemoteInputEvent,
+        remoteKeyCode: UInt16
+    ) throws -> KeyInjectionTarget {
         if input.kind == .keyUp {
             // Reusing the keyDown's resolution, rather than recomputing it,
             // is what guarantees a press and its release always target the
@@ -901,13 +1149,11 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
         if let existing = activeKeyRemap[remoteKeyCode] {
             return existing
         }
-        let target = computeKeyInjectionTarget(
+        let target = try computeKeyInjectionTargetOrThrow(
             for: input,
             remoteKeyCode: remoteKeyCode
         )
-        if let target {
-            activeKeyRemap[remoteKeyCode] = target
-        }
+        activeKeyRemap[remoteKeyCode] = target
         return target
     }
 
@@ -915,18 +1161,29 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
         for input: RemoteInputEvent,
         remoteKeyCode: UInt16
     ) -> KeyInjectionTarget? {
+        try? computeKeyInjectionTargetOrThrow(
+            for: input,
+            remoteKeyCode: remoteKeyCode
+        )
+    }
+
+    private func computeKeyInjectionTargetOrThrow(
+        for input: RemoteInputEvent,
+        remoteKeyCode: UInt16
+    ) throws -> KeyInjectionTarget {
         guard let remoteLayout = input.keyboardLayoutIdentifier,
               RemappableKeyCodes.all.contains(remoteKeyCode) else {
             return .identity(keyCode: remoteKeyCode)
         }
         // A sender that supplied a layout identifier needs a known local
         // identifier before we can safely decide that the raw key code is
-        // already correct. If Carbon is temporarily unavailable, declining
-        // this remappable event is safer than injecting a key under an
-        // unknown layout and producing the wrong character or shortcut.
-        guard let localLayout = keyboardLayoutProvider.currentIdentifier() else {
-            return nil
+        // already correct. If Carbon is temporarily unavailable, the caller
+        // drops this one event and retries on the next event after the cache
+        // refresh; it must not tear down the active control session.
+        guard let snapshot = keyboardLayoutProvider.currentSnapshot() else {
+            throw RemoteInputSinkError.layoutUnavailable
         }
+        let localLayout = snapshot.identifier
         guard remoteLayout != localLayout else {
             return .identity(keyCode: remoteKeyCode)
         }
@@ -934,27 +1191,15 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
             // The sender could not translate this key on its own layout
             // (for example, an ISO key with no glyph there); there is
             // nothing to look up on this one either.
-            return nil
+            throw RemoteInputSinkError.unmappableKey
         }
-        refreshReverseMapIfNeeded(for: localLayout)
-        guard let target = reverseMap?.target(for: character) else {
-            return nil
+        guard let target = snapshot.reverseMap.target(for: character) else {
+            throw RemoteInputSinkError.unmappableKey
         }
         let modifierFlags = CGEventFlags(rawValue: input.modifierFlags)
         let isShortcut = modifierFlags.contains(.maskCommand)
             || modifierFlags.contains(.maskControl)
         return .remapped(target, applyModifiers: !isShortcut)
-    }
-
-    func refreshReverseMapIfNeeded(for localLayout: String) {
-        guard reverseMapLayoutIdentifier != localLayout else { return }
-        guard let map = keyboardLayoutProvider.currentReverseMap() else {
-            reverseMap = nil
-            reverseMapLayoutIdentifier = nil
-            return
-        }
-        reverseMap = map
-        reverseMapLayoutIdentifier = localLayout
     }
 
     private func inputWithInferredCapsLockState(
@@ -1093,6 +1338,7 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
         }
         pressedMouseButtons.removeAll()
         capsLockRemoteInputPolicy.reset()
+        droppedKeyUps.removeAll()
         // Nothing here is a stuck-key risk to clear: every key it names was
         // already released above by the loop that drains pressedKeyCodes.
         activeKeyRemap.removeAll()
@@ -1211,6 +1457,44 @@ private let inputEventTapCallback: CGEventTapCallBack = {
     return service.capture(type: type, event: event)
         ? nil
         : Unmanaged.passUnretained(event)
+}
+
+private let hotKeyEventTapCallback: CGEventTapCallBack = {
+    _, type, event, userInfo in
+    guard let userInfo else {
+        return Unmanaged.passUnretained(event)
+    }
+    let service = Unmanaged<InputCaptureService>
+        .fromOpaque(userInfo)
+        .takeUnretainedValue()
+    if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+        // macOS can disable a tap after a callback timeout or while another
+        // process temporarily owns event-input handling. Re-enable this
+        // dedicated shortcut tap immediately so the global switch key does
+        // not silently disappear until the next permission refresh.
+        service.reenableHotKeyEventTap()
+        return Unmanaged.passUnretained(event)
+    }
+    return service.captureHotKey(type: type, event: event)
+        ? nil
+        : Unmanaged.passUnretained(event)
+}
+
+private enum RegisteredSwitchHotKey {
+    static let signature: OSType = 0x4D4B_564D // "MKVM"
+    static let id: UInt32 = 1
+    static let modifiers: UInt32 =
+        UInt32(controlKey | optionKey | cmdKey)
+}
+
+private let registeredHotKeyEventHandler: EventHandlerUPP = {
+    _, _, userInfo in
+    guard let userInfo else { return noErr }
+    let service = Unmanaged<InputCaptureService>
+        .fromOpaque(userInfo)
+        .takeUnretainedValue()
+    service.handleRegisteredHotKey()
+    return noErr
 }
 
 private enum MainDisplayCoordinateSpace {

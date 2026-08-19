@@ -182,20 +182,56 @@ final class MonitorController: ObservableObject {
         )
     }
 
+    /// Runs the remote display route and reports whether native DDC actually
+    /// succeeded. This is intentionally separate from `switchToRemote`, whose
+    /// completion means that the route has resolved (including manual
+    /// fallback or a DDC error). Callers that will forward input must use this
+    /// result so they never start control while the local Mac is still on
+    /// screen.
+    func switchToRemoteAndReportSuccess(
+        completion: @escaping (Bool) -> Void
+    ) {
+        guard automationEnabled,
+              Self.automaticSwitchDecision(
+                  displaySelector: displaySelector,
+                  isDisplaySelectorVerified: isDisplaySelectorVerified,
+                  hasCompletedDisplayDiscovery: true
+              ) == .switchNow else {
+            completion(false)
+            return
+        }
+        switchInput(
+            remoteInput,
+            description: "the other Mac",
+            intent: .normal,
+            completion: nil,
+            result: completion
+        )
+    }
+
     private func switchInput(
         _ input: MonitorInputSource,
         description: String,
         intent: DeferredAutomaticSwitchIntent,
-        completion: (() -> Void)?
+        completion: (() -> Void)?,
+        result: ((Bool) -> Void)? = nil
     ) {
+        let reportResult: (Bool) -> Void = { success in
+            guard let result else { return }
+            DispatchQueue.main.async {
+                result(success)
+            }
+        }
         guard intent == .terminating
                 || !deferredAutomaticSwitchState.isTerminating else {
             completion?()
+            reportResult(false)
             return
         }
         guard automationEnabled else {
             status = "Use the monitor OSD to select \(input.name) for \(description)"
             completion?()
+            reportResult(false)
             return
         }
         let selector = displaySelector.trimmingCharacters(
@@ -216,6 +252,7 @@ final class MonitorController: ObservableObject {
                 completion: completion
             )
             cancelledCompletions.forEach { $0() }
+            reportResult(false)
             status = "Verifying the saved DDC display before switching…"
             if !isDiscoveringDisplays {
                 refreshDetectedDisplays()
@@ -226,6 +263,7 @@ final class MonitorController: ObservableObject {
                 ? "Detect and select a DDC-capable display before automatic switching"
                 : "The selected DDC display is not currently available; detect it again"
             completion?()
+            reportResult(false)
             return
         }
 
@@ -248,12 +286,14 @@ final class MonitorController: ObservableObject {
                     "\(displayName) switched to \(input.name) for \(description)",
                     completion: completion
                 )
+                reportResult(true)
             } catch {
                 self?.publish(
                     "Native DDC/CI switch failed; use the monitor OSD to select \(input.name)",
                     diagnostic: Self.diagnostic(from: error),
                     completion: completion
                 )
+                reportResult(false)
             }
         }
     }

@@ -44,7 +44,7 @@ Create and verify a universal DMG for local testing:
 ./scripts/verify-release.sh \
   --app dist/universal/MacKVM.app \
   --arch universal
-(cd dist && shasum -a 256 -c MacKVM-0.9.5-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-0.11.0-universal.dmg.sha256)
 ```
 
 Ad-hoc signing is suitable only for local testing. For distribution to
@@ -72,9 +72,14 @@ No signing, notarization, or Keychain credentials belong in this repository.
    the first control request.
 7. Optionally enable **Launch MacKVM at Login**.
 
-MacKVM appears as a keyboard icon in the menu bar rather than as a Dock app.
-The app bundle, rather than `swift run`, is required because it contains the
-Bonjour and Local Network privacy metadata.
+MacKVM appears with a KVM/display-sharing icon in the menu bar and as a regular
+Dock app with a full control window. The app bundle, rather than `swift run`,
+is required because it contains the Bonjour and Local Network privacy metadata.
+Pairing and remote input work without an external display; DDC switching and
+cross-display pointer mapping are optional monitor features.
+When launched by Login Items, MacKVM keeps the full window hidden so startup
+does not steal focus; open it from the menu-bar icon or activate it from the
+Dock when needed.
 
 ## Configure the monitor and input path
 
@@ -91,6 +96,9 @@ Bonjour and Local Network privacy metadata.
    connected to the M5 Pro or the MA270U USB hub. HDMI does not carry USB data.
 7. Use **Show this Mac** and **Show other Mac** to verify switching. If DDC/CI
    fails, use the diagnostic text and switch inputs through the MA270U OSD.
+   On the M5 Pro, **Share keyboard and mouse with [Intel Mac]** combines the
+   display switch with sharing; the Intel Mac selects **Allow** unless
+   seamless control was enabled for the paired M5 Pro.
 
 Select **External USB switch (bidirectional)** only after both Macs visibly see
 the keyboard and mouse through a real physical USB switch.
@@ -100,23 +108,39 @@ the keyboard and mouse through a real physical USB switch.
 1. After the Local Network step is complete, open the MacKVM menu on both Macs.
 2. Under **Nearby Macs**, select **Pair** on one Mac.
 3. Compare the six-digit security code and peer name on both Macs.
-4. Select **Accept** on both Macs only when the codes match.
-5. Select **Connect** on either Mac.
-6. On the controlling Mac, select **Request control of other Mac**.
-7. On the receiving Mac, select **Allow**. A closed menu can use the native
-   Allow/Deny/Review notification; Review opens the MacKVM approval dialog.
-8. End control with **Return input to this Mac**, **Stop remote control**, or
-   `Control-Option-Command-Escape`.
+4. On the receiving Mac, select **Accept** only when the code matches. On the
+   initiating Mac, select **Confirm code** after comparing the same code.
+5. After both signed decisions complete, MacKVM automatically attempts to
+   connect the encrypted session. If it remains idle, select **Connect** on
+   either paired row.
+6. On the M5 Pro, select **Share keyboard and mouse with [Intel Mac]**. This
+   switches the MA270U to the Intel Mac and then starts the keyboard/mouse
+   control request.
+7. A newly paired receiver automatically enables seamless control for that
+   pinned peer. To keep per-request consent, turn off **Automatically allow
+   control from this Mac** under **Paired device information**. When it is off,
+   select **Allow** on the receiving Mac; a closed menu can use the native
+   Allow/Deny/Review notification, and Review opens the MacKVM approval dialog.
+8. The M5 Pro can interrupt at any time with
+   `Control-Option-Command-Escape`. To switch back from Intel, select
+   **Return keyboard and mouse to [M5 Mac]** on the Intel Mac. The controller
+   can also select **Return keyboard and mouse to this Mac**. The global
+   `Control-Option-Command-K` shortcut toggles the same route without opening
+   the menu: it starts a request when idle and returns input when controlling
+   or receiving.
 
-After a transport loss, MacKVM reconnects with bounded backoff but requires a
-new control consent. **Disconnect**, **Forget**, and **Quit** clear reconnect
-intent.
+After a transport loss, MacKVM reconnects with bounded backoff. A peer with
+seamless control authorization can resume control without another prompt;
+otherwise it requires fresh consent. **Disconnect**, **Forget**, and **Quit**
+clear reconnect intent.
 
 ## Device profiles and support information
 
 Under **Paired device information**, edit and save a friendly name. MacKVM
 retains the name, advertised model, last authenticated connection time, and
-the SHA-256 fingerprint of the pinned public key across relaunches.
+the SHA-256 fingerprint of the pinned public key across relaunches. A newly
+paired Mac is automatically authorized for seamless control; use the per-peer
+toggle there to require Allow for every request.
 
 Select **Copy support information** when reporting a problem. The report
 contains public version, OS, device, fingerprint, and connection-status data;

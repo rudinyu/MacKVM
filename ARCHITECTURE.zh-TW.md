@@ -4,7 +4,7 @@
 
 ## 系統範圍
 
-MacKVM 是 macOS 選單列工具，實作附近裝置探索、雙方配對、持久化加密連線、
+MacKVM 是 macOS 選單列與一般視窗工具，實作附近裝置探索、雙方配對、持久化加密連線、
 鍵盤與滑鼠轉送、接收端明確同意、安全返回、權限設定檢查與原生 DDC/CI 螢幕輸入切換。
 
 ```mermaid
@@ -26,13 +26,16 @@ flowchart LR
   並提供系統設定連結。
 - `PeerDiscoveryService`：Bonjour 探索、配對請求、驗證碼與配對生命週期。
 - `PairingRegistry`：保存已配對 peer 的公開金鑰與 generation；不保存私密金鑰。
-- `PairedPeerProfile`：保存友善名稱、型號、最後成功連線時間與公開金鑰指紋。
+- `PairedPeerProfile`：保存友善名稱、型號、最後成功連線時間、公開金鑰指紋與每台
+  配對 Mac 的無縫控制授權。
 - `SecureSessionService`：簽署短期 P-256 握手、HKDF、ChaChaPoly 與序號防重放。
 - `ControlCoordinator`：控制請求、Allow／Deny／Stop、session generation 與輸入狀態。
 - `InputCaptureService`／`RemoteInputSink`：擷取與驗證鍵盤、滑鼠、滾輪事件。
 - `ControlRequestNotifier`：選單關閉時顯示帶有 request ID 與 nonce 的原生通知。
 - `MonitorController`：探索支援 DDC/CI 的顯示器；Apple Silicon 使用 `IOAVService`、
   Intel 使用 `IOI2C`，並提供螢幕 OSD 手動備援。
+
+外接螢幕不是配對或遠端控制的必要條件；它只用於 DDC 輸入切換與跨螢幕指標定位。
 
 ## 配對與安全連線流程
 
@@ -42,20 +45,21 @@ flowchart LR
    但不代表已建立信任。
 3. 發起端與回應端交換簽署的 commitment，再揭露獨立的隨機貢獻。
 4. 雙方用貢獻、request UUID、角色與公開金鑰計算六位數驗證碼，使用者在兩台 Mac
-   比對後明確按 **Accept**。
+   比對後，接收端按 **Accept**、發起端按 **Confirm code**。
 5. 完成訊息與 acknowledgement 都成功、TCP half-close 確認後，才將公開金鑰釘選到
    peer UUID。取消或 Forget 會清除延遲完成，避免舊配對恢復信任。
 6. 控制連線交換簽署的短期 P-256 金鑰，使用方向分離的 HKDF 金鑰與 ChaChaPoly；
    接收端解開新鮮的 key-confirmation 後才發布 connected。
-7. 只有接收端按 **Allow** 後，控制端才會抑制本機輸入並送出事件。重連後仍需重新
-   同意，不會靜默恢復控制。
+7. 控制端需要 Input Monitoring 與 Accessibility，才能用 active event tap 抑制本機輸入並
+   送出事件；接收端也需要 Accessibility 來注入事件。新配對的接收端會使用本機的無縫
+   控制授權自動核准；若使用者關閉該授權，才需要按 **Allow**。重連後同樣依此設定處理。
 
 ## 配對裝置資料
 
 `PairingRegistry` 的公開金鑰仍是認證信任根；`PairedPeerProfile` 是另外的本機
 UserDefaults JSON 資料。配對時保存簽署身份的友善名稱與 Bonjour 型號，安全連線在
-完成 key confirmation 後更新最後連線時間。使用者可在選單的
-**Paired device information** 修改友善名稱。
+完成 key confirmation 後更新最後連線時間。新配對會啟用無縫控制授權，使用者可在選單的
+**Paired device information** 修改友善名稱或關閉每台裝置的授權。
 
 金鑰指紋是公開金鑰 bytes 的 SHA-256，以冒號分隔的 32 組大寫十六進位顯示。支援
 資訊只包含這類公開診斷資料、版本、作業系統與連線狀態，不包含私密金鑰、憑證、密碼
@@ -108,7 +112,7 @@ stateDiagram-v2
     [*] --> idle
     idle --> connected: 加密連線完成
     connected --> waiting: 發出控制請求
-    waiting --> controlling: 接收端 Allow
+    waiting --> controlling: 接收端 Allow 或無縫授權
     waiting --> connected: Deny 或逾時
     controlling --> connected: Stop 或緊急快捷鍵
     controlling --> disconnected: 網路中斷
@@ -128,12 +132,17 @@ stateDiagram-v2
 - Forget 先移除釘選公開金鑰，再取消匿名 handshake 與遲到的配對完成。
 
 這些是本機網路上的可用性防護；真正的授權邊界仍是已釘選公開金鑰、簽署握手、加密
-通道與接收端的明確控制同意。
+通道與接收端的控制同意。無縫授權是配對後保存在接收端的本機一次性同意。
 
 ## 使用步驟
 
 請先依照[繁體中文安裝指南](INSTALL.zh-TW.md)完成架構對應的 app、權限、DDC/CI
-輸入來源與配對。日常操作時，在 **Paired device information** 查看或修改名稱，
-需要回報問題按 **Copy support information**；要停止控制則使用
-**Return input to this Mac**、**Stop remote control** 或
-`Control-Option-Command-Escape`。
+輸入來源與配對。配對完成後 MacKVM 會自動嘗試建立安全連線；若仍顯示 idle，可在已配對
+裝置列按 **Connect**。日常操作時，在 **Paired device information** 查看或修改名稱、
+關閉無縫控制授權，
+需要回報問題按 **Copy support information**。M5 Pro 用 **Share keyboard and mouse
+with [Intel Mac]** 分享鍵盤與滑鼠；要從 Intel Mac 返回 M5 Pro，接收端按
+**Return keyboard and mouse to [M5 Mac]**，控制端也可按
+**Return keyboard and mouse to this Mac** 或使用
+`Control-Option-Command-K` 在閒置／控制中切換，或用
+`Control-Option-Command-Escape` 緊急中斷。
