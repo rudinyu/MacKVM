@@ -240,6 +240,28 @@ final class MonitorControllerTests: XCTestCase {
         XCTAssertEqual(completed, ["local", "remote"])
     }
 
+    func testDeferredSwitchResultIsResolvedOnlyByTheActualRouteOutcome() {
+        var state = DeferredAutomaticSwitchState()
+        var completions = 0
+        var results: [Bool] = []
+
+        _ = state.deferSwitch(
+            input: .hdmi1,
+            description: "the other Mac",
+            intent: .normal,
+            completion: { completions += 1 },
+            result: { results.append($0) }
+        )
+
+        let pending = state.takeDeferredSwitch()
+        pending?.completeCompletions()
+        XCTAssertEqual(completions, 1)
+        XCTAssertTrue(results.isEmpty)
+
+        pending?.result?(true)
+        XCTAssertEqual(results, [true])
+    }
+
     func testTerminationKeepsOnlyTheFinalLocalDeferredRoute() {
         var state = DeferredAutomaticSwitchState()
         var completed: [String] = []

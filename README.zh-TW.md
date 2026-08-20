@@ -99,8 +99,9 @@ repository，正常 CI 也會建置三種診斷目標。按下 Ctrl-C 或收到 
    **Copy support information**。
 6. 在任一台 Mac 選取 **Detect DDC-capable displays**，明確選取要控制的外接螢幕；
    M5 Pro 套用 **M5 / USB-C preset**，Intel Mac 套用 **Intel / HDMI preset**。
-   在 M5 Pro 可按 **Share keyboard and mouse with [Intel Mac]**，一次切換畫面並
-   分享鍵盤與滑鼠；Intel Mac 只有在未啟用該配對裝置的無縫控制時才需要按 **Allow**。
+   在 M5 Pro 按 **Show other Mac** 時，若控制前置條件已完成，也會開始受保護的鍵盤／滑鼠
+   分享；**Share keyboard and mouse with [Intel Mac]** 仍可作為明確的等效操作。Intel Mac
+   只有在未啟用該配對裝置的無縫控制時才需要按 **Allow**。
    控制中可隨時按 `Control-Option-Command-Escape` 中斷並把鍵盤與滑鼠還給 M5 Pro。
    `Control-Option-Command-K` 可在分享與本機控制之間切換；閒置時會開始請求，
    控制中或接收中會返回本機／控制端。

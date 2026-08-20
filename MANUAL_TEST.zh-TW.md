@@ -31,7 +31,7 @@ Intel Mac 的 `/Applications`，再開啟各自架構的 app。
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist && shasum -a 256 -c MacKVM-0.12.2-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-0.12.4-universal.dmg.sha256)
 ```
 
 本機 ad-hoc 簽章只能用於測試；正式散布必須使用 Developer ID、hardened runtime
@@ -85,8 +85,10 @@ transport 與 VCP `0x60` 狀態。若型號 mapping 不明，明確執行掃描�
 HDMI 1 使用 VCP 17（`0x11`）。其他型號使用自己的 mapping；螢幕可能在 I2C 傳輸成功時
 仍靜默忽略未公告的輸入值。新增型號前先執行診斷掃描。
 
-預期結果：**Show this Mac** 顯示 USB-C，**Show other Mac** 顯示指定 HDMI；原生
-DDC/CI 失敗時五秒內回報診斷並可用 OSD 手動切換，不能悄悄改用不明顯示器。
+預期結果：**Show this Mac** 顯示 USB-C，**Show other Mac** 顯示指定 HDMI；在 M5 Pro
+若控制前置條件已完成，**Show other Mac** 同時開始受保護的鍵盤／滑鼠分享；若前置
+條件未完成，仍只執行顯示器切換並讓實體輸入留在本機；原生 DDC/CI 失敗時五秒內回報
+診斷並可用 OSD 手動切換，不能悄悄改用不明顯示器。
 
 ## 3. macOS 權限
 
@@ -122,8 +124,8 @@ DDC/CI 失敗時五秒內回報診斷並可用 OSD 手動切換，不能悄悄�
 
 1. 配對完成後，在接收端的 **Paired device information** 確認該配對 Mac 的
    **Automatically allow control from this Mac** 已開啟。
-2. M5 Pro 控制端按 **Share keyboard and mouse with [Intel Mac]**，確認不需再次按 Allow 即可開始控制，
-   且螢幕與鍵盤路由一致。
+2. M5 Pro 控制端按 **Show other Mac**（或明確的 **Share keyboard and mouse with [Intel Mac]**），
+   確認不需再次按 Allow 即可開始控制，且螢幕與鍵盤路由一致。
 3. 在接收端關閉 **Automatically allow control from this Mac**，回到本機後再次請求控制。
 4. 接收端分別測試選單中的 **Allow**、**Deny**、逾時，以及選單關閉時的原生通知
    **Allow**、**Deny**、**Review in MacKVM**。

@@ -85,7 +85,7 @@ Create and verify a universal DMG for local testing:
 ./scripts/verify-release.sh \
   --app dist/universal/MacKVM.app \
   --arch universal
-(cd dist && shasum -a 256 -c MacKVM-0.12.2-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-0.12.4-universal.dmg.sha256)
 ```
 
 Ad-hoc signing is suitable only for local testing. For distribution to
@@ -141,9 +141,10 @@ Dock when needed.
    MA270U firmware has no DDC/CI OSD toggle; if native detection fails, use
    the diagnostic text, check the direct cable path, and switch inputs through
    the MA270U OSD.
-   On the M5 Pro, **Share keyboard and mouse with [Intel Mac]** combines the
-   display switch with sharing; the Intel Mac selects **Allow** unless
-   seamless control was enabled for the paired M5 Pro.
+   On the M5 Pro, **Show other Mac** also starts the guarded keyboard/mouse
+   hand-off when the control prerequisites are ready. **Share keyboard and
+   mouse with [Intel Mac]** remains the explicit equivalent; the Intel Mac
+   selects **Allow** unless seamless control was enabled for the paired M5 Pro.
 
 Select **External USB switch (bidirectional)** only after both Macs visibly see
 the keyboard and mouse through a real physical USB switch.

@@ -123,7 +123,7 @@ The package is built from a fresh staging directory and writes a portable
 SHA-256 sidecar next to the DMG. Verify the pair from the `dist` directory:
 
 ```sh
-(cd dist && shasum -a 256 -c MacKVM-0.12.2-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-0.12.4-universal.dmg.sha256)
 ```
 
 For distribution to another Mac, sign with a Developer ID Application
@@ -226,9 +226,10 @@ In the MacKVM menu:
    its OSD; MacKVM uses the native bridge when macOS exposes the display. If
    detection or switching fails, read the **DDC diagnostic**, check the direct
    cable path, and use the OSD input menu as the fallback.
-   On the M5 Pro, **Share keyboard and mouse with [Intel Mac]** combines the
-   display route with the control request; the Intel Mac selects **Allow**
-   unless seamless control was enabled for the paired M5 Pro.
+   On the M5 Pro, **Show other Mac** also starts the guarded keyboard/mouse
+   hand-off when the control prerequisites are ready. **Share keyboard and
+   mouse with [Intel Mac]** remains the explicit equivalent; the Intel Mac
+   selects **Allow** unless seamless control was enabled for the paired M5 Pro.
 
 After the receiving Mac accepts the matching code, the initiating Mac must
 compare the same code and select **Confirm code**. Both signed decisions are

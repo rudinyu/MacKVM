@@ -157,8 +157,9 @@ stateDiagram-v2
 輸入來源與配對。配對完成後 MacKVM 會自動嘗試建立安全連線；若仍顯示 idle，可在已配對
 裝置列按 **Connect**。日常操作時，在 **Paired device information** 查看或修改名稱、
 關閉無縫控制授權，
-需要回報問題按 **Copy support information**。M5 Pro 用 **Share keyboard and mouse
-with [Intel Mac]** 分享鍵盤與滑鼠；要從 Intel Mac 返回 M5 Pro，接收端按
+需要回報問題按 **Copy support information**。實體鍵盤與滑鼠接在 M5 Pro 時，按
+**Show other Mac** 會沿用受保護的先切畫面流程，並在控制前置條件完成時開始分享；
+**Share keyboard and mouse with [Intel Mac]** 是明確的等效操作。要從 Intel Mac 返回 M5 Pro，接收端按
 **Return keyboard and mouse to [M5 Mac]**，控制端也可按
 **Return keyboard and mouse to this Mac** 或使用
 `Control-Option-Command-K` 在閒置／控制中切換，或用

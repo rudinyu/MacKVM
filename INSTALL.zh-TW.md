@@ -76,7 +76,7 @@ transport 與 VCP `0x60` 輸入狀態。唯讀報告可保存為：
 ./scripts/verify-release.sh \
   --app dist/universal/MacKVM.app \
   --arch universal
-(cd dist && shasum -a 256 -c MacKVM-0.12.2-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-0.12.4-universal.dmg.sha256)
 ```
 
 ad-hoc 簽章只適合本機測試。要提供給其他 Mac，請使用 Developer ID Application、
@@ -124,8 +124,9 @@ KVM 圖示或 Dock 重新開啟。
 7. 用 **Show this Mac** 與 **Show other Mac** 測試切換。部分 MA270U 韌體沒有
    DDC/CI OSD 開關；若原生探索失敗，查看診斷文字、確認線材直接連接，再使用
    MA270U OSD 手動選擇輸入。
-   在 M5 Pro 可按 **Share keyboard and mouse with [Intel Mac]**，一次切換畫面並分享
-   鍵盤與滑鼠；Intel Mac 只有在未啟用該配對裝置的無縫控制時才需按 **Allow**。
+   在 M5 Pro 按 **Show other Mac** 時，若控制前置條件已完成，也會開始受保護的鍵盤／滑鼠
+   分享；**Share keyboard and mouse with [Intel Mac]** 仍可作為明確的等效操作。Intel Mac
+   只有在未啟用該配對裝置的無縫控制時才需按 **Allow**。
 
 只有在兩台 Mac 都透過實體 USB switch 看見鍵盤與滑鼠後，才選
 **External USB switch (bidirectional)**。

@@ -33,7 +33,7 @@ Release check (from the M5 Pro) is also available:
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist && shasum -a 256 -c MacKVM-0.12.2-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-0.12.4-universal.dmg.sha256)
 ```
 
 Expected: the app reports both `arm64` and `x86_64`, and an ad-hoc signature
@@ -98,7 +98,10 @@ scan before accepting a new model mapping.
 Expected:
 
 - **Show this Mac** on the M5 Pro selects USB-C.
-- **Show other Mac** on the M5 Pro selects HDMI 1.
+- **Show other Mac** on the M5 Pro selects HDMI 1 and starts the guarded
+  keyboard/mouse hand-off when control prerequisites are ready.
+- If control prerequisites are not ready, **Show other Mac** still performs
+  the display-only route and leaves the physical input local.
 - A reconnect or additional display does not silently redirect DDC to display
   number 1; the selected native DDC display remains visibly verified.
 - If an older installation saved display number 1, detecting a display can
@@ -323,8 +326,9 @@ Expected:
 
 ## 7. Safe return and monitor routing
 
-1. On the M5 Pro, select **Share keyboard and mouse with [Intel Mac]** and
-   verify that the display switches before input capture starts.
+1. On the M5 Pro, select **Show other Mac** (or the explicit
+   **Share keyboard and mouse with [Intel Mac]** action) and verify that the
+   display switches before input capture starts.
 2. With the session connected and idle, press **Control-Option-Command-K** and
    verify that the control request starts without opening the menu.
 3. While controlling, press **Control-Option-Command-K** and verify that input

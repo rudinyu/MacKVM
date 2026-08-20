@@ -431,9 +431,10 @@ behavior are covered by the automated test suite.
     DDC/CI, follow the diagnostic and use the monitor OSD.
 13. After the receiver accepts and the initiator confirms the matching code, the
     app automatically attempts to connect the encrypted session. If it remains idle, select **Connect** on
-    one paired row. When the encrypted session is connected, the M5 Pro uses
-    **Share keyboard and mouse with [Intel Mac]** to switch the display and
-    share the physical keyboard and mouse.
+    one paired row. When the encrypted session is connected, **Show other Mac**
+    on the physical-input M5 Pro follows the guarded display-first path and
+    starts the keyboard/mouse request when its prerequisites are ready.
+    **Share keyboard and mouse with [Intel Mac]** is the explicit equivalent.
 14. The controlling Mac needs both Input Monitoring and Accessibility because
     its active event tap suppresses local input while forwarding it. The
     receiving Mac must select **Allow** before input is sent only to the

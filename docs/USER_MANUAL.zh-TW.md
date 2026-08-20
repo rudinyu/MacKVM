@@ -62,8 +62,9 @@ notarization。
    其他型號使用自己的韌體 mapping。依賴新型號前先執行診斷掃描。
 4. 用 **Show this Mac** 與 **Show other Mac** 測試；若原生探索或切換失敗，查看診斷、
    確認線材直接連接，再用 MA270U OSD 手動切換。
-   在 M5 Pro 可按 **Share keyboard and mouse with [Intel Mac]** 一次完成畫面切換與
-   鍵盤滑鼠分享；Intel Mac 只有在未啟用該配對裝置的無縫控制時才需要按 **Allow**。
+   在 M5 Pro 按 **Show other Mac** 時，若控制前置條件已完成，也會使用先切畫面的流程
+   分享鍵盤滑鼠；**Share keyboard and mouse with [Intel Mac]** 仍是明確的等效操作。Intel
+   Mac 只有在未啟用該配對裝置的無縫控制時才需要按 **Allow**。
 
 ### 找出不同螢幕的 input mapping
 
@@ -102,7 +103,8 @@ mapping 原始碼。按下 Ctrl-C 或收到 SIGTERM 時會停止候選值迴圈�
    相同驗證碼後按 **Confirm code**。
 3. 兩邊的簽署決定都完成後，MacKVM 會自動嘗試建立加密連線；若狀態仍是 idle，
    可在已配對裝置列按 **Connect**。鍵盤與滑鼠接在 M5 Pro 時，請按
-   **Share keyboard and mouse with [Intel Mac]**，一次切換螢幕並送出控制請求。
+   **Show other Mac** 或 **Share keyboard and mouse with [Intel Mac]**；在 M5 Pro 兩者
+   都會先切換螢幕，再送出控制請求。
 4. 新配對的接收端會自動啟用該已釘選 Mac 的無縫控制。若要每次控制都重新按
    **Allow**，請在 **Paired device information** 關閉
    **Automatically allow control from this Mac**。未啟用時，控制端需要 Input Monitoring

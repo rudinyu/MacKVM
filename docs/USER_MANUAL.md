@@ -71,9 +71,10 @@ steal focus; use the menu-bar icon or activate MacKVM from the Dock to reopen it
 4. Use **Show this Mac** and **Show other Mac** to verify switching. If native
    detection or switching fails, read the diagnostic, check the direct cable
    path, and use the MA270U OSD.
-   On the M5 Pro, **Share keyboard and mouse with [Intel Mac]** performs both
-   actions; the Intel Mac selects **Allow** unless seamless control was enabled
-   for the paired M5 Pro.
+   On the M5 Pro, **Show other Mac** also performs the guarded keyboard/mouse
+   hand-off when control prerequisites are ready. **Share keyboard and mouse
+   with [Intel Mac]** remains the explicit equivalent; the Intel Mac selects
+   **Allow** unless seamless control was enabled for the paired M5 Pro.
 
 ### Diagnose a monitor-specific input mapping
 
@@ -117,8 +118,9 @@ See the [diagnostic guide](../Tools/DDCDiagnostic/README.md).
 3. After both signed decisions complete, MacKVM automatically attempts to
    connect the encrypted session. If it remains idle, select
    **Connect** on a paired row. With the keyboard and mouse connected to the M5 Pro, use
-   **Share keyboard and mouse with [Intel Mac]**; this switches the display and
-   requests control in one action. The controlling Mac needs both Input
+   **Show other Mac** or **Share keyboard and mouse with [Intel Mac]**; on the
+   M5 Pro both use the display-first route and request control in one action.
+   The controlling Mac needs both Input
    Monitoring and Accessibility for its active event tap.
 4. A newly paired receiver automatically enables seamless control for the
    pinned peer. To keep per-request consent, turn off **Automatically allow

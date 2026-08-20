@@ -33,7 +33,7 @@ final class PairingRegistryTests: XCTestCase {
 
     private func makeRegistry(storageKey: String) -> PairingRegistry {
         PairingRegistry(
-            defaults: defaults,
+            testDefaults: defaults,
             storageKey: storageKey,
             persistenceApplicationID: suiteName
         )

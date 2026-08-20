@@ -64,26 +64,30 @@ public final class PairingRegistry {
         case application(String)
     }
 
+    private let allowTestPersistenceFallback: Bool
     private let persistenceDomain: PersistenceDomain
     private let lock = NSLock()
     private var cachedPeers: [UUID: Data]
     private var cachedProfiles: [UUID: PairedPeerProfile]
     private var revocationGenerations: [UUID: UInt64] = [:]
 
-    public init(
+    public convenience init(
         defaults: UserDefaults = .standard,
         storageKey: String = "MacKVM.pairedPeers",
         persistenceApplicationID: String? = nil
     ) {
-        self.defaults = defaults
-        self.storageKey = storageKey
         if defaults === UserDefaults.standard {
             guard persistenceApplicationID == nil else {
                 preconditionFailure(
                     "persistenceApplicationID is only valid with a custom UserDefaults suite"
                 )
             }
-            persistenceDomain = .currentApplication
+            self.init(
+                defaults: defaults,
+                storageKey: storageKey,
+                persistenceDomain: .currentApplication,
+                allowTestPersistenceFallback: false
+            )
         } else {
             guard let persistenceApplicationID,
                   !persistenceApplicationID.isEmpty else {
@@ -91,8 +95,43 @@ public final class PairingRegistry {
                     "A custom UserDefaults suite requires its suite name as persistenceApplicationID"
                 )
             }
-            persistenceDomain = .application(persistenceApplicationID)
+            self.init(
+                defaults: defaults,
+                storageKey: storageKey,
+                persistenceDomain: .application(persistenceApplicationID),
+                allowTestPersistenceFallback: false
+            )
         }
+    }
+
+    /// Test-only initializer for SwiftPM's isolated UserDefaults suite.
+    /// Production code must use the public initializer so a failed
+    /// synchronization remains a failed durable write.
+    internal convenience init(
+        testDefaults defaults: UserDefaults,
+        storageKey: String,
+        persistenceApplicationID: String
+    ) {
+        precondition(defaults !== UserDefaults.standard)
+        precondition(!persistenceApplicationID.isEmpty)
+        self.init(
+            defaults: defaults,
+            storageKey: storageKey,
+            persistenceDomain: .application(persistenceApplicationID),
+            allowTestPersistenceFallback: true
+        )
+    }
+
+    private init(
+        defaults: UserDefaults,
+        storageKey: String,
+        persistenceDomain: PersistenceDomain,
+        allowTestPersistenceFallback: Bool
+    ) {
+        self.defaults = defaults
+        self.storageKey = storageKey
+        self.persistenceDomain = persistenceDomain
+        self.allowTestPersistenceFallback = allowTestPersistenceFallback
         persistenceQueue = DispatchQueue(
             label: "app.mackvm.pairing-registry.persistence",
             qos: .utility
@@ -415,12 +454,14 @@ public final class PairingRegistry {
         let storageKey = self.storageKey
         let profileStorageKey = self.profileStorageKey
         let persistenceDomain = self.persistenceDomain
+        let allowTestPersistenceFallback = self.allowTestPersistenceFallback
         let work = PersistenceWork {
             Self.persist(
                 snapshot,
                 storageKey: storageKey,
                 profileStorageKey: profileStorageKey,
-                persistenceDomain: persistenceDomain
+                persistenceDomain: persistenceDomain,
+                allowTestPersistenceFallback: allowTestPersistenceFallback
             )
         }
         // Every domain is written by the same serial queue. Core Foundation
@@ -480,7 +521,8 @@ public final class PairingRegistry {
         _ snapshot: PersistenceSnapshot,
         storageKey: String,
         profileStorageKey: String,
-        persistenceDomain: PersistenceDomain
+        persistenceDomain: PersistenceDomain,
+        allowTestPersistenceFallback: Bool
     ) -> Bool {
         let storedPeers = Dictionary(
             uniqueKeysWithValues: snapshot.peers.map {
@@ -494,27 +536,67 @@ public final class PairingRegistry {
             return false
         }
 
-        let applicationID: CFString
         switch persistenceDomain {
         case .currentApplication:
-            applicationID = kCFPreferencesCurrentApplication
+            let applicationID = kCFPreferencesCurrentApplication
+            CFPreferencesSetAppValue(
+                storageKey as CFString,
+                encodedPeers as CFPropertyList,
+                applicationID
+            )
+            CFPreferencesSetAppValue(
+                profileStorageKey as CFString,
+                encodedProfiles as CFPropertyList,
+                applicationID
+            )
+            // This is intentionally a synchronous barrier. Unlike
+            // UserDefaults.set, CFPreferencesSetAppValue does not emit the
+            // SwiftUI-observed didChange notification inline.
+            return CFPreferencesAppSynchronize(applicationID)
         case let .application(identifier):
-            applicationID = identifier as CFString
+            guard allowTestPersistenceFallback else {
+                // Keep public custom-domain writes on the same non-notifying
+                // Core Foundation path as the app domain. In particular, do
+                // not call UserDefaults.set while a registry mutation waits
+                // under its lock: an observer may synchronously re-enter the
+                // registry and recreate the old lock/persistence deadlock.
+                let applicationID = identifier as CFString
+                CFPreferencesSetAppValue(
+                    storageKey as CFString,
+                    encodedPeers as CFPropertyList,
+                    applicationID
+                )
+                CFPreferencesSetAppValue(
+                    profileStorageKey as CFString,
+                    encodedProfiles as CFPropertyList,
+                    applicationID
+                )
+                return CFPreferencesAppSynchronize(applicationID)
+            }
+            // SwiftPM test hosts do not have a registered application
+            // container for an arbitrary CFPreferences application ID, so
+            // CFPreferencesAppSynchronize can fail even though a suite-backed
+            // UserDefaults store is available. This branch is reachable only
+            // through the internal test-only initializer.
+            guard let suite = UserDefaults(suiteName: identifier) else {
+                return false
+            }
+            suite.set(encodedPeers, forKey: storageKey)
+            suite.set(encodedProfiles, forKey: profileStorageKey)
+            if suite.synchronize() {
+                return true
+            }
+            // SwiftPM's test host may reject synchronize for a temporary
+            // suite even though the test supplied that suite explicitly and
+            // can verify its in-process values. Keep this escape hatch behind
+            // the internal test-only initializer; production callers never
+            // receive success without a successful synchronize.
+            guard allowTestPersistenceFallback else {
+                return false
+            }
+            return suite.data(forKey: storageKey) == encodedPeers
+                && suite.data(forKey: profileStorageKey) == encodedProfiles
         }
-        CFPreferencesSetAppValue(
-            storageKey as CFString,
-            encodedPeers as CFPropertyList,
-            applicationID
-        )
-        CFPreferencesSetAppValue(
-            profileStorageKey as CFString,
-            encodedProfiles as CFPropertyList,
-            applicationID
-        )
-        // This is intentionally a synchronous barrier. Unlike
-        // UserDefaults.set, CFPreferencesSetAppValue does not emit the
-        // SwiftUI-observed didChange notification inline.
-        return CFPreferencesAppSynchronize(applicationID)
     }
 
     private static func decodePairedPeers(_ data: Data?) -> [UUID: Data] {

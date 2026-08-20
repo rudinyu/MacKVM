@@ -335,6 +335,20 @@ final class MonitorController: ObservableObject {
         )
     }
 
+    /// Whether a display-first control request can route the monitor
+    /// immediately or wait for the current verification pass. Callers that
+    /// will suppress local input must not treat a manual-fallback route as a
+    /// successful hand-off, but a saved selector may safely queue the request
+    /// while discovery is in flight.
+    func canStartAutomaticRemoteSwitching() -> Bool {
+        guard automationEnabled else { return false }
+        return Self.automaticSwitchDecision(
+            displaySelector: displaySelector,
+            isDisplaySelectorVerified: isDisplaySelectorVerified,
+            hasCompletedDisplayDiscovery: hasCompletedDisplayDiscovery
+        ) != .useManualFallback
+    }
+
     /// Runs the remote display route and reports whether native DDC actually
     /// succeeded. This is intentionally separate from `switchToRemote`, whose
     /// completion means that the route has resolved (including manual
@@ -348,8 +362,8 @@ final class MonitorController: ObservableObject {
               Self.automaticSwitchDecision(
                   displaySelector: displaySelector,
                   isDisplaySelectorVerified: isDisplaySelectorVerified,
-                  hasCompletedDisplayDiscovery: true
-              ) == .switchNow else {
+                  hasCompletedDisplayDiscovery: hasCompletedDisplayDiscovery
+              ) != .useManualFallback else {
             completion(false)
             return
         }
@@ -422,10 +436,10 @@ final class MonitorController: ObservableObject {
                 input: input,
                 description: description,
                 intent: intent,
-                completion: completion
+                completion: completion,
+                result: result
             )
             cancelledCompletions.forEach { $0() }
-            reportResult(false)
             status = "Verifying the saved DDC display before switching…"
             if !isDiscoveringDisplays {
                 refreshDetectedDisplays()
@@ -600,7 +614,8 @@ final class MonitorController: ObservableObject {
             deferredAutomaticSwitch.input,
             description: deferredAutomaticSwitch.description,
             intent: deferredAutomaticSwitch.intent,
-            completion: deferredAutomaticSwitch.complete
+            completion: deferredAutomaticSwitch.completeCompletions,
+            result: deferredAutomaticSwitch.result
         )
     }
 
@@ -708,21 +723,38 @@ struct DeferredAutomaticSwitch {
     let description: String
     let intent: DeferredAutomaticSwitchIntent
     let completions: [() -> Void]
+    let result: ((Bool) -> Void)?
 
     init(
         input: MonitorInputSource,
         description: String,
         intent: DeferredAutomaticSwitchIntent,
-        completion: (() -> Void)?
+        completion: (() -> Void)?,
+        result: ((Bool) -> Void)?
     ) {
         self.input = input
         self.description = description
         self.intent = intent
         completions = completion.map { [$0] } ?? []
+        self.result = result
     }
 
-    func complete() {
+    func complete(success: Bool = true) {
+        completeCompletions()
+        result?(success)
+    }
+
+    /// Completes the ordinary route callback without resolving a result
+    /// callback that is being passed separately to `switchInput`. This keeps
+    /// a deferred display-first request from reporting success before native
+    /// DDC has actually completed.
+    func completeCompletions() {
         completions.forEach { $0() }
+    }
+
+    func resolveCallbacks(success: Bool) -> [() -> Void] {
+        guard !completions.isEmpty || result != nil else { return [] }
+        return [{ complete(success: success) }]
     }
 }
 
@@ -736,9 +768,10 @@ struct DeferredAutomaticSwitchState {
     mutating func beginTermination() -> [() -> Void] {
         guard !isTerminating else { return [] }
         isTerminating = true
-        let completions = deferredAutomaticSwitch?.completions ?? []
+        let callbacks = deferredAutomaticSwitch?.resolveCallbacks(success: false)
+            ?? []
         deferredAutomaticSwitch = nil
-        return completions
+        return callbacks
     }
 
     /// Keeps the newest normal route while resolving every superseded request.
@@ -748,17 +781,27 @@ struct DeferredAutomaticSwitchState {
         input: MonitorInputSource,
         description: String,
         intent: DeferredAutomaticSwitchIntent,
-        completion: (() -> Void)?
+        completion: (() -> Void)?,
+        result: ((Bool) -> Void)? = nil
     ) -> [() -> Void] {
         guard intent == .terminating || !isTerminating else {
-            return completion.map { [$0] } ?? []
+            return DeferredAutomaticSwitch(
+                input: input,
+                description: description,
+                intent: intent,
+                completion: completion,
+                result: result
+            ).resolveCallbacks(success: false)
         }
-        let supersededCompletions = deferredAutomaticSwitch?.completions ?? []
+        let supersededCompletions = deferredAutomaticSwitch?.resolveCallbacks(
+            success: false
+        ) ?? []
         deferredAutomaticSwitch = DeferredAutomaticSwitch(
             input: input,
             description: description,
             intent: intent,
-            completion: completion
+            completion: completion,
+            result: result
         )
         return supersededCompletions
     }

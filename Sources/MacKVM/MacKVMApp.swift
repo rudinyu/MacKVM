@@ -430,11 +430,13 @@ private final class AppBootstrap: ObservableObject {
     /// Starts the display-first share flow used by both the main button and
     /// the global shortcut. Input capture is not allowed to begin until native
     /// DDC reports that the remote input has been selected.
-    func startCombinedControlRequest() {
+    @discardableResult
+    func startCombinedControlRequest() -> Bool {
         guard let monitor, let control,
               control.canRequestControl(),
+              monitor.canStartAutomaticRemoteSwitching(),
               let requestGeneration = beginCombinedControlRequest() else {
-            return
+            return false
         }
         monitor.switchToRemoteAndReportSuccess { [weak self] switched in
             guard let self else { return }
@@ -467,6 +469,7 @@ private final class AppBootstrap: ObservableObject {
                 monitor.switchToLocal()
             }
         }
+        return true
     }
 
     /// Performs the same ordered shutdown for every app-level termination
@@ -1472,8 +1475,10 @@ private struct MacKVMMenuView: View {
                     }
                 }
                 Button("Show other Mac") {
-                    let shouldCancelWaitingControl =
+                    let hadCombinedRequest =
                         bootstrap.combinedControlRequestInFlight
+                    let shouldCancelWaitingControl =
+                        hadCombinedRequest
                             && control.state == .suspended
                     bootstrap.cancelCombinedControlRequest()
                     if shouldCancelWaitingControl {
@@ -1491,6 +1496,27 @@ private struct MacKVMMenuView: View {
                         control.endReceivingControl(
                             reason: "Returned input to the other Mac"
                         )
+                    } else if hadCombinedRequest {
+                        // A second click while the display-first request is
+                        // still resolving cancels that request and leaves the
+                        // display on the explicitly selected remote route.
+                        monitor.switchToRemote()
+                    } else if control.state == .connected
+                        && inputTopology.allowsLocalControl {
+                        // On the physical-input Mac (normally the M5 Pro),
+                        // Show other Mac is the direct hand-off action. The
+                        // old path changed only the display and left the
+                        // keyboard/mouse local, unlike the receiver-side
+                        // endReceivingControl path above. Reuse the guarded
+                        // display-first request so capture starts only after
+                        // native DDC confirms the remote input. The guard is
+                        // evaluated inside AppBootstrap, which refreshes the
+                        // live macOS permissions; using the view's cached
+                        // permission flags here could incorrectly fall back to
+                        // display-only on Apple Silicon after Settings grants.
+                        if !bootstrap.startCombinedControlRequest() {
+                            monitor.switchToRemote()
+                        }
                     } else {
                         monitor.switchToRemote()
                     }
