@@ -8,6 +8,7 @@
 
 #include <mach/error.h>
 #include <mach/mach.h>
+#include <pthread.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdarg.h>
@@ -32,6 +33,17 @@ extern IOReturn IOAVServiceWriteI2C(
     const void *inputBuffer,
     uint32_t inputBufferSize
 );
+extern IOReturn IOAVServiceReadI2C(
+    IOAVServiceRef service,
+    uint32_t chipAddress,
+    uint32_t dataAddress,
+    void *outputBuffer,
+    uint32_t outputBufferSize
+);
+extern IOReturn IOAVServiceCopyEDID(
+    IOAVServiceRef service,
+    CFDataRef *edidData
+);
 
 // CoreDisplay exposes the display-location dictionary used to associate a
 // CGDirectDisplayID with its Apple Silicon DCP service.
@@ -50,17 +62,16 @@ enum {
     kMacKVMNativeDDCWriteAddress = 0x6E
 };
 
-typedef enum {
-    kMacKVMNativeDDCTransportIntel = 0,
-    kMacKVMNativeDDCTransportAppleSilicon = 1
-} MacKVMNativeDDCTransport;
-
 typedef struct {
     CGDirectDisplayID displayID;
     io_service_t framebuffer;
     IOAVServiceRef avService;
+    CFDataRef edid;
     uint32_t chipAddress;
     MacKVMNativeDDCTransport transport;
+    uint32_t vendorID;
+    uint32_t productID;
+    uint32_t serialNumber;
     char name[kMacKVMNativeDDCNameCapacity];
     char identifier[kMacKVMNativeDDCIdentifierCapacity];
 } MacKVMNativeDDCDisplay;
@@ -69,6 +80,24 @@ struct MacKVMNativeDDCList {
     size_t count;
     MacKVMNativeDDCDisplay displays[kMacKVMNativeDDCMaxDisplays];
 };
+
+// A monitor can disappear from CoreGraphics while it is showing the other
+// input. Keep the already-resolved native transport alive so a return-to-local
+// write does not have to rediscover the display through CGGetOnlineDisplayList.
+// The cache is bounded and keyed by the stable selector returned to Swift.
+typedef struct {
+    bool valid;
+    char identifier[kMacKVMNativeDDCIdentifierCapacity];
+    io_service_t framebuffer;
+    IOAVServiceRef avService;
+    uint32_t chipAddress;
+    MacKVMNativeDDCTransport transport;
+} MacKVMNativeDDCRouteCacheEntry;
+
+static pthread_mutex_t routeCacheLock = PTHREAD_MUTEX_INITIALIZER;
+static MacKVMNativeDDCRouteCacheEntry routeCache[
+    kMacKVMNativeDDCMaxDisplays
+];
 
 static void clearError(char *buffer, size_t capacity) {
     if (buffer != NULL && capacity > 0) {
@@ -117,6 +146,159 @@ static void copyCString(
     }
     snprintf(destination, capacity, "%s", value);
     destination[capacity - 1] = '\0';
+}
+
+static void releaseRouteCacheEntry(
+    MacKVMNativeDDCRouteCacheEntry *entry
+) {
+    if (entry == NULL) {
+        return;
+    }
+    if (entry->avService != NULL) {
+        CFRelease(entry->avService);
+        entry->avService = NULL;
+    }
+    if (entry->framebuffer != MACH_PORT_NULL) {
+        IOObjectRelease(entry->framebuffer);
+        entry->framebuffer = MACH_PORT_NULL;
+    }
+    entry->valid = false;
+    entry->identifier[0] = '\0';
+    entry->chipAddress = 0;
+    entry->transport = MacKVMNativeDDCTransportIntel;
+}
+
+static size_t routeCacheIndexForIdentifier(const char *identifier) {
+    if (identifier == NULL || identifier[0] == '\0') {
+        return kMacKVMNativeDDCMaxDisplays;
+    }
+    for (size_t index = 0; index < kMacKVMNativeDDCMaxDisplays; index += 1) {
+        if (routeCache[index].valid
+            && strcmp(routeCache[index].identifier, identifier) == 0) {
+            return index;
+        }
+    }
+    return kMacKVMNativeDDCMaxDisplays;
+}
+
+static void cacheDisplayRoute(const MacKVMNativeDDCDisplay *display) {
+    if (display == NULL || display->identifier[0] == '\0') {
+        return;
+    }
+
+    pthread_mutex_lock(&routeCacheLock);
+    size_t index = routeCacheIndexForIdentifier(display->identifier);
+    if (index == kMacKVMNativeDDCMaxDisplays) {
+        for (size_t candidate = 0;
+             candidate < kMacKVMNativeDDCMaxDisplays;
+             candidate += 1) {
+            if (!routeCache[candidate].valid) {
+                index = candidate;
+                break;
+            }
+        }
+    }
+    // The cache is deliberately bounded. If every slot is occupied, replace
+    // the oldest slot deterministically; callers still have the live list for
+    // the current write, and future calls can repopulate this route.
+    if (index == kMacKVMNativeDDCMaxDisplays) {
+        index = 0;
+    }
+    releaseRouteCacheEntry(&routeCache[index]);
+
+    MacKVMNativeDDCRouteCacheEntry *entry = &routeCache[index];
+    entry->valid = true;
+    copyCString(
+        entry->identifier,
+        sizeof(entry->identifier),
+        display->identifier,
+        ""
+    );
+    entry->chipAddress = display->chipAddress;
+    entry->transport = display->transport;
+    if (display->framebuffer != MACH_PORT_NULL
+        && IOObjectRetain(display->framebuffer) == KERN_SUCCESS) {
+        entry->framebuffer = display->framebuffer;
+    }
+    if (display->avService != NULL) {
+        entry->avService = CFRetain(display->avService);
+    }
+    if (entry->framebuffer == MACH_PORT_NULL && entry->avService == NULL) {
+        releaseRouteCacheEntry(entry);
+    }
+    pthread_mutex_unlock(&routeCacheLock);
+}
+
+static bool copyCachedRoute(
+    const char *identifier,
+    MacKVMNativeDDCDisplay *destination
+) {
+    if (destination == NULL || identifier == NULL || identifier[0] == '\0') {
+        return false;
+    }
+    memset(destination, 0, sizeof(*destination));
+
+    pthread_mutex_lock(&routeCacheLock);
+    size_t index = routeCacheIndexForIdentifier(identifier);
+    if (index == kMacKVMNativeDDCMaxDisplays) {
+        pthread_mutex_unlock(&routeCacheLock);
+        return false;
+    }
+    MacKVMNativeDDCRouteCacheEntry *entry = &routeCache[index];
+    destination->chipAddress = entry->chipAddress;
+    destination->transport = entry->transport;
+    copyCString(
+        destination->identifier,
+        sizeof(destination->identifier),
+        entry->identifier,
+        ""
+    );
+    if (entry->framebuffer != MACH_PORT_NULL
+        && IOObjectRetain(entry->framebuffer) == KERN_SUCCESS) {
+        destination->framebuffer = entry->framebuffer;
+    }
+    if (entry->avService != NULL) {
+        destination->avService = CFRetain(entry->avService);
+    }
+    bool copied = destination->framebuffer != MACH_PORT_NULL
+        || destination->avService != NULL;
+    pthread_mutex_unlock(&routeCacheLock);
+    if (!copied) {
+        if (destination->framebuffer != MACH_PORT_NULL) {
+            IOObjectRelease(destination->framebuffer);
+        }
+        if (destination->avService != NULL) {
+            CFRelease(destination->avService);
+        }
+        memset(destination, 0, sizeof(*destination));
+    }
+    return copied;
+}
+
+static void releaseRouteSnapshot(MacKVMNativeDDCDisplay *display) {
+    if (display == NULL) {
+        return;
+    }
+    if (display->avService != NULL) {
+        CFRelease(display->avService);
+        display->avService = NULL;
+    }
+    if (display->framebuffer != MACH_PORT_NULL) {
+        IOObjectRelease(display->framebuffer);
+        display->framebuffer = MACH_PORT_NULL;
+    }
+}
+
+static void clearCachedRoute(const char *identifier) {
+    if (identifier == NULL || identifier[0] == '\0') {
+        return;
+    }
+    pthread_mutex_lock(&routeCacheLock);
+    size_t index = routeCacheIndexForIdentifier(identifier);
+    if (index != kMacKVMNativeDDCMaxDisplays) {
+        releaseRouteCacheEntry(&routeCache[index]);
+    }
+    pthread_mutex_unlock(&routeCacheLock);
 }
 
 static void copyCFString(
@@ -271,11 +453,66 @@ static bool displayInfoMatches(
     return matches;
 }
 
+// IODisplayConnect entries are the metadata siblings of the Apple Silicon
+// DCPAVServiceProxy.  They do not always carry the same registry location as
+// the IOFramebuffer/CoreDisplay entry, so keep a second, deliberately looser
+// identity check for the service-discovery fallback below.  A serialised
+// display still has to match its serial; a zero-serial display is accepted
+// only when the caller can prove there is a single matching entry.
+static bool displayIdentityMatches(
+    io_service_t displayService,
+    CGDirectDisplayID displayID
+) {
+    if (displayService == MACH_PORT_NULL) {
+        return false;
+    }
+    CFDictionaryRef info = IODisplayCreateInfoDictionary(
+        displayService,
+        kIODisplayOnlyPreferredName
+    );
+    if (info == NULL) {
+        return false;
+    }
+    CFNumberRef vendorNumber = (CFNumberRef)CFDictionaryGetValue(
+        info,
+        CFSTR("DisplayVendorID")
+    );
+    CFNumberRef productNumber = (CFNumberRef)CFDictionaryGetValue(
+        info,
+        CFSTR("DisplayProductID")
+    );
+    CFNumberRef serialNumber = (CFNumberRef)CFDictionaryGetValue(
+        info,
+        CFSTR("DisplaySerialNumber")
+    );
+    int32_t vendor = 0;
+    int32_t product = 0;
+    int32_t serial = 0;
+    bool valid = vendorNumber != NULL
+        && productNumber != NULL
+        && CFGetTypeID(vendorNumber) == CFNumberGetTypeID()
+        && CFGetTypeID(productNumber) == CFNumberGetTypeID()
+        && CFNumberGetValue(vendorNumber, kCFNumberSInt32Type, &vendor)
+        && CFNumberGetValue(productNumber, kCFNumberSInt32Type, &product);
+    if (valid && serialNumber != NULL
+        && CFGetTypeID(serialNumber) == CFNumberGetTypeID()) {
+        CFNumberGetValue(serialNumber, kCFNumberSInt32Type, &serial);
+    }
+    uint32_t targetSerial = CGDisplaySerialNumber(displayID);
+    bool matches = valid
+        && (uint32_t)vendor == CGDisplayVendorNumber(displayID)
+        && (uint32_t)product == CGDisplayModelNumber(displayID)
+        && (targetSerial == 0 || (uint32_t)serial == targetSerial);
+    CFRelease(info);
+    return matches;
+}
+
 static void makeIdentifier(
     char *destination,
     size_t capacity,
     CGDirectDisplayID displayID,
-    io_service_t framebuffer
+    io_service_t framebuffer,
+    CFDataRef displayEDID
 ) {
     uint32_t vendor = CGDisplayVendorNumber(displayID);
     uint32_t model = CGDisplayModelNumber(displayID);
@@ -289,15 +526,19 @@ static void makeIdentifier(
         if (framebuffer != MACH_PORT_NULL) {
             info = IODisplayCreateInfoDictionary(framebuffer, 0);
         }
-        CFTypeRef edid = info == NULL
+        CFTypeRef framebufferEDID = info == NULL
             ? NULL
             : CFDictionaryGetValue(info, CFSTR(kIODisplayEDIDKey));
-        bool hasEDID = edid != NULL
-            && CFGetTypeID(edid) == CFDataGetTypeID()
-            && CFDataGetLength((CFDataRef)edid) > 0;
+        CFDataRef edid = displayEDID != NULL
+            ? displayEDID
+            : (framebufferEDID != NULL
+                && CFGetTypeID(framebufferEDID) == CFDataGetTypeID()
+                ? (CFDataRef)framebufferEDID
+                : NULL);
+        bool hasEDID = edid != NULL && CFDataGetLength(edid) > 0;
         if (hasEDID) {
-            const UInt8 *bytes = CFDataGetBytePtr((CFDataRef)edid);
-            CFIndex length = CFDataGetLength((CFDataRef)edid);
+            const UInt8 *bytes = CFDataGetBytePtr(edid);
+            CFIndex length = CFDataGetLength(edid);
             fingerprint = UINT64_C(1469598103934665603);
             for (CFIndex index = 0; index < length; index += 1) {
                 fingerprint ^= bytes[index];
@@ -363,6 +604,243 @@ static bool isExternalProxy(io_service_t proxy) {
     bool result = cfStringEquals(value, CFSTR("External"));
     if (value != NULL) {
         CFRelease(value);
+    }
+    return result;
+}
+
+static CFDataRef copyAVServiceEDID(IOAVServiceRef service) {
+    if (service == NULL) {
+        return NULL;
+    }
+    CFDataRef edid = NULL;
+    IOReturn result = IOAVServiceCopyEDID(service, &edid);
+    if (result == kIOReturnSuccess
+        && edid != NULL
+        && CFGetTypeID(edid) == CFDataGetTypeID()
+        && CFDataGetLength(edid) > 0) {
+        return edid;
+    }
+    if (edid != NULL) {
+        CFRelease(edid);
+    }
+    return NULL;
+}
+
+static bool edidMatchesDisplay(
+    CFDataRef edid,
+    CGDirectDisplayID displayID
+) {
+    if (edid == NULL || CFGetTypeID(edid) != CFDataGetTypeID()) {
+        return false;
+    }
+    CFIndex length = CFDataGetLength(edid);
+    if (length < 16) {
+        return false;
+    }
+    const UInt8 *bytes = CFDataGetBytePtr(edid);
+    uint32_t vendor = ((uint32_t)bytes[8] << 8) | bytes[9];
+    uint32_t product = (uint32_t)bytes[10]
+        | ((uint32_t)bytes[11] << 8);
+    uint32_t serial = (uint32_t)bytes[12]
+        | ((uint32_t)bytes[13] << 8)
+        | ((uint32_t)bytes[14] << 16)
+        | ((uint32_t)bytes[15] << 24);
+    uint32_t targetSerial = CGDisplaySerialNumber(displayID);
+    return vendor == CGDisplayVendorNumber(displayID)
+        && product == CGDisplayModelNumber(displayID)
+        && (targetSerial == 0 || serial == targetSerial);
+}
+
+static IOAVServiceRef avServiceForGlobalProxy(
+    CGDirectDisplayID displayID,
+    uint32_t *chipAddress,
+    io_service_t *matchedServiceOut,
+    CFDataRef *edidOut
+) {
+    if (chipAddress != NULL) {
+        *chipAddress = kMacKVMNativeDDCStandardChipAddress;
+    }
+    if (matchedServiceOut != NULL) {
+        *matchedServiceOut = MACH_PORT_NULL;
+    }
+    if (edidOut != NULL) {
+        *edidOut = NULL;
+    }
+
+    CFMutableDictionaryRef matching = IOServiceMatching(
+        "DCPAVServiceProxy"
+    );
+    if (matching == NULL) {
+        return NULL;
+    }
+    io_iterator_t iterator = IO_OBJECT_NULL;
+    if (IOServiceGetMatchingServices(
+        kIOMainPortDefault,
+        matching,
+        &iterator
+    ) != KERN_SUCCESS) {
+        return NULL;
+    }
+
+    IOAVServiceRef selectedAVService = NULL;
+    io_service_t selectedService = MACH_PORT_NULL;
+    CFDataRef selectedEDID = NULL;
+    bool ambiguous = false;
+    io_service_t service = MACH_PORT_NULL;
+    while ((service = IOIteratorNext(iterator)) != MACH_PORT_NULL) {
+        if (!isExternalProxy(service)) {
+            IOObjectRelease(service);
+            continue;
+        }
+        IOAVServiceRef avService = IOAVServiceCreateWithService(
+            kCFAllocatorDefault,
+            service
+        );
+        CFDataRef edid = copyAVServiceEDID(avService);
+        if (avService != NULL && edidMatchesDisplay(edid, displayID)) {
+            if (selectedAVService == NULL) {
+                selectedAVService = avService;
+                selectedService = service;
+                selectedEDID = edid;
+                avService = NULL;
+                edid = NULL;
+            } else {
+                ambiguous = true;
+            }
+        }
+        if (edid != NULL) {
+            CFRelease(edid);
+        }
+        if (avService != NULL) {
+            CFRelease(avService);
+        }
+        if (service != selectedService) {
+            IOObjectRelease(service);
+        }
+    }
+    IOObjectRelease(iterator);
+
+    if (ambiguous || selectedAVService == NULL || selectedEDID == NULL) {
+        if (selectedEDID != NULL) {
+            CFRelease(selectedEDID);
+        }
+        if (selectedAVService != NULL) {
+            CFRelease(selectedAVService);
+        }
+        if (selectedService != MACH_PORT_NULL) {
+            IOObjectRelease(selectedService);
+        }
+        return NULL;
+    }
+
+    if (chipAddress != NULL && isMCDP29xxProxy(selectedService)) {
+        *chipAddress = kMacKVMNativeDDCMCDP29xxChipAddress;
+    }
+    if (matchedServiceOut != NULL) {
+        *matchedServiceOut = selectedService;
+    } else {
+        IOObjectRelease(selectedService);
+    }
+    if (edidOut != NULL) {
+        *edidOut = selectedEDID;
+    } else {
+        CFRelease(selectedEDID);
+    }
+    return selectedAVService;
+}
+
+static IOAVServiceRef avServiceForDisplayConnect(
+    CGDirectDisplayID displayID,
+    uint32_t *chipAddress,
+    io_service_t *matchedServiceOut
+) {
+    if (chipAddress != NULL) {
+        *chipAddress = kMacKVMNativeDDCStandardChipAddress;
+    }
+    if (matchedServiceOut != NULL) {
+        *matchedServiceOut = MACH_PORT_NULL;
+    }
+
+    CFMutableDictionaryRef matching = IOServiceMatching("IODisplayConnect");
+    if (matching == NULL) {
+        return NULL;
+    }
+    io_iterator_t iterator = IO_OBJECT_NULL;
+    if (IOServiceGetMatchingServices(
+        kIOMainPortDefault,
+        matching,
+        &iterator
+    ) != KERN_SUCCESS) {
+        return NULL;
+    }
+
+    // Prefer the complete location-aware match. If the registry omits that
+    // location on Apple Silicon, retain at most one identity-only candidate;
+    // two identical zero-serial panels are intentionally rejected rather than
+    // routing DDC to an arbitrary monitor.
+    io_service_t identityOnlyMatch = MACH_PORT_NULL;
+    bool identityOnlyAmbiguous = false;
+    io_service_t service = MACH_PORT_NULL;
+    while ((service = IOIteratorNext(iterator)) != MACH_PORT_NULL) {
+        if (displayInfoMatches(service, displayID)) {
+            IOAVServiceRef result = IOAVServiceCreateWithService(
+                kCFAllocatorDefault,
+                service
+            );
+            if (result != NULL) {
+                if (chipAddress != NULL && isMCDP29xxProxy(service)) {
+                    *chipAddress = kMacKVMNativeDDCMCDP29xxChipAddress;
+                }
+                if (matchedServiceOut != NULL) {
+                    *matchedServiceOut = service;
+                } else {
+                    IOObjectRelease(service);
+                }
+                if (identityOnlyMatch != MACH_PORT_NULL) {
+                    IOObjectRelease(identityOnlyMatch);
+                }
+                IOObjectRelease(iterator);
+                return result;
+            }
+            IOObjectRelease(service);
+            continue;
+        }
+
+        if (displayIdentityMatches(service, displayID)) {
+            if (identityOnlyMatch == MACH_PORT_NULL && !identityOnlyAmbiguous) {
+                identityOnlyMatch = service;
+            } else {
+                identityOnlyAmbiguous = true;
+                IOObjectRelease(service);
+            }
+        } else {
+            IOObjectRelease(service);
+        }
+    }
+    IOObjectRelease(iterator);
+
+    if (identityOnlyMatch == MACH_PORT_NULL || identityOnlyAmbiguous) {
+        if (identityOnlyMatch != MACH_PORT_NULL) {
+            IOObjectRelease(identityOnlyMatch);
+        }
+        return NULL;
+    }
+
+    IOAVServiceRef result = IOAVServiceCreateWithService(
+        kCFAllocatorDefault,
+        identityOnlyMatch
+    );
+    if (result == NULL) {
+        IOObjectRelease(identityOnlyMatch);
+        return NULL;
+    }
+    if (chipAddress != NULL && isMCDP29xxProxy(identityOnlyMatch)) {
+        *chipAddress = kMacKVMNativeDDCMCDP29xxChipAddress;
+    }
+    if (matchedServiceOut != NULL) {
+        *matchedServiceOut = identityOnlyMatch;
+    } else {
+        IOObjectRelease(identityOnlyMatch);
     }
     return result;
 }
@@ -472,6 +950,7 @@ static bool addDisplay(
     CGDirectDisplayID displayID,
     io_service_t framebuffer,
     IOAVServiceRef avService,
+    CFDataRef displayEDID,
     MacKVMNativeDDCTransport transport,
     uint32_t chipAddress
 ) {
@@ -483,14 +962,36 @@ static bool addDisplay(
     display->displayID = displayID;
     display->framebuffer = framebuffer;
     display->avService = avService;
+    display->edid = displayEDID == NULL ? NULL : CFRetain(displayEDID);
     display->transport = transport;
     display->chipAddress = chipAddress;
+    display->vendorID = CGDisplayVendorNumber(displayID);
+    display->productID = CGDisplayModelNumber(displayID);
+    display->serialNumber = CGDisplaySerialNumber(displayID);
+    if (display->edid == NULL && framebuffer != MACH_PORT_NULL) {
+        CFDictionaryRef info = IODisplayCreateInfoDictionary(
+            framebuffer,
+            kIODisplayOnlyPreferredName
+        );
+        if (info != NULL) {
+            CFTypeRef framebufferEDID = CFDictionaryGetValue(
+                info,
+                CFSTR(kIODisplayEDIDKey)
+            );
+            if (framebufferEDID != NULL
+                && CFGetTypeID(framebufferEDID) == CFDataGetTypeID()) {
+                display->edid = CFRetain((CFDataRef)framebufferEDID);
+            }
+            CFRelease(info);
+        }
+    }
     copyDisplayName(display->name, sizeof(display->name), framebuffer, displayID);
     makeIdentifier(
         display->identifier,
         sizeof(display->identifier),
         displayID,
-        framebuffer
+        framebuffer,
+        displayEDID
     );
     list->count += 1;
     return true;
@@ -597,16 +1098,42 @@ MacKVMNativeDDCListRef MacKVMNativeDDCCreateList(
             continue;
         }
 #if defined(__arm64__)
+        io_service_t framebuffer = framebufferForDisplay(displayID);
         uint32_t chipAddress = kMacKVMNativeDDCStandardChipAddress;
         IOAVServiceRef avService = avServiceForDisplay(displayID, &chipAddress);
+        io_service_t matchedDisplayService = MACH_PORT_NULL;
+        CFDataRef displayEDID = copyAVServiceEDID(avService);
+        if (avService == NULL) {
+            avService = avServiceForGlobalProxy(
+                displayID,
+                &chipAddress,
+                &matchedDisplayService,
+                &displayEDID
+            );
+        }
+        if (avService == NULL) {
+            avService = avServiceForDisplayConnect(
+                displayID,
+                &chipAddress,
+                &matchedDisplayService
+            );
+            if (avService != NULL) {
+                displayEDID = copyAVServiceEDID(avService);
+            }
+        }
         if (avService != NULL) {
-            io_service_t framebuffer = framebufferForDisplay(displayID);
+            if (framebuffer == MACH_PORT_NULL
+                && matchedDisplayService != MACH_PORT_NULL) {
+                framebuffer = matchedDisplayService;
+                matchedDisplayService = MACH_PORT_NULL;
+            }
             if (!addDisplay(
                 list,
                 displayID,
                 framebuffer,
                 avService,
-                kMacKVMNativeDDCTransportAppleSilicon,
+                displayEDID,
+                MacKVMNativeDDCTransportAppleSilicon,
                 chipAddress
             )) {
                 if (framebuffer != MACH_PORT_NULL) {
@@ -614,6 +1141,15 @@ MacKVMNativeDDCListRef MacKVMNativeDDCCreateList(
                 }
                 CFRelease(avService);
             }
+        }
+        if (matchedDisplayService != MACH_PORT_NULL) {
+            IOObjectRelease(matchedDisplayService);
+        }
+        if (avService == NULL && framebuffer != MACH_PORT_NULL) {
+            IOObjectRelease(framebuffer);
+        }
+        if (displayEDID != NULL) {
+            CFRelease(displayEDID);
         }
 #else
         io_service_t framebuffer = framebufferForDisplay(displayID);
@@ -623,7 +1159,8 @@ MacKVMNativeDDCListRef MacKVMNativeDDCCreateList(
                 displayID,
                 framebuffer,
                 NULL,
-                kMacKVMNativeDDCTransportIntel,
+                NULL,
+                MacKVMNativeDDCTransportIntel,
                 kMacKVMNativeDDCStandardChipAddress
             ) && framebuffer != MACH_PORT_NULL) {
                 IOObjectRelease(framebuffer);
@@ -672,6 +1209,78 @@ const char *MacKVMNativeDDCListIdentifierAt(
     return list->displays[index].identifier;
 }
 
+MacKVMNativeDDCTransport MacKVMNativeDDCListTransportAt(
+    MacKVMNativeDDCListRef list,
+    size_t index
+) {
+    if (list == NULL || index >= list->count) {
+        return MacKVMNativeDDCTransportIntel;
+    }
+    return list->displays[index].transport;
+}
+
+uint32_t MacKVMNativeDDCListVendorIDAt(
+    MacKVMNativeDDCListRef list,
+    size_t index
+) {
+    if (list == NULL || index >= list->count) {
+        return 0;
+    }
+    return list->displays[index].vendorID;
+}
+
+uint32_t MacKVMNativeDDCListProductIDAt(
+    MacKVMNativeDDCListRef list,
+    size_t index
+) {
+    if (list == NULL || index >= list->count) {
+        return 0;
+    }
+    return list->displays[index].productID;
+}
+
+uint32_t MacKVMNativeDDCListSerialNumberAt(
+    MacKVMNativeDDCListRef list,
+    size_t index
+) {
+    if (list == NULL || index >= list->count) {
+        return 0;
+    }
+    return list->displays[index].serialNumber;
+}
+
+size_t MacKVMNativeDDCListEDIDLengthAt(
+    MacKVMNativeDDCListRef list,
+    size_t index
+) {
+    if (list == NULL || index >= list->count
+        || list->displays[index].edid == NULL
+        || CFGetTypeID(list->displays[index].edid) != CFDataGetTypeID()) {
+        return 0;
+    }
+    CFIndex length = CFDataGetLength(list->displays[index].edid);
+    return length > 0 ? (size_t)length : 0;
+}
+
+size_t MacKVMNativeDDCCopyEDIDAt(
+    MacKVMNativeDDCListRef list,
+    size_t index,
+    uint8_t *destination,
+    size_t destinationCapacity
+) {
+    size_t length = MacKVMNativeDDCListEDIDLengthAt(list, index);
+    if (length == 0 || destination == NULL || destinationCapacity == 0) {
+        return length;
+    }
+    size_t copied = length < destinationCapacity ? length : destinationCapacity;
+    CFDataGetBytes(
+        list->displays[index].edid,
+        CFRangeMake(0, (CFIndex)copied),
+        destination
+    );
+    return copied;
+}
+
 void MacKVMNativeDDCReleaseList(MacKVMNativeDDCListRef list) {
     if (list == NULL) {
         return;
@@ -681,6 +1290,10 @@ void MacKVMNativeDDCReleaseList(MacKVMNativeDDCListRef list) {
         if (display->avService != NULL) {
             CFRelease(display->avService);
             display->avService = NULL;
+        }
+        if (display->edid != NULL) {
+            CFRelease(display->edid);
+            display->edid = NULL;
         }
         if (display->framebuffer != MACH_PORT_NULL) {
             IOObjectRelease(display->framebuffer);
@@ -696,6 +1309,7 @@ static bool validInputValue(uint32_t value) {
         case 16:
         case 17:
         case 18:
+        case 19:
         case 27:
             return true;
         default:
@@ -703,18 +1317,30 @@ static bool validInputValue(uint32_t value) {
     }
 }
 
-static void makeInputPacket(uint32_t inputValue, uint8_t packet[7]) {
+static void makeVCPWritePacket(
+    uint8_t vcpCode,
+    uint16_t value,
+    uint8_t packet[7]
+) {
     packet[0] = 0x51;
     packet[1] = 0x84;
     packet[2] = 0x03;
-    packet[3] = kMacKVMNativeDDCInputVCP;
-    packet[4] = 0x00;
-    packet[5] = (uint8_t)inputValue;
+    packet[3] = vcpCode;
+    packet[4] = (uint8_t)(value >> 8);
+    packet[5] = (uint8_t)(value & 0xff);
     uint8_t checksum = kMacKVMNativeDDCWriteAddress;
     for (size_t index = 0; index < 6; index += 1) {
         checksum ^= packet[index];
     }
     packet[6] = checksum;
+}
+
+static void makeInputPacket(uint32_t inputValue, uint8_t packet[7]) {
+    makeVCPWritePacket(
+        kMacKVMNativeDDCInputVCP,
+        (uint16_t)inputValue,
+        packet
+    );
 }
 
 #if defined(__arm64__)
@@ -732,6 +1358,49 @@ static IOReturn writeAppleSilicon(
             kMacKVMNativeDDCAddressByte,
             packet + 1,
             6
+        );
+        if (result == kIOReturnSuccess) {
+            return result;
+        }
+    }
+    return result;
+}
+
+static IOReturn readAppleSilicon(
+    const MacKVMNativeDDCDisplay *display,
+    uint8_t vcpCode,
+    uint8_t response[12]
+) {
+    if (display == NULL || display->avService == NULL || response == NULL) {
+        return kIOReturnBadArgument;
+    }
+    uint8_t query[4] = { 0x82, 0x01, vcpCode, 0x00 };
+    // IOAVService receives the DDC payload without the I2C data-address byte.
+    // Get-VCP reads therefore use the source/write address (0x6E) as the
+    // checksum seed; the data address is included only for Set-VCP writes.
+    query[3] = kMacKVMNativeDDCWriteAddress
+        ^ query[0] ^ query[1] ^ query[2];
+    IOReturn result = kIOReturnError;
+    for (int attempt = 0; attempt < 3; attempt += 1) {
+        usleep(10000);
+        result = IOAVServiceWriteI2C(
+            display->avService,
+            display->chipAddress,
+            kMacKVMNativeDDCAddressByte,
+            query,
+            sizeof(query)
+        );
+        if (result != kIOReturnSuccess) {
+            continue;
+        }
+        usleep(50000);
+        memset(response, 0, 12);
+        result = IOAVServiceReadI2C(
+            display->avService,
+            display->chipAddress,
+            kMacKVMNativeDDCAddressByte,
+            response,
+            12
         );
         if (result == kIOReturnSuccess) {
             return result;
@@ -798,7 +1467,263 @@ static IOReturn writeIntel(
     return result;
 }
 
+static IOReturn readIntel(
+    const MacKVMNativeDDCDisplay *display,
+    uint8_t vcpCode,
+    uint8_t response[12]
+) {
+    if (display == NULL || display->framebuffer == MACH_PORT_NULL
+        || response == NULL) {
+        return kIOReturnBadArgument;
+    }
+    IOItemCount busCount = 0;
+    IOReturn result = IOFBGetI2CInterfaceCount(
+        display->framebuffer,
+        &busCount
+    );
+    if (result != kIOReturnSuccess || busCount == 0) {
+        return result == kIOReturnSuccess ? kIOReturnNoDevice : result;
+    }
+
+    uint8_t query[5] = {
+        kMacKVMNativeDDCAddressByte,
+        0x82,
+        0x01,
+        vcpCode,
+        0x00
+    };
+    query[4] = kMacKVMNativeDDCWriteAddress
+        ^ query[0] ^ query[1] ^ query[2] ^ query[3];
+    result = kIOReturnNoDevice;
+
+    for (IOItemCount bus = 0; bus < busCount; bus += 1) {
+        io_service_t interface = MACH_PORT_NULL;
+        if (IOFBCopyI2CInterfaceForBus(
+            display->framebuffer,
+            bus,
+            &interface
+        ) != kIOReturnSuccess) {
+            continue;
+        }
+        IOI2CConnectRef connection = NULL;
+        IOReturn openResult = IOI2CInterfaceOpen(
+            interface,
+            kNilOptions,
+            &connection
+        );
+        IOObjectRelease(interface);
+        if (openResult != kIOReturnSuccess || connection == NULL) {
+            result = openResult;
+            continue;
+        }
+
+        memset(response, 0, 12);
+        IOI2CRequest request;
+        memset(&request, 0, sizeof(request));
+        request.sendTransactionType = kIOI2CSimpleTransactionType;
+        request.sendAddress = kMacKVMNativeDDCWriteAddress;
+        request.sendBuffer = (vm_address_t)query;
+        request.sendBytes = sizeof(query);
+        request.replyAddress = 0x6F;
+        request.replySubAddress = kMacKVMNativeDDCAddressByte;
+        request.replyBuffer = (vm_address_t)response;
+        request.replyBytes = 12;
+        request.minReplyDelay = 50000000;
+        request.result = kIOReturnError;
+
+        // Prefer Apple's DDC/CI reply transaction because it strips the
+        // protocol's embedded length byte; fall back to a simple reply for
+        // older Intel framebuffers that only advertise transaction type 1.
+        IOOptionBits replyTypes[2] = {
+            kIOI2CDDCciReplyTransactionType,
+            kIOI2CSimpleTransactionType
+        };
+        for (size_t typeIndex = 0; typeIndex < 2; typeIndex += 1) {
+            request.replyTransactionType = replyTypes[typeIndex];
+            request.result = kIOReturnError;
+            request.replyBytes = 12;
+            memset(response, 0, 12);
+            IOReturn sendResult = IOI2CSendRequest(
+                connection,
+                kNilOptions,
+                &request
+            );
+            result = sendResult == kIOReturnSuccess
+                ? request.result : sendResult;
+            if (result == kIOReturnSuccess && request.replyBytes >= 10) {
+                break;
+            }
+        }
+        IOI2CInterfaceClose(connection, kNilOptions);
+        if (result == kIOReturnSuccess && request.replyBytes >= 10) {
+            return result;
+        }
+    }
+    return result;
+}
+
 #endif
+
+static IOReturn writeVCP(
+    const MacKVMNativeDDCDisplay *display,
+    uint8_t vcpCode,
+    uint16_t value
+) {
+    uint8_t packet[7];
+    makeVCPWritePacket(vcpCode, value, packet);
+#if defined(__arm64__)
+    return writeAppleSilicon(display, packet);
+#else
+    return writeIntel(display, packet);
+#endif
+}
+
+static IOReturn readVCP(
+    const MacKVMNativeDDCDisplay *display,
+    uint8_t vcpCode,
+    uint8_t response[12]
+) {
+#if defined(__arm64__)
+    return readAppleSilicon(display, vcpCode, response);
+#else
+    return readIntel(display, vcpCode, response);
+#endif
+}
+
+static bool parseVCPFrame(
+    const uint8_t frame[11],
+    uint8_t vcpCode,
+    MacKVMNativeDDCVCPValue *value
+) {
+    if (frame == NULL || value == NULL
+        || frame[0] != 0x6E
+        || (frame[1] & 0x80) == 0
+        || (frame[1] & 0x7F) != 8
+        || frame[2] != 0x02
+        || frame[3] != 0x00
+        || frame[4] != vcpCode) {
+        return false;
+    }
+
+    // DDC/CI checksums XOR the virtual 0x50 response address with every
+    // byte through the current value.  Do not trust a VCP value unless the
+    // complete 0x88 VCP-reply frame and its checksum are present.
+    uint8_t checksum = 0x50;
+    for (size_t index = 0; index < 10; index += 1) {
+        checksum ^= frame[index];
+    }
+    if (checksum != frame[10]) {
+        return false;
+    }
+
+    value->valueType = frame[5];
+    value->maximumValue = ((uint16_t)frame[6] << 8) | frame[7];
+    value->currentValue = ((uint16_t)frame[8] << 8) | frame[9];
+    return true;
+}
+
+static bool parseVCPResponse(
+    const uint8_t response[12],
+    uint8_t vcpCode,
+    MacKVMNativeDDCVCPValue *value
+) {
+    if (response == NULL || value == NULL) {
+        return false;
+    }
+
+    // Most transports return the complete eleven-byte frame. Intel's
+    // kIOI2CDDCciReplyTransactionType may remove the embedded length byte;
+    // reconstruct that byte before applying the same header/checksum checks.
+    if (parseVCPFrame(response, vcpCode, value)) {
+        return true;
+    }
+    if (response[0] == 0x6E && response[1] == 0x02) {
+        uint8_t compactFrame[11] = { 0 };
+        compactFrame[0] = response[0];
+        compactFrame[1] = 0x88;
+        memcpy(compactFrame + 2, response + 1, 9);
+        return parseVCPFrame(compactFrame, vcpCode, value);
+    }
+    return false;
+}
+
+static bool resolveDisplay(
+    const char *displayIdentifier,
+    MacKVMNativeDDCListRef *listOut,
+    MacKVMNativeDDCDisplay **displayOut,
+    MacKVMNativeDDCDisplay *cachedRouteOut,
+    bool *usingCachedRouteOut,
+    char *errorBuffer,
+    size_t errorCapacity
+) {
+    if (listOut == NULL || displayOut == NULL || cachedRouteOut == NULL
+        || usingCachedRouteOut == NULL) {
+        setError(errorBuffer, errorCapacity, "Invalid display resolution state");
+        return false;
+    }
+    *listOut = NULL;
+    *displayOut = NULL;
+    *usingCachedRouteOut = false;
+    memset(cachedRouteOut, 0, sizeof(*cachedRouteOut));
+
+    if (displayIdentifier == NULL
+        || strnlen(displayIdentifier, kMacKVMNativeDDCIdentifierCapacity)
+            >= kMacKVMNativeDDCIdentifierCapacity) {
+        setError(errorBuffer, errorCapacity, "Invalid display selector");
+        return false;
+    }
+
+    char discoveryError[256];
+    MacKVMNativeDDCListRef list = MacKVMNativeDDCCreateList(
+        discoveryError,
+        sizeof(discoveryError)
+    );
+    if (list != NULL) {
+        for (size_t index = 0; index < list->count; index += 1) {
+            if (identifierMatches(
+                displayIdentifier,
+                list->displays[index].identifier
+            )) {
+                *listOut = list;
+                *displayOut = &list->displays[index];
+                return true;
+            }
+        }
+    }
+    if (copyCachedRoute(displayIdentifier, cachedRouteOut)) {
+        *listOut = list;
+        *displayOut = cachedRouteOut;
+        *usingCachedRouteOut = true;
+        return true;
+    }
+
+    setError(
+        errorBuffer,
+        errorCapacity,
+        "%s",
+        discoveryError[0] == '\0'
+            ? "The selected display is no longer available"
+            : discoveryError
+    );
+    if (list != NULL) {
+        MacKVMNativeDDCReleaseList(list);
+    }
+    return false;
+}
+
+static void releaseResolvedDisplay(
+    MacKVMNativeDDCListRef list,
+    MacKVMNativeDDCDisplay *display,
+    MacKVMNativeDDCDisplay *cachedRoute,
+    bool usingCachedRoute
+) {
+    if (usingCachedRoute && display == cachedRoute) {
+        releaseRouteSnapshot(cachedRoute);
+    }
+    if (list != NULL) {
+        MacKVMNativeDDCReleaseList(list);
+    }
+}
 
 int MacKVMNativeDDCSwitchInput(
     const char *displayIdentifier,
@@ -824,23 +1749,37 @@ int MacKVMNativeDDCSwitchInput(
         discoveryError,
         sizeof(discoveryError)
     );
-    if (list == NULL) {
-        setError(errorBuffer, errorCapacity, "%s",
-                 discoveryError[0] == '\0' ? "Display discovery failed" : discoveryError);
-        return 0;
-    }
     MacKVMNativeDDCDisplay *selected = NULL;
-    for (size_t index = 0; index < list->count; index += 1) {
-        if (identifierMatches(displayIdentifier, list->displays[index].identifier)) {
-            selected = &list->displays[index];
-            break;
+    MacKVMNativeDDCDisplay cachedRoute;
+    bool usingCachedRoute = false;
+    if (list != NULL) {
+        for (size_t index = 0; index < list->count; index += 1) {
+            if (identifierMatches(
+                displayIdentifier,
+                list->displays[index].identifier
+            )) {
+                selected = &list->displays[index];
+                break;
+            }
         }
     }
     if (selected == NULL) {
-        setError(errorBuffer, errorCapacity,
-                 "The selected display is no longer available");
-        MacKVMNativeDDCReleaseList(list);
-        return 0;
+        if (!copyCachedRoute(displayIdentifier, &cachedRoute)) {
+            setError(
+                errorBuffer,
+                errorCapacity,
+                "%s",
+                discoveryError[0] == '\0'
+                    ? "The selected display is no longer available"
+                    : discoveryError
+            );
+            if (list != NULL) {
+                MacKVMNativeDDCReleaseList(list);
+            }
+            return 0;
+        }
+        selected = &cachedRoute;
+        usingCachedRoute = true;
     }
 
     uint8_t packet[7];
@@ -853,9 +1792,152 @@ int MacKVMNativeDDCSwitchInput(
 #endif
     if (result != kIOReturnSuccess) {
         setIOReturnError(errorBuffer, errorCapacity, "DDC/CI input switch", result);
-        MacKVMNativeDDCReleaseList(list);
+        if (usingCachedRoute) {
+            clearCachedRoute(displayIdentifier);
+            releaseRouteSnapshot(&cachedRoute);
+        }
+        if (list != NULL) {
+            MacKVMNativeDDCReleaseList(list);
+        }
         return 0;
     }
-    MacKVMNativeDDCReleaseList(list);
+    if (!usingCachedRoute) {
+        cacheDisplayRoute(selected);
+    }
+    if (usingCachedRoute) {
+        releaseRouteSnapshot(&cachedRoute);
+    }
+    if (list != NULL) {
+        MacKVMNativeDDCReleaseList(list);
+    }
+    return 1;
+}
+
+int MacKVMNativeDDCReadVCP(
+    const char *displayIdentifier,
+    uint8_t vcpCode,
+    MacKVMNativeDDCVCPValue *value,
+    char *errorBuffer,
+    size_t errorCapacity
+) {
+    clearError(errorBuffer, errorCapacity);
+    if (value == NULL) {
+        setError(errorBuffer, errorCapacity, "VCP output is required");
+        return 0;
+    }
+    memset(value, 0, sizeof(*value));
+
+    MacKVMNativeDDCListRef list = NULL;
+    MacKVMNativeDDCDisplay *selected = NULL;
+    MacKVMNativeDDCDisplay cachedRoute;
+    bool usingCachedRoute = false;
+    if (!resolveDisplay(
+        displayIdentifier,
+        &list,
+        &selected,
+        &cachedRoute,
+        &usingCachedRoute,
+        errorBuffer,
+        errorCapacity
+    )) {
+        return 0;
+    }
+
+    uint8_t response[12] = { 0 };
+    IOReturn result = readVCP(selected, vcpCode, response);
+    bool parsed = result == kIOReturnSuccess
+        && parseVCPResponse(response, vcpCode, value);
+    if (!parsed) {
+        if (result != kIOReturnSuccess) {
+            setIOReturnError(errorBuffer, errorCapacity, "DDC/CI VCP read", result);
+        } else {
+            setError(
+                errorBuffer,
+                errorCapacity,
+                "DDC/CI VCP 0x%02x returned an invalid reply",
+                vcpCode
+            );
+        }
+        // A read can fail transiently while the monitor is showing the
+        // newly selected input and disappears from CoreGraphics. Keep a
+        // cached native route alive so the diagnostic scanner can still try
+        // its final restore write; a write failure clears the route in the
+        // write path where it is proven unusable.
+        releaseResolvedDisplay(
+            list,
+            selected,
+            &cachedRoute,
+            usingCachedRoute
+        );
+        return 0;
+    }
+    if (!usingCachedRoute) {
+        cacheDisplayRoute(selected);
+    }
+    releaseResolvedDisplay(
+        list,
+        selected,
+        &cachedRoute,
+        usingCachedRoute
+    );
+    return 1;
+}
+
+int MacKVMNativeDDCWriteVCP(
+    const char *displayIdentifier,
+    uint8_t vcpCode,
+    uint16_t value,
+    char *errorBuffer,
+    size_t errorCapacity
+) {
+    clearError(errorBuffer, errorCapacity);
+    if (vcpCode != kMacKVMNativeDDCInputVCP) {
+        setError(
+            errorBuffer,
+            errorCapacity,
+            "Diagnostic writes are limited to input-source VCP 0x%02x",
+            kMacKVMNativeDDCInputVCP
+        );
+        return 0;
+    }
+    MacKVMNativeDDCListRef list = NULL;
+    MacKVMNativeDDCDisplay *selected = NULL;
+    MacKVMNativeDDCDisplay cachedRoute;
+    bool usingCachedRoute = false;
+    if (!resolveDisplay(
+        displayIdentifier,
+        &list,
+        &selected,
+        &cachedRoute,
+        &usingCachedRoute,
+        errorBuffer,
+        errorCapacity
+    )) {
+        return 0;
+    }
+
+    IOReturn result = writeVCP(selected, vcpCode, value);
+    if (result != kIOReturnSuccess) {
+        setIOReturnError(errorBuffer, errorCapacity, "DDC/CI VCP write", result);
+        if (usingCachedRoute) {
+            clearCachedRoute(displayIdentifier);
+        }
+        releaseResolvedDisplay(
+            list,
+            selected,
+            &cachedRoute,
+            usingCachedRoute
+        );
+        return 0;
+    }
+    if (!usingCachedRoute) {
+        cacheDisplayRoute(selected);
+    }
+    releaseResolvedDisplay(
+        list,
+        selected,
+        &cachedRoute,
+        usingCachedRoute
+    );
     return 1;
 }

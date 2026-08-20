@@ -145,8 +145,21 @@ final class ControlRequestNotifier: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
-    func clearActiveRequest() {
-        guard let request = takeActiveRequest() else { return }
+    /// Clears only the notification for the request that just resolved. The
+    /// coordinator calls this synchronously with its request-state transition
+    /// so a delayed publisher delivery cannot consume another request's
+    /// notification. The active payload's nonce remains part of the removal
+    /// identifier, while the request ID binds the lifecycle callback.
+    func clearActiveRequest(requestID: UUID) {
+        stateLock.lock()
+        guard let activeRequest,
+              activeRequest.requestID == requestID else {
+            stateLock.unlock()
+            return
+        }
+        self.activeRequest = nil
+        stateLock.unlock()
+        let request = activeRequest
         removeNotification(for: request)
     }
 

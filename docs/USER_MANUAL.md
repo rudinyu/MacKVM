@@ -27,7 +27,9 @@ Build on the M5 Pro and copy the matching app to `/Applications`:
 
 MacKVM uses native IOKit DDC/CI: `IOAVService` on Apple Silicon and `IOI2C`
 on Intel. No display helper or Homebrew package is required. The monitor and
-connection must expose VESA DDC/CI; enable it in the monitor OSD when needed.
+connection must expose VESA DDC/CI; some MA270U firmware does not show a
+DDC/CI toggle in the OSD, so MacKVM uses the native bridge when macOS exposes
+the display.
 
 For a local DMG:
 
@@ -63,11 +65,48 @@ steal focus; use the menu-bar icon or activate MacKVM from the Dock to reopen it
    display, and use the matching input preset.
 3. Both the M5 Pro and Intel Mac use native DDC/CI after their display is
    verified.
-4. Use **Show this Mac** and **Show other Mac** to verify switching. If DDC/CI
-   fails, read the diagnostic and use the MA270U OSD.
+   The MA270U EDID mapping sends USB-C as VCP 19 (`0x13`) and HDMI 1 as VCP 17
+   (`0x11`); other monitor models use their own firmware mapping. Run the
+   diagnostic scan before relying on a new model.
+4. Use **Show this Mac** and **Show other Mac** to verify switching. If native
+   detection or switching fails, read the diagnostic, check the direct cable
+   path, and use the MA270U OSD.
    On the M5 Pro, **Share keyboard and mouse with [Intel Mac]** performs both
    actions; the Intel Mac selects **Allow** unless seamless control was enabled
    for the paired M5 Pro.
+
+### Diagnose a monitor-specific input mapping
+
+The repository includes a native diagnostic tool for both CPU families:
+
+```sh
+./scripts/build-ddc-diagnostic.sh --arch arm64
+./scripts/build-ddc-diagnostic.sh --arch x86_64
+./scripts/build-ddc-diagnostic.sh --arch universal
+```
+
+Run the matching binary to save system, EDID, transport, and VCP `0x60` data:
+
+```sh
+./dist/ddc-diagnostic-arm64 > arm64-ddc-report.txt 2>&1
+./dist/ddc-diagnostic-x86_64 > x86_64-ddc-report.txt 2>&1
+```
+
+If the monitor accepts I2C writes but does not switch, opt in to a mapping
+scan. It writes candidate values, reads them back, reports matching values as
+`accepted=yes`, and restores the initial input:
+
+```sh
+./dist/ddc-diagnostic-universal --display 1 --scan-inputs \
+  --values 15,16,17,18,19,27
+```
+
+The scan temporarily changes the monitor input and must only be run when it is
+safe to switch and restore the display. It never changes MacKVM's source
+mapping automatically. Ctrl-C/SIGTERM stops the candidate loop and still
+attempts to restore the starting input. The tested MA270U uses USB-C VCP `19`
+(`0x13`) and HDMI 1 VCP `17` (`0x11`); other models require their own scan.
+See the [diagnostic guide](../Tools/DDCDiagnostic/README.md).
 
 ## Pair and control
 

@@ -18,7 +18,13 @@ public struct PairingCompletionGuard: Equatable, Sendable {
         self.generation = generation
     }
 
-    public func permits(currentGeneration: UInt64) -> Bool {
-        generation == currentGeneration
+    public func permits(
+        currentGeneration: UInt64,
+        requestID: UUID,
+        peerID: UUID
+    ) -> Bool {
+        self.requestID == requestID
+            && self.peerID == peerID
+            && generation == currentGeneration
     }
 }

@@ -51,4 +51,18 @@ final class BoundedAdmissionGateTests: XCTestCase {
         XCTAssertTrue(gate.isCurrent(current))
         XCTAssertFalse(gate.reserve().accepted)
     }
+
+    func testReservationReleaseIsSingleUse() {
+        let gate = BoundedAdmissionGate(capacity: 2, initiallyEnabled: true)
+        let first = gate.reserve()
+        XCTAssertTrue(first.accepted)
+        XCTAssertTrue(gate.reserve().accepted)
+
+        gate.release(first)
+        gate.release(first)
+
+        XCTAssertTrue(gate.reserve().accepted)
+        XCTAssertFalse(gate.reserve().accepted)
+        XCTAssertFalse(gate.isCurrent(first))
+    }
 }

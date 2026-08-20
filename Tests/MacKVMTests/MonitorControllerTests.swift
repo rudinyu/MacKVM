@@ -140,6 +140,59 @@ final class MonitorControllerTests: XCTestCase {
         }
     }
 
+    func testSingleDetectedDDCDisplayIsSelectedWhenThereIsNoSavedSelector() {
+        let display = DDCDisplay(
+            index: 4,
+            name: "External display 4",
+            stableIdentifier: "native-ddc:2513:32884:1684300"
+        )
+
+        XCTAssertEqual(
+            MonitorController.automaticSelector(
+                for: [display],
+                existingSelector: ""
+            ),
+            display.selector
+        )
+        XCTAssertNil(
+            MonitorController.automaticSelector(
+                for: [display],
+                existingSelector: "native-ddc:old:selector"
+            )
+        )
+    }
+
+    func testAutomaticDisplaySelectionStaysExplicitForAmbiguousOrNonDDCLists() {
+        let first = DDCDisplay(
+            index: 1,
+            name: "Display 1",
+            stableIdentifier: "native-ddc:1:1:1"
+        )
+        let second = DDCDisplay(
+            index: 2,
+            name: "Display 2",
+            stableIdentifier: "native-ddc:2:2:2"
+        )
+        let nonDDC = DDCDisplay(
+            index: 3,
+            name: "External display",
+            stableIdentifier: nil
+        )
+
+        XCTAssertNil(
+            MonitorController.automaticSelector(
+                for: [first, second],
+                existingSelector: ""
+            )
+        )
+        XCTAssertNil(
+            MonitorController.automaticSelector(
+                for: [nonDDC],
+                existingSelector: ""
+            )
+        )
+    }
+
     func testLegacyNumericSelectorRequiresExplicitReselection() {
         let display = DDCDisplay(
             index: 1,

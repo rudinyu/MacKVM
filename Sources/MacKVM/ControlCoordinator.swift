@@ -80,6 +80,11 @@ final class ControlCoordinator: ObservableObject {
     var onReceivingStarted: (() -> Void)?
     var onReceivingStopped: ((@escaping () -> Void) -> Void)?
     var onIncomingControlRequest: ((IncomingControlRequest) -> Void)?
+    /// Called synchronously when a pending incoming request is resolved or
+    /// invalidated. Keeping the exact request here lets notification cleanup
+    /// use request identity instead of inferring ownership from delayed
+    /// @Published nil emissions.
+    var onIncomingControlRequestResolved: ((IncomingControlRequest) -> Void)?
 
     private static let controlRequestTimeout: TimeInterval = 15
     private let localID: UUID
@@ -333,7 +338,7 @@ final class ControlCoordinator: ObservableObject {
         }
         incomingRequestTimeout?.cancel()
         incomingRequestTimeout = nil
-        pendingIncomingControlRequest = nil
+        resolvePendingIncomingControlRequest(request)
 
         inputSink.refreshPermission()
         guard inputSink.hasAccessibilityPermission else {
@@ -427,7 +432,7 @@ final class ControlCoordinator: ObservableObject {
         }
 
         if let request = pendingIncomingControlRequest {
-            pendingIncomingControlRequest = nil
+            resolvePendingIncomingControlRequest(request)
             sendResponse(kind: .controlDenied, for: request)
         }
         if let request = preparingIncomingControlRequest {
@@ -789,7 +794,9 @@ final class ControlCoordinator: ObservableObject {
         if wasWaitingForControlGrant {
             completeActiveControlRequest(false)
         }
-        pendingIncomingControlRequest = nil
+        if let request = pendingIncomingControlRequest {
+            resolvePendingIncomingControlRequest(request)
+        }
         preparingIncomingControlRequest = nil
         if wasControlling {
             onControllingStopped?()
@@ -900,9 +907,7 @@ final class ControlCoordinator: ObservableObject {
     ) {
         incomingRequestTimeout?.cancel()
         incomingRequestTimeout = nil
-        if pendingIncomingControlRequest?.id == request.id {
-            pendingIncomingControlRequest = nil
-        }
+        resolvePendingIncomingControlRequest(request)
         if preparingIncomingControlRequest?.id == request.id {
             preparingIncomingControlRequest = nil
             endTransientRemoteInput()
@@ -911,15 +916,28 @@ final class ControlCoordinator: ObservableObject {
         status = reason
     }
 
+    /// Clears a pending request only when the exact request is still active,
+    /// then immediately reports that identity to observers that own
+    /// request-scoped side effects such as native notifications.
+    @discardableResult
+    private func resolvePendingIncomingControlRequest(
+        _ request: IncomingControlRequest
+    ) -> Bool {
+        guard pendingIncomingControlRequest == request else {
+            return false
+        }
+        pendingIncomingControlRequest = nil
+        onIncomingControlRequestResolved?(request)
+        return true
+    }
+
     private func cancelIncomingControlRequest(
         _ request: IncomingControlRequest,
         reason: String
     ) {
         incomingRequestTimeout?.cancel()
         incomingRequestTimeout = nil
-        if pendingIncomingControlRequest?.id == request.id {
-            pendingIncomingControlRequest = nil
-        }
+        resolvePendingIncomingControlRequest(request)
         if preparingIncomingControlRequest?.id == request.id {
             preparingIncomingControlRequest = nil
             endTransientRemoteInput()

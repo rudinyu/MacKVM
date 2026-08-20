@@ -43,7 +43,7 @@
 <body>
   <main>
     <header>
-      <div class="badge">MacKVM 0.11.0</div>
+      <div class="badge">MacKVM 0.12.2</div>
       <h1>MacKVM 使用手冊</h1>
       <p class="lede">提供選單列入口與一般控制視窗，讓兩台 MacBook Pro 共用一組鍵盤、滑鼠，並可選擇切換 BenQ MA270U 螢幕的 macOS app。</p>
       <p><a href="USER_MANUAL.html" lang="en">English Version</a> · <a href="USER_MANUAL.zh-TW.md">Markdown 版本</a></p>
@@ -56,6 +56,7 @@
         <li><a href="#install">安裝與啟動</a></li>
         <li><a href="#input">實體鍵盤／滑鼠路徑</a></li>
         <li><a href="#monitor">MA270U 螢幕與線材設定</a></li>
+        <li><a href="#diagnostics">原生 DDC 診斷與 mapping 掃描</a></li>
         <li><a href="#permissions">授權 macOS 權限</a></li>
         <li><a href="#pair">探索、配對與控制</a></li>
         <li><a href="#profiles">裝置資料與支援資訊</a></li>
@@ -97,7 +98,7 @@
       <p>要建立 DMG，可使用：</p>
       <pre><code>./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist &amp;&amp; shasum -a 256 -c MacKVM-0.11.0-universal.dmg.sha256)</code></pre>
+(cd dist &amp;&amp; shasum -a 256 -c MacKVM-0.12.2-universal.dmg.sha256)</code></pre>
       <p>DMG 會從乾淨的暫存目錄建立，並在旁邊產生可攜式 SHA-256 檔案；驗證結果應顯示 <strong>OK</strong>。</p>
       <p>未提供 Developer ID 時是 ad-hoc 簽章，只適合本機測試；跨電腦散布前請用
         <code>--sign "Developer ID Application: …" --require-developer-id</code>，
@@ -132,17 +133,33 @@
         </tbody>
       </table>
       <ol>
-        <li>在 MA270U 的螢幕選單（OSD）啟用 DDC/CI，如該選項可用。</li>
+        <li>部分 MA270U 韌體不會在 OSD 顯示 DDC/CI 開關；MacKVM 會在 macOS 暴露顯示器時使用原生 bridge。</li>
         <li>MacKVM 使用原生 IOKit DDC/CI：Apple Silicon 走 <code>IOAVService</code>，Intel 走 <code>IOI2C</code>，不需要 Homebrew 工具。</li>
         <li>在任一台 Mac 按 <strong>Detect DDC-capable displays</strong>，明確選取要控制的螢幕。MacKVM 保存原生穩定識別碼，不會假設螢幕永遠是編號 1。</li>
-        <li>在 M5 Pro 選擇 <strong>M5 / USB-C preset</strong>；在 Intel Mac 選擇 <strong>Intel / HDMI preset</strong>，兩種架構都能使用原生自動 DDC/CI。</li>
-        <li>先以 <strong>Show this Mac</strong> 與 <strong>Show other Mac</strong> 確認切換。M5 Pro 可按 <strong>Share keyboard and mouse with [Intel Mac]</strong> 一次切換畫面並分享鍵盤滑鼠；Intel Mac 只有在未啟用該配對裝置的無縫控制時才需按 <strong>Allow</strong>。失敗時先閱讀 <strong>DDC diagnostic</strong>。</li>
+        <li>在 M5 Pro 選擇 <strong>M5 / USB-C preset</strong>；在 Intel Mac 選擇 <strong>Intel / HDMI preset</strong>。MA270U 的 EDID mapping 會把 USB-C 傳成 VCP 19（<code>0x13</code>），HDMI 1 傳成 VCP 17（<code>0x11</code>）；其他型號使用自己的韌體 mapping，依賴新型號前先執行診斷掃描。</li>
+        <li>先以 <strong>Show this Mac</strong> 與 <strong>Show other Mac</strong> 確認切換。M5 Pro 可按 <strong>Share keyboard and mouse with [Intel Mac]</strong> 一次切換畫面並分享鍵盤滑鼠；Intel Mac 只有在未啟用該配對裝置的無縫控制時才需按 <strong>Allow</strong>。若原生探索或切換失敗，先閱讀 <strong>DDC diagnostic</strong> 並確認線材直接連接，再使用 OSD 備援。</li>
       </ol>
       <p>若 Intel Mac 接在 HDMI 2，請將所有對應的輸入選擇改成 HDMI 2。螢幕與線材必須提供 DDC/CI；切換失敗時請查看診斷並用螢幕 OSD 手動選擇輸入來源。</p>
     </section>
 
+    <section id="diagnostics">
+      <h2>5. 原生 DDC 診斷與 mapping 掃描</h2>
+      <p>repository 提供與 MacKVM 共用原生 bridge 的獨立診斷程式。可在兩台 Mac 建置相符架構，或在 M5 Pro 建置 universal：</p>
+      <pre><code>./scripts/build-ddc-diagnostic.sh --arch arm64
+./scripts/build-ddc-diagnostic.sh --arch x86_64
+./scripts/build-ddc-diagnostic.sh --arch universal</code></pre>
+      <p>工具會輸出執行與編譯架構、Mac 型號、macOS build、EDID 身份／checksum、原生 transport 與 VCP <code>0x60</code> 輸入狀態：</p>
+      <pre><code>./dist/ddc-diagnostic-arm64 &gt; arm64-ddc-report.txt 2&gt;&amp;1
+./dist/ddc-diagnostic-x86_64 &gt; x86_64-ddc-report.txt 2&gt;&amp;1</code></pre>
+      <p>若螢幕接受 I2C 寫入卻沒有切換，明確執行 mapping 掃描：</p>
+      <pre><code>./dist/ddc-diagnostic-universal --display 1 --scan-inputs \
+  --values 15,16,17,18,19,27</code></pre>
+      <div class="notice"><strong>硬體注意：</strong>掃描會暫時切換螢幕輸入，只有在可以安全切換與還原時才執行。只有 <code>accepted=yes</code> 的讀回才是 mapping 證據；工具不會自動修改 app mapping。按 Ctrl-C 或收到 SIGTERM 時，工具會停止候選值迴圈並嘗試還原原本的值；SIGKILL 無法攔截與還原。本專案實測 MA270U 使用 USB-C VCP <code>19</code>（<code>0x13</code>）與 HDMI 1 VCP <code>17</code>（<code>0x11</code>）。</div>
+      <p>請參閱<a href="../Tools/DDCDiagnostic/README.zh-TW.md">診斷工具說明</a>與<a href="../Tools/DDCDiagnostic/ddc-diagnostic.m">原始碼</a>。</p>
+    </section>
+
     <section id="permissions">
-      <h2>5. 授權 macOS 權限</h2>
+      <h2>6. 授權 macOS 權限</h2>
       <p>MacKVM 需要兩台 Mac 都依序完成 <strong>Local Network</strong>、<strong>Input Monitoring</strong> 與 <strong>Accessibility</strong>。這可避免多個 macOS 權限提示重疊。</p>
       <ol>
         <li>點擊選單列的 MacKVM 圖示，在 <strong>Set up this Mac</strong> 按 <strong>Enable Local Network</strong>。</li>
@@ -156,7 +173,7 @@
     </section>
 
     <section id="pair">
-      <h2>6. 探索、配對與控制</h2>
+      <h2>7. 探索、配對與控制</h2>
       <ol>
         <li>確認兩台 Mac 都開著 MacKVM，並在選單的 <strong>Nearby Macs</strong> 看見對方。</li>
         <li>在其中一台按 <strong>Pair</strong>。</li>
@@ -168,7 +185,7 @@
     </section>
 
     <section id="profiles">
-      <h2>7. 裝置資料與支援資訊</h2>
+      <h2>8. 裝置資料與支援資訊</h2>
       <p>配對後，MacKVM 會在本機保存每台裝置的友善名稱、Bonjour 提供的 Mac
         型號、最後一次成功完成加密連線的時間，以及固定的 SHA-256 公開金鑰指紋。新配對
         的 Mac 預設會啟用無縫控制，也可在每台配對裝置旁關閉。</p>
@@ -185,7 +202,7 @@
     </section>
 
     <section id="daily">
-      <h2>8. 日常操作與安全返回</h2>
+      <h2>9. 日常操作與安全返回</h2>
       <ul>
         <li>控制另一台 Mac 時，本機鍵盤與滑鼠輸入會被轉送；除非該已釘選 Mac 已啟用無縫控制，否則接收端按 Allow 前不會開始抑制本機輸入。</li>
         <li>通知中的按鈕會帶著該次請求的識別碼與一次性的本機 nonce；請求逾時、取消或連線中斷後，舊通知的按鈕不會重新啟動控制。</li>
@@ -205,7 +222,7 @@
     </section>
 
     <section id="hardware">
-      <h2>9. P2 實機驗收</h2>
+      <h2>10. P2 實機驗收</h2>
       <div class="notice">
         這一節必須在實際的 14 吋 M5 Pro、2019 16 吋 Intel MacBook Pro 與 BenQ MA270U 上執行；CI 無法模擬螢幕 DDC/CI、實體 USB switch 或 macOS 隱私權提示。
       </div>
@@ -219,7 +236,7 @@
     </section>
 
     <section id="troubleshooting">
-      <h2>10. 常見問題</h2>
+      <h2>11. 常見問題</h2>
       <h3>看不到另一台 Mac</h3>
       <p>確認兩台都在同一 Wi-Fi／乙太網路、MacKVM 正在執行，並在 Set up this Mac 完成本機網路步驟。公司或訪客網路可能阻擋 Bonjour 探索。</p>
       <h3>無法控制，或按鍵沒有反應</h3>
@@ -237,7 +254,7 @@
     </section>
 
     <footer>
-      <p>MacKVM 使用手冊 · 對應版本 0.11.0 · 最後更新 2026-08-17</p>
+      <p>MacKVM 使用手冊 · 對應版本 0.12.2 · 最後更新 2026-08-20</p>
     </footer>
   </main>
 </body>

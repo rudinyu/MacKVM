@@ -25,6 +25,7 @@ final class LaunchAtLoginControllerTests: XCTestCase {
         XCTAssertTrue(
             LaunchAtLoginStatus.isRegistered(.requiresApproval)
         )
+        XCTAssertFalse(LaunchAtLoginStatus.isEnabled(.requiresApproval))
         XCTAssertEqual(
             LaunchAtLoginStatus.message(for: .requiresApproval),
             "Approve MacKVM in System Settings > Login Items"

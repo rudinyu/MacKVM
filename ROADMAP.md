@@ -3,7 +3,7 @@
 [Architecture](ARCHITECTURE.md) · [Installation guide](INSTALL.md) ·
 [Security status](SECURITY.md) · [繁體中文](ROADMAP.zh-TW.md)
 
-This roadmap is written against the 0.11.0 source tree. Every gap below was
+This roadmap is written against the 0.12.2 source tree. Every gap below was
 confirmed in code rather than inferred from the documentation, and each item
 records the files a change would start from.
 
@@ -27,6 +27,7 @@ request/consent round trip for every switch, and maps only one display.
 | Pointer mapping | Main display only; other screens clamp to its edge | [`InputServices.swift:1154`](Sources/MacKVM/InputServices.swift:1154) |
 | Peer count | One peer at a time, arbitrated by UUID comparison | [`PeerArbitration.swift:4`](Sources/MacKVMCore/PeerArbitration.swift:4) |
 | Monitor switching | Native DDC/CI through IOAVService (Apple Silicon) or IOI2C (Intel); OSD fallback when unavailable | [`Sources/MacKVM/NativeDDCService.swift`](Sources/MacKVM/NativeDDCService.swift) |
+| DDC diagnostics | Cross-architecture CLI reports system/EDID/transport/VCP data and can scan VCP 0x60 mappings with readback and restore | [`Tools/DDCDiagnostic/README.md`](Tools/DDCDiagnostic/README.md) |
 
 ## Priorities
 
@@ -249,6 +250,17 @@ from display identity, not a MA270U model-name allowlist or a numeric index.
 When a monitor or cable does not expose DDC/CI, the app reports a diagnostic and
 leaves the monitor OSD as the explicit fallback.
 
+The repository also includes a standalone diagnostic program at
+[`Tools/DDCDiagnostic/ddc-diagnostic.m`](Tools/DDCDiagnostic/ddc-diagnostic.m).
+It builds as arm64, x86_64, or universal and reports the running/compiled
+architecture, Mac and macOS identity, EDID/checksum, native transport, and VCP
+`0x60` state. Its opt-in `--scan-inputs` mode writes candidate values, reads
+them back, marks only matching values as accepted, and restores the original
+input. This makes model-specific mappings reproducible without treating a
+successful I2C transaction as proof of a firmware mapping. The tested MA270U
+uses USB-C `19` (`0x13`) and HDMI 1 `17` (`0x11`); other models are confirmed
+from their own reports and scans.
+
 ## P2 — scale and distribution
 
 ### F8. Three or more Macs
@@ -264,12 +276,12 @@ Already recorded as outstanding in `ARCHITECTURE.md`. Required before anyone
 else can install MacKVM without Finder's **Open** confirmation; deferrable
 indefinitely for personal use.
 
-### F10. Connection diagnostics
+### F10. Runtime connection diagnostics
 
-Beyond the static `SupportInformation` snapshot there is no runtime
-observability, so stuttering remote input cannot be diagnosed. Latency and
-jitter indicators plus a bounded event log would make the manual test
-checklist far easier to complete.
+The native DDC diagnostic CLI now covers system/display transport and input
+mapping evidence. The remaining runtime gap is session observability: beyond
+the static `SupportInformation` snapshot there are no latency, jitter, or
+bounded event-log indicators for diagnosing stuttering remote input.
 
 ## P3 — needs a spike first
 

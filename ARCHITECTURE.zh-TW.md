@@ -105,6 +105,23 @@ flowchart LR
 使用的五個輸入來源值，錯誤文字也會限制長度。若線材或螢幕沒有 DDC/CI，介面顯示
 診斷，使用者可明確改用 OSD。
 
+### 跨架構 DDC 診斷工具
+
+`Tools/DDCDiagnostic/ddc-diagnostic.m` 是和 app 共用原生 bridge 的獨立診斷程式，
+`scripts/build-ddc-diagnostic.sh` 可建置 `arm64`、`x86_64` 與 universal 版本。因此
+可以在 M5 Pro 與 2019 Intel Mac 各自取得報告，不需要 Homebrew 或外部 helper。報告會
+合併系統架構／型號、原生 selector、EDID 身份與 checksum、原生 transport（Apple
+Silicon 的 `IOAVService` 或 Intel 的 `IOFramebuffer`／`IOI2C`），以及 VCP `0x60`
+讀值。
+
+可選的 `--scan-inputs` 與 app 的一般操作分開。它只會把使用者提供的候選值寫入 VCP
+`0x60`，逐一讀回，只有讀回相同才標記 `accepted=yes`，最後還原掃描前的輸入。這能
+區分「I2C 傳輸成功」與「螢幕韌體真的接受該 mapping」。工具不會自動修改 app mapping，
+也不會讀取身份、私密金鑰、憑證或網路端點。本專案實測 MA270U 的 USB-C 是 `19`
+（`0x13`），HDMI 1 是 `17`（`0x11`）；其他型號必須以自己的報告與掃描確認。請參閱
+[診斷工具說明](Tools/DDCDiagnostic/README.zh-TW.md) 與[原始碼](Tools/DDCDiagnostic/ddc-diagnostic.m)。
+按下 Ctrl-C 或收到 SIGTERM 時會停止候選值迴圈，仍嘗試還原開始前的輸入。
+
 ## 連線與輸入狀態
 
 ```mermaid

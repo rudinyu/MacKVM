@@ -186,6 +186,28 @@ text before it returns to the UI. If the display transport is unavailable or
 the monitor rejects DDC/CI, switching ends with a diagnostic and the user can
 choose the monitor OSD explicitly.
 
+### Cross-architecture DDC diagnostic tool
+
+`Tools/DDCDiagnostic/ddc-diagnostic.m` is a standalone diagnostic client built
+against the same native bridge as the app. `scripts/build-ddc-diagnostic.sh`
+produces separate `arm64`, `x86_64`, and universal binaries, so a report can
+be collected on both the M5 Pro and the 2019 Intel Mac without Homebrew or a
+helper executable. The report combines system architecture/model data with
+the native selector, EDID identity/checksum, transport (`IOAVService` on
+Apple Silicon or `IOFramebuffer`/`IOI2C` on Intel), and VCP `0x60` readback.
+
+The optional `--scan-inputs` path is deliberately separate from normal app
+operation. It writes user-supplied candidate values only to VCP `0x60`, reads
+each value back, labels a value `accepted=yes` only when the readback matches,
+and restores the starting input. This distinguishes a transport-level I2C
+success from a monitor firmware mapping. The tool never edits the app mapping
+or reads identities, private keys, credentials, or network endpoints. The
+tested MA270U mapping is USB-C `19` (`0x13`) and HDMI 1 `17` (`0x11`); other
+models must be confirmed from their own report and scan. See the
+[diagnostic guide](Tools/DDCDiagnostic/README.md) and
+[source](Tools/DDCDiagnostic/ddc-diagnostic.m). Ctrl-C/SIGTERM stops the
+candidate loop while still attempting to restore the starting input.
+
 ### Physical input topology (P0)
 
 The monitor's HDMI input is a video path; it does not upstream the MA270U USB

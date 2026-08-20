@@ -3,7 +3,13 @@ import ServiceManagement
 
 enum LaunchAtLoginStatus {
     static func isRegistered(_ status: SMAppService.Status) -> Bool {
+        // `.requiresApproval` means macOS has not enabled the login item yet;
+        // it is still registered and must remain unregisterable.
         status == .enabled || status == .requiresApproval
+    }
+
+    static func isEnabled(_ status: SMAppService.Status) -> Bool {
+        status == .enabled
     }
 
     static func message(for status: SMAppService.Status) -> String? {
@@ -54,6 +60,7 @@ private actor LaunchAtLoginService {
 @MainActor
 final class LaunchAtLoginController: ObservableObject {
     @Published private(set) var isEnabled = false
+    @Published private(set) var isAwaitingApproval = false
     @Published private(set) var isUpdating = false
     @Published private(set) var status: String?
     private let service = LaunchAtLoginService()
@@ -76,7 +83,7 @@ final class LaunchAtLoginController: ObservableObject {
             guard currentOperationID == operationID else { return }
             isUpdating = false
             if let errorMessage = update.errorMessage {
-                isEnabled = LaunchAtLoginStatus.isRegistered(update.status)
+                apply(update.status)
                 status = "Could not update Login Items: \(errorMessage)"
             } else {
                 apply(update.status)
@@ -98,7 +105,8 @@ final class LaunchAtLoginController: ObservableObject {
     }
 
     private func apply(_ currentStatus: SMAppService.Status) {
-        isEnabled = LaunchAtLoginStatus.isRegistered(currentStatus)
+        isEnabled = LaunchAtLoginStatus.isEnabled(currentStatus)
+        isAwaitingApproval = currentStatus == .requiresApproval
         status = LaunchAtLoginStatus.message(for: currentStatus)
     }
 }

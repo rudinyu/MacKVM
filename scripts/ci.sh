@@ -20,6 +20,10 @@ swift test --disable-sandbox
 ./scripts/build-app.sh
 ./scripts/build-app.sh --arch arm64
 ./scripts/build-app.sh --arch x86_64
+./scripts/build-ddc-diagnostic.sh --arch arm64
+./scripts/build-ddc-diagnostic.sh --arch x86_64
+./scripts/build-ddc-diagnostic.sh --arch universal
+./dist/ddc-diagnostic-universal --help >/dev/null
 
 assert_build_app_rejected() {
   local description="$1"

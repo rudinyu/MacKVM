@@ -111,6 +111,9 @@ final class PeerDiscoveryService: ObservableObject {
     private let privateKey: P256.Signing.PrivateKey
     private var listener: NWListener?
     private var browser: NWBrowser?
+    private var networkRecoveryWorkItem: DispatchWorkItem?
+    private var networkRecoveryAttempt = 0
+    private var networkRecoveryGeneration: UInt64 = 0
     private var requestConnections: [UUID: NWConnection] = [:]
     private var unauthenticatedConnections: [ObjectIdentifier: NWConnection] = [:]
     private var requestMessages: [UUID: PairingEnvelope] = [:]
@@ -241,13 +244,17 @@ final class PeerDiscoveryService: ObservableObject {
 
     func start() {
         queue.async { [weak self] in
-            guard let self, self.listener == nil, self.browser == nil else {
+            guard let self else { return }
+            // Repeated bootstrap notifications are harmless. Do not advance
+            // the lifecycle epoch when both Bonjour services are already
+            // running; doing so would invalidate an in-flight pairing job
+            // even though there is nothing to restart.
+            guard self.listener == nil || self.browser == nil else {
                 return
             }
             self.advanceLifecycleEpoch()
             self.admissionLimiter.reset()
-            self.startListener()
-            self.startBrowser()
+            self.startMissingNetworkServices()
         }
     }
 
@@ -255,6 +262,10 @@ final class PeerDiscoveryService: ObservableObject {
         queue.async { [weak self] in
             guard let self else { return }
             self.advanceLifecycleEpoch()
+            self.networkRecoveryGeneration &+= 1
+            self.networkRecoveryWorkItem?.cancel()
+            self.networkRecoveryWorkItem = nil
+            self.networkRecoveryAttempt = 0
             self.listener?.cancel()
             self.browser?.cancel()
             self.requestConnections.values.forEach { $0.cancel() }
@@ -307,6 +318,50 @@ final class PeerDiscoveryService: ObservableObject {
                 self.status = "Discovery stopped"
             }
         }
+    }
+
+    /// Starts only the discovery components that are currently missing. A
+    /// browser or listener can fail independently after a network transition;
+    /// requiring both properties to be nil would otherwise make a later start
+    /// a permanent no-op.
+    private func startMissingNetworkServices() {
+        if listener == nil {
+            startListener()
+        }
+        if browser == nil {
+            startBrowser()
+        }
+    }
+
+    private func scheduleNetworkRecovery() {
+        guard networkRecoveryWorkItem == nil else { return }
+        let delay = min(pow(2.0, Double(networkRecoveryAttempt)), 30.0)
+        networkRecoveryAttempt = min(networkRecoveryAttempt + 1, 5)
+        networkRecoveryGeneration &+= 1
+        let recoveryGeneration = networkRecoveryGeneration
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self,
+                  self.networkRecoveryGeneration == recoveryGeneration,
+                  self.networkRecoveryWorkItem != nil else {
+                return
+            }
+            self.networkRecoveryWorkItem = nil
+            self.startMissingNetworkServices()
+        }
+        networkRecoveryWorkItem = workItem
+        queue.asyncAfter(deadline: .now() + delay, execute: workItem)
+    }
+
+    @discardableResult
+    private func noteNetworkServiceReady() -> Bool {
+        guard listener != nil, browser != nil else { return false }
+        let recoveredAfterFailure = networkRecoveryAttempt > 0
+            || networkRecoveryWorkItem != nil
+        networkRecoveryAttempt = 0
+        networkRecoveryGeneration &+= 1
+        networkRecoveryWorkItem?.cancel()
+        networkRecoveryWorkItem = nil
+        return recoveredAfterFailure
     }
 
     func requestPairing(with peer: DiscoveredPeer) {
@@ -635,6 +690,7 @@ final class PeerDiscoveryService: ObservableObject {
             listener.stateUpdateHandler = { [weak self, weak listener] state in
                 switch state {
                 case .ready:
+                    self?.noteNetworkServiceReady()
                     self?.publishStatus("Ready on the local network")
                 case .failed(let error):
                     guard let self else { return }
@@ -644,6 +700,7 @@ final class PeerDiscoveryService: ObservableObject {
                     if self.listener === listener {
                         self.listener?.cancel()
                         self.listener = nil
+                        self.scheduleNetworkRecovery()
                     }
                 default:
                     break
@@ -656,6 +713,7 @@ final class PeerDiscoveryService: ObservableObject {
             listener.start(queue: queue)
         } catch {
             publishStatus("Could not start listener: \(error.localizedDescription)")
+            scheduleNetworkRecovery()
         }
     }
 
@@ -731,14 +789,22 @@ final class PeerDiscoveryService: ObservableObject {
             self.publishMain(epoch: epoch) { $0.peers = discovered }
         }
         browser.stateUpdateHandler = { [weak self, weak browser] state in
-            if case .failed(let error) = state {
+            switch state {
+            case .ready:
+                if let self, self.noteNetworkServiceReady() {
+                    self.publishStatus("Discovery recovered on the local network")
+                }
+            case .failed(let error):
                 guard let self else { return }
                 self.publishStatus(
                     "Discovery failed: \(error.localizedDescription)"
                 )
                 if self.browser === browser {
                     self.browser = nil
+                    self.scheduleNetworkRecovery()
                 }
+            default:
+                break
             }
         }
         self.browser = browser
@@ -2082,7 +2148,9 @@ final class PeerDiscoveryService: ObservableObject {
                   closeBarrierConfirmedByPeer: closeBarrierConfirmedByPeer
               ),
               completionGuard.permits(
-                  currentGeneration: registry.generation(for: peer.id)
+                  currentGeneration: registry.generation(for: peer.id),
+                  requestID: requestID,
+                  peerID: peer.id
               ) else {
             logPairingPhase(
                 "completion.gate.blocked",

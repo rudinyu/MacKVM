@@ -30,6 +30,25 @@ final class ControlCoordinatorTests: XCTestCase {
         )
     }
 
+    func testResolvedIncomingRequestCallbackCarriesExactRequestIdentity() {
+        let fixture = makeFixture()
+        var resolvedRequests: [IncomingControlRequest] = []
+        fixture.coordinator.onIncomingControlRequestResolved = {
+            resolvedRequests.append($0)
+        }
+        let requestID = UUID()
+        let peerID = fixture.transport.connectedPeerID!
+
+        fixture.transport.deliver(controlMessage(.requestControl, requestID))
+        drainMainQueue()
+        fixture.coordinator.denyIncomingControlRequest(requestID)
+
+        XCTAssertEqual(
+            resolvedRequests,
+            [IncomingControlRequest(id: requestID, peerID: peerID)]
+        )
+    }
+
     func testSeamlessAuthorizationAutomaticallyGrantsControl() {
         let fixture = makeFixture(seamlessControlAuthorized: true)
         let requestID = UUID()

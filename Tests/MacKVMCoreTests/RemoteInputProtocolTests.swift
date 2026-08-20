@@ -55,6 +55,46 @@ final class RemoteInputProtocolTests: XCTestCase {
         )
     }
 
+    func testRejectsUnknownModifierFlagBits() {
+        let event = RemoteInputEvent(
+            kind: .keyDown,
+            keyCode: 36,
+            modifierFlags: 1 << 63
+        )
+
+        XCTAssertThrowsError(try event.validated()) { error in
+            XCTAssertEqual(error as? RemoteInputError, .invalidFields)
+        }
+    }
+
+    func testAcceptsKnownDeviceModifierBitsForLegacyPeers() throws {
+        let event = RemoteInputEvent(
+            kind: .keyDown,
+            keyCode: 36,
+            modifierFlags: (1 << 20) | 0x8
+        )
+
+        XCTAssertNoThrow(try event.validated())
+        XCTAssertEqual(
+            RemoteInputEvent.normalizedModifierFlags(event.modifierFlags),
+            1 << 20
+        )
+    }
+
+    func testAcceptsLegacyStatelessCapsLockFlag() throws {
+        let event = RemoteInputEvent(
+            kind: .keyDown,
+            keyCode: 57,
+            modifierFlags: (1 << 24) | (1 << 16)
+        )
+
+        XCTAssertNoThrow(try event.validated())
+        XCTAssertEqual(
+            RemoteInputEvent.normalizedModifierFlags(event.modifierFlags),
+            1 << 16
+        )
+    }
+
     func testRejectsModifierStateOnNonModifierEvents() {
         let event = RemoteInputEvent(
             kind: .mouseMoved,

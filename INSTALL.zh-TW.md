@@ -10,10 +10,12 @@
 - 兩台 Mac 都使用 macOS 13 或更新版本。
 - 兩台 Mac 位於同一個可信任的本機網路。
 - 建置 MacKVM 的電腦安裝 Swift 6 toolchain 或 Xcode。
-- 外接螢幕與線材需提供 VESA DDC/CI；若螢幕 OSD 有 DDC/CI 選項，請先開啟。
+- 外接螢幕與線材需提供 VESA DDC/CI。部分 MA270U 韌體不會在 OSD 顯示
+  DDC/CI 開關；MacKVM 會在 macOS 暴露顯示器時使用原生 bridge。
 
 MacKVM 使用原生 IOKit DDC/CI：Apple Silicon 走 `IOAVService`，Intel 走 `IOI2C`。
-不需要安裝 Homebrew 工具，兩台 Mac 都能使用自動輸入切換。
+不需要安裝 Homebrew 工具，兩台 Mac 都能使用自動輸入切換。MA270U 的 USB-C 會依
+EDID mapping 使用 `19`／`0x13`；其他型號保留通用值，或先執行診斷掃描再加入 mapping。
 
 ## 建置 app
 
@@ -33,6 +35,40 @@ Intel Mac。建置腳本會驗證 Mach-O 架構與 ad-hoc 簽章。
 ./scripts/ci.sh
 ```
 
+### 建置原生 DDC 診斷工具
+
+repository 同時提供獨立的 `ddc-diagnostic` 原始碼與建置腳本。可在兩台 Mac 建置
+各自架構，或直接在 M5 Pro 建置 universal 版本：
+
+```sh
+./scripts/build-ddc-diagnostic.sh --arch arm64
+./scripts/build-ddc-diagnostic.sh --arch x86_64
+./scripts/build-ddc-diagnostic.sh --arch universal
+```
+
+工具會輸出實際執行架構、編譯架構、Mac 型號、macOS build、顯示器 EDID 身份、原生
+transport 與 VCP `0x60` 輸入狀態。唯讀報告可保存為：
+
+```sh
+./dist/ddc-diagnostic-arm64 > arm64-ddc-report.txt 2>&1
+./dist/ddc-diagnostic-x86_64 > x86_64-ddc-report.txt 2>&1
+```
+
+當螢幕回報 I2C 寫入成功卻沒有切換畫面時，可明確啟用 mapping 掃描。工具會依序將
+候選值寫入 VCP `0x60`、讀回驗證，只把讀回相同的值標記為 accepted，最後還原開始前
+的輸入：
+
+```sh
+./dist/ddc-diagnostic-universal --display 1 --scan-inputs \
+  --values 15,16,17,18,19,27
+```
+
+掃描會暫時切換螢幕輸入，只有在可以安全切換並還原原本輸入時才執行。工具不會自動
+修改 app mapping。本專案實測 BenQ MA270U 的 USB-C 是 VCP `19`（`0x13`），HDMI 1
+是 VCP `17`（`0x11`）；其他型號與韌體必須以掃描結果確認。請參閱[診斷工具說明](Tools/DDCDiagnostic/README.zh-TW.md)
+與[原始碼](Tools/DDCDiagnostic/ddc-diagnostic.m)。按下 Ctrl-C 或收到 SIGTERM 時會停止
+候選值迴圈，仍嘗試還原開始前的輸入。
+
 建立並驗證本機測試用 universal DMG：
 
 ```sh
@@ -40,7 +76,7 @@ Intel Mac。建置腳本會驗證 Mach-O 架構與 ad-hoc 簽章。
 ./scripts/verify-release.sh \
   --app dist/universal/MacKVM.app \
   --arch universal
-(cd dist && shasum -a 256 -c MacKVM-0.11.0-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-0.12.2-universal.dmg.sha256)
 ```
 
 ad-hoc 簽章只適合本機測試。要提供給其他 Mac，請使用 Developer ID Application、
@@ -79,12 +115,15 @@ KVM 圖示或 Dock 重新開啟。
 3. 在兩台 Mac 都把 MA270U 設為主要顯示器。
 4. 在任一台 Mac 按 **Detect DDC-capable displays**，明確選取要控制的外接螢幕，再套用
    相符的預設。
-5. M5 Pro 的 **M5 / USB-C preset** 會選取本機 USB-C、另一台 HDMI 1；Intel Mac 的
-   **Intel / HDMI preset** 會選取本機 HDMI 1，且同樣啟用原生 DDC/CI。
+5. M5 Pro 的 **M5 / USB-C preset** 會選取邏輯上的 USB-C 與另一台 HDMI 1（VCP 17）。
+   MA270U 的 EDID mapping 會把 USB-C 傳成 VCP 19／`0x13`；其他型號請先用診斷掃描。
+   Intel Mac 的 **Intel / HDMI preset** 會選取本機 HDMI 1，且同樣啟用原生 DDC/CI。
+   輸入值會依螢幕型號與韌體而不同。
 6. 鍵盤與滑鼠接在 M5 Pro 或 MA270U USB hub 時，選 **One keyboard on M5 Pro
    (USB-C)**；HDMI 不會傳送 USB 資料。
-7. 用 **Show this Mac** 與 **Show other Mac** 測試切換。DDC/CI 失敗時查看診斷文字，
-   並使用 MA270U OSD 手動選擇輸入。
+7. 用 **Show this Mac** 與 **Show other Mac** 測試切換。部分 MA270U 韌體沒有
+   DDC/CI OSD 開關；若原生探索失敗，查看診斷文字、確認線材直接連接，再使用
+   MA270U OSD 手動選擇輸入。
    在 M5 Pro 可按 **Share keyboard and mouse with [Intel Mac]**，一次切換畫面並分享
    鍵盤與滑鼠；Intel Mac 只有在未啟用該配對裝置的無縫控制時才需按 **Allow**。
 

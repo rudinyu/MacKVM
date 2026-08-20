@@ -92,6 +92,26 @@ These commands produce `dist/arm64/MacKVM.app` and
 app to the M5 Pro Mac. The build script verifies the Mach-O architecture and
 the ad-hoc code signature without trying to execute the cross-built app.
 
+### Native DDC diagnostics
+
+Build the architecture-aware diagnostic tool when a monitor's input mapping
+is unknown or when a write reports success without switching the display:
+
+```sh
+./scripts/build-ddc-diagnostic.sh --arch arm64
+./scripts/build-ddc-diagnostic.sh --arch x86_64
+./scripts/build-ddc-diagnostic.sh --arch universal
+```
+
+See the [diagnostic tool guide](Tools/DDCDiagnostic/README.md),
+[diagnostic source](Tools/DDCDiagnostic/ddc-diagnostic.m), and
+[diagnostic build script](scripts/build-ddc-diagnostic.sh) for the read-only
+system/EDID report and the opt-in VCP `0x60` scan. The scan reads back every
+candidate and restores the starting input; a successful I2C write alone is
+not treated as proof that a monitor accepts a value. These files are part of
+this repository and are built by the normal CI job. Ctrl-C/SIGTERM stops the
+candidate loop and still attempts to restore the starting input.
+
 Create a disk image after building. The default is a universal DMG with an
 ad-hoc signature for local testing:
 
@@ -103,7 +123,7 @@ The package is built from a fresh staging directory and writes a portable
 SHA-256 sidecar next to the DMG. Verify the pair from the `dist` directory:
 
 ```sh
-(cd dist && shasum -a 256 -c MacKVM-0.11.0-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-0.12.2-universal.dmg.sha256)
 ```
 
 For distribution to another Mac, sign with a Developer ID Application
@@ -194,13 +214,18 @@ In the MacKVM menu:
    display number 1; a display that is not rediscovered cannot enable automatic
    switching.
 3. On the M5 Pro Mac, select **M5 / USB-C preset**. This sets this Mac to
-   USB-C (VCP 27), the other Mac to HDMI 1 (VCP 17), and enables native DDC.
+   logical USB-C, the other Mac to HDMI 1 (VCP 17), and enables native DDC.
+   MacKVM applies the MA270U EDID-specific USB-C value (VCP 19 / 0x13); other
+   monitor models keep their generic firmware value. Use the diagnostic scan
+   when the model or firmware is unknown.
 4. On the 2019 Intel Mac, select **Intel / HDMI preset**. This sets the local
    route to HDMI 1 and enables native DDC on Intel as well.
 5. If the Intel Mac uses HDMI 2, change both matching input pickers to HDMI 2.
 6. Use **Show this Mac** and **Show other Mac** to verify switching before
-   starting remote control. If it fails, read the **DDC diagnostic**, enable
-   DDC/CI in the MA270U OSD, and use the OSD input menu as the fallback.
+   starting remote control. MA270U firmware may not expose a DDC/CI toggle in
+   its OSD; MacKVM uses the native bridge when macOS exposes the display. If
+   detection or switching fails, read the **DDC diagnostic**, check the direct
+   cable path, and use the OSD input menu as the fallback.
    On the M5 Pro, **Share keyboard and mouse with [Intel Mac]** combines the
    display route with the control request; the Intel Mac selects **Allow**
    unless seamless control was enabled for the paired M5 Pro.

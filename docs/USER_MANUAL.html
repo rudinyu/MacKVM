@@ -43,7 +43,7 @@
 <body>
   <main>
     <header>
-      <div class="badge">MacKVM 0.11.0</div>
+      <div class="badge">MacKVM 0.12.2</div>
       <h1>MacKVM User Manual</h1>
       <p class="lede">A macOS app with a KVM menu-bar entry and full control window for sharing one keyboard, mouse, and optionally a BenQ MA270U display between two MacBook Pro computers.</p>
       <p><a href="USER_MANUAL.zh-TW.html" lang="zh-Hant">繁體中文版</a> · <a href="USER_MANUAL.md">Markdown version</a></p>
@@ -56,6 +56,7 @@
         <li><a href="#install">Install and launch</a></li>
         <li><a href="#input">Physical keyboard and mouse path</a></li>
         <li><a href="#monitor">MA270U and cable setup</a></li>
+        <li><a href="#diagnostics">Native DDC diagnostic and mapping scan</a></li>
         <li><a href="#permissions">macOS permissions</a></li>
         <li><a href="#pair">Discovery, pairing, and control</a></li>
         <li><a href="#profiles">Device profiles and support information</a></li>
@@ -94,7 +95,7 @@
       <p>Create and verify a DMG:</p>
       <pre><code>./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist &amp;&amp; shasum -a 256 -c MacKVM-0.11.0-universal.dmg.sha256)</code></pre>
+(cd dist &amp;&amp; shasum -a 256 -c MacKVM-0.12.2-universal.dmg.sha256)</code></pre>
       <p>The DMG is built from a clean staging directory and produces a portable SHA-256 sidecar. Ad-hoc signing is for local testing; distribution requires Developer ID, hardened runtime, and Apple notarization.</p>
     </section>
 
@@ -118,17 +119,33 @@
         </tbody>
       </table>
       <ol>
-        <li>Enable DDC/CI in the MA270U OSD if the option is available.</li>
+        <li>Some MA270U firmware does not expose a DDC/CI toggle in the OSD; MacKVM uses its native bridge when macOS exposes the display.</li>
         <li>MacKVM uses native IOKit DDC/CI: <code>IOAVService</code> on Apple Silicon and <code>IOI2C</code> on Intel. No Homebrew helper is required.</li>
         <li>Select <strong>Detect DDC-capable displays</strong> on either Mac and choose the intended display explicitly. MacKVM stores its stable native selector instead of assuming display number 1.</li>
-        <li>Choose <strong>M5 / USB-C preset</strong> on the M5 Pro and <strong>Intel / HDMI preset</strong> on the Intel Mac; both can use automatic native DDC/CI.</li>
-        <li>Use <strong>Show this Mac</strong> and <strong>Show other Mac</strong> before starting control. On the M5 Pro, <strong>Share keyboard and mouse with [Intel Mac]</strong> combines the display switch with sharing; the Intel Mac selects <strong>Allow</strong> unless seamless control was enabled for the paired M5 Pro. If DDC fails, read <strong>DDC diagnostic</strong> and use the OSD as a fallback.</li>
+        <li>Choose <strong>M5 / USB-C preset</strong> on the M5 Pro and <strong>Intel / HDMI preset</strong> on the Intel Mac; the MA270U EDID mapping sends USB-C as VCP 19 (<code>0x13</code>) and HDMI 1 as VCP 17 (<code>0x11</code>). Other monitor models use their own firmware mapping; run the diagnostic scan before relying on a new model.</li>
+        <li>Use <strong>Show this Mac</strong> and <strong>Show other Mac</strong> before starting control. On the M5 Pro, <strong>Share keyboard and mouse with [Intel Mac]</strong> combines the display switch with sharing; the Intel Mac selects <strong>Allow</strong> unless seamless control was enabled for the paired M5 Pro. If native detection or switching fails, read <strong>DDC diagnostic</strong>, check the direct cable path, and use the OSD as a fallback.</li>
       </ol>
       <p>If the Intel Mac uses HDMI 2, select HDMI 2 consistently in both input pickers. The monitor and cable must expose DDC/CI; otherwise use the monitor OSD.</p>
     </section>
 
+    <section id="diagnostics">
+      <h2>5. Native DDC diagnostic and mapping scan</h2>
+      <p>The repository includes a standalone diagnostic program built against the same native bridge as MacKVM. Build the matching architecture on each Mac, or build a universal binary on the M5 Pro:</p>
+      <pre><code>./scripts/build-ddc-diagnostic.sh --arch arm64
+./scripts/build-ddc-diagnostic.sh --arch x86_64
+./scripts/build-ddc-diagnostic.sh --arch universal</code></pre>
+      <p>It reports the running and compiled architecture, Mac model, macOS build, EDID identity/checksum, native transport, and VCP <code>0x60</code> input state:</p>
+      <pre><code>./dist/ddc-diagnostic-arm64 &gt; arm64-ddc-report.txt 2&gt;&amp;1
+./dist/ddc-diagnostic-x86_64 &gt; x86_64-ddc-report.txt 2&gt;&amp;1</code></pre>
+      <p>When a monitor accepts I2C writes but does not switch, opt in to the mapping scan:</p>
+      <pre><code>./dist/ddc-diagnostic-universal --display 1 --scan-inputs \
+  --values 15,16,17,18,19,27</code></pre>
+      <div class="notice"><strong>Hardware warning:</strong> the scan temporarily changes the monitor input. Run it only when the display can safely switch and restore. Only <code>accepted=yes</code> readbacks are mapping evidence; the tool never changes the app mapping automatically. Ctrl-C or SIGTERM stops the candidate loop and attempts to restore the original value; SIGKILL cannot be restored. The tested MA270U uses USB-C VCP <code>19</code> (<code>0x13</code>) and HDMI 1 VCP <code>17</code> (<code>0x11</code>).</div>
+      <p>See the <a href="../Tools/DDCDiagnostic/README.md">diagnostic tool guide</a> and its <a href="../Tools/DDCDiagnostic/ddc-diagnostic.m">source</a>.</p>
+    </section>
+
     <section id="permissions">
-      <h2>5. macOS permissions</h2>
+      <h2>6. macOS permissions</h2>
       <p>Complete <strong>Local Network</strong>, <strong>Input Monitoring</strong>, and <strong>Accessibility</strong> in that order on both Macs.</p>
       <ol>
         <li>Open the menu-bar item and select <strong>Enable Local Network</strong>.</li>
@@ -141,7 +158,7 @@
     </section>
 
     <section id="pair">
-      <h2>6. Discovery, pairing, and control</h2>
+      <h2>7. Discovery, pairing, and control</h2>
       <ol>
         <li>Confirm both Macs show the other under <strong>Nearby Macs</strong>.</li>
         <li>Select <strong>Pair</strong> on one Mac.</li>
@@ -153,7 +170,7 @@
     </section>
 
     <section id="profiles">
-      <h2>7. Device profiles and support information</h2>
+      <h2>8. Device profiles and support information</h2>
       <p>After pairing, MacKVM stores each peer's friendly name, advertised Mac model, last authenticated connection time, and SHA-256 fingerprint of the pinned public key. New pairings enable seamless control automatically; the per-peer toggle can revoke it.</p>
       <ol>
         <li>Open <strong>Paired device information</strong> to view the profile.</li>
@@ -164,7 +181,7 @@
     </section>
 
     <section id="daily">
-      <h2>8. Daily operation and safe return</h2>
+      <h2>9. Daily operation and safe return</h2>
       <ul>
         <li>Input is not suppressed until the receiver selects <strong>Allow</strong>, unless seamless control was enabled for that pinned peer.</li>
         <li>Use <strong>Return keyboard and mouse to this Mac</strong> on the controller. To switch back from Intel, the receiver selects <strong>Return keyboard and mouse to [M5 Mac]</strong>.</li>
@@ -176,7 +193,7 @@
     </section>
 
     <section id="hardware">
-      <h2>9. P2 hardware acceptance</h2>
+      <h2>10. P2 hardware acceptance</h2>
       <div class="notice">Run this section on the actual 14-inch M5 Pro, 2019 16-inch Intel MacBook Pro, and BenQ MA270U. CI cannot emulate monitor DDC/CI, a physical USB switch, or macOS privacy prompts.</div>
       <ol>
         <li>Run arm64 on the M5 Pro and x86_64 on the Intel Mac; complete permissions and pair with matching codes.</li>
@@ -188,7 +205,7 @@
     </section>
 
     <section id="troubleshooting">
-      <h2>10. Troubleshooting</h2>
+      <h2>11. Troubleshooting</h2>
       <h3>The other Mac is not visible</h3>
       <p>Confirm both Macs share the same Wi-Fi or Ethernet network, MacKVM is running, and the Local Network setup step is complete. Guest or corporate networks may block Bonjour.</p>
       <h3>Control does not work</h3>
@@ -202,7 +219,7 @@
     </section>
 
     <footer>
-      <p>MacKVM User Manual · Version 0.11.0 · Updated 2026-08-17</p>
+      <p>MacKVM User Manual · Version 0.12.2 · Updated 2026-08-20</p>
     </footer>
   </main>
 </body>
