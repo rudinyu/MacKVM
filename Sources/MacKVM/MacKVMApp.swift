@@ -1,6 +1,5 @@
 import AppKit
 import Carbon
-import Combine
 import MacKVMCore
 import SwiftUI
 
@@ -243,7 +242,6 @@ private final class AppBootstrap: ObservableObject {
     /// would not prevent cross-scene double activation.
     @Published private(set) var combinedControlRequestInFlight = false
     private var combinedControlRequestGeneration: UInt64 = 0
-    private var controlRequestObservation: AnyCancellable?
     private var terminationCleanupStarted = false
 
     init() {
@@ -294,6 +292,12 @@ private final class AppBootstrap: ObservableObject {
                 controlRequestNotifier?.present(
                     request: request,
                     peerName: peerName
+                )
+            }
+            control.onIncomingControlRequestResolved = {
+                [weak controlRequestNotifier] request in
+                controlRequestNotifier?.clearActiveRequest(
+                    requestID: request.id
                 )
             }
             self.discovery = discovery
@@ -368,14 +372,6 @@ private final class AppBootstrap: ObservableObject {
                     self?.reviewIncomingControlRequest(requestID)
                 }
             }
-            controlRequestObservation = control.$pendingIncomingControlRequest
-                .dropFirst()
-                .receive(on: DispatchQueue.main)
-                .sink { [weak controlRequestNotifier] request in
-                    if request == nil {
-                        controlRequestNotifier?.clearActiveRequest()
-                    }
-                }
             if OnboardingDefaults.resolveLocalNetworkAccessReviewed(
                 hadExistingDeviceCredentials: hadExistingDeviceCredentials
             ) {
@@ -1585,6 +1581,13 @@ private struct MacKVMMenuView: View {
                 Text(status)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+            }
+            if launchAtLogin.isAwaitingApproval {
+                Button("Remove pending Login Item") {
+                    launchAtLogin.setEnabled(false)
+                }
+                .buttonStyle(.borderless)
+                .font(.caption2)
             }
         }
         .onAppear {

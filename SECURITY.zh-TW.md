@@ -53,6 +53,18 @@ Bonjour 上可看到裝置名稱、型號、UUID 與公開金鑰。配對後本�
 連線狀態，不包含私密金鑰、密碼、憑證或網路端點。貼到公開論壇或客服表單前，仍應
 自行檢查是否有不想公開的裝置名稱。
 
+## 原生 DDC 診斷工具
+
+repository 的 `Tools/DDCDiagnostic` 是本機獨立工具，不會開啟網路 listener，也不會
+讀取 MacKVM 身份紀錄、私密金鑰、密碼、憑證或網路端點。它只輸出系統 metadata、EDID、
+原生顯示器 selector、transport 與 DDC/CI 值；一般模式是唯讀。
+
+`--scan-inputs` 是明確的硬體變更操作，只允許寫入 VCP `0x60`，接受有界候選值，逐一
+讀回，並還原開始時讀到的輸入。讀回相同才算螢幕接受該值；I2C 寫入成功本身不是證據。
+使用者必須只在可以安全切換的螢幕執行，並自行確認還原成功。工具不會自動把發現的
+mapping 寫入 app 或 repository。Ctrl-C 或 SIGTERM 會停止候選值迴圈並仍嘗試還原開始前
+的輸入；SIGKILL 等無法攔截的終止則無法保證還原。
+
 ## 已知邊界與發佈要求
 
 MacKVM 假設兩台 Mac 位於使用者信任的本機網路；Bonjour metadata 會在區域網路可見。

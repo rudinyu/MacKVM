@@ -11,12 +11,15 @@ Silicon M5 Pro MacBook Pro connected to a BenQ MA270U over USB-C, and a 2019
 - macOS 13 or later on both Macs.
 - A trusted local network shared by both Macs.
 - Swift 6 toolchain or Xcode on the Mac used to build the app.
-- An external monitor and connection that expose VESA DDC/CI. Enable DDC/CI
-  in the monitor OSD when the setting is available.
+- An external monitor and connection that expose VESA DDC/CI. Some MA270U
+  firmware does not show a DDC/CI toggle in the OSD; MacKVM uses the native
+  bridge when macOS exposes the display.
 
 MacKVM uses native IOKit DDC/CI: `IOAVService` on Apple Silicon and `IOI2C`
 on Intel. There is no Homebrew helper to install, and the same automatic input
-switching flow is available on both Macs.
+switching flow is available on both Macs. The MA270U USB-C value is selected by
+its EDID mapping (`19` / `0x13`); other models keep their generic value or can
+be mapped after running the diagnostic scan.
 
 ## Build the app
 
@@ -37,6 +40,44 @@ Run the local checks before installation:
 ./scripts/ci.sh
 ```
 
+### Build the native DDC diagnostic
+
+The repository also ships the source and build script for the standalone
+`ddc-diagnostic` tool. Build the matching report tool on each Mac, or build a
+universal binary on the M5 Pro:
+
+```sh
+./scripts/build-ddc-diagnostic.sh --arch arm64
+./scripts/build-ddc-diagnostic.sh --arch x86_64
+./scripts/build-ddc-diagnostic.sh --arch universal
+```
+
+The tool reports the running architecture, compiled architecture, Mac model,
+macOS build, display EDID identity, native transport, and VCP `0x60` input
+state. Save a read-only report with:
+
+```sh
+./dist/ddc-diagnostic-arm64 > arm64-ddc-report.txt 2>&1
+./dist/ddc-diagnostic-x86_64 > x86_64-ddc-report.txt 2>&1
+```
+
+When a monitor accepts an I2C write but does not change input, opt in to the
+mapping scan. It writes each candidate to VCP `0x60`, reads it back, reports
+only matching values as accepted, and restores the starting input:
+
+```sh
+./dist/ddc-diagnostic-universal --display 1 --scan-inputs \
+  --values 15,16,17,18,19,27
+```
+
+The scan temporarily changes the monitor input, so run it only when the
+display can safely switch and the original input can be restored. It never
+modifies the app mapping automatically. For the tested BenQ MA270U, USB-C is
+VCP `19` (`0x13`) and HDMI 1 is VCP `17` (`0x11`); other models and firmware
+must be confirmed with the scan. See the [diagnostic tool guide](Tools/DDCDiagnostic/README.md)
+and the [source](Tools/DDCDiagnostic/ddc-diagnostic.m). Ctrl-C/SIGTERM stops
+the candidate loop and still attempts to restore the starting input.
+
 Create and verify a universal DMG for local testing:
 
 ```sh
@@ -44,7 +85,7 @@ Create and verify a universal DMG for local testing:
 ./scripts/verify-release.sh \
   --app dist/universal/MacKVM.app \
   --arch universal
-(cd dist && shasum -a 256 -c MacKVM-0.11.0-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-0.12.2-universal.dmg.sha256)
 ```
 
 Ad-hoc signing is suitable only for local testing. For distribution to
@@ -89,13 +130,17 @@ Dock when needed.
 3. Set the MA270U as the main display on both Macs.
 4. On either Mac, select **Detect DDC-capable displays** and choose the
    intended external display explicitly, then select the matching preset.
-5. On the M5 Pro, **M5 / USB-C preset** selects USB-C locally and HDMI 1 on
-   the other Mac. On the Intel Mac, **Intel / HDMI preset** selects HDMI 1
-   locally and keeps native DDC enabled.
+5. On the M5 Pro, **M5 / USB-C preset** selects logical USB-C locally and HDMI
+   1 (VCP 17) on the other Mac. The MA270U EDID mapping sends USB-C as VCP 19
+   (`0x13`); on other models use the diagnostic scan. On the Intel Mac,
+   **Intel / HDMI preset** selects HDMI 1 locally and keeps native DDC enabled.
+   Input values are monitor-firmware specific.
 6. Select **One keyboard on M5 Pro (USB-C)** when the keyboard and mouse are
    connected to the M5 Pro or the MA270U USB hub. HDMI does not carry USB data.
-7. Use **Show this Mac** and **Show other Mac** to verify switching. If DDC/CI
-   fails, use the diagnostic text and switch inputs through the MA270U OSD.
+7. Use **Show this Mac** and **Show other Mac** to verify switching. Some
+   MA270U firmware has no DDC/CI OSD toggle; if native detection fails, use
+   the diagnostic text, check the direct cable path, and switch inputs through
+   the MA270U OSD.
    On the M5 Pro, **Share keyboard and mouse with [Intel Mac]** combines the
    display switch with sharing; the Intel Mac selects **Allow** unless
    seamless control was enabled for the paired M5 Pro.

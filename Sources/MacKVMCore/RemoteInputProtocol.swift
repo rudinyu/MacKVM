@@ -142,6 +142,9 @@ public struct RemoteInputEvent: Codable, Equatable, Sendable {
     }
 
     public func validated() throws -> RemoteInputEvent {
+        guard validModifierFlags else {
+            throw RemoteInputError.invalidFields
+        }
         switch kind {
         case .keyDown:
             guard keyCode != nil,
@@ -270,6 +273,32 @@ public struct RemoteInputEvent: Codable, Equatable, Sendable {
     private var hasNoScrollPhase: Bool {
         scrollPhase == nil && scrollMomentumPhase == nil
     }
+
+    /// The public CGEvent modifier bits MacKVM can safely reproduce. Keep the
+    /// wire format strict: unknown/reserved bits must not be copied into a
+    /// receiver's CGEventFlags value by an authenticated peer.
+    private var validModifierFlags: Bool {
+        modifierFlags & ~Self.validModifierFlagsMask == 0
+    }
+
+    /// Returns only the device-independent flags that can be reconstructed on
+    /// another Mac. Capture uses this before encoding, and injection uses it
+    /// again so legacy peers cannot pass device-specific bits through.
+    public static func normalizedModifierFlags(_ flags: UInt64) -> UInt64 {
+        flags & publicModifierFlagsMask
+    }
+
+    private static let publicModifierFlagsMask: UInt64 =
+        0x0000_0000_00FF_0100
+
+    // Older macOS event taps can include these known device-dependent bits.
+    // They are accepted for wire compatibility, then removed by
+    // normalizedModifierFlags before a CGEvent is injected.
+    private static let deviceModifierFlagsMask: UInt64 =
+        0x0000_0000_0100_20FF
+
+    private static let validModifierFlagsMask: UInt64 =
+        publicModifierFlagsMask | deviceModifierFlagsMask
 
     /// Exactly one Unicode scalar, excluding control characters. UCKeyTranslate
     /// with dead keys disabled never produces a composed grapheme cluster, so

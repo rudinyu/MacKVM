@@ -56,6 +56,9 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
     let localModel: String
     private var listener: NWListener?
     private var browser: NWBrowser?
+    private var networkRecoveryWorkItem: DispatchWorkItem?
+    private var networkRecoveryAttempt = 0
+    private var networkRecoveryGeneration: UInt64 = 0
     private var peersByID: [UUID: [SecureServicePeer]] = [:]
     private var peerCandidateIndices: [UUID: Int] = [:]
     private var preferredPeerEndpoints: [UUID: NWEndpoint] = [:]
@@ -84,10 +87,9 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
 
     func start() {
         queue.async { [weak self] in
-            guard let self, listener == nil, browser == nil else { return }
+            guard let self else { return }
             startPathMonitor()
-            startListener()
-            startBrowser()
+            startMissingNetworkServices()
         }
     }
 
@@ -97,6 +99,10 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             connectionEpoch.advance()
             desiredPeerID = nil
             cancelReconnect(resetAttempt: true)
+            networkRecoveryGeneration &+= 1
+            networkRecoveryWorkItem?.cancel()
+            networkRecoveryWorkItem = nil
+            networkRecoveryAttempt = 0
             pathMonitor?.cancel()
             pathMonitor = nil
             listener?.cancel()
@@ -128,6 +134,17 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
     func connect(to peerID: UUID) {
         queue.async { [weak self] in
             guard let self else { return }
+            guard PeerArbitration.isValidPeerPair(
+                localID: credentials.identity.id,
+                remoteID: peerID
+            ) else {
+                logSecurePhase(
+                    "connect.rejected-self-identity",
+                    peerID: peerID
+                )
+                publishStatus("Cannot connect to this Mac's own identity")
+                return
+            }
             // A pairing completion can race with the automatic secure
             // connection it triggers. If authentication wins that race, the
             // active responder context is already established when this
@@ -490,6 +507,49 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         monitor.start(queue: queue)
     }
 
+    /// Starts only the secure discovery components that are missing. Bonjour
+    /// listener and browser failures are independent, so one surviving
+    /// component must not prevent recovery of the other.
+    private func startMissingNetworkServices() {
+        if listener == nil {
+            startListener()
+        }
+        if browser == nil {
+            startBrowser()
+        }
+    }
+
+    private func scheduleNetworkRecovery() {
+        guard networkRecoveryWorkItem == nil else { return }
+        let delay = min(pow(2.0, Double(networkRecoveryAttempt)), 30.0)
+        networkRecoveryAttempt = min(networkRecoveryAttempt + 1, 5)
+        networkRecoveryGeneration &+= 1
+        let recoveryGeneration = networkRecoveryGeneration
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self,
+                  self.networkRecoveryGeneration == recoveryGeneration,
+                  self.networkRecoveryWorkItem != nil else {
+                return
+            }
+            self.networkRecoveryWorkItem = nil
+            self.startMissingNetworkServices()
+        }
+        networkRecoveryWorkItem = workItem
+        queue.asyncAfter(deadline: .now() + delay, execute: workItem)
+    }
+
+    @discardableResult
+    private func noteNetworkServiceReady() -> Bool {
+        guard listener != nil, browser != nil else { return false }
+        let recoveredAfterFailure = networkRecoveryAttempt > 0
+            || networkRecoveryWorkItem != nil
+        networkRecoveryAttempt = 0
+        networkRecoveryGeneration &+= 1
+        networkRecoveryWorkItem?.cancel()
+        networkRecoveryWorkItem = nil
+        return recoveredAfterFailure
+    }
+
     private func retryConnectionIfNeeded() {
         guard desiredPeerID != nil,
               networkPathSatisfied,
@@ -569,20 +629,28 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                 self?.accept(connection)
             }
             listener.stateUpdateHandler = { [weak self, weak listener] state in
-                if case .failed(let error) = state {
+                switch state {
+                case .ready:
+                    self?.noteNetworkServiceReady()
+                case .failed(let error):
                     guard let self else { return }
                     self.publishStatus(
                         "Secure listener failed: \(error.localizedDescription)"
                     )
                     if self.listener === listener {
+                        listener?.cancel()
                         self.listener = nil
+                        self.scheduleNetworkRecovery()
                     }
+                default:
+                    break
                 }
             }
             self.listener = listener
             listener.start(queue: queue)
         } catch {
             publishStatus("Could not start secure listener: \(error.localizedDescription)")
+            scheduleNetworkRecovery()
         }
     }
 
@@ -649,14 +717,22 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             retryConnectionIfNeeded()
         }
         browser.stateUpdateHandler = { [weak self, weak browser] state in
-            if case .failed(let error) = state {
+            switch state {
+            case .ready:
+                if let self, self.noteNetworkServiceReady() {
+                    self.publishStatus("Secure discovery recovered")
+                }
+            case .failed(let error):
                 guard let self else { return }
                 self.publishStatus(
                     "Secure discovery failed: \(error.localizedDescription)"
                 )
                 if self.browser === browser {
                     self.browser = nil
+                    self.scheduleNetworkRecovery()
                 }
+            default:
+                break
             }
         }
         self.browser = browser
@@ -904,6 +980,10 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         case .initiator:
             guard handshake.role == .responder,
                   let expectedPeer = context.expectedPeer,
+                  PeerArbitration.isValidPeerPair(
+                      localID: credentials.identity.id,
+                      remoteID: expectedPeer.id
+                  ),
                   handshake.sender == expectedPeer,
                   registry.publicKey(for: expectedPeer.id)
                     == handshake.sender.signingPublicKey,
@@ -987,6 +1067,10 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
 
         case .responder:
             guard handshake.role == .initiator,
+                  PeerArbitration.isValidPeerPair(
+                      localID: credentials.identity.id,
+                      remoteID: handshake.sender.id
+                  ),
                   registry.publicKey(for: handshake.sender.id)
                     == handshake.sender.signingPublicKey else {
                 logSecurePhase(

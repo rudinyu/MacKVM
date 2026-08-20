@@ -31,23 +31,59 @@ Intel Mac 的 `/Applications`，再開啟各自架構的 app。
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist && shasum -a 256 -c MacKVM-0.11.0-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-0.12.2-universal.dmg.sha256)
 ```
 
 本機 ad-hoc 簽章只能用於測試；正式散布必須使用 Developer ID、hardened runtime
 與 Apple notarization。
+
+### 1.1 建置與執行 DDC 診斷工具
+
+從同一份 checkout 建置所有支援的診斷目標：
+
+```sh
+./scripts/build-ddc-diagnostic.sh --arch arm64
+./scripts/build-ddc-diagnostic.sh --arch x86_64
+./scripts/build-ddc-diagnostic.sh --arch universal
+```
+
+在實機上分別用原生架構執行並保存唯讀報告：
+
+```sh
+./dist/ddc-diagnostic-arm64 > arm64-ddc-report.txt 2>&1
+./dist/ddc-diagnostic-x86_64 > x86_64-ddc-report.txt 2>&1
+```
+
+確認每份報告都包含實際執行與編譯架構、Mac 型號、macOS build、顯示器 EDID、原生
+transport 與 VCP `0x60` 狀態。若型號 mapping 不明，明確執行掃描並把結果放入驗收
+紀錄：
+
+```sh
+./dist/ddc-diagnostic-universal --display 1 --scan-inputs \
+  --values 15,16,17,18,19,27
+```
+
+只有 `accepted=yes` 的讀回結果才算 mapping 證據。確認掃描結束後已還原原本輸入，且
+工具沒有自動修改 app 原始碼。按下 Ctrl-C 或收到 SIGTERM 時會停止候選值迴圈，仍嘗試
+還原開始前的輸入。本專案實測 MA270U 應得到 USB-C `19`（`0x13`）與 HDMI 1 `17`
+（`0x11`）。
 
 ## 2. 線材、螢幕與實體輸入
 
 1. M5 Pro 接 MA270U USB-C 視訊／資料／供電連接埠。
 2. Intel Mac 接 HDMI 1；若使用 HDMI 2，後續所有設定都使用 HDMI 2。
 3. 在兩台 Mac 將 MA270U 設為主要顯示器。
-4. 在 MA270U OSD 開啟 DDC/CI（若該選項存在）。
+4. 部分 MA270U 韌體不會在 OSD 顯示 DDC/CI 開關；不必為了尋找該選項而
+   中斷測試，請先確認線材直接連接，再讓 MacKVM 探索原生 DDC bridge。
 5. 在任一台 Mac 按 **Detect DDC-capable displays**，明確選取要控制的外接螢幕。
 6. M5 Pro 按 **M5 / USB-C preset**；Intel Mac 按 **Intel / HDMI preset**。
 7. 鍵盤與滑鼠接 M5 Pro 或 MA270U USB hub，選 **One keyboard on M5 Pro (USB-C)**。
    HDMI 不會把 hub 的 USB 資料傳給 Intel Mac。
 8. 只有在兩台 Mac 都能看見實體 USB switch 的裝置時，才選雙向模式。
+
+預期結果：MA270U 的 EDID mapping 會讓 M5 Pro USB-C 路徑使用 VCP 19（`0x13`），Intel
+HDMI 1 使用 VCP 17（`0x11`）。其他型號使用自己的 mapping；螢幕可能在 I2C 傳輸成功時
+仍靜默忽略未公告的輸入值。新增型號前先執行診斷掃描。
 
 預期結果：**Show this Mac** 顯示 USB-C，**Show other Mac** 顯示指定 HDMI；原生
 DDC/CI 失敗時五秒內回報診斷並可用 OSD 手動切換，不能悄悄改用不明顯示器。
@@ -170,5 +206,7 @@ Acceptance record。
 | 跨配置鍵盤重映射 |  |  |  |
 | 控制同意／接收端停止 |  |  |  |
 | DDC 螢幕偵測／原生識別碼 |  |  |  |
+| ARM64／Intel 診斷報告 |  |  |  |
+| VCP 0x60 mapping 掃描／還原 |  |  |  |
 | 原生 DDC/CI 切換 |  |  |  |
 | OSD 手動備援 |  |  |  |

@@ -9,15 +9,18 @@ public final class BoundedAdmissionGate: @unchecked Sendable {
     public struct Reservation: Equatable, Sendable {
         public let generation: UInt64?
         public let shouldSignalFailure: Bool
+        fileprivate let token: UUID?
 
         public var accepted: Bool { generation != nil }
 
         fileprivate init(
             generation: UInt64?,
-            shouldSignalFailure: Bool
+            shouldSignalFailure: Bool,
+            token: UUID? = nil
         ) {
             self.generation = generation
             self.shouldSignalFailure = shouldSignalFailure
+            self.token = token
         }
     }
 
@@ -26,6 +29,7 @@ public final class BoundedAdmissionGate: @unchecked Sendable {
     private var generation: UInt64 = 0
     private var pendingByGeneration: [UInt64: Int] = [:]
     private var pendingReservationCount = 0
+    private var activeReservationTokens: Set<UUID> = []
     private var isEnabled: Bool
     private var isLatchedClosed = false
     private var failureSignalled = false
@@ -126,27 +130,41 @@ public final class BoundedAdmissionGate: @unchecked Sendable {
         }
         pendingByGeneration[generation] = pending + 1
         pendingReservationCount += 1
-        return Reservation(generation: generation, shouldSignalFailure: false)
+        let token = UUID()
+        activeReservationTokens.insert(token)
+        return Reservation(
+            generation: generation,
+            shouldSignalFailure: false,
+            token: token
+        )
     }
 
     public func isCurrent(_ reservation: Reservation) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        guard let reservationGeneration = reservation.generation else {
+        guard let reservationGeneration = reservation.generation,
+              let token = reservation.token else {
             return false
         }
         // An admission overflow stops accepting new work, but it must not
         // invalidate work that was already admitted. Only begin/invalidate
         // advances the generation and makes queued work stale.
         return reservationGeneration == generation
+            && activeReservationTokens.contains(token)
     }
 
     public func release(_ reservation: Reservation) {
-        guard let reservationGeneration = reservation.generation else {
+        guard let reservationGeneration = reservation.generation,
+              let token = reservation.token else {
             return
         }
         lock.lock()
         defer { lock.unlock() }
+        guard activeReservationTokens.remove(token) != nil else {
+            // Reservations are single-use. A duplicated callback must not
+            // release a later reservation that happens to share a generation.
+            return
+        }
         guard let pending = pendingByGeneration[reservationGeneration] else {
             return
         }

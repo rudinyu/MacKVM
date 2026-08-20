@@ -43,6 +43,8 @@ MacKVM 是原生 macOS 應用程式，提供選單列入口與一般控制視窗
 
 MacKVM 在 Apple Silicon 透過 `IOAVService`、在 Intel 透過 `IOI2C` 直接傳送 DDC/CI
 指令，不需要 Homebrew 工具或其他外部執行檔，兩種架構都能使用自動切換。
+MA270U 的 USB-C 輸入使用 VCP 0x60 值 `19 (0x13)`；MacKVM 會依 EDID 套用這個型號特例，
+其他螢幕保留通用的 USB-C 值。不同螢幕型號與韌體的輸入值可能不同，請用診斷掃描確認。
 
 ## 建置與打包
 
@@ -61,6 +63,24 @@ MacKVM 在 Apple Silicon 透過 `IOAVService`、在 Intel 透過 `IOI2C` 直接�
 
 產物位於 `dist/`。本機測試使用 ad-hoc 簽章；要提供給其他 Mac 正式安裝，請用
 Developer ID Application、hardened runtime，並在公開發佈前完成 Apple notarization。
+
+### 原生 DDC 診斷工具
+
+當螢幕的 input mapping 不明，或 I2C 回報寫入成功但畫面沒有切換時，可建置跨架構
+診斷工具：
+
+```sh
+./scripts/build-ddc-diagnostic.sh --arch arm64
+./scripts/build-ddc-diagnostic.sh --arch x86_64
+./scripts/build-ddc-diagnostic.sh --arch universal
+```
+
+請參閱[診斷工具說明](Tools/DDCDiagnostic/README.zh-TW.md)、[診斷原始碼](Tools/DDCDiagnostic/ddc-diagnostic.m)
+與[診斷建置腳本](scripts/build-ddc-diagnostic.sh)。工具會輸出本機系統、EDID、Apple
+Silicon／Intel transport 與 VCP `0x60` 讀值；明確執行 input scan 時會讀回每個候選值
+並嘗試還原起始輸入，不能只把 I2C 寫入成功視為螢幕接受該值。這些檔案已納入本
+repository，正常 CI 也會建置三種診斷目標。按下 Ctrl-C 或收到 SIGTERM 時會停止
+候選值迴圈，仍嘗試還原起始輸入。
 
 ## 第一次使用
 

@@ -16,6 +16,33 @@ final class MonitorRoutingTests: XCTestCase {
         )
     }
 
+    func testMA270UUsesObservedUSBCCValueWithoutChangingGenericMapping() {
+        XCTAssertEqual(
+            MonitorInputMapping.rawValue(
+                for: .usbC,
+                vendorID: 2513,
+                productID: 32884
+            ),
+            19
+        )
+        XCTAssertEqual(
+            MonitorInputMapping.rawValue(
+                for: .usbC,
+                vendorID: 1234,
+                productID: 5678
+            ),
+            27
+        )
+        XCTAssertEqual(
+            NativeDDCCommand.setInputPacket(
+                for: .usbC,
+                vendorID: 2513,
+                productID: 32884
+            ),
+            [0x51, 0x84, 0x03, 0x60, 0x00, 0x13, 0xCB]
+        )
+    }
+
     func testNativeDDCCommandChecksumChangesWithInput() {
         let hdmi = NativeDDCCommand.setInputPacket(for: .hdmi1)
         let displayPort = NativeDDCCommand.setInputPacket(for: .displayPort1)

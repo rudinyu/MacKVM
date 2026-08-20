@@ -42,7 +42,9 @@ enum NativeDDCService {
                 DDCDisplay(
                     index: index + 1,
                     name: name.isEmpty ? "External display" : name,
-                    stableIdentifier: identifier
+                    stableIdentifier: identifier,
+                    vendorID: MacKVMNativeDDCListVendorIDAt(list, index),
+                    productID: MacKVMNativeDDCListProductIDAt(list, index)
                 )
             )
         }
@@ -54,7 +56,9 @@ enum NativeDDCService {
 
     static func switchInput(
         displaySelector: String,
-        input: MonitorInputSource
+        input: MonitorInputSource,
+        vendorID: UInt32? = nil,
+        productID: UInt32? = nil
     ) throws {
         let selector = displaySelector.trimmingCharacters(
             in: .whitespacesAndNewlines
@@ -66,7 +70,11 @@ enum NativeDDCService {
         let succeeded = selector.withCString { selectorPointer in
             MacKVMNativeDDCSwitchInput(
                 selectorPointer,
-                UInt32(input.rawValue),
+                MonitorInputMapping.rawValue(
+                    for: input,
+                    vendorID: vendorID,
+                    productID: productID
+                ),
                 &error,
                 error.count
             )

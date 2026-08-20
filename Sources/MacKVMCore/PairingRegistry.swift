@@ -143,7 +143,11 @@ public final class PairingRegistry {
         return cachedProfiles[peerID]
     }
 
-    public func add(
+    /// Adds a trusted peer without a revocation-generation check. This is
+    /// intentionally module-internal for test/setup code; app code must use
+    /// `add(_:ifGeneration:model:persistImmediately:)` so stale asynchronous
+    /// pairing completions cannot restore a forgotten key.
+    internal func add(
         _ peer: PeerIdentity,
         model: String? = nil,
         persistImmediately: Bool = true

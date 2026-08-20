@@ -177,6 +177,15 @@ final class PeerIdentityTests: XCTestCase {
             )
         )
     }
+
+    func testEqualPeerIdentityIsNotAValidArbitrationPair() {
+        let id = UUID()
+
+        XCTAssertFalse(
+            PeerArbitration.isValidPeerPair(localID: id, remoteID: id)
+        )
+        XCTAssertFalse(PeerArbitration.localIDWins(localID: id, remoteID: id))
+    }
 }
 
 private final class InMemoryPrivateKeyStore: DevicePrivateKeyStore {

@@ -2,7 +2,7 @@
 
 # MacKVM 開發路線圖
 
-本路線圖以 0.11.0 程式碼為基準。配對、公開金鑰釘選、加密連線、輸入驗證、
+本路線圖以 0.12.2 程式碼為基準。配對、公開金鑰釘選、加密連線、輸入驗證、
 接收端明確同意、權限引導與有界佇列已完成；後續項目主要改善日常使用體驗。
 
 ## 目前狀態
@@ -14,6 +14,7 @@
 | 游標對應 | 目前以主要顯示器為基準 |
 | 裝置數量 | 一次一台 peer，使用 UUID 仲裁 |
 | 螢幕切換 | 原生 DDC/CI：Apple Silicon 使用 IOAVService，Intel 使用 IOI2C；不支援時回到 OSD |
+| DDC 診斷 | 跨架構 CLI 輸出系統／EDID／transport／VCP 資料，並可讀回驗證與還原 VCP 0x60 mapping |
 
 ## 優先順序
 
@@ -44,6 +45,14 @@ MacKVM 現在透過原生 IOKit bridge 探索外接顯示器，直接傳送 DDC/
   數字索引。
 - 若螢幕或線材沒有提供 DDC/CI，介面顯示診斷，使用者可明確改用螢幕 OSD。
 - arm64 與 x86_64 都由同一份 Swift/C 原生橋接編譯，Intel 不再是手動切換專用路徑。
+
+repository 另提供獨立的
+[`Tools/DDCDiagnostic/ddc-diagnostic.m`](Tools/DDCDiagnostic/ddc-diagnostic.m)。它可建置
+arm64、x86_64 或 universal，輸出執行／編譯架構、Mac 與 macOS 身份、EDID/checksum、
+原生 transport 與 VCP `0x60` 狀態。明確啟用 `--scan-inputs` 時會寫入候選值、讀回驗證，
+只將相同讀值標記為 accepted，最後還原原本輸入。這能產生可重現的型號 mapping 證據，
+不會把 I2C 傳輸成功誤當成韌體一定接受。本專案實測 MA270U 使用 USB-C `19`（`0x13`）
+與 HDMI 1 `17`（`0x11`）；其他型號請用自己的報告與掃描確認。
 
 ## F3、F5、F6 — 已完成
 
@@ -141,7 +150,8 @@ MacKVM 現在透過原生 IOKit bridge 探索外接顯示器，直接傳送 DDC/
 
 - F8 需要重新設計多 peer 仲裁與選單，不適合在雙 Mac MVP 前提下直接擴充。
 - F9 在公開散布前需要 Developer ID、hardened runtime 與 Apple notarization。
-- F10 加入延遲、jitter 與有界事件紀錄，避免支援只能依賴靜態資訊快照。
+- F10 執行期連線診斷仍待加入延遲、jitter 與有界事件紀錄；原生 DDC 診斷工具已能
+  提供系統／顯示器 transport 與 input mapping 證據。
 
 ## P3 研究項目
 

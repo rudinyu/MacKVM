@@ -81,3 +81,21 @@ signed handshake identifies a peer, the context cannot be safely attributed to
 another device. This can briefly interrupt an unrelated handshake, but it
 prevents a revoked peer from winning an attribution race and is immediately
 recoverable by reconnecting.
+
+## Native DDC diagnostic tool
+
+The repository's `Tools/DDCDiagnostic` program is a local, standalone tool. It
+does not open a network listener or read MacKVM identity records, private keys,
+passwords, credentials, or endpoints. It reports system metadata, EDID,
+native display selectors, transport, and DDC/CI values; the normal mode is
+read-only.
+
+`--scan-inputs` is an explicit hardware-changing operation. It is restricted
+to VCP `0x60`, accepts bounded candidate values, reads each value back, and
+restores the input observed at the start. A matching readback is evidence
+that the monitor accepted a value; a successful I2C write alone is not. Users
+must run the scan only on a display that can safely switch and must verify the
+restoration. The tool never writes a discovered mapping into the app or
+repository automatically. Ctrl-C/SIGTERM stops the candidate loop and still
+attempts to restore the starting input; an uncatchable termination such as
+SIGKILL cannot provide that guarantee.

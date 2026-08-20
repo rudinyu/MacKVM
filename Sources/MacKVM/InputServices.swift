@@ -471,7 +471,9 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
                 RemoteInputEvent(
                     kind: .systemDefined,
                     isPressed: isPressed,
-                    modifierFlags: event.flags.rawValue,
+                    modifierFlags: RemoteInputEvent.normalizedModifierFlags(
+                        event.flags.rawValue
+                    ),
                     mediaKey: key
                 )
             )
@@ -553,7 +555,9 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
         type: CGEventType,
         event: CGEvent
     ) -> RemoteInputEvent? {
-        let flags = event.flags.rawValue
+        let flags = RemoteInputEvent.normalizedModifierFlags(
+            event.flags.rawValue
+        )
         switch type {
         case .keyDown:
             return keyboardEvent(.keyDown, event: event, flags: flags)
@@ -1028,7 +1032,11 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
             event = SystemDefinedEvent.makeEvent(
                 key: mediaKey,
                 isPressed: isPressed,
-                flags: CGEventFlags(rawValue: input.modifierFlags)
+                flags: CGEventFlags(
+                    rawValue: RemoteInputEvent.normalizedModifierFlags(
+                        input.modifierFlags
+                    )
+                )
             )
 
         case .mouseMoved, .leftMouseDown, .leftMouseUp, .leftMouseDragged,
@@ -1196,7 +1204,11 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
         guard let target = snapshot.reverseMap.target(for: character) else {
             throw RemoteInputSinkError.unmappableKey
         }
-        let modifierFlags = CGEventFlags(rawValue: input.modifierFlags)
+        let modifierFlags = CGEventFlags(
+            rawValue: RemoteInputEvent.normalizedModifierFlags(
+                input.modifierFlags
+            )
+        )
         let isShortcut = modifierFlags.contains(.maskCommand)
             || modifierFlags.contains(.maskControl)
         return .remapped(target, applyModifiers: !isShortcut)
@@ -1360,18 +1372,20 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
         for input: RemoteInputEvent,
         remap: KeyInjectionTarget? = nil
     ) -> CGEventFlags {
+        let normalizedModifierFlags =
+            RemoteInputEvent.normalizedModifierFlags(input.modifierFlags)
         if let remap, case .remapped(let target, let applyModifiers) = remap {
             guard applyModifiers else {
                 // Only the keycode came from the lookup (see
                 // KeyInjectionTarget); the sender's own flags — Command,
                 // Control, and whatever Shift/Option/Caps Lock it actually
                 // held — pass through completely unchanged.
-                return CGEventFlags(rawValue: input.modifierFlags)
+                return CGEventFlags(rawValue: normalizedModifierFlags)
             }
             // Shift/Option/Caps Lock are replaced with whatever this local
             // layout needs to produce the sender's character, which may
             // differ from what the sender itself held.
-            var flags = CGEventFlags(rawValue: input.modifierFlags)
+            var flags = CGEventFlags(rawValue: normalizedModifierFlags)
             flags.remove([.maskShift, .maskAlternate, .maskAlphaShift])
             if target.shift { flags.insert(.maskShift) }
             if target.option { flags.insert(.maskAlternate) }
@@ -1380,10 +1394,10 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
         }
         guard input.kind == .flagsChanged,
               let keyCode = input.keyCode else {
-            return CGEventFlags(rawValue: input.modifierFlags)
+            return CGEventFlags(rawValue: normalizedModifierFlags)
         }
         return ModifierFlagProjection.projectedFlags(
-            reportedFlags: CGEventFlags(rawValue: input.modifierFlags),
+            reportedFlags: CGEventFlags(rawValue: normalizedModifierFlags),
             keyCode: keyCode,
             isPressed: input.isPressed,
             pressedKeyCodes: pressedKeyCodes

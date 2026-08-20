@@ -33,7 +33,7 @@ Release check (from the M5 Pro) is also available:
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist && shasum -a 256 -c MacKVM-0.11.0-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-0.12.2-universal.dmg.sha256)
 ```
 
 Expected: the app reports both `arm64` and `x86_64`, and an ad-hoc signature
@@ -42,17 +42,58 @@ is explicitly labelled as local-testing-only. The checksum command reports
 provide a Developer ID Application identity, pass `--require-developer-id`,
 and report the hardened runtime before notarization is attempted.
 
+### 1.1 Build and exercise the DDC diagnostic tool
+
+Build all supported diagnostic targets from the same checkout:
+
+```sh
+./scripts/build-ddc-diagnostic.sh --arch arm64
+./scripts/build-ddc-diagnostic.sh --arch x86_64
+./scripts/build-ddc-diagnostic.sh --arch universal
+```
+
+On the real machines, save one read-only report from each native binary:
+
+```sh
+./dist/ddc-diagnostic-arm64 > arm64-ddc-report.txt 2>&1
+./dist/ddc-diagnostic-x86_64 > x86_64-ddc-report.txt 2>&1
+```
+
+Verify that each report identifies the running and compiled architecture,
+Mac model, macOS build, display EDID, native transport, and VCP `0x60` state.
+When the monitor mapping is unknown, run the explicit scan and keep the
+result with the acceptance record:
+
+```sh
+./dist/ddc-diagnostic-universal --display 1 --scan-inputs \
+  --values 15,16,17,18,19,27
+```
+
+Only `accepted=yes` readbacks count as mapping evidence. Confirm that the
+original input is restored after the scan and that the tool does not change
+the app source automatically. Ctrl-C/SIGTERM stops the candidate loop and
+still attempts to restore the starting input. For the tested MA270U, expect
+USB-C `19` (`0x13`) and HDMI 1 `17` (`0x11`).
+
 ## 2. Cable and monitor setup
 
 1. Connect the M5 Pro Mac to the MA270U USB-C video/data/90 W port.
 2. Connect the Intel Mac to HDMI 1. If using HDMI 2, use HDMI 2 consistently
    in all later steps.
 3. Make the MA270U the main display in macOS on both Macs.
-4. In the MA270U OSD, enable DDC/CI if that setting is available.
+4. MA270U firmware may not expose a DDC/CI OSD toggle. Do not block this
+   test on finding one; verify the direct cable path and let MacKVM probe its
+   native DDC bridge.
 5. On either Mac, select **Detect DDC-capable displays** and choose the
    intended external display explicitly.
 7. Select **M5 / USB-C preset** on the M5 Pro Mac.
 8. Select **Intel / HDMI preset** on the Intel Mac.
+
+Expected: the MA270U EDID mapping sends the M5 Pro USB-C route as VCP 19
+(`0x13`) and the Intel HDMI 1 route as VCP 17 (`0x11`). Other monitor models
+use their own mapping; the monitor may silently ignore a value it does not
+advertise even when the I2C transaction itself succeeds. Run the diagnostic
+scan before accepting a new model mapping.
 
 Expected:
 
@@ -411,5 +452,7 @@ Record the macOS version and result for each item:
 | Control consent / receiver stop |  |  |  |
 | Emergency return |  |  |  |
 | DDC-capable display detection / stable ID |  |  |  |
+| ARM64/Intel diagnostic report |  |  |  |
+| VCP 0x60 mapping scan / restore |  |  |  |
 | Native DDC/CI switch |  |  |  |
 | Manual OSD fallback |  |  |  |

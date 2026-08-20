@@ -11,7 +11,13 @@ final class PairingCompletionGuardTests: XCTestCase {
             generation: 4
         )
 
-        XCTAssertTrue(guardToken.permits(currentGeneration: 4))
+        XCTAssertTrue(
+            guardToken.permits(
+                currentGeneration: 4,
+                requestID: requestID,
+                peerID: peerID
+            )
+        )
     }
 
     func testForgetGenerationOrIdentityMismatchRejectsCompletion() {
@@ -25,7 +31,23 @@ final class PairingCompletionGuardTests: XCTestCase {
 
         XCTAssertFalse(
             guardToken.permits(
-                currentGeneration: 5
+                currentGeneration: 5,
+                requestID: requestID,
+                peerID: peerID
+            )
+        )
+        XCTAssertFalse(
+            guardToken.permits(
+                currentGeneration: 4,
+                requestID: UUID(),
+                peerID: peerID
+            )
+        )
+        XCTAssertFalse(
+            guardToken.permits(
+                currentGeneration: 4,
+                requestID: requestID,
+                peerID: UUID()
             )
         )
         XCTAssertNotEqual(

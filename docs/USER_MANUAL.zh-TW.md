@@ -23,8 +23,8 @@ MacKVM 是 macOS app，提供選單列入口與一般控制視窗，讓 14 吋 M
 ```
 
 MacKVM 使用原生 IOKit DDC/CI：Apple Silicon 走 `IOAVService`，Intel 走 `IOI2C`，
-不需要安裝螢幕工具或 Homebrew 套件。螢幕與線材需提供 VESA DDC/CI；若 OSD 有此
-選項，請先開啟。
+不需要安裝螢幕工具或 Homebrew 套件。螢幕與線材需提供 VESA DDC/CI；部分 MA270U
+韌體不會在 OSD 顯示 DDC/CI 開關，MacKVM 會在 macOS 暴露顯示器時使用原生 bridge。
 
 建立本機測試 DMG：
 
@@ -58,10 +58,42 @@ notarization。
 2. 在任一台 Mac 按 **Detect DDC-capable displays**，選取要控制的螢幕，再使用相符
    的輸入預設。
 3. M5 Pro 與 Intel Mac 在驗證顯示器後都使用原生 DDC/CI。
-4. 用 **Show this Mac** 與 **Show other Mac** 測試；DDC/CI 失敗時查看診斷並用
-   MA270U OSD 手動切換。
+   MA270U 的 EDID mapping 會把 USB-C 傳成 VCP 19（`0x13`），HDMI 1 傳成 VCP 17（`0x11`）；
+   其他型號使用自己的韌體 mapping。依賴新型號前先執行診斷掃描。
+4. 用 **Show this Mac** 與 **Show other Mac** 測試；若原生探索或切換失敗，查看診斷、
+   確認線材直接連接，再用 MA270U OSD 手動切換。
    在 M5 Pro 可按 **Share keyboard and mouse with [Intel Mac]** 一次完成畫面切換與
    鍵盤滑鼠分享；Intel Mac 只有在未啟用該配對裝置的無縫控制時才需要按 **Allow**。
+
+### 找出不同螢幕的 input mapping
+
+repository 提供 ARM 與 Intel 共用原生 bridge 的診斷工具：
+
+```sh
+./scripts/build-ddc-diagnostic.sh --arch arm64
+./scripts/build-ddc-diagnostic.sh --arch x86_64
+./scripts/build-ddc-diagnostic.sh --arch universal
+```
+
+用相符架構保存系統、EDID、transport 與 VCP `0x60` 資料：
+
+```sh
+./dist/ddc-diagnostic-arm64 > arm64-ddc-report.txt 2>&1
+./dist/ddc-diagnostic-x86_64 > x86_64-ddc-report.txt 2>&1
+```
+
+若螢幕接受 I2C 寫入卻沒有切換，明確啟用 mapping 掃描。它會寫入候選值、讀回驗證，
+將相同讀值標記為 `accepted=yes`，並還原開始前的輸入：
+
+```sh
+./dist/ddc-diagnostic-universal --display 1 --scan-inputs \
+  --values 15,16,17,18,19,27
+```
+
+掃描會暫時切換輸入，只有在可以安全切換與還原時才執行；它不會自動修改 MacKVM 的
+mapping 原始碼。按下 Ctrl-C 或收到 SIGTERM 時會停止候選值迴圈，仍嘗試還原開始前的
+輸入。本專案實測 MA270U 使用 USB-C VCP `19`（`0x13`）與 HDMI 1 VCP `17`（`0x11`）；
+其他型號需要自己的掃描。請參閱[診斷工具說明](../Tools/DDCDiagnostic/README.zh-TW.md)。
 
 ## 配對與控制
 
