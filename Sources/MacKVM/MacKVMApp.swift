@@ -513,6 +513,15 @@ private final class AppBootstrap: ObservableObject {
             control.endReceivingControl(
                 reason: "Returned input to the other Mac"
             )
+        } else if control.state == .controlling || control.state == .suspended {
+            // A second press while already controlling (or while a direct
+            // non-combined request is awaiting the peer's grant) returns both
+            // the display and physical input locally. The pre-routed combined
+            // request case is handled above and intentionally keeps its
+            // existing remote-route behavior.
+            control.stopControl(
+                reason: "Returned display and input to this Mac"
+            )
         } else if hadCombinedRequest {
             // A second press while the display-first request is resolving
             // cancels that request and leaves the display on the explicit
