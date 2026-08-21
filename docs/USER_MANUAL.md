@@ -140,8 +140,9 @@ See the [diagnostic guide](../Tools/DDCDiagnostic/README.md).
    `Control-Option-Command-Escape`. The global
    `Control-Option-Command-K` shortcut toggles sharing without opening the
    menu: it starts a request while idle and returns input while controlling or
-   receiving. `Control-Option-Command-O` switches only the display to the other
-   Mac without changing the keyboard/mouse owner. To switch back from Intel, select
+   receiving. `Control-Option-Command-O` follows the guarded **Show other Mac**
+   route: it switches the display before requesting keyboard/mouse control, or
+   ends receiving and restores the controller's display and input. To switch back from Intel, select
    **Return keyboard and mouse to [M5 Mac]** on the Intel Mac. The controller
    can also select **Return keyboard and mouse to this Mac**.
 

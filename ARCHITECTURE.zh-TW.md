@@ -167,5 +167,5 @@ stateDiagram-v2
 **Return keyboard and mouse to this Mac** 或使用
 `Control-Option-Command-K` 在閒置／控制中切換，或用
 `Control-Option-Command-Escape` 緊急中斷。獨立的
-`Control-Option-Command-O` 只會把螢幕輸入切到另一台 Mac，不會改變目前鍵盤／滑鼠的
-控制權。
+`Control-Option-Command-O` 沿用 **Show other Mac** 的受保護流程，先切換螢幕再請求
+鍵盤／滑鼠控制；如果本機正在接收控制，則結束接收並把螢幕與輸入還給控制端。

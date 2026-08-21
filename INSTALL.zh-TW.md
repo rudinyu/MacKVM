@@ -76,7 +76,7 @@ transport 與 VCP `0x60` 輸入狀態。唯讀報告可保存為：
 ./scripts/verify-release.sh \
   --app dist/universal/MacKVM.app \
   --arch universal
-(cd dist && shasum -a 256 -c MacKVM-0.12.22-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-0.12.30-universal.dmg.sha256)
 ```
 
 ad-hoc 簽章只適合本機測試。要提供給其他 Mac，請使用 Developer ID Application、
@@ -157,8 +157,9 @@ KVM 圖示或 Dock 重新開啟。
    切回 M5 Pro，請在 Intel Mac 按 **Return keyboard and mouse to [M5 Mac]**；
    控制端也可按 **Return keyboard and mouse to this Mac**。全域
    `Control-Option-Command-K` 不必開啟選單即可切換：閒置時開始請求，控制中或接收中
-   會把鍵盤與滑鼠返回本機／控制端。`Control-Option-Command-O` 只切換螢幕輸入到
-   另一台 Mac，不會改變鍵盤／滑鼠控制權。
+   會把鍵盤與滑鼠返回本機／控制端。`Control-Option-Command-O` 沿用受保護的
+   **Show other Mac** 流程：會先切換螢幕，再請求鍵盤／滑鼠控制；如果本機正在接收控制，
+   則結束接收並把螢幕與輸入還給控制端。
 
 連線中斷後 MacKVM 會以有上限的退避時間重連；已啟用無縫控制的配對裝置不需再次按
 Allow，關閉該選項的裝置才需要重新取得控制同意。**Disconnect**、**Forget** 與

@@ -47,9 +47,8 @@ enum KeyboardMouseSwitchHotKey {
     }
 }
 
-/// A separate monitor-only shortcut. `O` means “Other” and deliberately does
-/// not share the `K` shortcut's control state, so users can move the display
-/// route without toggling keyboard/mouse capture.
+/// The dedicated "Other Mac" route shortcut. `O` means “Other” and uses the
+/// same guarded display-plus-control toggle as the Show other Mac action.
 enum OtherMonitorSwitchHotKey {
     static let keyCode: UInt16 = 31 // O
     static let displayName = "Control-Option-Command-O"

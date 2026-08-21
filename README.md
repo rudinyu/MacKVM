@@ -49,8 +49,9 @@ The current MVP provides:
 - local input suppression while controlling and an emergency
   `Control-Option-Command-Escape` return shortcut, plus a
   `Control-Option-Command-K` toggle shortcut for sharing and returning the
-  keyboard and mouse, and a `Control-Option-Command-O` shortcut for switching
-  only the display to the other Mac;
+  keyboard and mouse, and a `Control-Option-Command-O` guarded display-first
+  shortcut that transfers the display and keyboard/mouse together like
+  **Show other Mac**, and ends receiving to return them from the other side;
 - native DDC/CI input switching through IOKit on both Apple Silicon and Intel,
   including display discovery, stable display selection, diagnostics, and a
   manual OSD fallback when the monitor or cable does not expose DDC/CI.
@@ -124,7 +125,7 @@ The package is built from a fresh staging directory and writes a portable
 SHA-256 sidecar next to the DMG. Verify the pair from the `dist` directory:
 
 ```sh
-(cd dist && shasum -a 256 -c MacKVM-0.12.22-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-0.12.30-universal.dmg.sha256)
 ```
 
 For distribution to another Mac, sign with a Developer ID Application
@@ -284,8 +285,12 @@ M5 Pro.
 The global **Control-Option-Command-K** shortcut toggles sharing without
 opening the menu: it starts a request while idle and returns input while
 controlling or receiving.
-The **Control-Option-Command-O** shortcut switches only the monitor input to
-the other Mac; it does not change the current keyboard/mouse owner.
+The **Control-Option-Command-O** shortcut follows the guarded display-first
+**Show other Mac** route: when this Mac owns the local route, it switches the
+display and then requests keyboard/mouse control; when this Mac is receiving
+control, it ends receiving and restores the controller's display and input.
+The **Control-Option-Command-K** shortcut remains the direct sharing toggle
+when you want to change keyboard/mouse ownership without waiting for DDC.
 
 After an authenticated transport loss, MacKVM releases local input immediately
 and retries the last user-selected peer with a bounded 0/1/2/4…30-second

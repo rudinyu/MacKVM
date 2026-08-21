@@ -104,7 +104,15 @@ final class ControlCoordinator: ObservableObject {
     private var activeControlRequestCompletion: ((Bool) -> Void)?
     private var activeControlDisplayAlreadyRemote = false
     private var activeInboundControlRequest: IncomingControlRequest?
-    private var preparingIncomingControlRequest: IncomingControlRequest?
+    /// Published separately from `pendingIncomingControlRequest` because the
+    /// request is cleared before Accessibility setup completes. Views must not
+    /// treat that short preparation window as an idle, display-only state.
+    @Published private(set) var isPreparingIncomingControl = false
+    private var preparingIncomingControlRequest: IncomingControlRequest? {
+        didSet {
+            isPreparingIncomingControl = preparingIncomingControlRequest != nil
+        }
+    }
     private var receiverTeardown: ReceiverTeardown?
     private var transientRemoteInputTeardownCompletions: [() -> Void] = []
     private var isStoppingForQuit = false

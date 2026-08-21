@@ -290,8 +290,9 @@ injected input and return control to the controller.
 The global **Control–Option–Command–K** shortcut toggles the same route: it
 starts a normal control request while idle and returns input when either side
 is actively controlling or receiving. The independent
-**Control–Option–Command–O** shortcut changes only the monitor input to the
-other Mac; it leaves the current keyboard/mouse owner unchanged.
+**Control–Option–Command–O** shortcut shares the guarded **Show other Mac**
+route: it changes the monitor input before requesting keyboard/mouse control,
+and ends receiving to restore the controller's display and input.
 
 `SecureSessionService` remembers only a user-selected paired peer for automatic
 reconnect. `NWPathMonitor` pauses attempts while the network path is unavailable

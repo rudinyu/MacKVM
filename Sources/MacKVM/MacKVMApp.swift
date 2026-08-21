@@ -3,6 +3,12 @@ import Carbon
 import MacKVMCore
 import SwiftUI
 
+private enum MacKVMWindowIdentifiers {
+    static let controlRequestHost = NSUserInterfaceItemIdentifier(
+        "app.mackvm.control-request-host"
+    )
+}
+
 @main
 struct MacKVMApp: App {
     @NSApplicationDelegateAdaptor(MacKVMApplicationDelegate.self)
@@ -106,7 +112,10 @@ private final class MacKVMApplicationDelegate: NSObject, NSApplicationDelegate {
     private func mainWindow() -> NSWindow? {
         NSApplication.shared.windows.first {
             $0.identifier?.rawValue == "main"
-                || ($0.title == "MacKVM" && $0.canBecomeKey)
+                || ($0.title == "MacKVM"
+                    && $0.canBecomeKey
+                    && $0.identifier?.rawValue
+                        != MacKVMWindowIdentifiers.controlRequestHost.rawValue)
         }
     }
 
@@ -246,6 +255,14 @@ private final class AppBootstrap: ObservableObject {
     @Published private(set) var combinedControlRequestInFlight = false
     @Published private(set) var combinedControlStatus: String?
     private var combinedControlRequestGeneration: UInt64 = 0
+    private var activeControlRequestAlert: NSAlert?
+    /// Keep the full request identity and a presentation token. Request IDs
+    /// are untrusted input; an old sheet completion must not clear a
+    /// replacement sheet if an ID is ever reused after a timeout.
+    private var activeControlRequestAlertRequest: IncomingControlRequest?
+    private var activeControlRequestAlertToken: UUID?
+    private var activeControlRequestAlertHostWindow: NSWindow?
+    private var controlRequestAlertTimeout: DispatchWorkItem?
     private var terminationCleanupStarted = false
 
     init() {
@@ -298,12 +315,6 @@ private final class AppBootstrap: ObservableObject {
                     peerName: peerName
                 )
             }
-            control.onIncomingControlRequestResolved = {
-                [weak controlRequestNotifier] request in
-                controlRequestNotifier?.clearActiveRequest(
-                    requestID: request.id
-                )
-            }
             self.discovery = discovery
             self.secureSession = secureSession
             self.inputCapture = inputCapture
@@ -317,6 +328,17 @@ private final class AppBootstrap: ObservableObject {
             // the idle and receiving sides without leaking it to other apps.
             errorMessage = nil
             canResetIdentity = false
+            control.onIncomingControlRequestResolved = {
+                [weak self, weak controlRequestNotifier] request in
+                controlRequestNotifier?.clearActiveRequest(
+                    requestID: request.id
+                )
+                // Resolve callbacks are synchronous with the coordinator's
+                // state transition. Close only the sheet for that request;
+                // a delayed completion from an older sheet must not touch a
+                // replacement request's alert state.
+                self?.dismissControlRequestAlert(for: request)
+            }
             // Escape is also the local-return path after a display-only
             // remote route. Invalidate a display-first request before tearing
             // down control so its asynchronous completion cannot start input
@@ -381,7 +403,7 @@ private final class AppBootstrap: ObservableObject {
                 }
             }
             inputCapture.onSwitchMonitor = { [weak self] in
-                self?.switchToOtherMonitorFromHotKey()
+                self?.switchToOtherMac()
             }
             inputCapture.startHotKeyMonitoring()
             discovery.onPairingCompleted = { [weak secureSession] peerID in
@@ -461,21 +483,58 @@ private final class AppBootstrap: ObservableObject {
         combinedControlRequestInFlight = false
     }
 
-    /// Routes only the physical display to the other Mac. Keyboard/mouse
-    /// sharing remains on the K shortcut, so this emergency-safe monitor
-    /// shortcut can be used without changing the current input owner.
-    func switchToOtherMonitorFromHotKey() {
+    /// Switches monitor input together with keyboard/mouse ownership: routes
+    /// display and input to the other Mac if this Mac currently owns them, or
+    /// ends receiving and restores the controller's display if this Mac is
+    /// currently being controlled. Shared by the Show other Mac action and
+    /// the Control-Option-Command-O global shortcut so their behavior cannot
+    /// diverge.
+    func switchToOtherMac() {
+        guard let control, let monitor else { return }
+        let hadCombinedRequest = combinedControlRequestInFlight
         let shouldCancelWaitingControl =
-            combinedControlRequestInFlight
-                && (control?.state == .suspended
-                    || control?.state == .controlling)
+            hadCombinedRequest && control.state == .suspended
         cancelCombinedControlRequest()
         if shouldCancelWaitingControl {
-            control?.stopControl(
-                reason: "Monitor route changed; input stayed local"
+            control.stopControl(
+                reason: "Display route changed; input stayed local"
             )
         }
-        monitor?.switchToRemote()
+        if control.isPreparingIncomingControl {
+            // Allow clears the visible request before Accessibility setup
+            // finishes. Treat O/Show other Mac as an explicit return during
+            // that window so the pending preparation is rejected before its
+            // asynchronous completion can grant input or restore a route.
+            control.stopControl(
+                reason: "Returned input to the other Mac"
+            )
+            monitor.switchToRemote()
+        } else if control.isReceivingControl {
+            control.endReceivingControl(
+                reason: "Returned input to the other Mac"
+            )
+        } else if control.state == .controlling || control.state == .suspended {
+            // A second press while already controlling (or while a direct
+            // non-combined request is awaiting the peer's grant) returns both
+            // the display and physical input locally. The pre-routed combined
+            // request case is handled above and intentionally keeps its
+            // existing remote-route behavior.
+            control.stopControl(
+                reason: "Returned display and input to this Mac"
+            )
+        } else if hadCombinedRequest {
+            // A second press while the display-first request is resolving
+            // cancels that request and leaves the display on the explicit
+            // remote route, matching the menu action.
+            monitor.switchToRemote()
+        } else if control.state == .connected
+            && inputTopology.allowsLocalControl {
+            if !startCombinedControlRequest() {
+                monitor.switchToRemote()
+            }
+        } else {
+            monitor.switchToRemote()
+        }
     }
 
     /// Starts the display-first share flow used by both the main button and
@@ -625,12 +684,91 @@ private final class AppBootstrap: ObservableObject {
         controlRequestNotifier?.clearAllControlRequestNotifications()
     }
 
+    private func controlRequestAlertWindow() -> NSWindow {
+        if let window = NSApplication.shared.keyWindow
+            ?? NSApplication.shared.mainWindow
+            ?? NSApplication.shared.windows.first(where: {
+                $0.isVisible && $0.canBecomeKey
+            }) {
+            window.makeKeyAndOrderFront(nil)
+            return window
+        }
+
+        // A notification action can arrive while the menu-bar scene has no
+        // visible window. Use a small host panel so the alert can still be
+        // presented asynchronously instead of falling back to runModal().
+        let host = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 180),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        host.title = "MacKVM Control Request"
+        host.identifier = MacKVMWindowIdentifiers.controlRequestHost
+        host.isReleasedWhenClosed = false
+        host.center()
+        host.makeKeyAndOrderFront(nil)
+        activeControlRequestAlertHostWindow = host
+        return host
+    }
+
+    @discardableResult
+    private func clearControlRequestAlertState(
+        for request: IncomingControlRequest,
+        token: UUID? = nil
+    ) -> Bool {
+        guard activeControlRequestAlertRequest == request,
+              token == nil || activeControlRequestAlertToken == token else {
+            return false
+        }
+        controlRequestAlertTimeout?.cancel()
+        controlRequestAlertTimeout = nil
+        activeControlRequestAlert = nil
+        activeControlRequestAlertRequest = nil
+        activeControlRequestAlertToken = nil
+        return true
+    }
+
+    private func closeControlRequestAlertHostWindow() {
+        activeControlRequestAlertHostWindow?.orderOut(nil)
+        activeControlRequestAlertHostWindow?.close()
+        activeControlRequestAlertHostWindow = nil
+    }
+
+    private func dismissControlRequestAlert(
+        for request: IncomingControlRequest,
+        token: UUID? = nil
+    ) {
+        let alert = activeControlRequestAlert
+        guard clearControlRequestAlertState(for: request, token: token) else {
+            return
+        }
+        guard let alertWindow = alert?.window else {
+            return
+        }
+
+        if let parent = alertWindow.sheetParent {
+            parent.endSheet(
+                alertWindow,
+                returnCode: .alertFirstButtonReturn
+            )
+        } else {
+            alertWindow.orderOut(nil)
+        }
+        closeControlRequestAlertHostWindow()
+    }
+
     func reviewIncomingControlRequest(_ requestID: UUID) {
         guard let control,
               let request = control.pendingIncomingControlRequest,
               request.id == requestID else {
             return
         }
+        // Use NSAlert's asynchronous API. `runModal()` blocks this main-actor
+        // workflow while the 15-second request timeout continues to advance,
+        // so a later Allow click could otherwise target an already-expired
+        // request without giving the user any explanation.
+        guard activeControlRequestAlertRequest == nil else { return }
 
         activateMacKVM()
         let peerName = peerDisplayName(
@@ -644,13 +782,51 @@ private final class AppBootstrap: ObservableObject {
         alert.addButton(withTitle: "Allow")
         alert.addButton(withTitle: "Deny")
 
-        switch alert.runModal() {
-        case .alertSecondButtonReturn:
-            control.acceptIncomingControlRequest(request.id)
-        case .alertThirdButtonReturn:
-            control.denyIncomingControlRequest(request.id)
-        default:
-            break
+        let alertToken = UUID()
+        activeControlRequestAlert = alert
+        activeControlRequestAlertRequest = request
+        activeControlRequestAlertToken = alertToken
+        let hostWindow = controlRequestAlertWindow()
+        let timeout = DispatchWorkItem { [weak self, weak control] in
+            guard let self,
+                  self.activeControlRequestAlertRequest == request,
+                  self.activeControlRequestAlertToken == alertToken,
+                  control?.pendingIncomingControlRequest?.id != request.id else {
+                return
+            }
+            self.dismissControlRequestAlert(for: request, token: alertToken)
+        }
+        controlRequestAlertTimeout = timeout
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + 16,
+            execute: timeout
+        )
+        alert.beginSheetModal(for: hostWindow) { [weak self, weak control] response in
+            // AppKit invokes the completion on the main thread, but dispatch
+            // explicitly so the coordinator and alert bookkeeping remain on
+            // AppBootstrap's main actor even if AppKit changes that detail.
+            DispatchQueue.main.async {
+                guard let self else { return }
+                // A timeout or request-resolved callback may have already
+                // ended this sheet. Never let its late completion clear a
+                // newer request's alert state.
+                guard self.clearControlRequestAlertState(
+                    for: request,
+                    token: alertToken
+                ) else {
+                    return
+                }
+                self.closeControlRequestAlertHostWindow()
+                guard let control else { return }
+                switch response {
+                case .alertSecondButtonReturn:
+                    control.acceptIncomingControlRequest(request.id)
+                case .alertThirdButtonReturn:
+                    control.denyIncomingControlRequest(request.id)
+                default:
+                    break
+                }
+            }
         }
     }
 }
@@ -1390,6 +1566,10 @@ private struct MacKVMMenuView: View {
 
             if let request = control.pendingIncomingControlRequest {
                 incomingControlRequestSection(request)
+            } else if control.isPreparingIncomingControl {
+                Text("Preparing to receive remote control…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             } else if control.isReceivingControl {
                 VStack(alignment: .leading, spacing: 5) {
                     Text("This Mac is receiving remote control.")
@@ -1432,7 +1612,7 @@ private struct MacKVMMenuView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Text("Control-Option-Command-O switches the display to the other Mac. Control-Option-Command-K toggles keyboard and mouse sharing. Escape is the emergency local-return shortcut.")
+            Text("Control-Option-Command-O switches the display and keyboard/mouse ownership to the other Mac, and pressing it again returns them. Control-Option-Command-K toggles keyboard and mouse sharing. Escape is the emergency local-return shortcut.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
@@ -1587,45 +1767,7 @@ private struct MacKVMMenuView: View {
             TextField("Native DDC display selector", text: $monitor.displaySelector)
 
             Button("Show other Mac") {
-                let hadCombinedRequest =
-                    bootstrap.combinedControlRequestInFlight
-                let shouldCancelWaitingControl =
-                    hadCombinedRequest
-                        && control.state == .suspended
-                bootstrap.cancelCombinedControlRequest()
-                if shouldCancelWaitingControl {
-                    // Stop the stale request before selecting the remote
-                    // route; its invalidated completion cannot switch the
-                    // display back to this Mac afterward.
-                    control.stopControl(
-                        reason: "Display route changed; input stayed local"
-                    )
-                }
-                if control.isReceivingControl {
-                    // The receiver's normal teardown restores the
-                    // controller's display route and returns the shared
-                    // keyboard/mouse to the controller.
-                    control.endReceivingControl(
-                        reason: "Returned input to the other Mac"
-                    )
-                } else if hadCombinedRequest {
-                    // A second click while the display-first request is
-                    // still resolving cancels that request and leaves the
-                    // display on the explicitly selected remote route.
-                    monitor.switchToRemote()
-                } else if control.state == .connected
-                    && inputTopology.allowsLocalControl {
-                    // On the physical-input Mac (normally the M5 Pro), use
-                    // the guarded display-first request so capture starts
-                    // only after native DDC confirms the remote input. The
-                    // guard is evaluated inside AppBootstrap, which refreshes
-                    // live macOS permissions before it starts capture.
-                    if !bootstrap.startCombinedControlRequest() {
-                        monitor.switchToRemote()
-                    }
-                } else {
-                    monitor.switchToRemote()
-                }
+                bootstrap.switchToOtherMac()
             }
 
             // Keep a local display-only recovery action in the window. The
@@ -1647,6 +1789,11 @@ private struct MacKVMMenuView: View {
 
             if inputTopology.allowsLocalControl {
                 Button(shareKeyboardAndMouseTitle) {
+                    // The share action must be all-or-nothing: if its live
+                    // preflight fails, leave both the display and physical
+                    // input local. The Show other Mac action owns the explicit
+                    // display-only fallback; sharing must never create a
+                    // split route when no control request was sent.
                     _ = bootstrap.startCombinedControlRequest()
                 }
                 .buttonStyle(.borderedProminent)
@@ -1655,7 +1802,7 @@ private struct MacKVMMenuView: View {
                         || bootstrap.combinedControlRequestInFlight
                 )
                 Text(
-                    "This switches the display, then shares the keyboard and mouse. Control-Option-Command-O switches only the display; Control-Option-Command-K toggles sharing; Control-Option-Command-Escape interrupts and returns them to this Mac."
+                    "This switches the display, then shares the keyboard and mouse. Control-Option-Command-O performs the same toggle; press it again from the other Mac to return the display and input. Control-Option-Command-K toggles sharing; Control-Option-Command-Escape interrupts and returns them to this Mac."
                 )
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -1695,6 +1842,7 @@ private struct MacKVMMenuView: View {
             && secureSession.connectedPeerID != nil
             && control.state == .connected
             && control.pendingIncomingControlRequest == nil
+            && !control.isPreparingIncomingControl
             && !control.isReceivingControl
             && !control.isRemoteInputTearingDown
     }
