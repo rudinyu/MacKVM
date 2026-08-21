@@ -85,7 +85,7 @@ Create and verify a universal DMG for local testing:
 ./scripts/verify-release.sh \
   --app dist/universal/MacKVM.app \
   --arch universal
-(cd dist && shasum -a 256 -c MacKVM-0.12.4-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-0.12.22-universal.dmg.sha256)
 ```
 
 Ad-hoc signing is suitable only for local testing. For distribution to
@@ -134,13 +134,17 @@ Dock when needed.
    1 (VCP 17) on the other Mac. The MA270U EDID mapping sends USB-C as VCP 19
    (`0x13`); on other models use the diagnostic scan. On the Intel Mac,
    **Intel / HDMI preset** selects HDMI 1 locally and keeps native DDC enabled.
-   Input values are monitor-firmware specific.
+   A fresh Intel install uses HDMI 1 as its local default; use the preset to
+   migrate an older saved USB-C preference. Input values are monitor-firmware
+   specific.
 6. Select **One keyboard on M5 Pro (USB-C)** when the keyboard and mouse are
    connected to the M5 Pro or the MA270U USB hub. HDMI does not carry USB data.
-7. Use **Show this Mac** and **Show other Mac** to verify switching. Some
-   MA270U firmware has no DDC/CI OSD toggle; if native detection fails, use
-   the diagnostic text, check the direct cable path, and switch inputs through
-   the MA270U OSD.
+7. Use **Show other Mac** to verify switching. Some MA270U firmware has no
+   DDC/CI OSD toggle; if native detection fails, use the diagnostic text,
+   check the direct cable path, and switch inputs through the MA270U OSD.
+   For a display-only route, use **Return display to this Mac**. Returning
+   control with the emergency shortcut or the receiver's
+   **Return keyboard and mouse to [M5 Mac]** action restores the local route.
    On the M5 Pro, **Show other Mac** also starts the guarded keyboard/mouse
    hand-off when the control prerequisites are ready. **Share keyboard and
    mouse with [Intel Mac]** remains the explicit equivalent; the Intel Mac
@@ -156,6 +160,11 @@ the keyboard and mouse through a real physical USB switch.
 3. Compare the six-digit security code and peer name on both Macs.
 4. On the receiving Mac, select **Accept** only when the code matches. On the
    initiating Mac, select **Confirm code** after comparing the same code.
+   Either Mac may be the initiator. If the receiving Mac shows a macOS
+   Firewall prompt, allow incoming connections there. If the initiator remains
+   waiting, select **Cancel pairing** or **Retry pairing** after the rule is
+   allowed. For the M5／Intel setup, starting from Intel is a valid workaround
+   when Intel's inbound rule has not yet been approved.
 5. After both signed decisions complete, MacKVM automatically attempts to
    connect the encrypted session. If it remains idle, select **Connect** on
    either paired row.
@@ -173,7 +182,8 @@ the keyboard and mouse through a real physical USB switch.
    can also select **Return keyboard and mouse to this Mac**. The global
    `Control-Option-Command-K` shortcut toggles the same route without opening
    the menu: it starts a request when idle and returns input when controlling
-   or receiving.
+   or receiving. `Control-Option-Command-O` switches only the monitor input to
+   the other Mac without changing keyboard/mouse ownership.
 
 After a transport loss, MacKVM reconnects with bounded backoff. A peer with
 seamless control authorization can resume control without another prompt;

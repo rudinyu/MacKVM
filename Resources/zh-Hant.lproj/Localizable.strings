@@ -31,6 +31,10 @@
 "Optional but recommended: enable this before the first request so Allow/Deny alerts are ready while the menu is closed." = "選用但建議啟用：在第一次請求前完成，讓選單關閉時也能使用允許／拒絕通知。";
 "Respond to the macOS Local Network prompt before continuing." = "請先回應 macOS 的本機網路提示，再繼續。";
 "Pairing requests" = "配對請求";
+"Pairing with %@…" = "正在與 %@ 配對…";
+"If macOS asks about the firewall, allow incoming connections on the receiving Mac, then retry pairing." = "如果 macOS 顯示防火牆提示，請在接收端允許傳入連線，然後重試配對。";
+"Cancel pairing" = "取消配對";
+"Retry pairing" = "重試配對";
 "Accept" = "接受";
 "Decline" = "拒絕";
 "Confirm pairing" = "確認配對";
@@ -66,8 +70,8 @@
 "Other Mac" = "另一台 Mac";
 "Detect DDC-capable displays" = "偵測支援 DDC 的螢幕";
 "Selected DDC display verified" = "已驗證選取的 DDC 螢幕";
-"Show this Mac" = "顯示這台 Mac";
 "Show other Mac" = "顯示另一台 Mac";
+"Return display to this Mac" = "將螢幕切回這台 Mac";
 "No DDC-capable display detected yet. Connect an external display, then detect it." = "尚未偵測到支援 DDC 的螢幕。請連接外接螢幕後再執行偵測。";
 "Only a detected DDC-capable display can enable automatic switching." = "只有偵測到支援 DDC 的螢幕才能啟用自動切換。";
 "Native DDC display selector" = "原生 DDC 螢幕識別碼";

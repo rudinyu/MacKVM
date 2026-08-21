@@ -76,7 +76,7 @@ transport 與 VCP `0x60` 輸入狀態。唯讀報告可保存為：
 ./scripts/verify-release.sh \
   --app dist/universal/MacKVM.app \
   --arch universal
-(cd dist && shasum -a 256 -c MacKVM-0.12.4-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-0.12.22-universal.dmg.sha256)
 ```
 
 ad-hoc 簽章只適合本機測試。要提供給其他 Mac，請使用 Developer ID Application、
@@ -118,12 +118,14 @@ KVM 圖示或 Dock 重新開啟。
 5. M5 Pro 的 **M5 / USB-C preset** 會選取邏輯上的 USB-C 與另一台 HDMI 1（VCP 17）。
    MA270U 的 EDID mapping 會把 USB-C 傳成 VCP 19／`0x13`；其他型號請先用診斷掃描。
    Intel Mac 的 **Intel / HDMI preset** 會選取本機 HDMI 1，且同樣啟用原生 DDC/CI。
-   輸入值會依螢幕型號與韌體而不同。
+   Intel 新安裝會以 HDMI 1 作為本機預設；從舊版升級且曾保存 USB-C 設定時，請再次套用
+   Intel 預設。輸入值會依螢幕型號與韌體而不同。
 6. 鍵盤與滑鼠接在 M5 Pro 或 MA270U USB hub 時，選 **One keyboard on M5 Pro
    (USB-C)**；HDMI 不會傳送 USB 資料。
-7. 用 **Show this Mac** 與 **Show other Mac** 測試切換。部分 MA270U 韌體沒有
-   DDC/CI OSD 開關；若原生探索失敗，查看診斷文字、確認線材直接連接，再使用
-   MA270U OSD 手動選擇輸入。
+7. 用 **Show other Mac** 測試切換。部分 MA270U 韌體沒有 DDC/CI OSD 開關；若原生
+   探索失敗，查看診斷文字、確認線材直接連接，再使用 MA270U OSD 手動選擇輸入。
+   若只是切換了螢幕，可按 **Return display to this Mac**；控制中的緊急快速鍵或接收端的
+   **Return keyboard and mouse to [M5 Mac]** 操作可恢復本機路由。
    在 M5 Pro 按 **Show other Mac** 時，若控制前置條件已完成，也會開始受保護的鍵盤／滑鼠
    分享；**Share keyboard and mouse with [Intel Mac]** 仍可作為明確的等效操作。Intel Mac
    只有在未啟用該配對裝置的無縫控制時才需按 **Allow**。
@@ -138,6 +140,10 @@ KVM 圖示或 Dock 重新開啟。
 3. 比對兩邊的六位數驗證碼與對方裝置名稱。
 4. 接收端確認驗證碼相同後按 **Accept**；發起端比對相同驗證碼後按
    **Confirm code**。
+   任一台 Mac 都可以發起。若接收端出現 macOS Firewall 提示，先允許 incoming
+   connections；發起端若停在等待狀態，完成規則後按 **Cancel pairing** 再按
+   **Retry pairing**。在 M5／Intel 配置中，也可以由 Intel Mac 發起，作為 Intel 尚未允許
+   外部連入時的 workaround。
 5. 兩邊的簽署決定都完成後，MacKVM 會自動嘗試建立加密連線；若狀態仍是 idle，
    可在已配對裝置列按 **Connect**。
 6. 新配對的接收端會自動啟用該已釘選 Mac 的無縫控制。若要每次控制都重新按
@@ -151,7 +157,8 @@ KVM 圖示或 Dock 重新開啟。
    切回 M5 Pro，請在 Intel Mac 按 **Return keyboard and mouse to [M5 Mac]**；
    控制端也可按 **Return keyboard and mouse to this Mac**。全域
    `Control-Option-Command-K` 不必開啟選單即可切換：閒置時開始請求，控制中或接收中
-   會把鍵盤與滑鼠返回本機／控制端。
+   會把鍵盤與滑鼠返回本機／控制端。`Control-Option-Command-O` 只切換螢幕輸入到
+   另一台 Mac，不會改變鍵盤／滑鼠控制權。
 
 連線中斷後 MacKVM 會以有上限的退避時間重連；已啟用無縫控制的配對裝置不需再次按
 Allow，關閉該選項的裝置才需要重新取得控制同意。**Disconnect**、**Forget** 與

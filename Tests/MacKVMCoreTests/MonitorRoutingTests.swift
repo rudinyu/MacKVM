@@ -43,6 +43,41 @@ final class MonitorRoutingTests: XCTestCase {
         )
     }
 
+    func testReadBackUsesTheMonitorSpecificInputMapping() {
+        XCTAssertTrue(
+            MonitorInputMapping.isInputSelected(
+                currentValue: 19,
+                input: .usbC,
+                vendorID: 2513,
+                productID: 32884
+            )
+        )
+        XCTAssertFalse(
+            MonitorInputMapping.isInputSelected(
+                currentValue: 27,
+                input: .usbC,
+                vendorID: 2513,
+                productID: 32884
+            )
+        )
+        XCTAssertTrue(
+            MonitorInputMapping.isInputSelected(
+                currentValue: 17,
+                input: .hdmi1,
+                vendorID: 2513,
+                productID: 32884
+            )
+        )
+        XCTAssertTrue(
+            MonitorInputMapping.isInputSelected(
+                currentValue: 27,
+                input: .usbC,
+                vendorID: nil,
+                productID: nil
+            )
+        )
+    }
+
     func testNativeDDCCommandChecksumChangesWithInput() {
         let hdmi = NativeDDCCommand.setInputPacket(for: .hdmi1)
         let displayPort = NativeDDCCommand.setInputPacket(for: .displayPort1)

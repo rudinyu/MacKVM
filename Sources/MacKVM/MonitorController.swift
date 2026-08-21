@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import Darwin
 import Foundation
 import MacKVMCore
 
@@ -126,13 +127,16 @@ final class MonitorController: ObservableObject {
         automationEnabled = defaults.object(
             forKey: Keys.automationEnabled
         ) as? Bool ?? false
+        let defaultsForArchitecture = Self.defaultInputPreferences(
+            isAppleSilicon: Self.isAppleSilicon
+        )
         localInput = Self.inputPreference(
             rawValue: defaults.integer(forKey: Keys.localInput),
-            fallback: .usbC
+            fallback: defaultsForArchitecture.local
         )
         remoteInput = Self.inputPreference(
             rawValue: defaults.integer(forKey: Keys.remoteInput),
-            fallback: .hdmi1
+            fallback: defaultsForArchitecture.remote
         )
         displaySelector = defaults.string(
             forKey: Keys.displaySelector
@@ -234,6 +238,22 @@ final class MonitorController: ObservableObject {
 
     private func handleDisplayConfigurationChange() {
         let now = Date()
+        if isDiscoveringDisplays,
+           Self.shouldDeferRoutePreservationRefresh(
+               isDiscoveringDisplays: true,
+               attemptDeadline: routePreservationAttempt?.deadline,
+               now: now
+           ),
+           var attempt = routePreservationAttempt {
+            // The regular refresh is already in flight. Preserve the
+            // topology notification on the active route attempt so the
+            // current discovery publication can immediately start the
+            // selector-preserving pass instead of dropping this event.
+            attempt.topologyRefreshStarted = true
+            attempt.refreshAfterCurrentDiscovery = true
+            routePreservationAttempt = attempt
+            return
+        }
         let preservationAttemptID: UUID?
         if var attempt = routePreservationAttempt,
            attempt.deadline > now {
@@ -467,18 +487,62 @@ final class MonitorController: ObservableObject {
         status = "Switching \(displayName) to \(input.name)…"
         queue.async { [weak self] in
             do {
-                try NativeDDCService.switchInput(
-                    displaySelector: nativeSelector,
-                    input: input,
-                    vendorID: routeDisplay?.vendorID,
-                    productID: routeDisplay?.productID
-                )
+                // Read VCP 0x60 first so a route restore does not write the
+                // same value again and make the MA270U visibly re-negotiate
+                // its input. A monitor that does not implement Get-VCP still
+                // takes the normal write path.
+                let readValue: UInt32?
+                do {
+                    readValue = try NativeDDCService.currentInputValue(
+                        displaySelector: nativeSelector
+                    )
+                } catch {
+                    readValue = nil
+                    MacKVMLogger.monitor.debug(
+                        "phase=input.read.failed selector=\(nativeSelector, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+                    )
+                }
+                let alreadySelected: Bool
+                let decisionSource: String
+                if let readValue {
+                    alreadySelected = MonitorInputMapping.isInputSelected(
+                        currentValue: UInt16(truncatingIfNeeded: readValue),
+                        input: input,
+                        vendorID: routeDisplay?.vendorID,
+                        productID: routeDisplay?.productID
+                    )
+                    decisionSource = "readback"
+                } else {
+                    // A failed read is not evidence that the requested input
+                    // is still active. The other Mac (or the monitor OSD) may
+                    // have changed the route since this process last wrote it,
+                    // so preserve the safe write fallback instead of trusting
+                    // a stale process-local cache.
+                    alreadySelected = false
+                    decisionSource = "write-fallback"
+                }
+                if !alreadySelected {
+                    MacKVMLogger.monitor.info(
+                        "phase=input.write selector=\(nativeSelector, privacy: .public) input=\(input.rawValue, privacy: .public) source=\(decisionSource, privacy: .public)"
+                    )
+                    try NativeDDCService.switchInput(
+                        displaySelector: nativeSelector,
+                        input: input,
+                        vendorID: routeDisplay?.vendorID,
+                        productID: routeDisplay?.productID
+                    )
+                } else {
+                    MacKVMLogger.monitor.info(
+                        "phase=input.noop selector=\(nativeSelector, privacy: .public) input=\(input.rawValue, privacy: .public) source=\(decisionSource, privacy: .public)"
+                    )
+                }
                 self?.completeDisplayRouteSwitch(
                     success: true,
                     attemptID: routePreservationAttemptID
                 )
+                let action = alreadySelected ? "is already showing" : "switched to"
                 self?.publish(
-                    "\(displayName) switched to \(input.name) for \(description)",
+                    "\(displayName) \(action) \(input.name) for \(description)",
                     completion: completion
                 )
                 reportResult(true)
@@ -636,6 +700,15 @@ final class MonitorController: ObservableObject {
         hasStableDisplaySelector(displaySelector) && isDisplaySelectorVerified
     }
 
+    static func shouldDeferRoutePreservationRefresh(
+        isDiscoveringDisplays: Bool,
+        attemptDeadline: Date?,
+        now: Date
+    ) -> Bool {
+        guard isDiscoveringDisplays, let attemptDeadline else { return false }
+        return attemptDeadline > now
+    }
+
     static func automaticSwitchDecision(
         displaySelector: String,
         isDisplaySelectorVerified: Bool,
@@ -703,6 +776,40 @@ final class MonitorController: ObservableObject {
             return .usbC
         }
         return MonitorInputSource(rawValue: rawValue) ?? fallback
+    }
+
+    /// The first-run route must match the physical port used by the build's
+    /// host. Previously both architectures defaulted to USB-C, so an Intel
+    /// installation could route the local action to the M5 Pro input until
+    /// the user manually selected the Intel preset.
+    static func defaultInputPreferences(
+        isAppleSilicon: Bool
+    ) -> (local: MonitorInputSource, remote: MonitorInputSource) {
+        isAppleSilicon
+            ? (local: .usbC, remote: .hdmi1)
+            : (local: .hdmi1, remote: .usbC)
+    }
+
+    private static var isAppleSilicon: Bool {
+        #if arch(arm64)
+        true
+        #else
+        // A universal bundle can be launched through Rosetta on Apple
+        // Silicon. In that case the process architecture is x86_64 even
+        // though the physical Mac still uses the USB-C local route. Query
+        // the hardware capability rather than relying on the compile-time
+        // process architecture.
+        var arm64Capability: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        let result = sysctlbyname(
+            "hw.optional.arm64",
+            &arm64Capability,
+            &size,
+            nil,
+            0
+        )
+        return result == 0 && arm64Capability == 1
+        #endif
     }
 
     private enum Keys {

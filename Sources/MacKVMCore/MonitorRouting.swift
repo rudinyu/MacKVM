@@ -46,6 +46,23 @@ public enum MonitorInputMapping {
         }
         return UInt32(input.rawValue)
     }
+
+    /// Compares a read-back VCP 0x60 value with the monitor-specific value
+    /// that a logical input represents. Keeping this decision beside the
+    /// mapping prevents a MA270U USB-C value (19) from being compared with
+    /// the generic MCCS value (27).
+    public static func isInputSelected(
+        currentValue: UInt16,
+        input: MonitorInputSource,
+        vendorID: UInt32?,
+        productID: UInt32?
+    ) -> Bool {
+        UInt32(currentValue) == rawValue(
+            for: input,
+            vendorID: vendorID,
+            productID: productID
+        )
+    }
 }
 
 /// The native bridge sends a VESA DDC/CI Set VCP packet for input source

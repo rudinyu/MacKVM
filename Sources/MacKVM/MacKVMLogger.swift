@@ -18,6 +18,10 @@ enum MacKVMLogger {
         subsystem: subsystem,
         category: "secure-session"
     )
+    static let monitor = Logger(
+        subsystem: subsystem,
+        category: "monitor"
+    )
 
     static func short(_ id: UUID?) -> String {
         guard let id else { return "none" }

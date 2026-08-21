@@ -93,18 +93,26 @@ repository，正常 CI 也會建置三種診斷目標。按下 Ctrl-C 或收到 
    Monitoring 與 Accessibility，再選擇 **Request keyboard and mouse control**；接收端也
    需要 Accessibility；新配對的接收端會自動允許該已釘選 Mac，未啟用無縫控制時才需
    按 **Allow** 才會開始遠端輸入。
+   任一台 Mac 都可以發起配對。若接收端出現 macOS Firewall 提示，先在接收端允許
+   incoming connections；若發起端停在等待狀態，請按 **Cancel pairing**，完成防火牆規則後
+   再按 **Retry pairing**。常見的 M5／Intel 配置可改由 Intel Mac 發起，讓 M5 Pro 作為接收端；
+   這是防火牆環境的操作 workaround，不是架構上的固定限制。
 5. 在 **Paired device information** 查看或修改友善名稱；型號、最後成功連線時間
    與金鑰指紋會保存到本機。新配對的 Mac 會自動啟用無縫控制；若要每次都按 Allow，
    可在這裡關閉 **Automatically allow control from this Mac**。需要回報問題時按
    **Copy support information**。
 6. 在任一台 Mac 選取 **Detect DDC-capable displays**，明確選取要控制的外接螢幕；
    M5 Pro 套用 **M5 / USB-C preset**，Intel Mac 套用 **Intel / HDMI preset**。
+   Intel 新安裝會以 HDMI 1 作為本機預設；若從舊版升級並保存了 USB-C 設定，請再次套用
+   Intel 預設修正本機路由。
    在 M5 Pro 按 **Show other Mac** 時，若控制前置條件已完成，也會開始受保護的鍵盤／滑鼠
    分享；**Share keyboard and mouse with [Intel Mac]** 仍可作為明確的等效操作。Intel Mac
-   只有在未啟用該配對裝置的無縫控制時才需要按 **Allow**。
+   只有在未啟用該配對裝置的無縫控制時才需要按 **Allow**。若只是切換了螢幕而尚未共享輸入，
+   可按 **Return display to this Mac** 恢復本機畫面。
    控制中可隨時按 `Control-Option-Command-Escape` 中斷並把鍵盤與滑鼠還給 M5 Pro。
    `Control-Option-Command-K` 可在分享與本機控制之間切換；閒置時會開始請求，
    控制中或接收中會返回本機／控制端。
+   `Control-Option-Command-O` 只會把螢幕輸入切到另一台 Mac，不會改變目前鍵盤／滑鼠的控制權。
    若要從 Intel Mac 切回 M5 Pro，請在 Intel Mac 按 **Return keyboard and mouse to
    [M5 Mac]**；接收端會釋放輸入，螢幕路由也會返回 M5 Pro。
 7. 若通知被停用，仍可從選單列 KVM 圖示或 Dock／一般視窗開啟並處理控制請求。

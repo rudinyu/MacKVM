@@ -236,11 +236,15 @@ private final class AppBootstrap: ObservableObject {
     let errorMessage: String?
     let canResetIdentity: Bool
     @Published private(set) var networkServicesStarted = false
+    /// Shared by the menu-bar scene and the normal window so the Local
+    /// Network acknowledgement step cannot diverge between two surfaces.
+    @Published private(set) var awaitingLocalNetworkResponse = false
     @Published private(set) var recoveryMessage: String?
     /// Shared by the menu-bar scene and the normal window. Both surfaces can
     /// invoke the combined DDC-and-control action, so a view-local `@State`
     /// would not prevent cross-scene double activation.
     @Published private(set) var combinedControlRequestInFlight = false
+    @Published private(set) var combinedControlStatus: String?
     private var combinedControlRequestGeneration: UInt64 = 0
     private var terminationCleanupStarted = false
 
@@ -313,6 +317,33 @@ private final class AppBootstrap: ObservableObject {
             // the idle and receiving sides without leaking it to other apps.
             errorMessage = nil
             canResetIdentity = false
+            // Escape is also the local-return path after a display-only
+            // remote route. Invalidate a display-first request before tearing
+            // down control so its asynchronous completion cannot start input
+            // capture after the user has already asked to return locally.
+            inputCapture.onEmergencyStop = { [weak self, weak control, weak monitor] in
+                guard let control else { return }
+                let hadCombinedRequest = self?.combinedControlRequestInFlight ?? false
+                let wasReceivingControl = control.isReceivingControl
+                let wasRemoteInputTearingDown = control.isRemoteInputTearingDown
+                let shouldRestoreIdleRoute =
+                    !wasReceivingControl
+                        && !wasRemoteInputTearingDown
+                        && (control.state == .idle
+                            || control.state == .connected
+                            || control.state == .disconnected)
+                self?.cancelCombinedControlRequest()
+                control.stopControl(
+                    reason: "Emergency shortcut returned input locally"
+                )
+                if wasReceivingControl || wasRemoteInputTearingDown {
+                    control.requestLocalMonitorReturn {
+                        monitor?.switchToLocal()
+                    }
+                } else if hadCombinedRequest || shouldRestoreIdleRoute {
+                    monitor?.switchToLocal()
+                }
+            }
             inputCapture.onSwitchControl = { [weak self] in
                 guard let self else { return }
                 if self.combinedControlRequestInFlight {
@@ -348,6 +379,9 @@ private final class AppBootstrap: ObservableObject {
                 } else {
                     control.toggleControlFromHotKey()
                 }
+            }
+            inputCapture.onSwitchMonitor = { [weak self] in
+                self?.switchToOtherMonitorFromHotKey()
             }
             inputCapture.startHotKeyMonitoring()
             discovery.onPairingCompleted = { [weak secureSession] peerID in
@@ -427,17 +461,49 @@ private final class AppBootstrap: ObservableObject {
         combinedControlRequestInFlight = false
     }
 
+    /// Routes only the physical display to the other Mac. Keyboard/mouse
+    /// sharing remains on the K shortcut, so this emergency-safe monitor
+    /// shortcut can be used without changing the current input owner.
+    func switchToOtherMonitorFromHotKey() {
+        let shouldCancelWaitingControl =
+            combinedControlRequestInFlight
+                && (control?.state == .suspended
+                    || control?.state == .controlling)
+        cancelCombinedControlRequest()
+        if shouldCancelWaitingControl {
+            control?.stopControl(
+                reason: "Monitor route changed; input stayed local"
+            )
+        }
+        monitor?.switchToRemote()
+    }
+
     /// Starts the display-first share flow used by both the main button and
     /// the global shortcut. Input capture is not allowed to begin until native
     /// DDC reports that the remote input has been selected.
     @discardableResult
     func startCombinedControlRequest() -> Bool {
-        guard let monitor, let control,
-              control.canRequestControl(),
-              monitor.canStartAutomaticRemoteSwitching(),
-              let requestGeneration = beginCombinedControlRequest() else {
+        guard let monitor, let control else {
+            combinedControlStatus =
+                "Keyboard and mouse sharing is unavailable while MacKVM is starting."
             return false
         }
+        guard control.canRequestControl() else {
+            combinedControlStatus =
+                "Connect to the other Mac and complete the control setup before sharing keyboard and mouse."
+            return false
+        }
+        guard monitor.canStartAutomaticRemoteSwitching() else {
+            combinedControlStatus =
+                "Detect and select a DDC-capable display before sharing keyboard and mouse."
+            return false
+        }
+        guard let requestGeneration = beginCombinedControlRequest() else {
+            combinedControlStatus =
+                "Keyboard and mouse sharing is already in progress."
+            return false
+        }
+        combinedControlStatus = nil
         monitor.switchToRemoteAndReportSuccess { [weak self] switched in
             guard let self else { return }
             guard self.isCurrentCombinedControlRequest(requestGeneration) else {
@@ -445,6 +511,8 @@ private final class AppBootstrap: ObservableObject {
             }
             guard switched else {
                 self.endCombinedControlRequest(requestGeneration)
+                self.combinedControlStatus =
+                    "The display could not be switched; keyboard and mouse remain local."
                 return
             }
 
@@ -459,6 +527,8 @@ private final class AppBootstrap: ObservableObject {
                 )
                 self.endCombinedControlRequest(requestGeneration)
                 if !granted && ownsRoute {
+                    self.combinedControlStatus =
+                        "The other Mac did not accept keyboard and mouse control."
                     monitor?.switchToLocal()
                 }
             }
@@ -466,6 +536,8 @@ private final class AppBootstrap: ObservableObject {
                 // Keep a safe fallback if a future guard returns false without
                 // invoking the request completion.
                 self.endCombinedControlRequest(requestGeneration)
+                self.combinedControlStatus =
+                    "The control request could not be started; keyboard and mouse remain local."
                 monitor.switchToLocal()
             }
         }
@@ -526,6 +598,15 @@ private final class AppBootstrap: ObservableObject {
         discovery.start()
         secureSession.start()
         networkServicesStarted = true
+    }
+
+    func beginLocalNetworkPermissionRequest() {
+        awaitingLocalNetworkResponse = true
+        startNetworkServices()
+    }
+
+    func completeLocalNetworkPermissionRequest() {
+        awaitingLocalNetworkResponse = false
     }
 
     func forget(peerID: UUID) {
@@ -633,7 +714,6 @@ private struct MacKVMMenuView: View {
     @Environment(\.openWindow) private var openWindow
     @AppStorage(OnboardingDefaults.localNetworkAccessReviewedKey)
     private var localNetworkAccessReviewed = false
-    @State private var awaitingLocalNetworkResponse = false
     @State private var supportCopyStatus: String?
     @State private var editingFriendlyNames: [UUID: String] = [:]
 
@@ -646,6 +726,11 @@ private struct MacKVMMenuView: View {
 
                     setupSection
                     Divider()
+
+                    if discovery.pairingActivity.isActive {
+                        pairingProgressSection
+                        Divider()
+                    }
 
                     topologySection
                     Divider()
@@ -780,7 +865,7 @@ private struct MacKVMMenuView: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
-            } else if awaitingLocalNetworkResponse {
+            } else if bootstrap.awaitingLocalNetworkResponse {
                 Text("Respond to the macOS Local Network prompt before continuing.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -824,9 +909,9 @@ private struct MacKVMMenuView: View {
         switch permission {
         case .localNetwork:
             HStack {
-                if awaitingLocalNetworkResponse {
+                if bootstrap.awaitingLocalNetworkResponse {
                     Button("I handled the macOS prompt") {
-                        awaitingLocalNetworkResponse = false
+                        bootstrap.completeLocalNetworkPermissionRequest()
                         localNetworkAccessReviewed = true
                         bootstrap.startNetworkServices()
                         refreshSetupState()
@@ -834,11 +919,10 @@ private struct MacKVMMenuView: View {
                     .buttonStyle(.borderedProminent)
                 } else {
                     Button("Enable Local Network") {
-                        awaitingLocalNetworkResponse = true
                         // Bonjour traffic triggers the macOS Local Network
                         // prompt, so start it before recording the user's
                         // acknowledgement in the next step.
-                        bootstrap.startNetworkServices()
+                        bootstrap.beginLocalNetworkPermissionRequest()
                     }
                     .buttonStyle(.borderedProminent)
                 }
@@ -882,6 +966,66 @@ private struct MacKVMMenuView: View {
         )
         if localNetworkAccessReviewed {
             bootstrap.startNetworkServices()
+        }
+    }
+
+    @ViewBuilder
+    private var pairingProgressSection: some View {
+        switch discovery.pairingActivity {
+        case .idle:
+            EmptyView()
+        case let .connecting(peerID, peerName):
+            pairingProgressSectionView(
+                peerID: peerID,
+                peerName: peerName,
+                canCancel: true
+            )
+        case let .awaitingConfirmation(peerID, peerName):
+            pairingProgressSectionView(
+                peerID: peerID,
+                peerName: peerName,
+                canCancel: true
+            )
+        case let .retryAvailable(peerID, peerName):
+            pairingProgressSectionView(
+                peerID: peerID,
+                peerName: peerName,
+                canCancel: false
+            )
+        }
+    }
+
+    private func pairingProgressSectionView(
+        peerID: UUID,
+        peerName: String,
+        canCancel: Bool
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Pairing with \(peerName)…")
+                .font(.subheadline.weight(.semibold))
+            Text(
+                "If macOS asks about the firewall, allow incoming connections "
+                    + "on the receiving Mac, then retry pairing."
+            )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack {
+                if canCancel {
+                    Button("Cancel pairing") {
+                        discovery.cancelPairing()
+                    }
+                }
+                let retryPeer = discovery.pairingRetryPeer
+                    ?? discovery.peers.first(where: {
+                        $0.identity.id == peerID
+                    })
+                if let peer = retryPeer {
+                    Button("Retry pairing") {
+                        discovery.retryPairing(with: peer)
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
         }
     }
 
@@ -1288,7 +1432,7 @@ private struct MacKVMMenuView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Text("Control-Option-Command-K toggles keyboard and mouse sharing. Escape is the emergency local-return shortcut.")
+            Text("Control-Option-Command-O switches the display to the other Mac. Control-Option-Command-K toggles keyboard and mouse sharing. Escape is the emergency local-return shortcut.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
@@ -1442,90 +1586,68 @@ private struct MacKVMMenuView: View {
 
             TextField("Native DDC display selector", text: $monitor.displaySelector)
 
-            HStack {
-                Button("Show this Mac") {
-                    let hadCombinedRequest =
-                        bootstrap.combinedControlRequestInFlight
-                    bootstrap.cancelCombinedControlRequest()
-                    // Selecting the local display is also an explicit request
-                    // to return the shared keyboard and mouse. Otherwise the
-                    // monitor could show M5 while its input tap kept sending
-                    // events to the other Mac.
-                    if control.isReceivingControl {
-                        control.endReceivingControl(
-                            reason: "Returned input to this Mac",
-                            restoreMonitor: false
-                        ) {
-                            monitor.switchToLocal()
-                        }
-                    } else if control.state == .controlling
-                        || control.state == .suspended {
-                        let wasWaitingForGrant = control.state == .suspended
-                        control.stopControl(
-                            reason: "Returned input to this Mac"
-                        )
-                        if hadCombinedRequest && wasWaitingForGrant {
-                            // The cancelled pre-routed request no longer owns
-                            // its completion, so this manual action owns the
-                            // single local DDC restoration.
-                            monitor.switchToLocal()
-                        }
-                    } else {
-                        monitor.switchToLocal()
-                    }
+            Button("Show other Mac") {
+                let hadCombinedRequest =
+                    bootstrap.combinedControlRequestInFlight
+                let shouldCancelWaitingControl =
+                    hadCombinedRequest
+                        && control.state == .suspended
+                bootstrap.cancelCombinedControlRequest()
+                if shouldCancelWaitingControl {
+                    // Stop the stale request before selecting the remote
+                    // route; its invalidated completion cannot switch the
+                    // display back to this Mac afterward.
+                    control.stopControl(
+                        reason: "Display route changed; input stayed local"
+                    )
                 }
-                Button("Show other Mac") {
-                    let hadCombinedRequest =
-                        bootstrap.combinedControlRequestInFlight
-                    let shouldCancelWaitingControl =
-                        hadCombinedRequest
-                            && control.state == .suspended
-                    bootstrap.cancelCombinedControlRequest()
-                    if shouldCancelWaitingControl {
-                        // Stop the stale request before selecting the remote
-                        // route; its invalidated completion cannot switch the
-                        // display back to this Mac afterward.
-                        control.stopControl(
-                            reason: "Display route changed; input stayed local"
-                        )
+                if control.isReceivingControl {
+                    // The receiver's normal teardown restores the
+                    // controller's display route and returns the shared
+                    // keyboard/mouse to the controller.
+                    control.endReceivingControl(
+                        reason: "Returned input to the other Mac"
+                    )
+                } else if hadCombinedRequest {
+                    // A second click while the display-first request is
+                    // still resolving cancels that request and leaves the
+                    // display on the explicitly selected remote route.
+                    monitor.switchToRemote()
+                } else if control.state == .connected
+                    && inputTopology.allowsLocalControl {
+                    // On the physical-input Mac (normally the M5 Pro), use
+                    // the guarded display-first request so capture starts
+                    // only after native DDC confirms the remote input. The
+                    // guard is evaluated inside AppBootstrap, which refreshes
+                    // live macOS permissions before it starts capture.
+                    if !bootstrap.startCombinedControlRequest() {
+                        monitor.switchToRemote()
                     }
-                    if control.isReceivingControl {
-                        // The receiver's normal teardown restores the
-                        // controller's display route and returns the shared
-                        // keyboard/mouse to the controller.
-                        control.endReceivingControl(
-                            reason: "Returned input to the other Mac"
-                        )
-                    } else if hadCombinedRequest {
-                        // A second click while the display-first request is
-                        // still resolving cancels that request and leaves the
-                        // display on the explicitly selected remote route.
-                        monitor.switchToRemote()
-                    } else if control.state == .connected
-                        && inputTopology.allowsLocalControl {
-                        // On the physical-input Mac (normally the M5 Pro),
-                        // Show other Mac is the direct hand-off action. The
-                        // old path changed only the display and left the
-                        // keyboard/mouse local, unlike the receiver-side
-                        // endReceivingControl path above. Reuse the guarded
-                        // display-first request so capture starts only after
-                        // native DDC confirms the remote input. The guard is
-                        // evaluated inside AppBootstrap, which refreshes the
-                        // live macOS permissions; using the view's cached
-                        // permission flags here could incorrectly fall back to
-                        // display-only on Apple Silicon after Settings grants.
-                        if !bootstrap.startCombinedControlRequest() {
-                            monitor.switchToRemote()
-                        }
-                    } else {
-                        monitor.switchToRemote()
+                } else {
+                    monitor.switchToRemote()
+                }
+            }
+
+            // Keep a local display-only recovery action in the window. The
+            // emergency shortcut is the preferred global path, but macOS may
+            // refuse its Carbon registration when another app owns the same
+            // key combination; users must still be able to restore the local
+            // monitor without opening the OSD.
+            if !control.isReceivingControl,
+               control.state != .controlling,
+               control.state != .suspended,
+               !bootstrap.combinedControlRequestInFlight {
+                Button("Return display to this Mac") {
+                    bootstrap.cancelCombinedControlRequest()
+                    control.requestLocalMonitorReturn {
+                        monitor.switchToLocal()
                     }
                 }
             }
 
             if inputTopology.allowsLocalControl {
                 Button(shareKeyboardAndMouseTitle) {
-                    bootstrap.startCombinedControlRequest()
+                    _ = bootstrap.startCombinedControlRequest()
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(
@@ -1533,10 +1655,15 @@ private struct MacKVMMenuView: View {
                         || bootstrap.combinedControlRequestInFlight
                 )
                 Text(
-                    "This switches the display, then shares the keyboard and mouse. Control-Option-Command-K toggles sharing; Control-Option-Command-Escape interrupts and returns them to this Mac."
+                    "This switches the display, then shares the keyboard and mouse. Control-Option-Command-O switches only the display; Control-Option-Command-K toggles sharing; Control-Option-Command-Escape interrupts and returns them to this Mac."
                 )
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+                if let combinedControlStatus = bootstrap.combinedControlStatus {
+                    Text(combinedControlStatus)
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
             }
 
             Text(monitor.status)

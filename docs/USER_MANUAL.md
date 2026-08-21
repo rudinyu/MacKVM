@@ -68,9 +68,13 @@ steal focus; use the menu-bar icon or activate MacKVM from the Dock to reopen it
    The MA270U EDID mapping sends USB-C as VCP 19 (`0x13`) and HDMI 1 as VCP 17
    (`0x11`); other monitor models use their own firmware mapping. Run the
    diagnostic scan before relying on a new model.
-4. Use **Show this Mac** and **Show other Mac** to verify switching. If native
-   detection or switching fails, read the diagnostic, check the direct cable
-   path, and use the MA270U OSD.
+   A fresh Intel installation defaults its local route to HDMI 1; the Intel
+   preset repairs older saved USB-C preferences.
+4. Use **Show other Mac** to verify switching. If native detection or
+   switching fails, read the diagnostic, check the direct cable path, and use
+   the MA270U OSD. For a display-only route, use **Return display to this Mac**;
+   the emergency shortcut and the receiver's **Return keyboard and mouse to
+   [M5 Mac]** action restore the local route during control.
    On the M5 Pro, **Show other Mac** also performs the guarded keyboard/mouse
    hand-off when control prerequisites are ready. **Share keyboard and mouse
    with [Intel Mac]** remains the explicit equivalent; the Intel Mac selects
@@ -115,6 +119,11 @@ See the [diagnostic guide](../Tools/DDCDiagnostic/README.md).
 2. Compare the six-digit security code and peer names. The receiving Mac selects
    **Accept** only when the codes match; the initiating Mac selects
    **Confirm code** after comparing the same code.
+   Either Mac can initiate. If the receiving Mac shows a macOS Firewall prompt,
+   allow incoming connections there. If the initiator remains waiting, use
+   **Cancel pairing** or **Retry pairing** after the firewall rule is allowed.
+   Starting from the Intel Mac is a valid workaround when its inbound rule has
+   not yet been approved; the protocol is not architecture-specific.
 3. After both signed decisions complete, MacKVM automatically attempts to
    connect the encrypted session. If it remains idle, select
    **Connect** on a paired row. With the keyboard and mouse connected to the M5 Pro, use
@@ -131,7 +140,8 @@ See the [diagnostic guide](../Tools/DDCDiagnostic/README.md).
    `Control-Option-Command-Escape`. The global
    `Control-Option-Command-K` shortcut toggles sharing without opening the
    menu: it starts a request while idle and returns input while controlling or
-   receiving. To switch back from Intel, select
+   receiving. `Control-Option-Command-O` switches only the display to the other
+   Mac without changing the keyboard/mouse owner. To switch back from Intel, select
    **Return keyboard and mouse to [M5 Mac]** on the Intel Mac. The controller
    can also select **Return keyboard and mouse to this Mac**.
 

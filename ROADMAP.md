@@ -3,7 +3,7 @@
 [Architecture](ARCHITECTURE.md) · [Installation guide](INSTALL.md) ·
 [Security status](SECURITY.md) · [繁體中文](ROADMAP.zh-TW.md)
 
-This roadmap is written against the 0.12.4 source tree. Every gap below was
+This roadmap is written against the 0.12.22 source tree. Every gap below was
 confirmed in code rather than inferred from the documentation, and each item
 records the files a change would start from.
 
@@ -23,6 +23,7 @@ request/consent round trip for every switch, and maps only one display.
 | Area | Current behavior | Starting point |
 | --- | --- | --- |
 | Forwarded input | Keyboard (with cross-layout remapping), mouse, scroll (with phase/momentum), and an allowlisted set of media keys; no clipboard yet | [`RemoteInputProtocol.swift:3`](Sources/MacKVMCore/RemoteInputProtocol.swift:3) |
+| Pairing transport | Either Mac can initiate; waiting Firewall/listener attempts can be canceled and retried without restarting the app | [`PeerDiscoveryService.swift:401`](Sources/MacKVM/PeerDiscoveryService.swift:401) |
 | Switching | Menu → Request → local one-time authorization for newly paired peers; Allow/Deny remains available when revoked | [`ControlCoordinator.swift:163`](Sources/MacKVM/ControlCoordinator.swift:163) |
 | Pointer mapping | Main display only; other screens clamp to its edge | [`InputServices.swift:1154`](Sources/MacKVM/InputServices.swift:1154) |
 | Peer count | One peer at a time, arbitrated by UUID comparison | [`PeerArbitration.swift:4`](Sources/MacKVMCore/PeerArbitration.swift:4) |

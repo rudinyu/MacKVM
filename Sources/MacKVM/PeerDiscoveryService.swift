@@ -29,6 +29,52 @@ struct PendingPairingConfirmation: Identifiable {
     let verificationCode: String
 }
 
+/// The user-visible state of an outbound pairing attempt. Keeping this
+/// separate from the verification-code prompt lets the menu cancel or retry
+/// a request while Network.framework is still waiting for the receiving Mac's
+/// listener (for example while its firewall approval is pending).
+enum PairingActivity: Equatable {
+    case idle
+    case connecting(peerID: UUID, peerName: String)
+    case awaitingConfirmation(peerID: UUID, peerName: String)
+    case retryAvailable(peerID: UUID, peerName: String)
+
+    var isActive: Bool {
+        self != .idle
+    }
+
+    var peerID: UUID? {
+        switch self {
+        case .idle:
+            return nil
+        case let .connecting(peerID, _),
+            let .awaitingConfirmation(peerID, _),
+            let .retryAvailable(peerID, _):
+            return peerID
+        }
+    }
+
+    var peerName: String? {
+        switch self {
+        case .idle:
+            return nil
+        case let .connecting(_, peerName),
+            let .awaitingConfirmation(_, peerName),
+            let .retryAvailable(_, peerName):
+            return peerName
+        }
+    }
+
+    var canCancel: Bool {
+        switch self {
+        case .connecting, .awaitingConfirmation:
+            return true
+        case .idle, .retryAvailable:
+            return false
+        }
+    }
+}
+
 /// Work captured after the signed pairing completion has crossed the close
 /// barrier. Registry persistence can touch UserDefaults and compete with
 /// SwiftUI reads, so it must not run on the Network.framework queue. Keeping
@@ -76,6 +122,8 @@ final class PeerDiscoveryService: ObservableObject {
     @Published private(set) var activeVerificationCode: String?
     @Published private(set) var pendingPairingConfirmation:
         PendingPairingConfirmation?
+    @Published private(set) var pairingActivity: PairingActivity = .idle
+    @Published private(set) var pairingRetryPeer: DiscoveredPeer?
 
     /// Called after both sides have recorded the signed pairing completion.
     /// The app wires this to the secure-session connector so a user does not
@@ -111,6 +159,8 @@ final class PeerDiscoveryService: ObservableObject {
     private let privateKey: P256.Signing.PrivateKey
     private var listener: NWListener?
     private var browser: NWBrowser?
+    private var listenerIsReady = false
+    private var browserIsReady = false
     private var networkRecoveryWorkItem: DispatchWorkItem?
     private var networkRecoveryAttempt = 0
     private var networkRecoveryGeneration: UInt64 = 0
@@ -166,11 +216,32 @@ final class PeerDiscoveryService: ObservableObject {
     // peer application can consume our final acknowledgement.
     private var pairingPersistenceRecordedRequestIDs: Set<UUID> = []
     private var pairingPersistenceJobs: [UUID: PairingPersistenceJob] = [:]
+    // A peer can have more than one pairing attempt over its lifetime. Keep
+    // the latest persistence request token so a canceled older worker cannot
+    // revoke a newer successful retry for the same peer.
+    private var latestPairingPersistenceRequestIDsByPeer: [UUID: UUID] = [:]
+    /// A cancelled completion can finish after a retry has started. Keep the
+    /// request IDs whose writes succeeded until that retry either succeeds or
+    /// fails, so a failed retry cannot leave the cancelled trust record behind.
+    private var cancelledPersistenceTrustJobsByPeer: [UUID: [PairingPersistenceJob]] = [:]
+    private var latestSuccessfulPersistenceRequestIDsByPeer: [UUID: UUID] = [:]
+    private var requestPeerDescriptors: [UUID: DiscoveredPeer] = [:]
+    // A user cancellation can race the persistence worker. Keep cancellation
+    // intent separate from the job so the worker can either skip the write or
+    // roll it back before publishing trust.
+    private var cancelledPersistenceRequestIDs: Set<UUID> = []
     // EOF can arrive before the final close-receipt send callback. Remember
     // it so the persistence callback can release the request instead of
     // leaving it tracked until the 60-second timeout.
     private var peerFinishedSendingRequestIDs: Set<UUID> = []
     private var activeOutboundRequestID: UUID?
+    // Retry only after the previous TCP pairing transport has reported its
+    // cancellation. Network.framework can deliver that callback after the
+    // user taps Retry, while the receiver still has the old sender admission
+    // in its request table.
+    private var pendingRetryPeer: DiscoveredPeer?
+    private var pendingRetryGeneration: UInt64 = 0
+    private var pendingRetryWorkItem: DispatchWorkItem?
     private var receiveBuffers: [ObjectIdentifier: Data] = [:]
     private var connectionTimeouts: [ObjectIdentifier: DispatchWorkItem] = [:]
     private var admissionLimiter =
@@ -261,17 +332,29 @@ final class PeerDiscoveryService: ObservableObject {
     func stop() {
         queue.async { [weak self] in
             guard let self else { return }
+            let outstandingPersistenceJobs = Array(
+                self.pairingPersistenceJobs.values
+            )
+            outstandingPersistenceJobs.forEach {
+                self.markPersistenceCancellation(for: $0.requestID)
+            }
             self.advanceLifecycleEpoch()
             self.networkRecoveryGeneration &+= 1
             self.networkRecoveryWorkItem?.cancel()
             self.networkRecoveryWorkItem = nil
             self.networkRecoveryAttempt = 0
+            self.pendingRetryGeneration &+= 1
+            self.pendingRetryWorkItem?.cancel()
+            self.pendingRetryWorkItem = nil
+            self.pendingRetryPeer = nil
             self.listener?.cancel()
             self.browser?.cancel()
             self.requestConnections.values.forEach { $0.cancel() }
             self.unauthenticatedConnections.values.forEach { $0.cancel() }
             self.listener = nil
             self.browser = nil
+            self.listenerIsReady = false
+            self.browserIsReady = false
             self.requestConnections.removeAll()
             self.unauthenticatedConnections.removeAll()
             self.requestMessages.removeAll()
@@ -299,8 +382,18 @@ final class PeerDiscoveryService: ObservableObject {
             self.peerSupportsCompletionCloseRequestIDs.removeAll()
             self.locallyAcknowledgedByPeerRequestIDs.removeAll()
             self.pairingPersistenceRecordedRequestIDs.removeAll()
-            self.pairingPersistenceJobs.removeAll()
+            // Keep persistence jobs and cancellation markers until their
+            // utility-queue callbacks reconcile a write that may have raced
+            // this stop. Clearing them here could leave a canceled pairing
+            // trusted if the worker committed immediately before shutdown.
+            let cancelledTrustPeerIDs = Set(
+                self.cancelledPersistenceTrustJobsByPeer.keys
+            )
+            cancelledTrustPeerIDs.forEach {
+                self.revokeCancelledPersistenceTrust(for: $0)
+            }
             self.peerFinishedSendingRequestIDs.removeAll()
+            self.requestPeerDescriptors.removeAll()
             self.activeOutboundRequestID = nil
             self.receiveBuffers.removeAll()
             self.connectionTimeouts.values.forEach { $0.cancel() }
@@ -315,6 +408,8 @@ final class PeerDiscoveryService: ObservableObject {
                 self.pendingRequests.removeAll()
                 self.activeVerificationCode = nil
                 self.pendingPairingConfirmation = nil
+                self.pairingActivity = .idle
+                self.pairingRetryPeer = nil
                 self.status = "Discovery stopped"
             }
         }
@@ -354,7 +449,14 @@ final class PeerDiscoveryService: ObservableObject {
 
     @discardableResult
     private func noteNetworkServiceReady() -> Bool {
-        guard listener != nil, browser != nil else { return false }
+        guard Self.areNetworkServicesReady(
+            listenerPresent: listener != nil,
+            browserPresent: browser != nil,
+            listenerReady: listenerIsReady,
+            browserReady: browserIsReady
+        ) else {
+            return false
+        }
         let recoveredAfterFailure = networkRecoveryAttempt > 0
             || networkRecoveryWorkItem != nil
         networkRecoveryAttempt = 0
@@ -364,10 +466,100 @@ final class PeerDiscoveryService: ObservableObject {
         return recoveredAfterFailure
     }
 
+    static func areNetworkServicesReady(
+        listenerPresent: Bool,
+        browserPresent: Bool,
+        listenerReady: Bool,
+        browserReady: Bool
+    ) -> Bool {
+        listenerPresent && browserPresent && listenerReady && browserReady
+    }
+
     func requestPairing(with peer: DiscoveredPeer) {
         queue.async { [weak self] in
             self?.requestPairingOnQueue(with: peer)
         }
+    }
+
+    /// Cancels the current outbound request immediately. This is intentionally
+    /// available before a verification code arrives, because a blocked
+    /// receiving listener can otherwise leave the initiator in a pending state
+    /// until the transport timeout expires.
+    func cancelPairing() {
+        queue.async { [weak self] in
+            guard let self, let requestID = self.activeOutboundRequestID else {
+                return
+            }
+            let peerName = self.requestTargets[requestID]?.name
+                ?? self.requestMessages[requestID]?.sender.name
+                ?? "peer"
+            self.logPairingPhase(
+                "user.cancel",
+                requestID: requestID,
+                peerID: self.peerIDForRequest(requestID),
+                detail: "role=initiator"
+            )
+            self.finish(
+                requestID: requestID,
+                userCancelledPersistence: true
+            )
+            self.publishStatus("Pairing with \(peerName) canceled")
+        }
+    }
+
+    /// Starts a fresh request after clearing any stale outbound attempt. A
+    /// caller uses this only for an explicitly selected peer, so retrying does
+    /// not silently redirect a request to another Bonjour result.
+    func retryPairing(with peer: DiscoveredPeer) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            if let requestID = self.activeOutboundRequestID {
+                self.pendingRetryPeer = peer
+                self.pendingRetryGeneration &+= 1
+                let retryGeneration = self.pendingRetryGeneration
+                self.pendingRetryWorkItem?.cancel()
+                let fallback = DispatchWorkItem { [weak self] in
+                    guard let self,
+                          self.pendingRetryGeneration == retryGeneration else {
+                        return
+                    }
+                    self.pendingRetryWorkItem = nil
+                    self.startPendingRetryIfReady()
+                }
+                self.pendingRetryWorkItem = fallback
+                // The state callback normally starts the retry as soon as
+                // Network.framework reports cancellation. Keep a bounded
+                // fallback for platforms that do not deliver a second state
+                // callback after an already-cancelled connection.
+                self.queue.asyncAfter(
+                    deadline: .now() + 1,
+                    execute: fallback
+                )
+                self.logPairingPhase(
+                    "user.retry",
+                    requestID: requestID,
+                    peerID: self.peerIDForRequest(requestID),
+                    detail: "role=initiator"
+                )
+                self.finish(
+                    requestID: requestID,
+                    userCancelledPersistence: true
+                )
+            } else {
+                self.requestPairingOnQueue(with: peer)
+            }
+        }
+    }
+
+    private func startPendingRetryIfReady() {
+        guard activeOutboundRequestID == nil,
+              let peer = pendingRetryPeer else {
+            return
+        }
+        pendingRetryPeer = nil
+        pendingRetryWorkItem?.cancel()
+        pendingRetryWorkItem = nil
+        requestPairingOnQueue(with: peer)
     }
 
     private func requestPairingOnQueue(with peer: DiscoveredPeer) {
@@ -405,12 +597,24 @@ final class PeerDiscoveryService: ObservableObject {
         let connection = NWConnection(to: peer.endpoint, using: parameters)
         activeOutboundRequestID = request.requestID
         requestConnections[request.requestID] = connection
+        requestPeerDescriptors[request.requestID] = peer
         requestMessages[request.requestID] = request
         requestTargets[request.requestID] = peer.identity
         localContributions[request.requestID] = contribution
         requestForgetGenerations.set(
             registry.generation(for: peer.identity.id),
             for: request.requestID
+        )
+        publishMain {
+            $0.pairingRetryPeer = nil
+            $0.pairingActivity = .connecting(
+                peerID: peer.identity.id,
+                peerName: peer.name
+            )
+        }
+        publishStatus(
+            "Connecting to \(peer.name)… If macOS asks about the firewall on "
+                + "the receiving Mac, allow it, then select Retry pairing."
         )
         logPairingPhase(
             "request.created",
@@ -434,6 +638,8 @@ final class PeerDiscoveryService: ObservableObject {
                 self.receive(on: connection)
                 self.publishStatus("Negotiating a security code with \(peer.name)…")
             case .failed(let error):
+                guard self.requestConnections[request.requestID] === connection
+                else { return }
                 MacKVMLogger.pairing.error(
                     "phase=transport.failed request=\(MacKVMLogger.short(request.requestID), privacy: .public) peer=\(MacKVMLogger.short(peer.identity.id), privacy: .public) error=\(error.localizedDescription, privacy: .public)"
                 )
@@ -441,8 +647,12 @@ final class PeerDiscoveryService: ObservableObject {
                     .contains(request.requestID)
                 self.finish(requestID: request.requestID)
                 if !wasPersisted {
+                    self.publishRetryAvailable(for: peer)
                     self.publishStatus(
-                        "Could not reach \(peer.name): \(error.localizedDescription)"
+                        self.pairingTransportFailureMessage(
+                            peerName: peer.name,
+                            detail: error.localizedDescription
+                        )
                     )
                 }
             case .cancelled:
@@ -457,10 +667,25 @@ final class PeerDiscoveryService: ObservableObject {
                     .contains(request.requestID)
                 self.finish(requestID: request.requestID)
                 if wasTracked, !wasPersisted {
+                    self.publishRetryAvailable(for: peer)
                     self.publishStatus(
-                        "Could not reach \(peer.name): pairing connection canceled"
+                        self.pairingTransportFailureMessage(
+                            peerName: peer.name,
+                            detail: "pairing connection canceled"
+                        )
                     )
                 }
+            case .waiting(let error):
+                self.logPairingPhase(
+                    "transport.waiting",
+                    requestID: request.requestID,
+                    peerID: peer.identity.id,
+                    detail: "role=initiator error=\(error.localizedDescription)"
+                )
+                self.publishStatus(
+                    "Waiting for \(peer.name)… If the receiving Mac shows a "
+                        + "firewall prompt, allow it, then select Retry pairing."
+                )
             default:
                 break
             }
@@ -606,6 +831,12 @@ final class PeerDiscoveryService: ObservableObject {
                     detail: "role=responder"
                 )
                 self.finish(requestID: pending.id)
+                self.publishStatus(
+                    self.pairingTransportFailureMessage(
+                        peerName: pending.peer.name,
+                        detail: "pairing response failed"
+                    )
+                )
                 return
             }
             self.logPairingPhase(
@@ -643,6 +874,12 @@ final class PeerDiscoveryService: ObservableObject {
         registry.revoke(peerID)
         queue.async { [weak self] in
             guard let self else { return }
+            self.cancelledPersistenceTrustJobsByPeer.removeValue(
+                forKey: peerID
+            )
+            self.latestSuccessfulPersistenceRequestIDsByPeer.removeValue(
+                forKey: peerID
+            )
             let requestIDs = requestConnections.compactMap { requestID, _ in
                 let peer = self.requestTargets[requestID]
                     ?? self.requestMessages[requestID]?.sender
@@ -670,6 +907,7 @@ final class PeerDiscoveryService: ObservableObject {
     }
 
     private func startListener() {
+        listenerIsReady = false
         do {
             // Bonjour browsing and outbound pairing both allow AWDL/peer-to-peer
             // routes. The listener must opt in as well, or the discovered
@@ -688,20 +926,38 @@ final class PeerDiscoveryService: ObservableObject {
                 ])
             )
             listener.stateUpdateHandler = { [weak self, weak listener] state in
+                guard let self, let listener, self.listener === listener else {
+                    return
+                }
                 switch state {
                 case .ready:
-                    self?.noteNetworkServiceReady()
-                    self?.publishStatus("Ready on the local network")
+                    self.listenerIsReady = true
+                    self.noteNetworkServiceReady()
+                    self.publishStatus("Ready on the local network")
                 case .failed(let error):
-                    guard let self else { return }
+                    self.listenerIsReady = false
+                    let retryPeer = self.activeOutboundPeer()
+                    let hadPairing = self
+                        .cancelUnfinishedPairingsForNetworkFailure()
                     self.publishStatus(
-                        "Listening failed: \(error.localizedDescription)"
+                        hadPairing
+                            ? self.pairingNetworkFailureMessage(
+                                detail: error.localizedDescription
+                            )
+                            : "Listening failed: \(error.localizedDescription)"
                     )
-                    if self.listener === listener {
-                        self.listener?.cancel()
-                        self.listener = nil
-                        self.scheduleNetworkRecovery()
+                    if hadPairing, let retryPeer {
+                        self.publishRetryAvailable(for: retryPeer)
                     }
+                    self.listener?.cancel()
+                    self.listener = nil
+                    self.scheduleNetworkRecovery()
+                case .waiting(let error):
+                    self.listenerIsReady = false
+                    self.publishStatus(
+                        "Incoming pairing is waiting for the local network or "
+                            + "firewall approval: \(error.localizedDescription)"
+                    )
                 default:
                     break
                 }
@@ -712,12 +968,15 @@ final class PeerDiscoveryService: ObservableObject {
             self.listener = listener
             listener.start(queue: queue)
         } catch {
+            listenerIsReady = false
+            _ = cancelUnfinishedPairingsForNetworkFailure()
             publishStatus("Could not start listener: \(error.localizedDescription)")
             scheduleNetworkRecovery()
         }
     }
 
     private func startBrowser() {
+        browserIsReady = false
         let parameters = NWParameters.tcp
         parameters.includePeerToPeer = true
         let browser = NWBrowser(
@@ -789,20 +1048,34 @@ final class PeerDiscoveryService: ObservableObject {
             self.publishMain(epoch: epoch) { $0.peers = discovered }
         }
         browser.stateUpdateHandler = { [weak self, weak browser] state in
+            guard let self, let browser, self.browser === browser else {
+                return
+            }
             switch state {
             case .ready:
-                if let self, self.noteNetworkServiceReady() {
+                self.browserIsReady = true
+                if self.noteNetworkServiceReady() {
                     self.publishStatus("Discovery recovered on the local network")
                 }
             case .failed(let error):
-                guard let self else { return }
+                self.browserIsReady = false
+                let retryPeer = self.activeOutboundPeer()
+                let hadPairing = self
+                    .cancelUnfinishedPairingsForNetworkFailure()
                 self.publishStatus(
-                    "Discovery failed: \(error.localizedDescription)"
+                    hadPairing
+                        ? self.pairingNetworkFailureMessage(
+                            detail: error.localizedDescription
+                        )
+                        : "Discovery failed: \(error.localizedDescription)"
                 )
-                if self.browser === browser {
-                    self.browser = nil
-                    self.scheduleNetworkRecovery()
+                if hadPairing, let retryPeer {
+                    self.publishRetryAvailable(for: retryPeer)
                 }
+                self.browser = nil
+                self.scheduleNetworkRecovery()
+            case .waiting:
+                self.browserIsReady = false
             default:
                 break
             }
@@ -1181,6 +1454,10 @@ final class PeerDiscoveryService: ObservableObject {
                     peer: expectedPeer,
                     verificationCode: verificationCode
                 )
+                $0.pairingActivity = .awaitingConfirmation(
+                    peerID: expectedPeer.id,
+                    peerName: expectedPeer.name
+                )
             }
             publishStatus(
                 "Compare security code \(verificationCode) with \(expectedPeer.name), then confirm…"
@@ -1403,14 +1680,105 @@ final class PeerDiscoveryService: ObservableObject {
         }
     }
 
+    private func hasActivePersistenceJob(
+        for peerID: UUID,
+        excluding requestID: UUID
+    ) -> Bool {
+        pairingPersistenceJobs.values.contains {
+            $0.peer.id == peerID && $0.requestID != requestID
+        }
+    }
+
+    /// Rolls back trust written by a cancelled pairing only when no newer
+    /// successful write for that peer superseded it. This runs on the
+    /// discovery queue, so the registry check and cleanup decision are
+    /// serialized with every retry result.
+    private func revokeCancelledPersistenceTrust(for peerID: UUID) {
+        guard latestSuccessfulPersistenceRequestIDsByPeer[peerID] == nil else {
+            cancelledPersistenceTrustJobsByPeer.removeValue(forKey: peerID)
+            return
+        }
+        guard let jobs = cancelledPersistenceTrustJobsByPeer[peerID] else {
+            return
+        }
+        let currentGeneration = registry.generation(for: peerID)
+        let currentKey = registry.publicKey(for: peerID)
+        guard let matchingJob = jobs.reversed().first(where: {
+            $0.expectedRegistryGeneration == currentGeneration
+                && currentKey == $0.peer.signingPublicKey
+        }) else {
+            cancelledPersistenceTrustJobsByPeer.removeValue(forKey: peerID)
+            return
+        }
+        _ = registry.revoke(peerID)
+        cancelledPersistenceTrustJobsByPeer.removeValue(forKey: peerID)
+        latestSuccessfulPersistenceRequestIDsByPeer.removeValue(forKey: peerID)
+        logPairingPhase(
+            "pairing.persist.rollback",
+            requestID: matchingJob.requestID,
+            peerID: peerID,
+            detail: "cancelled-retry-failed"
+        )
+    }
+
     private func handlePairingPersistenceResult(
         _ job: PairingPersistenceJob,
         saved: Bool
     ) {
-        guard let activeJob = pairingPersistenceJobs.removeValue(
-            forKey: job.requestID
-        ), activeJob === job else {
+        let cancellationRequested = takePersistenceCancellation(
+            for: job.requestID
+        )
+        guard let activeJob = pairingPersistenceJobs[job.requestID],
+              activeJob === job else {
             // stop() or a newer lifecycle already retired this job.
+            return
+        }
+        pairingPersistenceJobs.removeValue(forKey: job.requestID)
+        let isLatestPersistenceJob =
+            latestPairingPersistenceRequestIDsByPeer[job.peer.id]
+                == job.requestID
+        if isLatestPersistenceJob {
+            latestPairingPersistenceRequestIDsByPeer.removeValue(
+                forKey: job.peer.id
+            )
+        }
+        if cancellationRequested {
+            // If the worker had already completed the write before the user
+            // cancellation reached this queue, remove that trust record before
+            // publishing anything to SwiftUI or auto-connecting the session.
+            // Never revoke a newer retry's record: its persistence request has
+            // a different token even when the peer uses the same signing key.
+            if saved,
+               registry.generation(for: job.peer.id)
+                    == job.expectedRegistryGeneration,
+               registry.publicKey(for: job.peer.id)
+                    == job.peer.signingPublicKey {
+                if hasActivePersistenceJob(
+                    for: job.peer.id,
+                    excluding: job.requestID
+                ) {
+                    cancelledPersistenceTrustJobsByPeer[
+                        job.peer.id,
+                        default: []
+                    ].append(job)
+                } else if latestSuccessfulPersistenceRequestIDsByPeer[
+                    job.peer.id
+                ] == nil {
+                    _ = registry.revoke(job.peer.id)
+                    cancelledPersistenceTrustJobsByPeer.removeValue(
+                        forKey: job.peer.id
+                    )
+                }
+            } else if isLatestPersistenceJob {
+                revokeCancelledPersistenceTrust(for: job.peer.id)
+            }
+            logPairingPhase(
+                "pairing.persist.discarded",
+                requestID: job.requestID,
+                peerID: job.peer.id,
+                detail: "user-cancelled"
+            )
+            publishStatus("Pairing with \(job.peer.name) canceled")
             return
         }
         logPairingPhase(
@@ -1436,6 +1804,11 @@ final class PeerDiscoveryService: ObservableObject {
             publishStatus(
                 "Could not save pairing with \(job.peer.name); try Pair again"
             )
+            if isLatestPersistenceJob
+                && latestSuccessfulPersistenceRequestIDsByPeer[job.peer.id]
+                    == nil {
+                revokeCancelledPersistenceTrust(for: job.peer.id)
+            }
             // A failed durable write is terminal for this pairing attempt. Do
             // not leave the connection/request tracked until the 60-second
             // timeout, otherwise the UI appears stuck and the next attempt is
@@ -1460,6 +1833,9 @@ final class PeerDiscoveryService: ObservableObject {
             return
         }
 
+        latestSuccessfulPersistenceRequestIDsByPeer[job.peer.id] = job.requestID
+        cancelledPersistenceTrustJobsByPeer.removeValue(forKey: job.peer.id)
+
         let requestIsTracked = requestTargets[job.requestID]?.id
                 == job.peer.id
             || requestMessages[job.requestID]?.sender.id == job.peer.id
@@ -1481,6 +1857,11 @@ final class PeerDiscoveryService: ObservableObject {
                 return
             }
             service.pairedPeerIDs.insert(peerID)
+            if service.pairingActivity.peerID == peerID {
+                service.activeVerificationCode = nil
+                service.pendingPairingConfirmation = nil
+                service.pairingActivity = .idle
+            }
         }
         onPairingCompleted?(peerID)
         publishStatus("Paired with \(job.peer.name)")
@@ -1521,8 +1902,14 @@ final class PeerDiscoveryService: ObservableObject {
 
     private func finish(
         requestID: UUID,
-        cancelConnection: Bool = true
+        cancelConnection: Bool = true,
+        userCancelledPersistence: Bool = false
     ) {
+        if userCancelledPersistence,
+           pairingPersistenceJobs[requestID] != nil,
+           !pairingPersistenceRecordedRequestIDs.contains(requestID) {
+            markPersistenceCancellation(for: requestID)
+        }
         logPairingPhase(
             "request.finish",
             requestID: requestID,
@@ -1535,6 +1922,7 @@ final class PeerDiscoveryService: ObservableObject {
             publishMain {
                 $0.activeVerificationCode = nil
                 $0.pendingPairingConfirmation = nil
+                $0.pairingActivity = .idle
             }
         }
         if let connection = requestConnections.removeValue(
@@ -1542,10 +1930,28 @@ final class PeerDiscoveryService: ObservableObject {
         ) {
             cleanup(connection)
             if cancelConnection {
+                if pendingRetryPeer != nil {
+                    connection.stateUpdateHandler = { [weak self] state in
+                        let ended: Bool
+                        switch state {
+                        case .cancelled, .failed:
+                            ended = true
+                        default:
+                            ended = false
+                        }
+                        guard ended else {
+                            return
+                        }
+                        self?.queue.async { [weak self] in
+                            self?.startPendingRetryIfReady()
+                        }
+                    }
+                }
                 connection.cancel()
             }
         }
         requestMessages.removeValue(forKey: requestID)
+        requestPeerDescriptors.removeValue(forKey: requestID)
         requestTargets.removeValue(forKey: requestID)
         requestPeerModels.removeValue(forKey: requestID)
         localContributions.removeValue(forKey: requestID)
@@ -1660,6 +2066,50 @@ final class PeerDiscoveryService: ObservableObject {
         unauthenticatedConnections.removeValue(forKey: connectionID)
     }
 
+    /// A listener/browser failure can leave Network.framework's connection
+    /// state callback delayed while the Bonjour service is being recreated.
+    /// Release unfinished requests here so the next Pair action is not forced
+    /// to wait for the normal handshake timeout.
+    @discardableResult
+    private func cancelUnfinishedPairingsForNetworkFailure() -> Bool {
+        let requestIDs = requestConnections.keys.filter {
+            !pairingPersistenceRecordedRequestIDs.contains($0)
+                && pairingPersistenceJobs[$0] == nil
+        }
+        let hadConnections = !requestIDs.isEmpty
+            || requestConnections.keys.contains {
+                pairingPersistenceJobs[$0] != nil
+            }
+            || !unauthenticatedConnections.isEmpty
+        requestIDs.forEach { finish(requestID: $0) }
+        unauthenticatedConnections.values.forEach { $0.cancel() }
+        unauthenticatedConnections.removeAll()
+        return hadConnections
+    }
+
+    private func pairingTransportFailureMessage(
+        peerName: String,
+        detail: String
+    ) -> String {
+        "Could not reach \(peerName) (\(detail)). Allow incoming connections "
+            + "on the receiving Mac in macOS Firewall, then select Retry pairing."
+    }
+
+    private func pairingNetworkFailureMessage(detail: String) -> String {
+        "Pairing network stopped (\(detail)). Allow incoming connections on "
+            + "the receiving Mac in macOS Firewall, then select Retry pairing."
+    }
+
+    private func publishRetryAvailable(for peer: DiscoveredPeer) {
+        publishMain {
+            $0.pairingRetryPeer = peer
+            $0.pairingActivity = .retryAvailable(
+                peerID: peer.identity.id,
+                peerName: peer.name
+            )
+        }
+    }
+
     private func scheduleTimeout(
         for connection: NWConnection,
         after seconds: TimeInterval = 60
@@ -1671,6 +2121,12 @@ final class PeerDiscoveryService: ObservableObject {
             guard let self, let connection else { return }
             guard self.isTracked(connection) else {
                 return
+            }
+            let outboundRequestID = self.activeOutboundRequestID.flatMap {
+                self.requestConnections[$0] === connection ? $0 : nil
+            }
+            let retryPeer = outboundRequestID.flatMap {
+                self.requestPeerDescriptors[$0]
             }
             let wasPersisted = self.pairingPersistenceRecordedRequestIDs
                 .contains { requestID in
@@ -1684,6 +2140,9 @@ final class PeerDiscoveryService: ObservableObject {
             }
             connection.cancel()
             self.removeConnection(connection)
+            if !wasPersisted, let retryPeer {
+                self.publishRetryAvailable(for: retryPeer)
+            }
         }
         connectionTimeouts[connectionID] = timeout
         queue.asyncAfter(deadline: .now() + seconds, execute: timeout)
@@ -1724,6 +2183,11 @@ final class PeerDiscoveryService: ObservableObject {
             ?? requestMessages[requestID]?.sender.id
     }
 
+    private func activeOutboundPeer() -> DiscoveredPeer? {
+        guard let requestID = activeOutboundRequestID else { return nil }
+        return requestPeerDescriptors[requestID]
+    }
+
     private func publishMain(
         epoch: UInt64? = nil,
         _ update: @escaping (PeerDiscoveryService) -> Void
@@ -1740,6 +2204,18 @@ final class PeerDiscoveryService: ObservableObject {
         pairingLifecycleLock.lock()
         defer { pairingLifecycleLock.unlock() }
         lifecycleEpoch.advance()
+    }
+
+    private func markPersistenceCancellation(for requestID: UUID) {
+        pairingLifecycleLock.lock()
+        cancelledPersistenceRequestIDs.insert(requestID)
+        pairingLifecycleLock.unlock()
+    }
+
+    private func takePersistenceCancellation(for requestID: UUID) -> Bool {
+        pairingLifecycleLock.lock()
+        defer { pairingLifecycleLock.unlock() }
+        return cancelledPersistenceRequestIDs.remove(requestID) != nil
     }
 
     private func currentLifecycleEpoch() -> UInt64 {
@@ -2167,6 +2643,7 @@ final class PeerDiscoveryService: ObservableObject {
             lifecycleEpoch: currentLifecycleEpoch()
         )
         pairingPersistenceJobs[requestID] = job
+        latestPairingPersistenceRequestIDsByPeer[peer.id] = requestID
         logPairingPhase(
             "pairing.persist.begin",
             requestID: requestID,
@@ -2181,10 +2658,19 @@ final class PeerDiscoveryService: ObservableObject {
                 return
             }
             self.pairingLifecycleLock.lock()
-            guard self.lifecycleEpoch.current() == job.lifecycleEpoch else {
+            let cancellationRequested = self
+                .cancelledPersistenceRequestIDs
+                .contains(job.requestID)
+            guard self.lifecycleEpoch.current() == job.lifecycleEpoch,
+                  !cancellationRequested else {
                 self.pairingLifecycleLock.unlock()
+                if cancellationRequested {
+                    self.queue.async { [weak self] in
+                        self?.handlePairingPersistenceResult(job, saved: false)
+                    }
+                }
                 MacKVMLogger.pairing.info(
-                    "phase=pairing.persist.worker.skipped request=\(MacKVMLogger.short(job.requestID), privacy: .public) peer=\(MacKVMLogger.short(job.peer.id), privacy: .public) detail=lifecycle-changed"
+                    "phase=pairing.persist.worker.skipped request=\(MacKVMLogger.short(job.requestID), privacy: .public) peer=\(MacKVMLogger.short(job.peer.id), privacy: .public) detail=\(cancellationRequested ? "user-cancelled" : "lifecycle-changed", privacy: .public)"
                 )
                 return
             }
