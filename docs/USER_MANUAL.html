@@ -43,7 +43,7 @@
 <body>
   <main>
     <header>
-      <div class="badge">MacKVM 0.12.22</div>
+      <div class="badge">MacKVM 0.12.29</div>
       <h1>MacKVM User Manual</h1>
       <p class="lede">A macOS app with a KVM menu-bar entry and full control window for sharing one keyboard, mouse, and optionally a BenQ MA270U display between two MacBook Pro computers.</p>
       <p><a href="USER_MANUAL.zh-TW.html" lang="zh-Hant">繁體中文版</a> · <a href="USER_MANUAL.md">Markdown version</a></p>
@@ -95,7 +95,7 @@
       <p>Create and verify a DMG:</p>
       <pre><code>./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist &amp;&amp; shasum -a 256 -c MacKVM-0.12.22-universal.dmg.sha256)</code></pre>
+(cd dist &amp;&amp; shasum -a 256 -c MacKVM-0.12.29-universal.dmg.sha256)</code></pre>
       <p>The DMG is built from a clean staging directory and produces a portable SHA-256 sidecar. Ad-hoc signing is for local testing; distribution requires Developer ID, hardened runtime, and Apple notarization.</p>
     </section>
 
@@ -186,7 +186,7 @@
       <ul>
         <li>Input is not suppressed until the receiver selects <strong>Allow</strong>, unless seamless control was enabled for that pinned peer.</li>
         <li>Use <strong>Return keyboard and mouse to this Mac</strong> on the controller. To switch back from Intel, the receiver selects <strong>Return keyboard and mouse to [M5 Mac]</strong>.</li>
-        <li>Emergency shortcut on the M5 Pro: <strong>Control-Option-Command-Escape</strong>. The global <strong>Control-Option-Command-K</strong> shortcut toggles sharing without opening the menu; it starts a request while idle and returns input while controlling or receiving. <strong>Control-Option-Command-O</strong> switches only the display to the other Mac without changing keyboard/mouse ownership.</li>
+        <li>Emergency shortcut on the M5 Pro: <strong>Control-Option-Command-Escape</strong>. The global <strong>Control-Option-Command-K</strong> shortcut toggles sharing without opening the menu; it starts a request while idle and returns input while controlling or receiving. <strong>Control-Option-Command-O</strong> follows the guarded <strong>Show other Mac</strong> route: it switches the display before requesting keyboard/mouse control, or ends receiving and restores the controller's display and input.</li>
         <li>Network loss immediately returns input locally and releases held keys and mouse buttons.</li>
         <li>A peer reconnects with bounded 0/1/2/4…30-second backoff. Seamless authorization resumes control without another prompt; an opted-out peer requires fresh consent. <strong>Disconnect</strong>, <strong>Forget</strong>, and <strong>Quit</strong> clear reconnect intent.</li>
         <li>A keyboard-layout mismatch is rejected before consent; a layout change during control safely ends remote input.</li>
@@ -220,7 +220,7 @@
     </section>
 
     <footer>
-      <p>MacKVM User Manual · Version 0.12.22 · Updated 2026-08-21</p>
+      <p>MacKVM User Manual · Version 0.12.29 · Updated 2026-08-21</p>
     </footer>
   </main>
 </body>

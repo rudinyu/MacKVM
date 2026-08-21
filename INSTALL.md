@@ -85,7 +85,7 @@ Create and verify a universal DMG for local testing:
 ./scripts/verify-release.sh \
   --app dist/universal/MacKVM.app \
   --arch universal
-(cd dist && shasum -a 256 -c MacKVM-0.12.22-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-0.12.29-universal.dmg.sha256)
 ```
 
 Ad-hoc signing is suitable only for local testing. For distribution to
@@ -182,8 +182,9 @@ the keyboard and mouse through a real physical USB switch.
    can also select **Return keyboard and mouse to this Mac**. The global
    `Control-Option-Command-K` shortcut toggles the same route without opening
    the menu: it starts a request when idle and returns input when controlling
-   or receiving. `Control-Option-Command-O` switches only the monitor input to
-   the other Mac without changing keyboard/mouse ownership.
+   or receiving. `Control-Option-Command-O` follows the guarded **Show other Mac**
+   route: it switches the display and then requests keyboard/mouse control, or
+   ends receiving and restores the controller's display and input.
 
 After a transport loss, MacKVM reconnects with bounded backoff. A peer with
 seamless control authorization can resume control without another prompt;

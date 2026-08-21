@@ -33,7 +33,7 @@ Release check (from the M5 Pro) is also available:
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist && shasum -a 256 -c MacKVM-0.12.22-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-0.12.29-universal.dmg.sha256)
 ```
 
 Expected: the app reports both `arm64` and `x86_64`, and an ad-hoc signature
@@ -337,29 +337,33 @@ Expected:
 1. On the M5 Pro, select **Show other Mac** (or the explicit
    **Share keyboard and mouse with [Intel Mac]** action) and verify that the
    display switches before input capture starts.
-2. With the session connected and idle, press **Control-Option-Command-K** and
-   verify that the control request starts without opening the menu.
-   Press **Control-Option-Command-O** and verify that only the monitor input
-   switches to the other Mac; keyboard/mouse ownership and capture state stay
-   unchanged.
-3. While controlling, press **Control-Option-Command-K** and verify that input
+2. With the session connected and idle, press **Control-Option-Command-O** and
+   verify that it follows the guarded **Show other Mac** route: the monitor
+   switches first, then the control request starts without opening the menu.
+   After the receiver accepts (when seamless control is disabled), verify that
+   the display and keyboard/mouse ownership move together.
+3. From the Mac that is receiving control, press **Control-Option-Command-O**
+   again and verify that receiving ends and the controller's display and
+   keyboard/mouse ownership are restored.
+4. While controlling, press **Control-Option-Command-K** and verify that input
    returns locally; repeat with **Control-Option-Command-Escape**.
-4. Repeat using **Return keyboard and mouse to this Mac**.
-5. From the receiving Intel Mac, select **Return keyboard and mouse to [M5 Mac]** while a key and a
+5. Repeat using **Return keyboard and mouse to this Mac**.
+6. From the receiving Intel Mac, select **Return keyboard and mouse to [M5 Mac]** while a key and a
    mouse button are held by the controlling Mac.
-6. Repeat the hotkey test from the receiving Mac when a bidirectional USB path
+7. Repeat the hotkey test from the receiving Mac when a bidirectional USB path
    is configured; verify it returns control to the controller.
-7. Repeat while DDC/CI is disabled or unavailable and confirm the OSD fallback.
-8. Quit MacKVM while the monitor shows the other Mac.
-9. Repeat step 8 while this Mac is receiving remote control.
+8. Repeat while DDC/CI is disabled or unavailable and confirm the OSD fallback.
+9. Quit MacKVM while the monitor shows the other Mac.
+10. Repeat step 9 while this Mac is receiving remote control.
 
 Expected:
 
 - The shortcut is consumed locally and immediately stops forwarding.
 - `Control-Option-Command-K` starts or ends the control route without opening
   the menu, depending on the current state.
-- `Control-Option-Command-O` switches only the monitor input and never changes
-  the current keyboard/mouse owner.
+- `Control-Option-Command-O` follows the guarded display-first route: it moves
+  the display and keyboard/mouse ownership together, and from the receiving
+  side it ends receiving and restores both to the controller.
 - The receiving Mac can stop a live session without disconnecting or quitting;
   both held keys and mouse buttons are released before the peer is notified.
 - Keyboard and mouse return before any monitor-switch result is assumed.
