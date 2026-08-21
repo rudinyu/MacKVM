@@ -43,7 +43,7 @@
 <body>
   <main>
     <header>
-      <div class="badge">MacKVM 0.12.4</div>
+      <div class="badge">MacKVM 0.12.22</div>
       <h1>MacKVM 使用手冊</h1>
       <p class="lede">提供選單列入口與一般控制視窗，讓兩台 MacBook Pro 共用一組鍵盤、滑鼠，並可選擇切換 BenQ MA270U 螢幕的 macOS app。</p>
       <p><a href="USER_MANUAL.html" lang="en">English Version</a> · <a href="USER_MANUAL.zh-TW.md">Markdown 版本</a></p>
@@ -98,7 +98,7 @@
       <p>要建立 DMG，可使用：</p>
       <pre><code>./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist &amp;&amp; shasum -a 256 -c MacKVM-0.12.4-universal.dmg.sha256)</code></pre>
+(cd dist &amp;&amp; shasum -a 256 -c MacKVM-0.12.22-universal.dmg.sha256)</code></pre>
       <p>DMG 會從乾淨的暫存目錄建立，並在旁邊產生可攜式 SHA-256 檔案；驗證結果應顯示 <strong>OK</strong>。</p>
       <p>未提供 Developer ID 時是 ad-hoc 簽章，只適合本機測試；跨電腦散布前請用
         <code>--sign "Developer ID Application: …" --require-developer-id</code>，
@@ -136,8 +136,8 @@
         <li>部分 MA270U 韌體不會在 OSD 顯示 DDC/CI 開關；MacKVM 會在 macOS 暴露顯示器時使用原生 bridge。</li>
         <li>MacKVM 使用原生 IOKit DDC/CI：Apple Silicon 走 <code>IOAVService</code>，Intel 走 <code>IOI2C</code>，不需要 Homebrew 工具。</li>
         <li>在任一台 Mac 按 <strong>Detect DDC-capable displays</strong>，明確選取要控制的螢幕。MacKVM 保存原生穩定識別碼，不會假設螢幕永遠是編號 1。</li>
-        <li>在 M5 Pro 選擇 <strong>M5 / USB-C preset</strong>；在 Intel Mac 選擇 <strong>Intel / HDMI preset</strong>。MA270U 的 EDID mapping 會把 USB-C 傳成 VCP 19（<code>0x13</code>），HDMI 1 傳成 VCP 17（<code>0x11</code>）；其他型號使用自己的韌體 mapping，依賴新型號前先執行診斷掃描。</li>
-        <li>先以 <strong>Show this Mac</strong> 與 <strong>Show other Mac</strong> 確認切換。M5 Pro 按 <strong>Show other Mac</strong> 時，若控制前置條件已完成，也會開始受保護的鍵盤／滑鼠分享；<strong>Share keyboard and mouse with [Intel Mac]</strong> 仍是明確的等效操作。Intel Mac 只有在未啟用該配對裝置的無縫控制時才需按 <strong>Allow</strong>。若原生探索或切換失敗，先閱讀 <strong>DDC diagnostic</strong> 並確認線材直接連接，再使用 OSD 備援。</li>
+        <li>在 M5 Pro 選擇 <strong>M5 / USB-C preset</strong>；在 Intel Mac 選擇 <strong>Intel / HDMI preset</strong>。Intel 新安裝會以 HDMI 1 作為本機路由；舊版若保存了 USB-C 設定，請重新套用 Intel 預設。MA270U 的 EDID mapping 會把 USB-C 傳成 VCP 19（<code>0x13</code>），HDMI 1 傳成 VCP 17（<code>0x11</code>）；其他型號使用自己的韌體 mapping，依賴新型號前先執行診斷掃描。</li>
+        <li>先按 <strong>Show other Mac</strong> 確認切換。M5 Pro 在控制前置條件完成時會開始受保護的鍵盤／滑鼠分享；<strong>Share keyboard and mouse with [Intel Mac]</strong> 仍是明確的等效操作。Intel Mac 只有在未啟用該配對裝置的無縫控制時才需按 <strong>Allow</strong>。若原生探索或切換失敗，先閱讀 <strong>DDC diagnostic</strong> 並確認線材直接連接，再使用 OSD 備援。若只是切換螢幕，可按 <strong>Return display to this Mac</strong>；控制中的緊急快速鍵或接收端的 <strong>Return keyboard and mouse to [M5 Mac]</strong> 操作可恢復本機路由。</li>
       </ol>
       <p>若 Intel Mac 接在 HDMI 2，請將所有對應的輸入選擇改成 HDMI 2。螢幕與線材必須提供 DDC/CI；切換失敗時請查看診斷並用螢幕 OSD 手動選擇輸入來源。</p>
     </section>
@@ -181,6 +181,7 @@
         <li>兩邊的簽署決定都完成後，MacKVM 會自動嘗試建立加密連線；若狀態仍是 idle，請在已配對裝置列按 <strong>Connect</strong>。</li>
         <li>鍵盤與滑鼠接在 M5 Pro 時，請按 <strong>Show other Mac</strong> 或 <strong>Share keyboard and mouse with [Intel Mac]</strong>。兩者在控制前置條件完成時都使用受保護的先切畫面流程。新配對的接收端會自動允許該已釘選 Mac；若要每次都確認，請在 <strong>Paired device information</strong> 關閉 <strong>Automatically allow control from this Mac</strong>，之後接收端才需按 <strong>Allow</strong>。未啟用時，即使沒有打開 MacKVM 選單，也會收到 macOS 原生通知，提供 <strong>Allow</strong>、<strong>Deny</strong> 與 <strong>Review in MacKVM</strong>。Review 會開啟明確的 Allow/Deny 對話框；螢幕鎖定時按 Allow 必須先通過 macOS 驗證。</li>
       </ol>
+      <p>任一台 Mac 都可以發起配對。若接收端出現 macOS Firewall 提示，先允許 incoming connections；發起端若停在等待狀態，完成規則後按 <strong>Cancel pairing</strong>，再按 <strong>Retry pairing</strong>。在 M5／Intel 配置中，由 Intel Mac 發起可作為 Intel 尚未允許外部連入時的 workaround；配對協定本身不綁定架構。</p>
       <p>第一次配對後，裝置的公開金鑰會被保存。若看到不預期的裝置名稱或驗證碼不一致，請按 <strong>Decline</strong>。</p>
     </section>
 
@@ -208,7 +209,7 @@
         <li>通知中的按鈕會帶著該次請求的識別碼與一次性的本機 nonce；請求逾時、取消或連線中斷後，舊通知的按鈕不會重新啟動控制。</li>
         <li>控制端按 <strong>Return keyboard and mouse to this Mac</strong> 可結束共享。</li>
         <li>要從 Intel Mac 切回 M5 Pro，接收端按 <strong>Return keyboard and mouse to [M5 Mac]</strong>，會立即停止注入、釋放可能按住的按鍵／滑鼠按鈕，並通知控制端。</li>
-        <li>M5 Pro 的緊急停止快捷鍵：<strong>Control-Option-Command-Escape</strong>；全域 <strong>Control-Option-Command-K</strong> 不必開啟選單即可切換分享，閒置時開始請求、控制中或接收中返回本機／控制端。</li>
+        <li>M5 Pro 的緊急停止快捷鍵：<strong>Control-Option-Command-Escape</strong>；全域 <strong>Control-Option-Command-K</strong> 不必開啟選單即可切換分享，閒置時開始請求、控制中或接收中返回本機／控制端。<strong>Control-Option-Command-O</strong> 只切換螢幕到另一台 Mac，不會改變鍵盤／滑鼠控制權。</li>
         <li>網路中斷時，MacKVM 會立刻把鍵盤與滑鼠控制歸還本機，並釋放可能按住的按鍵和滑鼠按鈕。</li>
         <li>如果是已連線的 peer 暫時離線，MacKVM 會以 0／1／2／4…30 秒的退避
           自動重連；已啟用無縫控制的配對裝置不需再次按 <strong>Allow</strong>，關閉授權的
@@ -254,7 +255,7 @@
     </section>
 
     <footer>
-      <p>MacKVM 使用手冊 · 對應版本 0.12.4 · 最後更新 2026-08-20</p>
+      <p>MacKVM 使用手冊 · 對應版本 0.12.22 · 最後更新 2026-08-21</p>
     </footer>
   </main>
 </body>

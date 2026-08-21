@@ -46,6 +46,9 @@ flowchart LR
 3. 發起端與回應端交換簽署的 commitment，再揭露獨立的隨機貢獻。
 4. 雙方用貢獻、request UUID、角色與公開金鑰計算六位數驗證碼，使用者在兩台 Mac
    比對後，接收端按 **Accept**、發起端按 **Confirm code**。
+   任一台 Mac 都可以擔任發起端；若接收端的 listener 因 macOS Firewall 等待，選單可按
+   **Cancel pairing** 或 **Retry pairing**。這是傳輸／防火牆狀態，不是 Apple Silicon 與
+   Intel 的密碼角色差異。
 5. 完成訊息與 acknowledgement 都成功、TCP half-close 確認後，才將公開金鑰釘選到
    peer UUID。取消或 Forget 會清除延遲完成，避免舊配對恢復信任。
 6. 控制連線交換簽署的短期 P-256 金鑰，使用方向分離的 HKDF 金鑰與 ChaChaPoly；
@@ -163,4 +166,6 @@ stateDiagram-v2
 **Return keyboard and mouse to [M5 Mac]**，控制端也可按
 **Return keyboard and mouse to this Mac** 或使用
 `Control-Option-Command-K` 在閒置／控制中切換，或用
-`Control-Option-Command-Escape` 緊急中斷。
+`Control-Option-Command-Escape` 緊急中斷。獨立的
+`Control-Option-Command-O` 只會把螢幕輸入切到另一台 Mac，不會改變目前鍵盤／滑鼠的
+控制權。

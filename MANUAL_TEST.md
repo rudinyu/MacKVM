@@ -33,7 +33,7 @@ Release check (from the M5 Pro) is also available:
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist && shasum -a 256 -c MacKVM-0.12.4-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-0.12.22-universal.dmg.sha256)
 ```
 
 Expected: the app reports both `arm64` and `x86_64`, and an ad-hoc signature
@@ -97,7 +97,6 @@ scan before accepting a new model mapping.
 
 Expected:
 
-- **Show this Mac** on the M5 Pro selects USB-C.
 - **Show other Mac** on the M5 Pro selects HDMI 1 and starts the guarded
   keyboard/mouse hand-off when control prerequisites are ready.
 - If control prerequisites are not ready, **Show other Mac** still performs
@@ -175,6 +174,10 @@ Expected:
    **Confirm code** after comparing the same code.
 5. Repeat from a clean pairing state with **Pair** pressed on only one Mac and
    both signed decisions completed.
+6. Block the receiving Mac's incoming rule or leave its firewall prompt
+   unanswered. Confirm the initiator shows a waiting status, then use
+   **Cancel pairing** and **Retry pairing** after allowing the rule. Repeat with
+   the Intel Mac as initiator and then with the M5 Pro as initiator.
 
 Expected:
 
@@ -182,6 +185,8 @@ Expected:
 - A code mismatch or decline never creates trust.
 - The initiating Mac's Pair and Confirm code actions plus the receiving Mac's
   Accept action converge to one request and one code.
+- A waiting transport can be canceled without quitting either app, and Retry
+  starts a fresh request after firewall approval.
 - **Forget** removes the pinned key; reconnect is blocked until pairing again.
 
 ## 5. Secure reconnect
@@ -283,8 +288,11 @@ Expected:
 - Pointer coordinates remain bounded to the receiving main display.
 - Four-click sequences are delivered.
 - Disconnect/end paths release every held key and mouse button.
-- Selecting **Show this Mac** while a request is active or waiting stops remote
+- Using the emergency shortcut or the receiver's **Return keyboard and mouse
+  to [M5 Mac]** action while a request is active or waiting stops remote
   capture and restores the local display and keyboard route.
+- After a display-only **Show other Mac**, **Return display to this Mac** is
+  available even when the global emergency shortcut could not be registered.
 - A second inbound control request is denied without disturbing the active one.
 - Toggling an input method (step 13) does not end control and does not change
   which characters are typed; a differing keyboard layout no longer denies the
@@ -331,6 +339,9 @@ Expected:
    display switches before input capture starts.
 2. With the session connected and idle, press **Control-Option-Command-K** and
    verify that the control request starts without opening the menu.
+   Press **Control-Option-Command-O** and verify that only the monitor input
+   switches to the other Mac; keyboard/mouse ownership and capture state stay
+   unchanged.
 3. While controlling, press **Control-Option-Command-K** and verify that input
    returns locally; repeat with **Control-Option-Command-Escape**.
 4. Repeat using **Return keyboard and mouse to this Mac**.
@@ -347,6 +358,8 @@ Expected:
 - The shortcut is consumed locally and immediately stops forwarding.
 - `Control-Option-Command-K` starts or ends the control route without opening
   the menu, depending on the current state.
+- `Control-Option-Command-O` switches only the monitor input and never changes
+  the current keyboard/mouse owner.
 - The receiving Mac can stop a live session without disconnecting or quitting;
   both held keys and mouse buttons are released before the peer is notified.
 - Keyboard and mouse return before any monitor-switch result is assumed.
@@ -428,10 +441,9 @@ or macOS privacy prompts.
    **External USB switch (bidirectional)** on both, verify both systems see the
    devices, and test control in both directions. Do not rely on the app to
    detect the switch.
-4. Use **Show this Mac** and **Show other Mac** while watching the MA270U OSD:
-   USB-C must show the M5 Pro and HDMI 1 (or the selected HDMI input) must show
-   the Intel Mac. If DDC/CI fails, use the OSD manually and record the
-   diagnostic text.
+4. Use **Show other Mac** while watching the MA270U OSD: HDMI 1 (or the
+   selected HDMI input) must show the Intel Mac. If DDC/CI fails, use the OSD
+   manually and record the diagnostic text.
 5. During an active control session, test the menu-bar **Return keyboard and mouse to [M5 Mac]**
    action, the emergency shortcut, a network unplug/reconnect, and a quit.
    Confirm the local keyboard/mouse returns and no key or mouse button remains

@@ -100,6 +100,10 @@ The pairing protocol currently works as follows:
    completion messages, and completion acknowledgements arrive. Each
    acknowledgement closes that Mac's sending direction; the peer's half-close
    must also arrive before trust is persisted.
+   Either Mac may be the initiator. A blocked or waiting inbound listener is a
+   transport/firewall condition, not a different cryptographic role; the menu
+   exposes **Cancel pairing** and **Retry pairing** and clears unfinished
+   requests when Network.framework reports a service failure.
 6. A later control connection exchanges signed ephemeral P-256 keys, derives
    directional keys with HKDF, and requires an encrypted key-confirmation packet
    before the responder marks the session connected.
@@ -285,7 +289,9 @@ while the receiver can use **Return keyboard and mouse to [M5 Mac]** to release
 injected input and return control to the controller.
 The global **Control–Option–Command–K** shortcut toggles the same route: it
 starts a normal control request while idle and returns input when either side
-is actively controlling or receiving.
+is actively controlling or receiving. The independent
+**Control–Option–Command–O** shortcut changes only the monitor input to the
+other Mac; it leaves the current keyboard/mouse owner unchanged.
 
 `SecureSessionService` remembers only a user-selected paired peer for automatic
 reconnect. `NWPathMonitor` pauses attempts while the network path is unavailable
@@ -427,8 +433,8 @@ behavior are covered by the automated test suite.
 12. On either Mac, select **Detect DDC-capable displays** and choose the
     intended display explicitly before selecting the matching preset. Native
     DDC/CI uses `IOAVService` on Apple Silicon and `IOI2C` on Intel. Test
-    **Show this Mac** and **Show other Mac**. If the display does not expose
-    DDC/CI, follow the diagnostic and use the monitor OSD.
+    **Show other Mac**. If the display does not expose DDC/CI, follow the
+    diagnostic and use the monitor OSD.
 13. After the receiver accepts and the initiator confirms the matching code, the
     app automatically attempts to connect the encrypted session. If it remains idle, select **Connect** on
     one paired row. When the encrypted session is connected, **Show other Mac**
@@ -446,13 +452,16 @@ behavior are covered by the automated test suite.
     **Control–Option–Command–Escape** or use **Return keyboard and mouse to
     this Mac** on the controller; the receiver can also select **Return
     keyboard and mouse to [M5 Mac]**. If DDC cannot switch the monitor, follow the diagnostic and
-    select the requested input through the OSD.
+    select the requested input through the OSD. A display-only route can be
+    restored with **Return display to this Mac**, even when the global
+    emergency shortcut could not be registered.
 
 After an authenticated transport loss, the selected peer is retried with
 bounded backoff and no new pairing. A seamless-authorized peer does not need a
 fresh Allow action; an opted-out peer does. Use **Disconnect** or **Forget** to
-clear the reconnect intent. Selecting **Show this Mac** also ends an active or
-waiting remote-control request before restoring the local display and input. If
+clear the reconnect intent. The emergency shortcut or the receiver's
+**Return keyboard and mouse to [M5 Mac]** action ends an active or waiting
+remote-control request before restoring the local display and input. If
 the bootstrap screen reports an identity/keychain mismatch, use its
 explicit reset action, relaunch, and pair both Macs again.
 

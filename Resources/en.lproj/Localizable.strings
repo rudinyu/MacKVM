@@ -31,6 +31,10 @@
 "Optional but recommended: enable this before the first request so Allow/Deny alerts are ready while the menu is closed." = "Optional but recommended: enable this before the first request so Allow/Deny alerts are ready while the menu is closed.";
 "Respond to the macOS Local Network prompt before continuing." = "Respond to the macOS Local Network prompt before continuing.";
 "Pairing requests" = "Pairing requests";
+"Pairing with %@…" = "Pairing with %@…";
+"If macOS asks about the firewall, allow incoming connections on the receiving Mac, then retry pairing." = "If macOS asks about the firewall, allow incoming connections on the receiving Mac, then retry pairing.";
+"Cancel pairing" = "Cancel pairing";
+"Retry pairing" = "Retry pairing";
 "Accept" = "Accept";
 "Decline" = "Decline";
 "Confirm pairing" = "Confirm pairing";
@@ -66,8 +70,8 @@
 "Other Mac" = "Other Mac";
 "Detect DDC-capable displays" = "Detect DDC-capable displays";
 "Selected DDC display verified" = "Selected DDC display verified";
-"Show this Mac" = "Show this Mac";
 "Show other Mac" = "Show other Mac";
+"Return display to this Mac" = "Return display to this Mac";
 "No DDC-capable display detected yet. Connect an external display, then detect it." = "No DDC-capable display detected yet. Connect an external display, then detect it.";
 "Only a detected DDC-capable display can enable automatic switching." = "Only a detected DDC-capable display can enable automatic switching.";
 "Native DDC display selector" = "Native DDC display selector";

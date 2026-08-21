@@ -43,7 +43,7 @@
 <body>
   <main>
     <header>
-      <div class="badge">MacKVM 0.12.4</div>
+      <div class="badge">MacKVM 0.12.22</div>
       <h1>MacKVM User Manual</h1>
       <p class="lede">A macOS app with a KVM menu-bar entry and full control window for sharing one keyboard, mouse, and optionally a BenQ MA270U display between two MacBook Pro computers.</p>
       <p><a href="USER_MANUAL.zh-TW.html" lang="zh-Hant">繁體中文版</a> · <a href="USER_MANUAL.md">Markdown version</a></p>
@@ -95,7 +95,7 @@
       <p>Create and verify a DMG:</p>
       <pre><code>./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist &amp;&amp; shasum -a 256 -c MacKVM-0.12.4-universal.dmg.sha256)</code></pre>
+(cd dist &amp;&amp; shasum -a 256 -c MacKVM-0.12.22-universal.dmg.sha256)</code></pre>
       <p>The DMG is built from a clean staging directory and produces a portable SHA-256 sidecar. Ad-hoc signing is for local testing; distribution requires Developer ID, hardened runtime, and Apple notarization.</p>
     </section>
 
@@ -122,8 +122,8 @@
         <li>Some MA270U firmware does not expose a DDC/CI toggle in the OSD; MacKVM uses its native bridge when macOS exposes the display.</li>
         <li>MacKVM uses native IOKit DDC/CI: <code>IOAVService</code> on Apple Silicon and <code>IOI2C</code> on Intel. No Homebrew helper is required.</li>
         <li>Select <strong>Detect DDC-capable displays</strong> on either Mac and choose the intended display explicitly. MacKVM stores its stable native selector instead of assuming display number 1.</li>
-        <li>Choose <strong>M5 / USB-C preset</strong> on the M5 Pro and <strong>Intel / HDMI preset</strong> on the Intel Mac; the MA270U EDID mapping sends USB-C as VCP 19 (<code>0x13</code>) and HDMI 1 as VCP 17 (<code>0x11</code>). Other monitor models use their own firmware mapping; run the diagnostic scan before relying on a new model.</li>
-        <li>Use <strong>Show this Mac</strong> and <strong>Show other Mac</strong> before starting control. On the M5 Pro, <strong>Show other Mac</strong> also starts the guarded keyboard/mouse hand-off when control prerequisites are ready; <strong>Share keyboard and mouse with [Intel Mac]</strong> remains the explicit equivalent. The Intel Mac selects <strong>Allow</strong> unless seamless control was enabled for the paired M5 Pro. If native detection or switching fails, read <strong>DDC diagnostic</strong>, check the direct cable path, and use the OSD as a fallback.</li>
+        <li>Choose <strong>M5 / USB-C preset</strong> on the M5 Pro and <strong>Intel / HDMI preset</strong> on the Intel Mac; the MA270U EDID mapping sends USB-C as VCP 19 (<code>0x13</code>) and HDMI 1 as VCP 17 (<code>0x11</code>). A fresh Intel install defaults its local route to HDMI 1; the preset repairs older saved USB-C preferences. Other monitor models use their own firmware mapping; run the diagnostic scan before relying on a new model.</li>
+        <li>Use <strong>Show other Mac</strong> before starting control. On the M5 Pro it starts the guarded keyboard/mouse hand-off when control prerequisites are ready; <strong>Share keyboard and mouse with [Intel Mac]</strong> remains the explicit equivalent. The Intel Mac selects <strong>Allow</strong> unless seamless control was enabled for the paired M5 Pro. If native detection or switching fails, read <strong>DDC diagnostic</strong>, check the direct cable path, and use the OSD as a fallback. For a display-only route, use <strong>Return display to this Mac</strong>; the emergency shortcut or the receiver's <strong>Return keyboard and mouse to [M5 Mac]</strong> action restores the local route during control.</li>
       </ol>
       <p>If the Intel Mac uses HDMI 2, select HDMI 2 consistently in both input pickers. The monitor and cable must expose DDC/CI; otherwise use the monitor OSD.</p>
     </section>
@@ -166,6 +166,7 @@
         <li>After both signed decisions complete, MacKVM automatically attempts to connect the encrypted session. If it remains idle, select <strong>Connect</strong> on a paired row.</li>
         <li>With the keyboard and mouse connected to the M5 Pro, select <strong>Show other Mac</strong> or <strong>Share keyboard and mouse with [Intel Mac]</strong>. Both use the guarded display-first hand-off when control prerequisites are ready. A newly paired receiver automatically authorizes that pinned peer. To require a prompt every time, turn off <strong>Automatically allow control from this Mac</strong> under <strong>Paired device information</strong>; the receiver then selects <strong>Allow</strong>. With the menu closed, use the native <strong>Allow</strong>, <strong>Deny</strong>, or <strong>Review in MacKVM</strong> notification.</li>
       </ol>
+      <p>Either Mac can initiate. If the receiving Mac shows a macOS Firewall prompt, allow incoming connections there. If the initiator remains waiting, use <strong>Cancel pairing</strong> or <strong>Retry pairing</strong> after the firewall rule is allowed. Starting from the Intel Mac is a valid workaround when its inbound rule has not yet been approved; the protocol is not architecture-specific.</p>
       <p>Review opens an explicit Allow/Deny dialog. Allow on a locked Mac requires macOS authentication. Expired notification actions cannot start a later request.</p>
     </section>
 
@@ -185,7 +186,7 @@
       <ul>
         <li>Input is not suppressed until the receiver selects <strong>Allow</strong>, unless seamless control was enabled for that pinned peer.</li>
         <li>Use <strong>Return keyboard and mouse to this Mac</strong> on the controller. To switch back from Intel, the receiver selects <strong>Return keyboard and mouse to [M5 Mac]</strong>.</li>
-        <li>Emergency shortcut on the M5 Pro: <strong>Control-Option-Command-Escape</strong>. The global <strong>Control-Option-Command-K</strong> shortcut toggles sharing without opening the menu; it starts a request while idle and returns input while controlling or receiving.</li>
+        <li>Emergency shortcut on the M5 Pro: <strong>Control-Option-Command-Escape</strong>. The global <strong>Control-Option-Command-K</strong> shortcut toggles sharing without opening the menu; it starts a request while idle and returns input while controlling or receiving. <strong>Control-Option-Command-O</strong> switches only the display to the other Mac without changing keyboard/mouse ownership.</li>
         <li>Network loss immediately returns input locally and releases held keys and mouse buttons.</li>
         <li>A peer reconnects with bounded 0/1/2/4…30-second backoff. Seamless authorization resumes control without another prompt; an opted-out peer requires fresh consent. <strong>Disconnect</strong>, <strong>Forget</strong>, and <strong>Quit</strong> clear reconnect intent.</li>
         <li>A keyboard-layout mismatch is rejected before consent; a layout change during control safely ends remote input.</li>
@@ -219,7 +220,7 @@
     </section>
 
     <footer>
-      <p>MacKVM User Manual · Version 0.12.4 · Updated 2026-08-20</p>
+      <p>MacKVM User Manual · Version 0.12.22 · Updated 2026-08-21</p>
     </footer>
   </main>
 </body>

@@ -47,6 +47,33 @@ enum KeyboardMouseSwitchHotKey {
     }
 }
 
+/// A separate monitor-only shortcut. `O` means “Other” and deliberately does
+/// not share the `K` shortcut's control state, so users can move the display
+/// route without toggling keyboard/mouse capture.
+enum OtherMonitorSwitchHotKey {
+    static let keyCode: UInt16 = 31 // O
+    static let displayName = "Control-Option-Command-O"
+
+    static func matches(
+        keyCode: UInt16,
+        flags: CGEventFlags
+    ) -> Bool {
+        guard keyCode == Self.keyCode else { return false }
+        let required: CGEventFlags = [
+            .maskControl, .maskAlternate, .maskCommand
+        ]
+        return flags.intersection(required) == required
+    }
+
+    static func matches(_ event: NSEvent) -> Bool {
+        guard event.type == .keyDown, !event.isARepeat else { return false }
+        return matches(
+            keyCode: UInt16(event.keyCode),
+            flags: CGEventFlags(rawValue: UInt64(event.modifierFlags.rawValue))
+        )
+    }
+}
+
 /// Media, brightness, and illumination keys are delivered as `NSSystemDefined`
 /// events, which `CGEventType` has no case for. The tap mask and the dispatch
 /// below therefore both work from the raw event type, and the payload is read
@@ -244,6 +271,7 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
     var onEvent: ((RemoteInputEvent) -> Void)?
     var onEmergencyStop: (() -> Void)?
     var onSwitchControl: (() -> Void)?
+    var onSwitchMonitor: (() -> Void)?
 
     var keyboardLayoutIdentifier: String? {
         KeyboardLayoutIdentifier.current()
@@ -254,6 +282,8 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
     private var hotKeyEventTap: CFMachPort?
     private var hotKeyRunLoopSource: CFRunLoopSource?
     private var registeredHotKey: EventHotKeyRef?
+    private var registeredEmergencyHotKey: EventHotKeyRef?
+    private var registeredMonitorSwitchHotKey: EventHotKeyRef?
     private var registeredHotKeyHandler: EventHandlerRef?
     private var suppressesLocalEvents = false
     private var capsLockCapturePolicy = CapsLockCapturePolicy()
@@ -281,7 +311,8 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
             : "Enable Input Monitoring in System Settings, then return to MacKVM"
     }
 
-    /// Installs a dedicated session event tap for the switch shortcut. Unlike
+    /// Installs a dedicated session event tap for the switch and emergency
+    /// shortcuts. Unlike
     /// NSEvent's global monitor, a session tap can consume the event even
     /// when another application is focused, so the shortcut cannot trigger a
     /// second action in that application. This tap is intentionally separate
@@ -345,26 +376,67 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
             return
         }
 
-        let hotKeyID = EventHotKeyID(
-            signature: RegisteredSwitchHotKey.signature,
-            id: RegisteredSwitchHotKey.id
+        let switchStatus = registerCarbonHotKey(
+            keyCode: KeyboardMouseSwitchHotKey.keyCode,
+            id: RegisteredSwitchHotKey.id,
+            modifiers: RegisteredSwitchHotKey.modifiers,
+            storage: &registeredHotKey
         )
-        let registerStatus = RegisterEventHotKey(
-            UInt32(KeyboardMouseSwitchHotKey.keyCode),
-            RegisteredSwitchHotKey.modifiers,
-            hotKeyID,
-            GetApplicationEventTarget(),
-            0,
-            &registeredHotKey
+        let emergencyStatus = registerCarbonHotKey(
+            keyCode: EmergencyReturnHotKey.keyCode,
+            id: RegisteredEmergencyHotKey.id,
+            modifiers: EmergencyReturnHotKey.modifiers,
+            storage: &registeredEmergencyHotKey
         )
-        guard registerStatus == noErr else {
+        let monitorStatus = registerCarbonHotKey(
+            keyCode: OtherMonitorSwitchHotKey.keyCode,
+            id: RegisteredMonitorSwitchHotKey.id,
+            modifiers: RegisteredMonitorSwitchHotKey.modifiers,
+            storage: &registeredMonitorSwitchHotKey
+        )
+
+        // Registration is intentionally independent. A conflicting K
+        // shortcut must not remove Escape emergency recovery or the monitor
+        // route shortcut, and vice versa.
+        if switchStatus != noErr {
+            status = "Could not create the global keyboard/mouse shortcut"
+        } else if emergencyStatus != noErr {
+            status = "Could not create the global emergency shortcut"
+        } else if monitorStatus != noErr {
+            status = "Could not create the global monitor shortcut"
+        }
+        if registeredHotKey == nil,
+           registeredEmergencyHotKey == nil,
+           registeredMonitorSwitchHotKey == nil {
             if let registeredHotKeyHandler {
                 RemoveEventHandler(registeredHotKeyHandler)
             }
             registeredHotKeyHandler = nil
-            status = "Could not create the global switch shortcut"
-            return
         }
+    }
+
+    private func registerCarbonHotKey(
+        keyCode: UInt16,
+        id: UInt32,
+        modifiers: UInt32,
+        storage: inout EventHotKeyRef?
+    ) -> OSStatus {
+        let hotKeyID = EventHotKeyID(
+            signature: RegisteredSwitchHotKey.signature,
+            id: id
+        )
+        let result = RegisterEventHotKey(
+            UInt32(keyCode),
+            modifiers,
+            hotKeyID,
+            GetApplicationEventTarget(),
+            0,
+            &storage
+        )
+        if result != noErr {
+            storage = nil
+        }
+        return result
     }
 
     func stopHotKeyMonitoring() {
@@ -383,10 +455,18 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
         if let registeredHotKey {
             UnregisterEventHotKey(registeredHotKey)
         }
+        if let registeredEmergencyHotKey {
+            UnregisterEventHotKey(registeredEmergencyHotKey)
+        }
+        if let registeredMonitorSwitchHotKey {
+            UnregisterEventHotKey(registeredMonitorSwitchHotKey)
+        }
         if let registeredHotKeyHandler {
             RemoveEventHandler(registeredHotKeyHandler)
         }
         registeredHotKey = nil
+        registeredEmergencyHotKey = nil
+        registeredMonitorSwitchHotKey = nil
         registeredHotKeyHandler = nil
     }
 
@@ -444,6 +524,13 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
                 != InjectedEventMarker.value else {
             return false
         }
+        if isMonitorSwitchShortcut(type: type, event: event) {
+            if type == .keyDown,
+               event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
+                dispatchMonitorSwitch()
+            }
+            return true
+        }
         if isSwitchShortcut(type: type, event: event) {
             if type == .keyDown,
                event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
@@ -458,6 +545,16 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
                     self?.onEmergencyStop?()
                 }
             }
+            return true
+        }
+        if suppressesLocalEvents,
+           type == .flagsChanged,
+           Self.shouldSuppressReservedHotKeyModifierFlags(event.flags) {
+            // K, O, and Escape all reserve the same three modifiers. Consume
+            // the flagsChanged edge that completes that chord so the remote
+            // Mac never observes the full modifier-only combination before
+            // the trigger key can be handled locally. Partial modifier use
+            // remains available for ordinary remote shortcuts.
             return true
         }
         if type.rawValue == SystemDefinedEvent.cgEventTypeRawValue {
@@ -518,14 +615,65 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
         )
     }
 
+    private func isMonitorSwitchShortcut(
+        type: CGEventType,
+        event: CGEvent
+    ) -> Bool {
+        guard type == .keyDown || type == .keyUp else { return false }
+        return OtherMonitorSwitchHotKey.matches(
+            keyCode: UInt16(
+                event.getIntegerValueField(.keyboardEventKeycode)
+            ),
+            flags: event.flags
+        )
+    }
+
     private func dispatchSwitchHotKey() {
         DispatchQueue.main.async { [weak self] in
             self?.onSwitchControl?()
         }
     }
 
-    fileprivate func handleRegisteredHotKey() {
-        dispatchSwitchHotKey()
+    private func dispatchMonitorSwitch() {
+        DispatchQueue.main.async { [weak self] in
+            self?.onSwitchMonitor?()
+        }
+    }
+
+    private func dispatchEmergencyStop() {
+        DispatchQueue.main.async { [weak self] in
+            self?.onEmergencyStop?()
+        }
+    }
+
+    fileprivate func handleRegisteredHotKey(_ event: EventRef?) {
+        var hotKeyID = EventHotKeyID()
+        let status = GetEventParameter(
+            event,
+            EventParamName(kEventParamDirectObject),
+            EventParamType(typeEventHotKeyID),
+            nil,
+            MemoryLayout<EventHotKeyID>.size,
+            nil,
+            &hotKeyID
+        )
+        guard let action = RegisteredHotKeyAction.resolve(
+            parameterStatus: status,
+            id: hotKeyID.id
+        ) else {
+            // A failed Carbon parameter lookup must be a no-op. Falling back
+            // to K here could toggle remote input while the user is trying
+            // to use Escape for emergency local recovery.
+            return
+        }
+        switch action {
+        case .emergencyStop:
+            dispatchEmergencyStop()
+        case .monitorSwitch:
+            dispatchMonitorSwitch()
+        case .switchControl:
+            dispatchSwitchHotKey()
+        }
     }
 
     fileprivate func reenableHotKeyEventTap() {
@@ -538,16 +686,30 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
         event: CGEvent
     ) -> Bool {
         guard event.getIntegerValueField(.eventSourceUserData)
-                != InjectedEventMarker.value,
-              isSwitchShortcut(type: type, event: event) else {
+                != InjectedEventMarker.value else {
             return false
         }
+        let isSwitchShortcut = isSwitchShortcut(type: type, event: event)
+        let isEmergencyShortcut = isEmergencyShortcut(type: type, event: event)
+        let isMonitorSwitchShortcut = isMonitorSwitchShortcut(
+            type: type,
+            event: event
+        )
+        guard isSwitchShortcut || isEmergencyShortcut || isMonitorSwitchShortcut
+        else { return false }
         if type == .keyDown,
            event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
-            dispatchSwitchHotKey()
+            if isSwitchShortcut {
+                dispatchSwitchHotKey()
+            } else if isEmergencyShortcut {
+                dispatchEmergencyStop()
+            } else {
+                dispatchMonitorSwitch()
+            }
         }
         // Consume both edges whenever the modifiers are still held. This
-        // keeps the foreground application from seeing a partial shortcut.
+        // keeps the foreground application from seeing a partial shortcut,
+        // including emergency return while no input capture is active.
         return true
     }
 
@@ -740,6 +902,15 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
         (CGEventMask(1) << CGEventType.keyDown.rawValue)
             | (CGEventMask(1) << CGEventType.keyUp.rawValue)
     }()
+
+    static func shouldSuppressReservedHotKeyModifierFlags(
+        _ flags: CGEventFlags
+    ) -> Bool {
+        let required: CGEventFlags = [
+            .maskControl, .maskAlternate, .maskCommand
+        ]
+        return flags.intersection(required) == required
+    }
 }
 
 /// Where a received keyDown/keyUp should actually be injected. `.identity`
@@ -789,6 +960,10 @@ enum RemoteInputSinkError: Error, Equatable {
     /// transient state while the main-thread refresh is queued; it must not
     /// tear down an otherwise healthy remote-control session.
     case layoutUnavailable
+    /// CoreGraphics could not allocate the event needed to inject input. This
+    /// is terminal for the current control session so held input is released
+    /// instead of leaving a key or button stuck remotely.
+    case eventCreationFailed
 }
 
 final class RemoteInputSink: ObservableObject, ControlInputSink {
@@ -872,6 +1047,15 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
                 }
                 return
             }
+            guard releaseAllInputsOnQueue() else {
+                publish(
+                    status: "Remote control cannot start until input is released"
+                )
+                DispatchQueue.main.async {
+                    completion(false)
+                }
+                return
+            }
             isAcceptingRemoteInput = true
             beginInputAdmission()
             capsLockRemoteInputPolicy.reset()
@@ -899,9 +1083,13 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
             }
             isAcceptingRemoteInput = false
             capsLockRemoteInputPolicy.reset()
-            releaseAllInputsOnQueue()
+            let released = releaseAllInputsOnQueue()
             hasPublishedInputActivity = false
-            publish(status: "Remote control ended")
+            publish(
+                status: released
+                    ? "Remote control ended"
+                    : "Remote control ended; input release will be retried"
+            )
             DispatchQueue.main.async(execute: completion)
         }
     }
@@ -961,6 +1149,21 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
                 )
                 DispatchQueue.main.async { [weak self] in
                     self?.onControlFailure?(.keyboardLayoutMismatch)
+                }
+            } catch RemoteInputSinkError.eventCreationFailed {
+                // A failable CGEvent initializer must terminate the receiving
+                // session. Otherwise a key-up or mouse-up can remain in the
+                // remote HID state with no later event able to release it.
+                isAcceptingRemoteInput = false
+                invalidateInputAdmission()
+                let released = releaseAllInputsOnQueue()
+                publish(
+                    status: released
+                        ? "Remote control ended: macOS rejected an input event"
+                        : "Remote control ended: retrying input release"
+                )
+                DispatchQueue.main.async { [weak self] in
+                    self?.onControlFailure?(.eventInjectionFailed)
                 }
             } catch {
                 publish(status: "Rejected invalid remote input")
@@ -1091,7 +1294,7 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
         }
 
         guard let event else {
-            throw RemoteInputError.invalidFields
+            throw RemoteInputSinkError.eventCreationFailed
         }
         event.flags = eventFlags(for: input, remap: keyInjectionTarget)
         event.setIntegerValueField(
@@ -1286,7 +1489,8 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
         }
     }
 
-    private func releaseAllInputsOnQueue() {
+    @discardableResult
+    private func releaseAllInputsOnQueue() -> Bool {
         // Release only keys and buttons injected by this sink. Releasing a
         // fixed modifier list would also release modifiers held locally by
         // the user when a remote session ends.
@@ -1299,16 +1503,17 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
                 )
             }
         )
+        var allReleased = true
         for keyCode in keysToRelease {
-            // Clear tracking even if CoreGraphics cannot allocate a synthetic
-            // key-up event; retaining it would poison the next session's
-            // modifier projection and teardown state.
-            pressedKeyCodes.remove(keyCode)
             guard let event = CGEvent(
                 keyboardEventSource: eventSource,
                 virtualKey: CGKeyCode(keyCode),
                 keyDown: false
             ) else {
+                // Keep the entry so a later teardown can retry the release.
+                // Dropping it here would make a failed CoreGraphics
+                // allocation indistinguishable from a delivered key-up.
+                allReleased = false
                 continue
             }
             if ModifierFlagProjection.group(for: keyCode) != nil {
@@ -1325,6 +1530,7 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
             } else {
                 markAndPost(event)
             }
+            pressedKeyCodes.remove(keyCode)
         }
         let location = CGEvent(source: nil)?.location ?? .zero
         for buttonNumber in pressedMouseButtons {
@@ -1340,6 +1546,7 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
                 mouseCursorPosition: location,
                 mouseButton: button
             ) else {
+                allReleased = false
                 continue
             }
             event.setIntegerValueField(
@@ -1347,13 +1554,14 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
                 value: Int64(buttonNumber)
             )
             markAndPost(event)
+            pressedMouseButtons.remove(buttonNumber)
         }
-        pressedMouseButtons.removeAll()
         capsLockRemoteInputPolicy.reset()
         droppedKeyUps.removeAll()
-        // Nothing here is a stuck-key risk to clear: every key it names was
-        // already released above by the loop that drains pressedKeyCodes.
         activeKeyRemap.removeAll()
+        return allReleased
+            && pressedKeyCodes.isEmpty
+            && pressedMouseButtons.isEmpty
     }
 
     private func markAndPost(
@@ -1501,13 +1709,54 @@ private enum RegisteredSwitchHotKey {
         UInt32(controlKey | optionKey | cmdKey)
 }
 
+enum RegisteredHotKeyAction: Equatable {
+    case switchControl
+    case emergencyStop
+    case monitorSwitch
+
+    static func resolve(
+        parameterStatus: OSStatus,
+        id: UInt32
+    ) -> RegisteredHotKeyAction? {
+        guard parameterStatus == noErr else { return nil }
+        switch id {
+        case RegisteredSwitchHotKey.id:
+            return .switchControl
+        case RegisteredEmergencyHotKey.id:
+            return .emergencyStop
+        case RegisteredMonitorSwitchHotKey.id:
+            return .monitorSwitch
+        default:
+            return nil
+        }
+    }
+}
+
+private enum EmergencyReturnHotKey {
+    static let keyCode: UInt16 = 53 // Escape
+    static let modifiers: UInt32 =
+        UInt32(controlKey | optionKey | cmdKey)
+}
+
+private enum RegisteredEmergencyHotKey {
+    static let signature: OSType = RegisteredSwitchHotKey.signature
+    static let id: UInt32 = 2
+}
+
+private enum RegisteredMonitorSwitchHotKey {
+    static let signature: OSType = RegisteredSwitchHotKey.signature
+    static let id: UInt32 = 3
+    static let modifiers: UInt32 =
+        UInt32(controlKey | optionKey | cmdKey)
+}
+
 private let registeredHotKeyEventHandler: EventHandlerUPP = {
-    _, _, userInfo in
+    _, event, userInfo in
     guard let userInfo else { return noErr }
     let service = Unmanaged<InputCaptureService>
         .fromOpaque(userInfo)
         .takeUnretainedValue()
-    service.handleRegisteredHotKey()
+    service.handleRegisteredHotKey(event)
     return noErr
 }
 

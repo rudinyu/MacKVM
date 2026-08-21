@@ -84,6 +84,38 @@ enum NativeDDCService {
         }
     }
 
+    /// Reads the monitor's current input-source VCP value. A read is best
+    /// effort at the caller: some monitors expose Set-VCP but do not answer
+    /// Get-VCP while their inactive input is being reconciled. In that case
+    /// the caller can safely fall back to the explicit write path.
+    static func currentInputValue(displaySelector: String) throws -> UInt32 {
+        let selector = displaySelector.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !selector.isEmpty else {
+            throw NativeDDCServiceError(message: "No DDC display is selected")
+        }
+        var value = MacKVMNativeDDCVCPValue(
+            currentValue: 0,
+            maximumValue: 0,
+            valueType: 0
+        )
+        var error = [CChar](repeating: 0, count: 512)
+        let succeeded = selector.withCString { selectorPointer in
+            MacKVMNativeDDCReadVCP(
+                selectorPointer,
+                0x60,
+                &value,
+                &error,
+                error.count
+            )
+        }
+        guard succeeded != 0 else {
+            throw NativeDDCServiceError(message: errorMessage(error))
+        }
+        return UInt32(value.currentValue)
+    }
+
     private static func errorMessage(_ buffer: [CChar]) -> String {
         let message = buffer.withUnsafeBufferPointer { pointer in
             guard let baseAddress = pointer.baseAddress else { return "" }

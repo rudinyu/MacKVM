@@ -13,6 +13,25 @@ final class MonitorControllerTests: XCTestCase {
         }
     }
 
+    func testArchitectureDefaultsMatchThePhysicalMonitorPorts() {
+        XCTAssertEqual(
+            MonitorController.defaultInputPreferences(isAppleSilicon: true).local,
+            .usbC
+        )
+        XCTAssertEqual(
+            MonitorController.defaultInputPreferences(isAppleSilicon: true).remote,
+            .hdmi1
+        )
+        XCTAssertEqual(
+            MonitorController.defaultInputPreferences(isAppleSilicon: false).local,
+            .hdmi1
+        )
+        XCTAssertEqual(
+            MonitorController.defaultInputPreferences(isAppleSilicon: false).remote,
+            .usbC
+        )
+    }
+
     func testNativeDDCIsAvailableOnBothSupportedArchitectures() {
         withDefaults { defaults in
             XCTAssertTrue(MonitorController(defaults: defaults)
@@ -49,6 +68,38 @@ final class MonitorControllerTests: XCTestCase {
             MonitorController.canUseAutomaticDDCSwitching(
                 displaySelector: "1",
                 isDisplaySelectorVerified: true
+            )
+        )
+    }
+
+    func testRoutePreservationRefreshDefersWhileDiscoveryIsInFlight() {
+        let now = Date()
+        XCTAssertTrue(
+            MonitorController.shouldDeferRoutePreservationRefresh(
+                isDiscoveringDisplays: true,
+                attemptDeadline: now.addingTimeInterval(1),
+                now: now
+            )
+        )
+        XCTAssertFalse(
+            MonitorController.shouldDeferRoutePreservationRefresh(
+                isDiscoveringDisplays: true,
+                attemptDeadline: now.addingTimeInterval(-1),
+                now: now
+            )
+        )
+        XCTAssertFalse(
+            MonitorController.shouldDeferRoutePreservationRefresh(
+                isDiscoveringDisplays: false,
+                attemptDeadline: now.addingTimeInterval(1),
+                now: now
+            )
+        )
+        XCTAssertFalse(
+            MonitorController.shouldDeferRoutePreservationRefresh(
+                isDiscoveringDisplays: true,
+                attemptDeadline: nil,
+                now: now
             )
         )
     }

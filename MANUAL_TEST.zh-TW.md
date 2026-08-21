@@ -31,7 +31,7 @@ Intel Mac 的 `/Applications`，再開啟各自架構的 app。
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist && shasum -a 256 -c MacKVM-0.12.4-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-0.12.22-universal.dmg.sha256)
 ```
 
 本機 ad-hoc 簽章只能用於測試；正式散布必須使用 Developer ID、hardened runtime
@@ -85,7 +85,7 @@ transport 與 VCP `0x60` 狀態。若型號 mapping 不明，明確執行掃描�
 HDMI 1 使用 VCP 17（`0x11`）。其他型號使用自己的 mapping；螢幕可能在 I2C 傳輸成功時
 仍靜默忽略未公告的輸入值。新增型號前先執行診斷掃描。
 
-預期結果：**Show this Mac** 顯示 USB-C，**Show other Mac** 顯示指定 HDMI；在 M5 Pro
+預期結果：**Show other Mac** 顯示指定 HDMI；在 M5 Pro
 若控制前置條件已完成，**Show other Mac** 同時開始受保護的鍵盤／滑鼠分享；若前置
 條件未完成，仍只執行顯示器切換並讓實體輸入留在本機；原生 DDC/CI 失敗時五秒內回報
 診斷並可用 OSD 手動切換，不能悄悄改用不明顯示器。
@@ -106,9 +106,12 @@ HDMI 1 使用 VCP 17（`0x11`）。其他型號使用自己的 mapping；螢幕�
 3. 接收端在驗證碼一致時按 **Accept**；發起端比對相同驗證碼後按
    **Confirm code**。
 4. 配對完成後按 **Connect**，確認顯示已建立加密連線。
+5. 讓接收端的 Firewall 規則保持未允許或不處理系統提示，確認發起端顯示等待狀態；
+   按 **Cancel pairing**，允許規則後再按 **Retry pairing**。分別以 Intel Mac 與 M5 Pro
+   作為發起端各測一次。
 
 預期結果：公開金鑰只在發起端 Pair／Confirm code、接收端 Accept、雙方完成簽署與 close receipt 後保存；錯誤名稱或驗證碼
-不一致時按 **Decline**，不能建立信任。
+不一致時按 **Decline**，不能建立信任；等待中的配對不需要退出兩邊 App 就能取消並重新開始。
 
 ## 5. 安全重連
 
@@ -154,14 +157,17 @@ HDMI 1 使用 VCP 17（`0x11`）。其他型號使用自己的 mapping；螢幕�
 16. 控制中按控制端實體鍵盤的電源鍵，確認兩台都沒有任何反應（接收端不會跳出關機
     或睡眠對話框）；按 Caps Lock 確認只切換一次、不會誤觸發兩次。
 17. 連線閒置時按 `Control-Option-Command-K`，確認不開啟選單也會開始控制請求；
+    按 `Control-Option-Command-O`，確認只有螢幕輸入切到另一台 Mac，鍵盤／滑鼠控制權與
+    控制狀態都不變；
     控制中再按一次，確認鍵盤與滑鼠返回本機。M5 Pro 也用
     `Control-Option-Command-Escape` 中斷，再用
-    **Return keyboard and mouse to this Mac** 結束控制；接收端 Intel Mac
+    **Return keyboard and mouse to this Mac** 結束控制；顯示器只有切換時可按
+    **Return display to this Mac**；接收端 Intel Mac
     按 **Return keyboard and mouse to [M5 Mac]** 返回。
 18. 若使用雙向 USB switch，在接收端按 `Control-Option-Command-K`，確認控制權返回
     控制端。
 
-預期結果：`Control-Option-Command-K` 可在閒置、控制中與接收中切換正確路由；新配對且啟用無縫控制時不需再次按 Allow；關閉後，接收端按 Allow 前不會抑制本機輸入；控制結束、斷線與取消後不會留下按住
+預期結果：`Control-Option-Command-K` 可在閒置、控制中與接收中切換正確路由；`Control-Option-Command-O` 只切換螢幕輸入，不改變鍵盤／滑鼠控制權；新配對且啟用無縫控制時不需再次按 Allow；關閉後，接收端按 Allow 前不會抑制本機輸入；控制結束、斷線與取消後不會留下按住
 的按鍵或滑鼠按鈕；過期通知不能授權另一個請求；切換輸入法不再誤判為配置不符；
 步驟 9 的 Cmd-Z 即使兩台字母位置不同，也要在接收端觸發 Undo——必須落在接收端
 真正打得出「z」的按鍵上，不是寄送端原始 keyCode 在接收端配置下代表的字元（以

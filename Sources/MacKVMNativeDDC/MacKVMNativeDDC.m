@@ -1377,7 +1377,7 @@ static IOReturn readAppleSilicon(
     uint8_t query[4] = { 0x82, 0x01, vcpCode, 0x00 };
     // IOAVService receives the DDC payload without the I2C data-address byte.
     // Get-VCP reads therefore use the source/write address (0x6E) as the
-    // checksum seed; the data address is included only for Set-VCP writes.
+    // checksum seed; the data address is supplied separately to the I2C call.
     query[3] = kMacKVMNativeDDCWriteAddress
         ^ query[0] ^ query[1] ^ query[2];
     IOReturn result = kIOReturnError;
@@ -1398,7 +1398,10 @@ static IOReturn readAppleSilicon(
         result = IOAVServiceReadI2C(
             display->avService,
             display->chipAddress,
-            kMacKVMNativeDDCAddressByte,
+            // IOAVServiceReadI2C starts at the reply payload offset. The
+            // 0x51 DDC data-address byte is already part of the transaction
+            // setup/checksum and must not be used as a 0x51-byte reply offset.
+            0,
             response,
             12
         );
@@ -1410,6 +1413,12 @@ static IOReturn readAppleSilicon(
 }
 
 #else
+
+static bool parseVCPResponse(
+    const uint8_t response[12],
+    uint8_t vcpCode,
+    MacKVMNativeDDCVCPValue *value
+);
 
 static IOReturn writeIntel(
     const MacKVMNativeDDCDisplay *display,
@@ -1485,15 +1494,29 @@ static IOReturn readIntel(
         return result == kIOReturnSuccess ? kIOReturnNoDevice : result;
     }
 
-    uint8_t query[5] = {
+    // IOI2C supports two ways of expressing the DDC data address.  Newer
+    // Intel framebuffers require the address in sendSubAddress with the
+    // sub-address communication flag; older drivers accept the legacy form
+    // where 0x51 is included in the send buffer.  Try the standards-based
+    // form first, then retain the legacy form as a compatibility fallback.
+    uint8_t queryWithSubAddress[4] = { 0x82, 0x01, vcpCode, 0x00 };
+    queryWithSubAddress[3] = kMacKVMNativeDDCWriteAddress
+        ^ kMacKVMNativeDDCAddressByte
+        ^ queryWithSubAddress[0]
+        ^ queryWithSubAddress[1]
+        ^ queryWithSubAddress[2];
+    uint8_t queryWithEmbeddedAddress[5] = {
         kMacKVMNativeDDCAddressByte,
-        0x82,
-        0x01,
-        vcpCode,
+        queryWithSubAddress[0],
+        queryWithSubAddress[1],
+        queryWithSubAddress[2],
         0x00
     };
-    query[4] = kMacKVMNativeDDCWriteAddress
-        ^ query[0] ^ query[1] ^ query[2] ^ query[3];
+    queryWithEmbeddedAddress[4] = kMacKVMNativeDDCWriteAddress
+        ^ queryWithEmbeddedAddress[0]
+        ^ queryWithEmbeddedAddress[1]
+        ^ queryWithEmbeddedAddress[2]
+        ^ queryWithEmbeddedAddress[3];
     result = kIOReturnNoDevice;
 
     for (IOItemCount bus = 0; bus < busCount; bus += 1) {
@@ -1517,20 +1540,28 @@ static IOReturn readIntel(
             continue;
         }
 
-        memset(response, 0, 12);
-        IOI2CRequest request;
-        memset(&request, 0, sizeof(request));
-        request.sendTransactionType = kIOI2CSimpleTransactionType;
-        request.sendAddress = kMacKVMNativeDDCWriteAddress;
-        request.sendBuffer = (vm_address_t)query;
-        request.sendBytes = sizeof(query);
-        request.replyAddress = 0x6F;
-        request.replySubAddress = kMacKVMNativeDDCAddressByte;
-        request.replyBuffer = (vm_address_t)response;
-        request.replyBytes = 12;
-        request.minReplyDelay = 50000000;
-        request.result = kIOReturnError;
-
+        const struct {
+            const uint8_t *buffer;
+            uint32_t bytes;
+            IOOptionBits commFlags;
+            uint8_t sendSubAddress;
+            uint8_t replySubAddress;
+        } queryForms[2] = {
+            {
+                queryWithSubAddress,
+                sizeof(queryWithSubAddress),
+                kIOI2CUseSubAddressCommFlag,
+                kMacKVMNativeDDCAddressByte,
+                kMacKVMNativeDDCAddressByte
+            },
+            {
+                queryWithEmbeddedAddress,
+                sizeof(queryWithEmbeddedAddress),
+                0,
+                0,
+                kMacKVMNativeDDCAddressByte
+            }
+        };
         // Prefer Apple's DDC/CI reply transaction because it strips the
         // protocol's embedded length byte; fall back to a simple reply for
         // older Intel framebuffers that only advertise transaction type 1.
@@ -1538,24 +1569,54 @@ static IOReturn readIntel(
             kIOI2CDDCciReplyTransactionType,
             kIOI2CSimpleTransactionType
         };
-        for (size_t typeIndex = 0; typeIndex < 2; typeIndex += 1) {
-            request.replyTransactionType = replyTypes[typeIndex];
-            request.result = kIOReturnError;
-            request.replyBytes = 12;
-            memset(response, 0, 12);
-            IOReturn sendResult = IOI2CSendRequest(
-                connection,
-                kNilOptions,
-                &request
-            );
-            result = sendResult == kIOReturnSuccess
-                ? request.result : sendResult;
-            if (result == kIOReturnSuccess && request.replyBytes >= 10) {
+        uint32_t receivedBytes = 0;
+        bool validResponse = false;
+        for (size_t formIndex = 0; formIndex < 2; formIndex += 1) {
+            for (size_t typeIndex = 0; typeIndex < 2; typeIndex += 1) {
+                memset(response, 0, 12);
+                IOI2CRequest request;
+                memset(&request, 0, sizeof(request));
+                request.sendTransactionType = kIOI2CSimpleTransactionType;
+                request.replyTransactionType = replyTypes[typeIndex];
+                request.sendAddress = kMacKVMNativeDDCWriteAddress;
+                request.replyAddress = 0x6F;
+                request.sendSubAddress = queryForms[formIndex].sendSubAddress;
+                request.replySubAddress = queryForms[formIndex].replySubAddress;
+                request.commFlags = queryForms[formIndex].commFlags;
+                request.sendBuffer = (vm_address_t)queryForms[formIndex].buffer;
+                request.sendBytes = queryForms[formIndex].bytes;
+                request.replyBuffer = (vm_address_t)response;
+                request.replyBytes = 12;
+                request.minReplyDelay = 50000000;
+                request.result = kIOReturnError;
+
+                IOReturn sendResult = IOI2CSendRequest(
+                    connection,
+                    kNilOptions,
+                    &request
+                );
+                result = sendResult == kIOReturnSuccess
+                    ? request.result : sendResult;
+                receivedBytes = request.replyBytes;
+                if (result == kIOReturnSuccess && receivedBytes >= 10) {
+                    MacKVMNativeDDCVCPValue parsedValue;
+                    memset(&parsedValue, 0, sizeof(parsedValue));
+                    validResponse = parseVCPResponse(
+                        response,
+                        vcpCode,
+                        &parsedValue
+                    );
+                    if (validResponse) {
+                        break;
+                    }
+                }
+            }
+            if (validResponse) {
                 break;
             }
         }
         IOI2CInterfaceClose(connection, kNilOptions);
-        if (result == kIOReturnSuccess && request.replyBytes >= 10) {
+        if (validResponse) {
             return result;
         }
     }

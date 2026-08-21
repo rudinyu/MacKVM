@@ -11,6 +11,7 @@ enum ControlInputFailure {
     case accessibilityPermission
     case queueOverloaded
     case keyboardLayoutMismatch
+    case eventInjectionFailed
 }
 
 struct ControlConnectionPublication: Equatable {
@@ -38,6 +39,7 @@ protocol ControlInputCapture: AnyObject {
     var onEvent: ((RemoteInputEvent) -> Void)? { get set }
     var onEmergencyStop: (() -> Void)? { get set }
     var onSwitchControl: (() -> Void)? { get set }
+    var onSwitchMonitor: (() -> Void)? { get set }
 
     func refreshPermission()
     func startCapture(suppressingLocalEvents: Bool)
@@ -288,6 +290,17 @@ final class ControlCoordinator: ObservableObject {
             endReceivingControl(reason: reason)
             return
         }
+        // Escape can be pressed while the receiver's Accessibility setup is
+        // still completing. Clear that request before the asynchronous
+        // beginRemoteControl callback returns, otherwise the callback could
+        // grant remote input after the user explicitly asked to stop.
+        if let incomingRequest = preparingIncomingControlRequest
+            ?? pendingIncomingControlRequest {
+            rejectIncomingControlRequest(
+                incomingRequest,
+                reason: reason
+            )
+        }
         let wasControlling = state == .controlling
         let wasWaitingForControlGrant = state == .suspended
         // A combined request has already switched the monitor before it
@@ -334,6 +347,7 @@ final class ControlCoordinator: ObservableObject {
         }
         guard let request = pendingIncomingControlRequest,
               request.id == requestID else {
+            status = "Control request expired before Allow was selected"
             return
         }
         incomingRequestTimeout?.cancel()
@@ -368,6 +382,7 @@ final class ControlCoordinator: ObservableObject {
         guard !isStoppingForQuit else { return }
         guard let request = pendingIncomingControlRequest,
               request.id == requestID else {
+            status = "Control request expired before Deny was selected"
             return
         }
         rejectIncomingControlRequest(
@@ -397,6 +412,24 @@ final class ControlCoordinator: ObservableObject {
             restoreMonitor: restoreMonitor,
             completion: completion
         )
+    }
+
+    /// Queues a local monitor route behind any in-flight input teardown. A
+    /// receiver normally restores the controller's display after releasing
+    /// input; an emergency local-return request must not race that callback
+    /// and leave the monitor on the remote input.
+    func requestLocalMonitorReturn(completion: @escaping () -> Void) {
+        if var teardown = receiverTeardown {
+            teardown.restoreMonitor = false
+            teardown.completions.append(completion)
+            receiverTeardown = teardown
+            return
+        }
+        if isRemoteInputTearingDown {
+            transientRemoteInputTeardownCompletions.append(completion)
+            return
+        }
+        completion()
     }
 
     /// Stops every local control path before app termination. The final monitor
@@ -847,6 +880,8 @@ final class ControlCoordinator: ObservableObject {
             reason = "Remote control ended because the input queue was overloaded"
         case .keyboardLayoutMismatch:
             reason = "Remote control ended because the keyboard layout changed"
+        case .eventInjectionFailed:
+            reason = "Remote control ended because macOS rejected an input event"
         }
         finishReceivingControl(
             request,

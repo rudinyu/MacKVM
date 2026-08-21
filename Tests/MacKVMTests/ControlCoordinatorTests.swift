@@ -18,6 +18,9 @@ final class ControlCoordinatorTests: XCTestCase {
         XCTAssertEqual(fixture.coordinator.pendingIncomingControlRequest?.id, requestID)
         XCTAssertEqual(fixture.sink.beginCount, 0)
         XCTAssertFalse(fixture.coordinator.isReceivingControl)
+        XCTAssertTrue(
+            fixture.coordinator.status.contains("expired")
+        )
 
         fixture.coordinator.acceptIncomingControlRequest(requestID)
 
@@ -595,6 +598,32 @@ final class ControlCoordinatorTests: XCTestCase {
         XCTAssertEqual(fixture.coordinator.state, .suspended)
     }
 
+    func testLocalMonitorReturnWaitsForReceiverTeardownRoute() {
+        let fixture = makeFixture()
+        let requestID = UUID()
+        fixture.transport.deliver(controlMessage(.requestControl, requestID))
+        drainMainQueue()
+        fixture.coordinator.acceptIncomingControlRequest(requestID)
+
+        var completeMonitorRoute: (() -> Void)?
+        fixture.coordinator.onReceivingStopped = { completion in
+            completeMonitorRoute = completion
+        }
+        fixture.coordinator.endReceivingControl()
+
+        var localReturnCount = 0
+        fixture.coordinator.requestLocalMonitorReturn {
+            localReturnCount += 1
+        }
+
+        XCTAssertTrue(fixture.coordinator.isRemoteInputTearingDown)
+        XCTAssertEqual(localReturnCount, 0)
+        completeMonitorRoute?()
+
+        XCTAssertFalse(fixture.coordinator.isRemoteInputTearingDown)
+        XCTAssertEqual(localReturnCount, 1)
+    }
+
     func testDuplicateDisconnectPreservesReceiverMonitorRestoration() {
         let fixture = makeFixture()
         let requestID = UUID()
@@ -931,6 +960,7 @@ private final class FakeInputCapture: ControlInputCapture {
     var onEvent: ((RemoteInputEvent) -> Void)?
     var onEmergencyStop: (() -> Void)?
     var onSwitchControl: (() -> Void)?
+    var onSwitchMonitor: (() -> Void)?
     private(set) var startCount = 0
     private(set) var stopCount = 0
 
