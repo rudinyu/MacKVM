@@ -2,7 +2,11 @@
 
 # Changelog
 
-## 0.12.33 (build 73) — 2026-08-24
+## 1.00.00 (build 74) — 2026-08-24
+
+This is the first formal MacKVM release. It includes the complete secure
+pairing, native cross-architecture DDC/CI, keyboard/mouse hand-off, recovery,
+and permission-aware control workflow delivered through the 0.12.x series.
 
 ### Fixed
 

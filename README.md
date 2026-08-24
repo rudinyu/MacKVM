@@ -126,7 +126,7 @@ The package is built from a fresh staging directory and writes a portable
 SHA-256 sidecar next to the DMG. Verify the pair from the `dist` directory:
 
 ```sh
-(cd dist && shasum -a 256 -c MacKVM-0.12.33-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.00.00-universal.dmg.sha256)
 ```
 
 For distribution to another Mac, sign with a Developer ID Application
