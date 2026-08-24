@@ -903,23 +903,15 @@ private struct MacKVMMenuView: View {
                     setupSection
                     Divider()
 
-                    if discovery.pairingActivity.isActive {
-                        pairingProgressSection
+                    if discovery.pairingActivity.isActive
+                        || !discovery.pendingRequests.isEmpty
+                        || discovery.pendingPairingConfirmation != nil {
+                        pairingSection
                         Divider()
                     }
 
                     topologySection
                     Divider()
-
-                    if !discovery.pendingRequests.isEmpty {
-                        pendingSection
-                        Divider()
-                    }
-
-                    if let confirmation = discovery.pendingPairingConfirmation {
-                        pairingConfirmationSection(confirmation)
-                        Divider()
-                    }
 
                     peerSection
                     Divider()
@@ -1168,6 +1160,26 @@ private struct MacKVMMenuView: View {
                 peerName: peerName,
                 canCancel: false
             )
+        }
+    }
+
+    /// Keeps every step of one pairing attempt together at the top of the
+    /// menu. In particular, the initiator's code confirmation must not be
+    /// separated from the "Pairing with …" progress state by unrelated
+    /// network, peer, or monitor sections.
+    private var pairingSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if discovery.pairingActivity.isActive {
+                pairingProgressSection
+            }
+
+            if !discovery.pendingRequests.isEmpty {
+                pendingSection
+            }
+
+            if let confirmation = discovery.pendingPairingConfirmation {
+                pairingConfirmationSection(confirmation)
+            }
         }
     }
 

@@ -129,5 +129,6 @@ repository，正常 CI 也會建置三種診斷目標。按下 Ctrl-C 或收到 
 - [繁體中文驗收清單](MANUAL_TEST.zh-TW.md) · [English acceptance test](MANUAL_TEST.md)
 - [繁體中文安全說明](SECURITY.zh-TW.md) · [English security status](SECURITY.md)
 - [繁體中文路線圖](ROADMAP.zh-TW.md) · [English roadmap](ROADMAP.md)
+- [繁體中文變更記錄](CHANGELOG.zh-TW.md) · [English changelog](CHANGELOG.md)
 - [English HTML manual](docs/USER_MANUAL.html) · [繁體中文 HTML 使用手冊](docs/USER_MANUAL.zh-TW.html)
 - [English Markdown manual](docs/USER_MANUAL.md) · [繁體中文 Markdown 手冊](docs/USER_MANUAL.zh-TW.md)

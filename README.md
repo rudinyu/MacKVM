@@ -125,7 +125,7 @@ The package is built from a fresh staging directory and writes a portable
 SHA-256 sidecar next to the DMG. Verify the pair from the `dist` directory:
 
 ```sh
-(cd dist && shasum -a 256 -c MacKVM-0.12.30-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-0.12.31-universal.dmg.sha256)
 ```
 
 For distribution to another Mac, sign with a Developer ID Application
@@ -339,5 +339,6 @@ HDMI 2.0 ports and one USB-C video/data/90 W port in the
 - [English acceptance test](MANUAL_TEST.md) · [繁體中文驗收](MANUAL_TEST.zh-TW.md)
 - [English security status](SECURITY.md) · [繁體中文安全說明](SECURITY.zh-TW.md)
 - [English roadmap](ROADMAP.md) · [繁體中文路線圖](ROADMAP.zh-TW.md)
+- [English changelog](CHANGELOG.md) · [繁體中文變更記錄](CHANGELOG.zh-TW.md)
 - [English HTML manual](docs/USER_MANUAL.html) · [繁體中文 HTML 使用手冊](docs/USER_MANUAL.zh-TW.html)
 - [English Markdown manual](docs/USER_MANUAL.md) · [繁體中文 Markdown 手冊](docs/USER_MANUAL.zh-TW.md)
