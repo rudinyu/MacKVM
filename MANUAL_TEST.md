@@ -33,7 +33,7 @@ Release check (from the M5 Pro) is also available:
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist && shasum -a 256 -c MacKVM-0.12.31-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-0.12.33-universal.dmg.sha256)
 ```
 
 Expected: the app reports both `arm64` and `x86_64`, and an ad-hoc signature
@@ -345,8 +345,11 @@ Expected:
 3. From the Mac that is receiving control, press **Control-Option-Command-O**
    again and verify that receiving ends and the controller's display and
    keyboard/mouse ownership are restored.
-4. While controlling, press **Control-Option-Command-K** and verify that input
-   returns locally; repeat with **Control-Option-Command-Escape**.
+4. Manually switch the monitor input with its OSD (or another verified manual
+   method), then press **Control-Option-Command-K** and verify that keyboard /
+   mouse control starts while the monitor route stays unchanged. Press K again
+   and verify that input returns locally; repeat the return check with
+   **Control-Option-Command-Escape**.
 5. Repeat using **Return keyboard and mouse to this Mac**.
 6. From the receiving Intel Mac, select **Return keyboard and mouse to [M5 Mac]** while a key and a
    mouse button are held by the controlling Mac.
@@ -359,8 +362,8 @@ Expected:
 Expected:
 
 - The shortcut is consumed locally and immediately stops forwarding.
-- `Control-Option-Command-K` starts or ends the control route without opening
-  the menu, depending on the current state.
+- After a manual monitor-input selection, `Control-Option-Command-K` starts or
+  ends only the keyboard/mouse control route without opening the menu.
 - `Control-Option-Command-O` follows the guarded display-first route: it moves
   the display and keyboard/mouse ownership together, and from the receiving
   side it ends receiving and restores both to the controller.

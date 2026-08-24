@@ -138,11 +138,13 @@ See the [diagnostic guide](../Tools/DDCDiagnostic/README.md).
    menu can use the native Allow/Deny/Review notification.
 5. The M5 Pro can interrupt sharing at any time with
    `Control-Option-Command-Escape`. The global
-   `Control-Option-Command-K` shortcut toggles sharing without opening the
-   menu: it starts a request while idle and returns input while controlling or
-   receiving. `Control-Option-Command-O` follows the guarded **Show other Mac**
-   route: it switches the display before requesting keyboard/mouse control, or
-   ends receiving and restores the controller's display and input. To switch back from Intel, select
+   `Control-Option-Command-K` shortcut is for a manually selected monitor
+   input: it toggles keyboard/mouse ownership without running automatic DDC
+   switching, starts a request while idle, and returns input while controlling
+   or receiving. `Control-Option-Command-O` follows the guarded **Show other
+   Mac** route: it automatically switches the display before requesting
+   keyboard/mouse control, or ends receiving and restores the controller's
+   display and input. To switch back from Intel, select
    **Return keyboard and mouse to [M5 Mac]** on the Intel Mac. The controller
    can also select **Return keyboard and mouse to this Mac**.
 

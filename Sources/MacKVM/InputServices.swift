@@ -21,8 +21,9 @@ private enum InjectedEventMarker {
 }
 
 /// A deliberately uncommon, four-modifier shortcut for toggling the
-/// keyboard/mouse route without opening the menu. Escape remains the
-/// emergency return shortcut while this one is reserved for switching.
+/// keyboard/mouse route after the user has manually selected the monitor
+/// input. O owns the automatic display-first hand-off; K must not start that
+/// DDC route on its own.
 enum KeyboardMouseSwitchHotKey {
     static let keyCode: UInt16 = 40 // K
     static let displayName = "Control-Option-Command-K"

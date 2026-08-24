@@ -110,12 +110,12 @@ repository，正常 CI 也會建置三種診斷目標。按下 Ctrl-C 或收到 
    只有在未啟用該配對裝置的無縫控制時才需要按 **Allow**。若只是切換了螢幕而尚未共享輸入，
    可按 **Return display to this Mac** 恢復本機畫面。
    控制中可隨時按 `Control-Option-Command-Escape` 中斷並把鍵盤與滑鼠還給 M5 Pro。
-   `Control-Option-Command-K` 可在分享與本機控制之間切換；閒置時會開始請求，
-   控制中或接收中會返回本機／控制端。
+   `Control-Option-Command-K` 適用於已手動選好螢幕輸入的情況，只切換鍵盤／滑鼠控制權，
+   不會啟動自動 DDC 螢幕切換；閒置時會開始請求，控制中或接收中會返回本機／控制端。
    `Control-Option-Command-O` 會沿用 **Show other Mac** 的受保護先切螢幕流程，將螢幕與
    鍵盤／滑鼠一起交給另一台 Mac；如果本機正在接收控制，按下後會結束接收並把螢幕與
-   輸入還給控制端。需要只改變鍵盤／滑鼠控制、不等待 DDC 時，使用
-   `Control-Option-Command-K`。
+   輸入還給控制端。需要在手動螢幕路由下切換鍵盤／滑鼠控制權時，使用
+   `Control-Option-Command-K`；`Control-Option-Command-O` 則用於自動切螢幕並同步交接控制權。
    若要從 Intel Mac 切回 M5 Pro，請在 Intel Mac 按 **Return keyboard and mouse to
    [M5 Mac]**；接收端會釋放輸入，螢幕路由也會返回 M5 Pro。
 7. 若通知被停用，仍可從選單列 KVM 圖示或 Dock／一般視窗開啟並處理控制請求。

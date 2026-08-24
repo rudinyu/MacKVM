@@ -43,7 +43,7 @@
 <body>
   <main>
     <header>
-      <div class="badge">MacKVM 0.12.31</div>
+      <div class="badge">MacKVM 0.12.33</div>
       <h1>MacKVM 使用手冊</h1>
       <p class="lede">提供選單列入口與一般控制視窗，讓兩台 MacBook Pro 共用一組鍵盤、滑鼠，並可選擇切換 BenQ MA270U 螢幕的 macOS app。</p>
       <p><a href="USER_MANUAL.html" lang="en">English Version</a> · <a href="USER_MANUAL.zh-TW.md">Markdown 版本</a></p>
@@ -98,7 +98,7 @@
       <p>要建立 DMG，可使用：</p>
       <pre><code>./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist &amp;&amp; shasum -a 256 -c MacKVM-0.12.31-universal.dmg.sha256)</code></pre>
+(cd dist &amp;&amp; shasum -a 256 -c MacKVM-0.12.33-universal.dmg.sha256)</code></pre>
       <p>DMG 會從乾淨的暫存目錄建立，並在旁邊產生可攜式 SHA-256 檔案；驗證結果應顯示 <strong>OK</strong>。</p>
       <p>未提供 Developer ID 時是 ad-hoc 簽章，只適合本機測試；跨電腦散布前請用
         <code>--sign "Developer ID Application: …" --require-developer-id</code>，
@@ -209,7 +209,7 @@
         <li>通知中的按鈕會帶著該次請求的識別碼與一次性的本機 nonce；請求逾時、取消或連線中斷後，舊通知的按鈕不會重新啟動控制。</li>
         <li>控制端按 <strong>Return keyboard and mouse to this Mac</strong> 可結束共享。</li>
         <li>要從 Intel Mac 切回 M5 Pro，接收端按 <strong>Return keyboard and mouse to [M5 Mac]</strong>，會立即停止注入、釋放可能按住的按鍵／滑鼠按鈕，並通知控制端。</li>
-        <li>M5 Pro 的緊急停止快捷鍵：<strong>Control-Option-Command-Escape</strong>；全域 <strong>Control-Option-Command-K</strong> 不必開啟選單即可切換分享，閒置時開始請求、控制中或接收中返回本機／控制端。<strong>Control-Option-Command-O</strong> 沿用受保護的 <strong>Show other Mac</strong> 流程，先切換螢幕再請求鍵盤／滑鼠控制；如果本機正在接收控制，則結束接收並把螢幕與輸入還給控制端。</li>
+        <li>M5 Pro 的緊急停止快捷鍵：<strong>Control-Option-Command-Escape</strong>；全域 <strong>Control-Option-Command-K</strong> 適用於手動選好的螢幕輸入，不必開啟選單即可切換鍵盤／滑鼠控制，且不會啟動自動 DDC；閒置時開始請求、控制中或接收中返回本機／控制端。<strong>Control-Option-Command-O</strong> 沿用受保護的 <strong>Show other Mac</strong> 流程，自動先切換螢幕再請求鍵盤／滑鼠控制；如果本機正在接收控制，則結束接收並把螢幕與輸入還給控制端。</li>
         <li>網路中斷時，MacKVM 會立刻把鍵盤與滑鼠控制歸還本機，並釋放可能按住的按鍵和滑鼠按鈕。</li>
         <li>如果是已連線的 peer 暫時離線，MacKVM 會以 0／1／2／4…30 秒的退避
           自動重連；已啟用無縫控制的配對裝置不需再次按 <strong>Allow</strong>，關閉授權的
@@ -255,7 +255,7 @@
     </section>
 
     <footer>
-      <p>MacKVM 使用手冊 · 對應版本 0.12.31 · 最後更新 2026-08-24</p>
+      <p>MacKVM 使用手冊 · 對應版本 0.12.33 · 最後更新 2026-08-24</p>
     </footer>
   </main>
 </body>

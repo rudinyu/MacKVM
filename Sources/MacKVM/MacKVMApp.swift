@@ -369,38 +369,25 @@ private final class AppBootstrap: ObservableObject {
             inputCapture.onSwitchControl = { [weak self] in
                 guard let self else { return }
                 if self.combinedControlRequestInFlight {
-                    // The combined action may already have routed the monitor
-                    // remotely while its control request is still suspended
-                    // waiting for the peer's grant. Let the same global
-                    // shortcut cancel that pending request and restore the
-                    // local display instead of silently ignoring the user's
-                    // only active return path.
+                    // K is the manual-monitor control shortcut. If an O
+                    // display-first hand-off is still waiting, cancel that
+                    // automatic request before applying K's direct control
+                    // toggle so the stale completion cannot claim input.
                     self.cancelCombinedControlRequest()
                     if self.control?.state == .suspended
                         || self.control?.state == .controlling {
                         self.control?.stopControl(
-                            reason: "Hotkey cancelled keyboard and mouse sharing"
+                            reason: "Hotkey cancelled automatic display hand-off"
                         )
                     }
                     self.monitor?.switchToLocal()
                     return
                 }
-                guard let control = self.control else { return }
-                if control.isReceivingControl
-                    || control.state == .controlling
-                    || control.state == .suspended {
-                    control.toggleControlFromHotKey()
-                } else if let monitor = self.monitor,
-                          monitor.automationEnabled,
-                          monitor.isDisplaySelectorVerified {
-                    // An idle shortcut follows the same display-first route
-                    // as the primary Share button. Otherwise the suppressing
-                    // input tap could start before native DDC has moved the
-                    // monitor to the remote Mac.
-                    self.startCombinedControlRequest()
-                } else {
-                    control.toggleControlFromHotKey()
-                }
+                // K is used after the monitor has been selected manually
+                // (for example with the monitor OSD). It changes only
+                // keyboard/mouse ownership; O performs the automatic
+                // display-first route.
+                self.control?.toggleControlFromManualMonitorHotKey()
             }
             inputCapture.onSwitchMonitor = { [weak self] in
                 self?.switchToOtherMac()
@@ -1624,7 +1611,7 @@ private struct MacKVMMenuView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Text("Control-Option-Command-O switches the display and keyboard/mouse ownership to the other Mac, and pressing it again returns them. Control-Option-Command-K toggles keyboard and mouse sharing. Escape is the emergency local-return shortcut.")
+            Text("After manually selecting the monitor input, Control-Option-Command-K switches keyboard/mouse control. Control-Option-Command-O automatically switches the display first and then transfers keyboard/mouse ownership. Escape is the emergency local-return shortcut.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
@@ -1814,7 +1801,7 @@ private struct MacKVMMenuView: View {
                         || bootstrap.combinedControlRequestInFlight
                 )
                 Text(
-                    "This switches the display, then shares the keyboard and mouse. Control-Option-Command-O performs the same toggle; press it again from the other Mac to return the display and input. Control-Option-Command-K toggles sharing; Control-Option-Command-Escape interrupts and returns them to this Mac."
+                    "This switches the display, then shares the keyboard and mouse. Control-Option-Command-O performs the same automatic toggle; press it again from the other Mac to return the display and input. If you switched the monitor input manually, use Control-Option-Command-K to change keyboard/mouse control. Control-Option-Command-Escape interrupts and returns them to this Mac."
                 )
                     .font(.caption2)
                     .foregroundStyle(.secondary)

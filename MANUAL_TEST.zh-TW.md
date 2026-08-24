@@ -31,7 +31,7 @@ Intel Mac 的 `/Applications`，再開啟各自架構的 app。
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist && shasum -a 256 -c MacKVM-0.12.31-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-0.12.33-universal.dmg.sha256)
 ```
 
 本機 ad-hoc 簽章只能用於測試；正式散布必須使用 Developer ID、hardened runtime
@@ -161,13 +161,16 @@ HDMI 1 使用 VCP 17（`0x11`）。其他型號使用自己的 mapping；螢幕�
     按 Allow 後，確認螢幕與鍵盤／滑鼠控制權一起移動。
 18. 在正在接收控制的 Mac 再按一次 `Control-Option-Command-O`，確認接收結束，控制端的
     螢幕與鍵盤／滑鼠控制權都恢復。
-19. 控制中按 `Control-Option-Command-K`，確認鍵盤與滑鼠返回本機；再用
-    `Control-Option-Command-Escape` 重複測試。也用 **Return keyboard and mouse to this Mac**
-    結束控制；接收端 Intel Mac 按 **Return keyboard and mouse to [M5 Mac]** 返回。
-20. 若使用雙向 USB switch，在接收端按 `Control-Option-Command-K`，確認控制權返回
-    控制端。
+19. 先用螢幕 OSD（或其他已驗證的手動方式）切換螢幕輸入，再按
+    `Control-Option-Command-K`，確認螢幕路由不變但鍵盤／滑鼠控制權開始切換；再次按 K
+    確認控制權返回本機。再用 `Control-Option-Command-Escape` 重複返回測試，也用
+    **Return keyboard and mouse to this Mac** 結束控制；接收端 Intel Mac 按
+    **Return keyboard and mouse to [M5 Mac]** 返回。
+20. 若使用雙向 USB switch，在接收端手動切好螢幕後按 `Control-Option-Command-K`，確認
+    控制權切換到另一端，再按一次返回。
 
-預期結果：`Control-Option-Command-K` 可在閒置、控制中與接收中切換正確路由；
+預期結果：手動切好螢幕輸入後，`Control-Option-Command-K` 只切換鍵盤／滑鼠控制權，
+不會啟動自動 DDC 螢幕路由；可在閒置、控制中與接收中切換正確控制狀態；
 `Control-Option-Command-O` 會沿用受保護的先切螢幕流程，讓螢幕與鍵盤／滑鼠控制權一起移動，
 並能從接收端結束接收、同時恢復兩者；新配對且啟用無縫控制時不需再次按 Allow；關閉後，接收端按 Allow 前不會抑制本機輸入；控制結束、斷線與取消後不會留下按住
 的按鍵或滑鼠按鈕；過期通知不能授權另一個請求；切換輸入法不再誤判為配置不符；

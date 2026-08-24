@@ -48,10 +48,11 @@ The current MVP provides:
   actions, so the receiver can respond while the menu is closed;
 - local input suppression while controlling and an emergency
   `Control-Option-Command-Escape` return shortcut, plus a
-  `Control-Option-Command-K` toggle shortcut for sharing and returning the
-  keyboard and mouse, and a `Control-Option-Command-O` guarded display-first
-  shortcut that transfers the display and keyboard/mouse together like
-  **Show other Mac**, and ends receiving to return them from the other side;
+  `Control-Option-Command-K` shortcut for toggling keyboard/mouse ownership
+  after the monitor input has been selected manually, and a
+  `Control-Option-Command-O` guarded display-first shortcut that automatically
+  switches the display before transferring keyboard/mouse ownership like
+  **Show other Mac**;
 - native DDC/CI input switching through IOKit on both Apple Silicon and Intel,
   including display discovery, stable display selection, diagnostics, and a
   manual OSD fallback when the monitor or cable does not expose DDC/CI.
@@ -125,7 +126,7 @@ The package is built from a fresh staging directory and writes a portable
 SHA-256 sidecar next to the DMG. Verify the pair from the `dist` directory:
 
 ```sh
-(cd dist && shasum -a 256 -c MacKVM-0.12.31-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-0.12.33-universal.dmg.sha256)
 ```
 
 For distribution to another Mac, sign with a Developer ID Application
@@ -282,15 +283,14 @@ session and return the keyboard and mouse locally. To switch back from the
 Intel Mac, open its MacKVM menu and select **Return keyboard and mouse to [M5
 Mac]**; the Intel receiver releases input and the monitor route returns to the
 M5 Pro.
-The global **Control-Option-Command-K** shortcut toggles sharing without
-opening the menu: it starts a request while idle and returns input while
+The global **Control-Option-Command-K** shortcut is for a manually selected
+monitor route: it toggles keyboard/mouse ownership without running automatic
+DDC display switching. It starts a request while idle and returns input while
 controlling or receiving.
 The **Control-Option-Command-O** shortcut follows the guarded display-first
 **Show other Mac** route: when this Mac owns the local route, it switches the
 display and then requests keyboard/mouse control; when this Mac is receiving
 control, it ends receiving and restores the controller's display and input.
-The **Control-Option-Command-K** shortcut remains the direct sharing toggle
-when you want to change keyboard/mouse ownership without waiting for DDC.
 
 After an authenticated transport loss, MacKVM releases local input immediately
 and retries the last user-selected peer with a bounded 0/1/2/4…30-second

@@ -2,6 +2,15 @@
 
 # Changelog
 
+## 0.12.33 (build 73) — 2026-08-24
+
+### Fixed
+
+- Keep `Control-Option-Command-K` as the keyboard/mouse control toggle for a
+  monitor input selected manually. It no longer starts the display-first DDC
+  route; `Control-Option-Command-O` remains the automatic display-plus-input
+  hand-off shortcut.
+
 ## 0.12.31 (build 71) — 2026-08-24
 
 This release collects the reliability, display-routing, and control-flow fixes

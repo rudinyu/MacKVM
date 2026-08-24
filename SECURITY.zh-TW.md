@@ -26,7 +26,8 @@ MacKVM 是使用於可信任本機網路的早期原型。安全性依賴兩台 
 **Return keyboard and mouse to [M5 Mac]**、網路中斷、Quit 與
 `Control-Option-Command-Escape` 都會釋放
 按住的按鍵和滑鼠按鈕。
-`Control-Option-Command-K` 是本機消費的鍵盤／滑鼠路由切換快捷鍵，不會傳送到遠端。
+`Control-Option-Command-K` 是本機消費的鍵盤／滑鼠路由切換快捷鍵，適用於手動選好的螢幕輸入，
+不會啟動自動 DDC 螢幕路由，也不會傳送到遠端。
 
 - Input Monitoring 只用於控制端擷取本機事件。
 - Accessibility 只用於接收端注入遠端事件。

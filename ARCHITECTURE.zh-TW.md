@@ -164,8 +164,8 @@ stateDiagram-v2
 **Show other Mac** 會沿用受保護的先切畫面流程，並在控制前置條件完成時開始分享；
 **Share keyboard and mouse with [Intel Mac]** 是明確的等效操作。要從 Intel Mac 返回 M5 Pro，接收端按
 **Return keyboard and mouse to [M5 Mac]**，控制端也可按
-**Return keyboard and mouse to this Mac** 或使用
-`Control-Option-Command-K` 在閒置／控制中切換，或用
+**Return keyboard and mouse to this Mac** 可交還控制權；在手動選好螢幕輸入後，使用
+`Control-Option-Command-K` 可在閒置／控制中切換鍵盤／滑鼠控制，或用
 `Control-Option-Command-Escape` 緊急中斷。獨立的
 `Control-Option-Command-O` 沿用 **Show other Mac** 的受保護流程，先切換螢幕再請求
 鍵盤／滑鼠控制；如果本機正在接收控制，則結束接收並把螢幕與輸入還給控制端。
