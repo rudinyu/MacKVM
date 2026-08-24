@@ -101,6 +101,26 @@ final class ControlCoordinatorTests: XCTestCase {
         )
     }
 
+    func testManualMonitorHotKeyDoesNotStartAutomaticDisplayRoute() {
+        let fixture = makeFixture()
+        var automaticRouteStartCount = 0
+        fixture.coordinator.onControllingStarted = {
+            automaticRouteStartCount += 1
+        }
+
+        fixture.capture.onSwitchControl?()
+        guard let requestID = fixture.transport.sentMessages.first?.requestID
+        else {
+            XCTFail("manual monitor hotkey did not send a control request")
+            return
+        }
+        fixture.transport.deliver(controlMessage(.controlGranted, requestID))
+        drainMainQueue()
+
+        XCTAssertEqual(fixture.coordinator.state, .controlling)
+        XCTAssertEqual(automaticRouteStartCount, 0)
+    }
+
     func testSwitchHotKeyReturnsControlLocally() {
         let fixture = makeFixture()
         XCTAssertTrue(fixture.coordinator.requestControl())

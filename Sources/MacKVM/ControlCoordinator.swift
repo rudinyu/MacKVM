@@ -160,7 +160,7 @@ final class ControlCoordinator: ObservableObject {
             self?.stopControl(reason: "Emergency shortcut returned input locally")
         }
         inputCapture.onSwitchControl = { [weak self] in
-            self?.toggleControlFromHotKey()
+            self?.toggleControlFromManualMonitorHotKey()
         }
         inputSink.onControlFailure = { [weak self] failure in
             self?.remoteInputSinkFailed(failure)
@@ -268,12 +268,22 @@ final class ControlCoordinator: ObservableObject {
         }
     }
 
-    /// Toggles the keyboard/mouse route from the dedicated global shortcut.
-    /// The same shortcut works on either Mac: a controller returns input
-    /// locally, while a receiver ends the incoming session and restores the
-    /// controller's display route. An idle Mac starts the normal request
-    /// flow; the app layer may additionally pre-route the monitor first.
+    /// Toggles the keyboard/mouse route from a normal control action. This
+    /// variant may start the display lifecycle callback when the caller has
+    /// not selected the monitor route in advance.
     func toggleControlFromHotKey() {
+        toggleControlFromHotKey(displayAlreadyRemote: false)
+    }
+
+    /// Toggles keyboard/mouse ownership after the user has manually selected
+    /// the monitor input. Marking the request as pre-routed prevents the grant
+    /// callback from starting the automatic DDC display route, which belongs
+    /// to the O/Show other Mac flow.
+    func toggleControlFromManualMonitorHotKey() {
+        toggleControlFromHotKey(displayAlreadyRemote: true)
+    }
+
+    private func toggleControlFromHotKey(displayAlreadyRemote: Bool) {
         if isReceivingControl {
             endReceivingControl(
                 reason: "Hotkey returned keyboard and mouse to this Mac"
@@ -284,7 +294,7 @@ final class ControlCoordinator: ObservableObject {
             stopControl(reason: "Hotkey returned keyboard and mouse locally")
             return
         }
-        _ = requestControl()
+        _ = requestControl(displayAlreadyRemote: displayAlreadyRemote)
     }
 
     private func completeActiveControlRequest(_ succeeded: Bool) {

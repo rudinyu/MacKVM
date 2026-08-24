@@ -67,7 +67,8 @@ per-session consent can turn it off. Simultaneous requests use the paired UUIDs
 for deterministic arbitration. During control,
 `Control-Option-Command-Escape` is consumed locally as an emergency return;
 `Control-Option-Command-K` is also consumed locally as the explicit
-keyboard/mouse route toggle;
+keyboard/mouse route toggle for a monitor input selected manually; it does not
+start the automatic DDC display route.
 disconnect and control-end paths synthesize key-up and mouse-up events on the
 receiver to avoid stuck input.
 

@@ -85,7 +85,7 @@ Create and verify a universal DMG for local testing:
 ./scripts/verify-release.sh \
   --app dist/universal/MacKVM.app \
   --arch universal
-(cd dist && shasum -a 256 -c MacKVM-0.12.30-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.00.00-universal.dmg.sha256)
 ```
 
 Ad-hoc signing is suitable only for local testing. For distribution to
@@ -180,11 +180,13 @@ the keyboard and mouse through a real physical USB switch.
    `Control-Option-Command-Escape`. To switch back from Intel, select
    **Return keyboard and mouse to [M5 Mac]** on the Intel Mac. The controller
    can also select **Return keyboard and mouse to this Mac**. The global
-   `Control-Option-Command-K` shortcut toggles the same route without opening
-   the menu: it starts a request when idle and returns input when controlling
-   or receiving. `Control-Option-Command-O` follows the guarded **Show other Mac**
-   route: it switches the display and then requests keyboard/mouse control, or
-   ends receiving and restores the controller's display and input.
+   `Control-Option-Command-K` shortcut toggles keyboard/mouse ownership after
+   you manually select the monitor input; it starts a request when idle and
+   returns input when controlling or receiving, without running automatic DDC
+   switching. `Control-Option-Command-O` follows the guarded **Show other Mac**
+   route: it automatically switches the display and then requests keyboard/
+   mouse control, or ends receiving and restores the controller's display and
+   input.
 
 After a transport loss, MacKVM reconnects with bounded backoff. A peer with
 seamless control authorization can resume control without another prompt;

@@ -117,10 +117,10 @@ mapping 原始碼。按下 Ctrl-C 或收到 SIGTERM 時會停止候選值迴圈�
    與 Accessibility，接收端也需要 Accessibility，然後按 **Allow**；選單關閉時可用
    macOS 原生 Allow／Deny／Review 通知。
 5. M5 Pro 可隨時按 `Control-Option-Command-Escape` 中斷共享；全域
-   `Control-Option-Command-K` 不必開啟選單即可切換，閒置時開始請求、控制中或接收中
-   返回本機／控制端。`Control-Option-Command-O` 沿用 **Show other Mac** 的受保護流程，
-   先切換螢幕再請求鍵盤／滑鼠控制；如果本機正在接收控制，則結束接收並把螢幕與輸入
-   還給控制端。要從 Intel Mac
+   `Control-Option-Command-K` 適用於已手動選好的螢幕輸入，不必開啟選單即可切換鍵盤／
+   滑鼠控制，且不會啟動自動 DDC；閒置時開始請求、控制中或接收中返回本機／控制端。
+   `Control-Option-Command-O` 沿用 **Show other Mac** 的受保護流程，自動先切換螢幕，再請求
+   鍵盤／滑鼠控制；如果本機正在接收控制，則結束接收並把螢幕與輸入還給控制端。要從 Intel Mac
    切回 M5 Pro，請在 Intel Mac 按 **Return keyboard and mouse to [M5 Mac]**；
    控制端也可按 **Return keyboard and mouse to this Mac**。
 
