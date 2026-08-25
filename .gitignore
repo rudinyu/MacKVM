@@ -1,0 +1,34 @@
+.build/
+.swiftpm/
+.DS_Store
+CODEX_CLAUDE_REVIEW.md
+CODEX_REVIEW.md
+CODEX_FEATURE_AUDIT.md
+dist/
+
+# Windows/.NET build outputs.
+**/bin/
+**/obj/
+.vs/
+
+# Local AI-agent configuration is intentionally kept outside the public repo.
+.codex/
+.claude/
+.claude/.claude.json
+.claude/settings.local.json
+.claude/*.lock
+.claude/projects/
+.claude/sessions/
+.claude/cache/
+.claude/telemetry/
+
+# Never add local credentials or certificate material to a commit.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.cer
+*.crt

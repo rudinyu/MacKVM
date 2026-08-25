@@ -29,11 +29,56 @@ EDID mapping 使用 `19`／`0x13`；其他型號保留通用值，或先執行�
 把 `dist/arm64/MacKVM.app` 安裝到 M5 Pro，把 `dist/x86_64/MacKVM.app` 安裝到
 Intel Mac。建置腳本會驗證 Mach-O 架構與 ad-hoc 簽章。
 
+### 準備 Windows 開發環境
+
+完整流程請參閱獨立的 [Windows 建置手冊](WINDOWS_BUILD.zh-TW.md)。
+
+Windows 分支改用 C#/.NET 8，不用 Swift。W1 已包含跨平台 protocol library、簽章配對
+state machine、console receiver、DPAPI 保護的 identity 與 `_mackvm._tcp` mDNS 廣播器；
+可以和 MacKVM 1.00.00 建立信任關係，但還不是完整可用的 Windows KVM。W2 會加入 WinUI 3
+常駐列介面、Raw Input、SendInput、加密控制 session、快捷鍵與有範圍的 Windows Firewall
+UX，讓 Windows 端能共用 Mac 上的鍵盤與滑鼠。
+
+請在 Windows 建置主機安裝 .NET 8 SDK；加入 WinUI 後，建議使用含 Windows App SDK workload
+的 Visual Studio 2022。兩個支援的 native 目標如下：
+
+```powershell
+.\scripts\build-windows.ps1 -Architecture x64
+.\scripts\build-windows.ps1 -Architecture arm64
+```
+
+建置後在 Windows 啟動只負責配對的 receiver：
+
+```powershell
+.\dist\windows\arm64\WindowsKVM.exe --pairing-listen --name "Windows ARM64"
+```
+
+把六位數驗證碼與發起配對的 Mac 比對後，在 Windows 輸入 `y`；`--yes` 僅供受控測試。
+receiver 會廣播 `_mackvm._tcp`，Windows Defender Firewall 只需在信任的 Private network
+允許標準提示。protocol self-test 可執行 `.\scripts\test-windows.ps1`。
+
+目標是 Windows x64（`win-x64`、`x86_64`）與 Windows ARM64（`win-arm64`），不支援 32-bit
+Windows。若只想在 M5 Pro 查看兩個 publish 指令，不呼叫 Windows/.NET toolchain，也不產生
+執行檔，可執行：
+
+```sh
+pwsh ./scripts/build-windows.ps1 -Architecture both -Plan
+```
+
+準備 Windows 建置主機時，請參閱官方的
+[Windows app development](https://learn.microsoft.com/en-us/windows/apps/) 與
+[.NET deployment](https://learn.microsoft.com/en-us/dotnet/core/deploying/) 說明。這個準備
+步驟不會改變 macOS app 或現有 release 產物。
+
 安裝前執行本機檢查：
 
 ```sh
 ./scripts/ci.sh
 ```
+
+macOS 檢查本身不需要 Windows SDK。若系統有 `dotnet`，這個指令也會建置 Windows
+protocol／app 並執行 self-test；沒有 `dotnet` 時會明確顯示略過 Windows 檢查。CI 主機
+可用 `RUN_WINDOWS_CI=1 ./scripts/ci.sh` 將它設為必要。
 
 ### 建置原生 DDC 診斷工具
 

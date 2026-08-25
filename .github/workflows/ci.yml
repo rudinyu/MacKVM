@@ -13,5 +13,11 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
       - name: Build and test app bundles
+        env:
+          RUN_WINDOWS_CI: "1"
         run: ./scripts/ci.sh

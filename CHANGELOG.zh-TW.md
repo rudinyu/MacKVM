@@ -2,6 +2,18 @@
 
 # 變更記錄
 
+## 1.00.01（build 75）— 2026-08-25
+
+本次修補強化 Windows 配對 scaffold 與本機驗證流程。
+
+### 修正
+
+- 序列化 Windows 第一次建立 identity 的流程，避免同時啟動 receiver 時互相覆寫
+  憑證資料。
+- 廣播所有實際可連線的 mDNS 位址 family，支援只有 IPv6 的區域網路；沒有可用的
+  .NET SDK 時，macOS 本機 CI 仍可完成其餘檢查。
+- 維持 Windows protocol 與 MacKVM 1.00.00 相容，同時保留有上限且安全的配對流程。
+
 ## 1.00.00（build 74）— 2026-08-24
 
 這是 MacKVM 的第一個正式版本，包含 0.12.x 系列完成的安全配對、跨架構原生

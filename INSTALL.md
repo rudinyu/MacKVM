@@ -34,11 +34,65 @@ Install `dist/arm64/MacKVM.app` on the M5 Pro and
 `dist/x86_64/MacKVM.app` on the Intel Mac. The build script verifies the
 Mach-O architecture and the ad-hoc signature.
 
+### Prepare Windows development
+
+For the complete procedure, see the standalone
+[Windows build guide](WINDOWS_BUILD.md).
+
+The Windows branch uses C#/.NET 8 rather than Swift. W1 contains the
+platform-neutral protocol library, signed pairing state machine, console
+receiver, DPAPI-protected identity, and `_mackvm._tcp` mDNS advertisement. It
+can establish trust with MacKVM 1.00.00, but it is not yet a usable Windows KVM.
+W2 will add the WinUI 3 tray UI, Raw Input capture, SendInput injection,
+encrypted control sessions, hotkeys, and scoped Windows Firewall UX so it can
+share the Mac's keyboard and mouse.
+
+On a Windows build host, install the .NET 8 SDK. Visual Studio 2022 with the
+Windows App SDK workload is recommended once the WinUI layer is added. Build
+the two supported native targets with:
+
+```powershell
+.\scripts\build-windows.ps1 -Architecture x64
+.\scripts\build-windows.ps1 -Architecture arm64
+```
+
+After publishing, start the pairing-only receiver on Windows:
+
+```powershell
+.\dist\windows\arm64\WindowsKVM.exe --pairing-listen --name "Windows ARM64"
+```
+
+Compare the six-digit code with the initiating Mac and type `y` at the Windows
+prompt. Use `--yes` only for a controlled test. The receiver advertises
+`_mackvm._tcp`; allow the normal Windows Defender Firewall Private-network
+prompt on the trusted LAN. Run the protocol self-test with
+`.\scripts\test-windows.ps1`.
+
+The targets are Windows x64 (`win-x64`, `x86_64`) and Windows ARM64
+(`win-arm64`); 32-bit Windows is not supported. To preview both publish
+commands from the M5 Pro without invoking a Windows/.NET toolchain or creating
+an executable, run:
+
+```sh
+pwsh ./scripts/build-windows.ps1 -Architecture both -Plan
+```
+
+Read the official [Windows app development
+guide](https://learn.microsoft.com/en-us/windows/apps/) and [.NET deployment
+guide](https://learn.microsoft.com/en-us/dotnet/core/deploying/) when preparing
+the Windows build host. This step does not change the macOS app or its release
+artifact.
+
 Run the local checks before installation:
 
 ```sh
 ./scripts/ci.sh
 ```
+
+The macOS checks do not require the Windows SDK. If `dotnet` is installed, the
+command also builds the Windows protocol/app and runs its self-test; without
+`dotnet`, those Windows checks are reported as skipped. CI hosts can require
+them with `RUN_WINDOWS_CI=1 ./scripts/ci.sh`.
 
 ### Build the native DDC diagnostic
 

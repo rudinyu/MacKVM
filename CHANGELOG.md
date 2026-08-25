@@ -2,6 +2,19 @@
 
 # Changelog
 
+## 1.00.01 (build 75) — 2026-08-25
+
+This patch hardens the Windows pairing scaffold and local validation.
+
+### Fixed
+
+- Serialize first-run Windows identity creation so concurrent receiver starts
+  cannot overwrite each other's credentials.
+- Advertise both reachable mDNS address families, support IPv6-only local
+  networks, and keep local macOS CI usable when the optional .NET SDK is absent.
+- Keep the Windows protocol compatible with MacKVM 1.00.00 while retaining
+  bounded, secure pairing behavior.
+
 ## 1.00.00 (build 74) — 2026-08-24
 
 This is the first formal MacKVM release. It includes the complete secure

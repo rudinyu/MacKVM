@@ -64,6 +64,52 @@ MA270U 的 USB-C 輸入使用 VCP 0x60 值 `19 (0x13)`；MacKVM 會依 EDID 套�
 產物位於 `dist/`。本機測試使用 ad-hoc 簽章；要提供給其他 Mac 正式安裝，請用
 Developer ID Application、hardened runtime，並在公開發佈前完成 Apple notarization。
 
+### Windows 開發（Windows 分支）
+
+完整建置流程請參閱獨立的 [Windows 建置手冊](WINDOWS_BUILD.zh-TW.md)。
+
+Windows 端改用 C#/.NET 8，不用 Swift 處理 Windows UI、常駐列、輸入 API 或防火牆設定。
+W1 已包含跨平台 protocol library、簽章配對 state machine、console receiver、DPAPI
+保護的 identity 與免外部套件的 `_mackvm._tcp` mDNS 廣播器；可以和 MacKVM 1.00.00
+建立信任關係，但還不是完整可用的 Windows KVM。W2 會加入 WinUI 3、Raw Input、SendInput、
+加密控制 session、全域快捷鍵與最小權限的 Windows Firewall UX，同時維持相同 wire protocol。
+
+支援的建置目標是 Windows x64（`win-x64`，也稱 `x86_64`）與 Windows ARM64（`win-arm64`），
+刻意不支援 32-bit `i686`。請在安裝 .NET 8 SDK 的 Windows 建置主機上執行（後續加入 WinUI
+後，建議使用含 Windows App SDK workload 的 Visual Studio 2022）：
+
+```powershell
+.\scripts\build-windows.ps1 -Architecture x64
+.\scripts\build-windows.ps1 -Architecture arm64
+```
+
+若要同時發布兩種架構，可使用 `-Architecture both`；腳本會驗證 PE machine type。建置後可
+啟動 Windows 端配對 receiver：
+
+```powershell
+.\dist\windows\arm64\WindowsKVM.exe --pairing-listen --name "Windows ARM64"
+```
+
+它會在區域網路廣播 `_mackvm._tcp`，顯示六位數驗證碼，並在比較 Mac 畫面後要求輸入 `y`。
+只有受控測試才使用 `--yes` 自動接受。Windows Defender Firewall 只會出現標準 Private
+network 提示，程式不會新增寬鬆規則。protocol self-test 可用
+`./scripts/test-windows.ps1`（Windows）執行。
+
+從 M5 Pro 只想預覽完整指令、不呼叫 .NET toolchain、也不產生執行檔，可使用：
+
+```sh
+pwsh ./scripts/build-windows.ps1 -Architecture both -Plan
+```
+
+準備 Windows 建置主機時，請參閱官方的
+[Windows app development](https://learn.microsoft.com/en-us/windows/apps/) 與
+[.NET deployment](https://learn.microsoft.com/en-us/dotnet/core/deploying/) 說明。
+
+W1 receiver 使用 dual-mode TCP listener；主機有可用介面時，會透過 IPv4／IPv6 mDNS
+廣播 A 與 AAAA 記錄。若主機沒有可用 IPv6 介面，會回退到 IPv4。macOS 的
+`scripts/ci.sh` 在找到 `dotnet` 時會自動執行 Windows 檢查；沒有 Windows SDK 的 Mac
+會略過這部分。使用 `RUN_WINDOWS_CI=1 ./scripts/ci.sh` 可將 Windows 檢查設為必要。
+
 ### 原生 DDC 診斷工具
 
 當螢幕的 input mapping 不明，或 I2C 回報寫入成功但畫面沒有切換時，可建置跨架構
