@@ -1,8 +1,24 @@
+import AppKit
 import Combine
 import CryptoKit
 import Foundation
 import MacKVMCore
 import Network
+
+/// One-shot latch so a connection that reports both `.failed` and `.cancelled`
+/// leaves the sleep flush group exactly once.
+private final class SleepFlushLatch: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isOpen = true
+
+    func close() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard isOpen else { return false }
+        isOpen = false
+        return true
+    }
+}
 
 enum SecureSessionRevocationPolicy {
     static func removesActiveContext(
@@ -42,6 +58,16 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
     // into a transport failure, while retaining a bounded per-session budget.
     private static let maximumInboundPacketsPerSecond = 8_192
     private static let maximumInboundBytesPerSecond = 8 * 1024 * 1024
+    // A dropped didWake notification must not gate secure networking for the
+    // rest of the process lifetime. DispatchTime does not advance while the
+    // Mac is asleep, so this deadline measures awake time: a real sleep never
+    // reaches it, while an aborted or unobserved wake self-clears.
+    static let defaultSystemSleepLatchTimeout: TimeInterval = 60
+    // Bounded wait so the transport's FIN reaches the peer before the
+    // workspace acknowledges the sleep transition, without letting a stuck
+    // socket delay that transition.
+    private static let sleepTransportFlushTimeout: DispatchTimeInterval =
+        .milliseconds(750)
     private static let partialFrameTimeout: TimeInterval = 5
     private static let partialFrameTimeoutNanoseconds =
         UInt64(partialFrameTimeout * 1_000_000_000)
@@ -70,24 +96,50 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         ConnectionAdmissionLimiter.unauthenticatedConnectionLimiter()
     private var pathMonitor: NWPathMonitor?
     private var networkPathSatisfied = true
+    private var powerLifecycleObserver: SystemPowerLifecycleObserver?
+    private var isSystemSleeping = false
+    private var systemSleepLatchWorkItem: DispatchWorkItem?
     private var desiredPeerID: UUID?
     private var reconnectAttempt = 0
     private var reconnectWorkItem: DispatchWorkItem?
     private let reconnectBackoff = ReconnectBackoffPolicy()
+    private let powerNotificationCenterOverride: NotificationCenter?
+    private let networkServicesEnabled: Bool
+    private let systemSleepLatchTimeout: TimeInterval
 
     init(
         credentials: DeviceCredentials,
         registry: PairingRegistry,
-        localModel: String = MacHardwareInfo.currentModel
+        localModel: String = MacHardwareInfo.currentModel,
+        // Test seams. Production uses the workspace notification center, the
+        // real Bonjour components, and the default sleep-latch timeout.
+        powerNotificationCenter: NotificationCenter? = nil,
+        networkServicesEnabled: Bool = true,
+        systemSleepLatchTimeout: TimeInterval =
+            SecureSessionService.defaultSystemSleepLatchTimeout
     ) {
         self.credentials = credentials
         self.registry = registry
         self.localModel = PeerMetadataValidation.validatedModel(localModel)
+        self.powerNotificationCenterOverride = powerNotificationCenter
+        self.networkServicesEnabled = networkServicesEnabled
+        self.systemSleepLatchTimeout = systemSleepLatchTimeout
     }
 
     func start() {
+        // NSWorkspace is an AppKit singleton, so resolve it on the caller's
+        // thread (the main thread in the app) instead of inside the
+        // secure-session queue, where the first touch would initialize AppKit
+        // state off the main thread.
+        let powerNotificationCenter = powerNotificationCenterOverride
+            ?? NSWorkspace.shared.notificationCenter
         queue.async { [weak self] in
             guard let self else { return }
+            // A previous run must never leave the sleep guards latched on.
+            clearSystemSleepLatch()
+            startPowerLifecycleObserver(
+                notificationCenter: powerNotificationCenter
+            )
             startPathMonitor()
             startMissingNetworkServices()
         }
@@ -96,6 +148,8 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
     func stop() {
         queue.async { [weak self] in
             guard let self else { return }
+            powerLifecycleObserver = nil
+            clearSystemSleepLatch()
             connectionEpoch.advance()
             desiredPeerID = nil
             cancelReconnect(resetAttempt: true)
@@ -134,6 +188,11 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
     func connect(to peerID: UUID) {
         queue.async { [weak self] in
             guard let self else { return }
+            // An explicit Connect is the user's own recovery action. Clear a
+            // sleep latch that a missed didWake notification could otherwise
+            // have left set, so the request is not silently dropped by the
+            // sleep guards further down this path.
+            clearSystemSleepLatch()
             guard PeerArbitration.isValidPeerPair(
                 localID: credentials.identity.id,
                 remoteID: peerID
@@ -192,6 +251,159 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             }
             connectOnQueue(to: peerID)
         }
+    }
+
+    /// Closes the transport before macOS suspends networking, while retaining
+    /// the user's selected peer so the normal reconnect path can resume after
+    /// wake. Without this explicit lifecycle boundary, a sleeping Mac can
+    /// leave its peer's TCP connection half-open and both control coordinators
+    /// continue to believe the old session is usable.
+    func prepareForSleep() {
+        let transportFlush = DispatchGroup()
+        // The workspace acknowledges the sleep transition once this handler
+        // returns, so the teardown has to run synchronously here instead of
+        // being queued behind whatever the session queue is already doing.
+        queue.sync {
+            guard !isSystemSleeping else { return }
+            isSystemSleeping = true
+            scheduleSystemSleepLatchTimeout()
+            logSecurePhase("power.will-sleep")
+            cancelReconnect(resetAttempt: true)
+            networkRecoveryGeneration &+= 1
+            networkRecoveryWorkItem?.cancel()
+            networkRecoveryWorkItem = nil
+            networkRecoveryAttempt = 0
+            connectionEpoch.advance()
+
+            let oldContexts = Array(contexts.values)
+            let hadActiveContext = activeContextID != nil
+            oldContexts.forEach {
+                // The context is about to be removed, so its own state
+                // handler stops running. Report the terminal state into the
+                // flush group instead, so this call can wait for the
+                // cancellation to reach the wire.
+                let latch = SleepFlushLatch()
+                transportFlush.enter()
+                $0.connection.stateUpdateHandler = { state in
+                    switch state {
+                    case .cancelled, .failed:
+                        if latch.close() {
+                            transportFlush.leave()
+                        }
+                    default:
+                        break
+                    }
+                }
+                $0.connection.cancel()
+                self.remove($0)
+            }
+
+            listener?.cancel()
+            browser?.cancel()
+            listener = nil
+            browser = nil
+            peersByID.removeAll()
+            peerCandidateIndices.removeAll()
+            preferredPeerEndpoints.removeAll()
+
+            if hadActiveContext {
+                publishStatus("Secure session paused for system sleep")
+            } else {
+                publishConnection(
+                    peerID: nil,
+                    status: "Secure session paused for system sleep"
+                )
+            }
+        }
+        _ = transportFlush.wait(
+            timeout: .now() + Self.sleepTransportFlushTimeout
+        )
+    }
+
+    /// Restarts discovery and reconnects only the peer selected before sleep.
+    /// A deliberate Disconnect clears `desiredPeerID`, so waking after that
+    /// action cannot unexpectedly create a new session.
+    func resumeAfterWake() {
+        queue.async { [weak self] in
+            guard let self else { return }
+            resumeFromSystemSleepOnQueue(
+                phase: "power.did-wake",
+                reconnectingStatus:
+                    "System woke; reconnecting to the paired Mac…"
+            )
+        }
+    }
+
+    private func resumeFromSystemSleepOnQueue(
+        phase: String,
+        reconnectingStatus: String
+    ) {
+        let wasSleeping = isSystemSleeping
+        clearSystemSleepLatch()
+        guard wasSleeping else { return }
+        logSecurePhase(phase)
+        networkRecoveryAttempt = 0
+        startMissingNetworkServices()
+        // prepareForSleep() emptied the peer table, and the browser is only
+        // restarting now, so a zero-delay attempt is guaranteed to find no
+        // candidate and publish a false "service is not available" status.
+        // Start from the first backed-off step so discovery gets a turn.
+        reconnectAttempt = max(reconnectAttempt, 1)
+        retryConnectionIfNeeded()
+        publishStatus(
+            desiredPeerID == nil
+                ? "Secure session services resumed"
+                : reconnectingStatus
+        )
+    }
+
+    /// Queue-synchronized view of the sleep lifecycle state, so tests can
+    /// assert on it without racing the secure-session queue.
+    struct SleepLifecycleSnapshot: Equatable {
+        var isSystemSleeping: Bool
+        var desiredPeerID: UUID?
+        var reconnectAttempt: Int
+        var hasScheduledReconnect: Bool
+    }
+
+    var sleepLifecycleSnapshot: SleepLifecycleSnapshot {
+        queue.sync {
+            SleepLifecycleSnapshot(
+                isSystemSleeping: isSystemSleeping,
+                desiredPeerID: desiredPeerID,
+                reconnectAttempt: reconnectAttempt,
+                hasScheduledReconnect: reconnectWorkItem != nil
+            )
+        }
+    }
+
+    /// Clears the sleep latch and its watchdog. Every guard added for sleep
+    /// also blocks ordinary recovery, so the latch must never outlive the
+    /// wake it was waiting for.
+    private func clearSystemSleepLatch() {
+        isSystemSleeping = false
+        systemSleepLatchWorkItem?.cancel()
+        systemSleepLatchWorkItem = nil
+    }
+
+    /// Arms the watchdog that recovers from a `willSleep` notification whose
+    /// matching `didWake` never arrives — an aborted sleep, or a wake this
+    /// process did not observe. Without it a single missed notification would
+    /// leave secure networking gated off until the app is relaunched.
+    private func scheduleSystemSleepLatchTimeout() {
+        systemSleepLatchWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self, isSystemSleeping else { return }
+            resumeFromSystemSleepOnQueue(
+                phase: "power.sleep-latch-expired",
+                reconnectingStatus: "Reconnecting to the paired Mac…"
+            )
+        }
+        systemSleepLatchWorkItem = workItem
+        queue.asyncAfter(
+            deadline: .now() + systemSleepLatchTimeout,
+            execute: workItem
+        )
     }
 
     func disconnect() {
@@ -358,7 +570,8 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
     }
 
     private func connectOnQueue(to peerID: UUID) {
-        guard networkPathSatisfied else {
+        guard !isSystemSleeping,
+              networkPathSatisfied else {
             logSecurePhase("connect.waiting-for-network", peerID: peerID)
             publishStatus("Network unavailable; waiting to reconnect")
             return
@@ -494,6 +707,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         monitor.pathUpdateHandler = { [weak self] path in
             guard let self else { return }
             networkPathSatisfied = path.status == .satisfied
+            guard !isSystemSleeping else { return }
             if networkPathSatisfied {
                 retryConnectionIfNeeded()
             } else {
@@ -520,7 +734,8 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
     }
 
     private func scheduleNetworkRecovery() {
-        guard networkRecoveryWorkItem == nil else { return }
+        guard !isSystemSleeping,
+              networkRecoveryWorkItem == nil else { return }
         let delay = min(pow(2.0, Double(networkRecoveryAttempt)), 30.0)
         networkRecoveryAttempt = min(networkRecoveryAttempt + 1, 5)
         networkRecoveryGeneration &+= 1
@@ -551,7 +766,8 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
     }
 
     private func retryConnectionIfNeeded() {
-        guard desiredPeerID != nil,
+        guard !isSystemSleeping,
+              desiredPeerID != nil,
               networkPathSatisfied,
               activeContextID == nil,
               !contexts.values.contains(where: { $0.localRole == .initiator }) else {
@@ -561,7 +777,8 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
     }
 
     private func scheduleReconnect() {
-        guard let peerID = desiredPeerID,
+        guard !isSystemSleeping,
+              let peerID = desiredPeerID,
               networkPathSatisfied,
               activeContextID == nil,
               !contexts.values.contains(where: { $0.localRole == .initiator }),
@@ -601,6 +818,21 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         publishReconnecting(false)
     }
 
+    private func startPowerLifecycleObserver(
+        notificationCenter: NotificationCenter
+    ) {
+        guard powerLifecycleObserver == nil else { return }
+        powerLifecycleObserver = SystemPowerLifecycleObserver(
+            notificationCenter: notificationCenter,
+            onWillSleep: { [weak self] in
+                self?.prepareForSleep()
+            },
+            onDidWake: { [weak self] in
+                self?.resumeAfterWake()
+            }
+        )
+    }
+
     private func publishReconnecting(_ value: Bool) {
         DispatchQueue.main.async { [weak self] in
             self?.isReconnecting = value
@@ -608,6 +840,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
     }
 
     private func startListener() {
+        guard networkServicesEnabled else { return }
         do {
             // Keep the secure listener aligned with the peer-to-peer Bonjour
             // browser and outbound connector so AWDL endpoints can accept
@@ -655,6 +888,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
     }
 
     private func startBrowser() {
+        guard networkServicesEnabled else { return }
         let parameters = NWParameters.tcp
         parameters.includePeerToPeer = true
         let browser = NWBrowser(

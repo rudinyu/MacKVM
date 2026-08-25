@@ -301,6 +301,11 @@ peer must be granted again. If the keyboard layout changes while control is live
 the receiver stops remote input and asks both users to choose the same macOS
 input source before trying again.
 
+When macOS is about to sleep, MacKVM closes the secure transport before network
+suspension so the peer immediately returns to local input. After wake, the
+previously selected paired peer is discovered and reconnected automatically;
+keyboard/mouse Hotkeys are then available without a manual Disconnect action.
+
 If the app cannot load its Keychain identity, the error view offers **Reset this
 Mac identity**. Use it only after confirming that the old identity should be
 discarded; it removes local pairings, and the next launch requires pairing both

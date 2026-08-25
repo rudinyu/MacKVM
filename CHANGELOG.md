@@ -14,6 +14,9 @@ and permission-aware control workflow delivered through the 0.12.x series.
   monitor input selected manually. It no longer starts the display-first DDC
   route; `Control-Option-Command-O` remains the automatic display-plus-input
   hand-off shortcut.
+- Close the secure transport before system sleep and restore the selected peer
+  after wake, so the other Mac releases remote input and Hotkey switching does
+  not remain blocked by a half-open session.
 
 ## 0.12.31 (build 71) — 2026-08-24
 

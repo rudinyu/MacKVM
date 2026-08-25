@@ -195,6 +195,11 @@ Expected:
 2. Disconnect and reconnect from each Mac.
 3. Quit one app, reopen it, and reconnect.
 4. Turn Wi-Fi off during a connection, then restore it.
+5. While the M5 Pro is actively controlling the Intel Mac, put the M5 Pro to
+   sleep. Confirm the Intel Mac releases remote input and reports a disconnected
+   session without requiring a manual **Disconnect** click.
+6. Wake the M5 Pro and wait for the secure session to reconnect. Confirm the
+   keyboard/mouse Hotkey works without first disconnecting from the Intel Mac.
 
 Expected:
 
@@ -203,6 +208,8 @@ Expected:
   and mouse buttons.
 - Reconnect succeeds without repeating pairing; seamless-authorized peers can
   resume control without another Allow prompt.
+- A system sleep closes the old transport before networking suspends; wake
+  reconnects the previously selected peer and starts from local input.
 
 ## 6. Keyboard and mouse control
 

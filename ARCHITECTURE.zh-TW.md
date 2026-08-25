@@ -139,9 +139,11 @@ stateDiagram-v2
     disconnected --> connected: 有上限的自動重連
 ```
 
-`NWPathMonitor` 在網路不可用時暫停重連，恢復後使用 0／1／2／4…30 秒退避。手動
-**Disconnect**、**Forget** 或退出 app 會清除重連目標。控制請求與鍵盤輸入會檢查
-協定版本和 keyboard layout；不相容時在同意前拒絕，控制中途變更 layout 則安全停止。
+`NSWorkspace` 的睡眠／喚醒通知會在網路暫停前關閉 active transport，保留重連目標，並在
+喚醒後重新啟動安全探索。`NWPathMonitor` 在網路不可用時暫停重連，恢復後使用
+0／1／2／4…30 秒退避。手動 **Disconnect**、**Forget** 或退出 app 會清除重連目標。
+控制請求與鍵盤輸入會檢查協定版本和 keyboard layout；不相容時在同意前拒絕，控制中途
+變更 layout 則安全停止。
 
 ## 防護邊界
 

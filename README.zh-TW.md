@@ -19,7 +19,7 @@ MacKVM 是原生 macOS 應用程式，提供選單列入口與一般控制視窗
 - 使用短期 P-256 金鑰交換、方向分離 HKDF、ChaChaPoly 與序號計數器的加密連線。
 - 驗證後的鍵盤、滑鼠、滾輪與修飾鍵轉送，以及明確的 Allow／Deny 控制同意。
 - Local Network、Input Monitoring、Accessibility 的循序設定檢查。
-- Launch MacKVM at Login、通知 Allow／Deny／Review、斷線安全返回與自動重連。
+- Launch MacKVM at Login、通知 Allow／Deny／Review、斷線安全返回，以及睡眠／喚醒時的自動重連。
 - 防止 HDMI-only Intel Mac 誤宣稱具備雙向實體輸入的拓撲模式。
 - 透過 IOKit 原生 DDC/CI 在 Apple Silicon 與 Intel 切換螢幕輸入、探索支援 DDC 的
   顯示器、保存穩定識別碼、顯示診斷，並在螢幕不支援時提供 OSD 備援。
@@ -118,6 +118,9 @@ repository，正常 CI 也會建置三種診斷目標。按下 Ctrl-C 或收到 
    `Control-Option-Command-K`；`Control-Option-Command-O` 則用於自動切螢幕並同步交接控制權。
    若要從 Intel Mac 切回 M5 Pro，請在 Intel Mac 按 **Return keyboard and mouse to
    [M5 Mac]**；接收端會釋放輸入，螢幕路由也會返回 M5 Pro。
+   macOS 即將休眠時，MacKVM 會先關閉安全傳輸，讓另一台 Mac 立即釋放遠端輸入；
+   喚醒後會重新探索並連回休眠前選取的 peer，不需要先在 Intel Mac 手動按 **Disconnect**，
+   鍵盤／滑鼠 Hotkey 就能再次使用。
 7. 若通知被停用，仍可從選單列 KVM 圖示或 Dock／一般視窗開啟並處理控制請求。
    若啟用登入時自動啟動，登入項目只會啟動背景服務，不會搶焦點開啟完整視窗；
    需要時可從選單列 KVM 圖示或 Dock 重新開啟。

@@ -295,11 +295,13 @@ route: it changes the monitor input before requesting keyboard/mouse control,
 and ends receiving to restore the controller's display and input.
 
 `SecureSessionService` remembers only a user-selected paired peer for automatic
-reconnect. `NWPathMonitor` pauses attempts while the network path is unavailable
-and resumes with a bounded exponential backoff (0/1/2/4…30 seconds) after a
-path or Bonjour update. A deliberate Disconnect, Forget, or app stop clears the
-desired peer. Reconnection returns both Macs to a local-input state; a peer
-with seamless authorization can be granted again automatically, while an
+reconnect. `NSWorkspace` sleep/wake notifications close the active transport
+before networking suspends, preserve that reconnect intent, and restart secure
+discovery after wake. `NWPathMonitor` pauses attempts while the network path is
+unavailable and resumes with a bounded exponential backoff (0/1/2/4…30 seconds)
+after a path or Bonjour update. A deliberate Disconnect, Forget, or app stop
+clears the desired peer. Reconnection returns both Macs to a local-input state;
+a peer with seamless authorization can be granted again automatically, while an
 opted-out peer must confirm the request again.
 
 Control requests carry a protocol-version range and the current macOS

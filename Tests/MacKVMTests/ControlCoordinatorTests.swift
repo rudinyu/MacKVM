@@ -452,6 +452,14 @@ final class ControlCoordinatorTests: XCTestCase {
         drainMainQueue()
 
         XCTAssertEqual(fixture.sink.receiveCount, 0)
+
+        fixture.capture.onSwitchControl?()
+
+        XCTAssertEqual(fixture.coordinator.state, .suspended)
+        XCTAssertEqual(
+            fixture.transport.sentMessages.last?.kind,
+            .requestControl
+        )
     }
 
     func testInputQueueFailureUsesAResourceReason() {
