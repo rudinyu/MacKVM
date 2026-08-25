@@ -15,3 +15,12 @@ xcuserdata/
 
 # macOS Finder metadata
 .DS_Store
+
+# Local agent workflow, instruction, and review files. These stay on the
+# machine and must never reach GitHub; .codex/ was previously removed from
+# the tree for this reason.
+.claude/
+.codex/
+CLAUDE.md
+AGENTS.md
+CODEX_*.md
