@@ -27,7 +27,7 @@ internal sealed class MdnsAdvertiser : IAsyncDisposable
     private readonly UdpClient? ipv6Client;
     private readonly string serviceName;
     private readonly string hostName;
-    private readonly string serviceType = "_mackvm._tcp.local";
+    private readonly string serviceType;
     private readonly CancellationTokenSource cancellation = new();
     private readonly HashSet<IPAddress> joinedIPv4Interfaces = [];
     private readonly HashSet<int> joinedIPv6Interfaces = [];
@@ -42,13 +42,24 @@ internal sealed class MdnsAdvertiser : IAsyncDisposable
         PeerIdentity identity,
         string model,
         int port,
-        bool enableIPv6 = true
+        bool enableIPv6 = true,
+        string serviceType = "_mackvm._tcp.local"
     )
     {
         this.identity = identity;
         this.model = model;
         this.port = port;
-        serviceName = $"{identity.ServiceName}._mackvm._tcp.local";
+        if (string.IsNullOrWhiteSpace(serviceType)
+            || !serviceType.EndsWith(".local", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException(
+                "The mDNS service type must be a .local name.",
+                nameof(serviceType)
+            );
+        }
+
+        this.serviceType = serviceType;
+        serviceName = $"{identity.ServiceName}.{serviceType}";
         hostName = $"mackvm-{identity.Id:D}.local";
         ipv4Client = TryCreateClient(AddressFamily.InterNetwork);
         ipv6Client = enableIPv6 && Socket.OSSupportsIPv6

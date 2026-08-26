@@ -1651,7 +1651,8 @@ public static class LengthPrefixedFrameCodec
     public static IReadOnlyList<byte[]> DecodeAvailablePayloads(
         List<byte> buffer,
         int maximumPayloadLength,
-        int? maximumFrameCount = null
+        int? maximumFrameCount = null,
+        bool rejectExcessFrames = true
     )
     {
         if (maximumPayloadLength <= 0
@@ -1689,10 +1690,19 @@ public static class LengthPrefixedFrameCodec
                     break;
                 }
 
-                throw new LengthPrefixedFrameException(
-                    LengthPrefixedFrameErrorCode.TooManyMessages,
-                    "Too many frames were received in one delivery."
-                );
+                if (rejectExcessFrames)
+                {
+                    throw new LengthPrefixedFrameException(
+                        LengthPrefixedFrameErrorCode.TooManyMessages,
+                        "Too many frames were received in one delivery."
+                    );
+                }
+
+                // A secure input stream may legitimately coalesce more than
+                // one bounded batch in a single TCP read. Leave the complete
+                // next frame in the buffer so the caller can drain another
+                // batch without allocating an unbounded result list.
+                break;
             }
 
             var length = (buffer[0] << 24)
@@ -1737,5 +1747,24 @@ public static class LengthPrefixedFrameCodec
         return length > 0
             && length <= maximumPayloadLength
             && buffer.Length >= length + 4;
+    }
+
+    public static bool HasCompleteFrame(
+        IReadOnlyList<byte> buffer,
+        int maximumPayloadLength
+    )
+    {
+        if (buffer.Count < 4 || maximumPayloadLength <= 0)
+        {
+            return false;
+        }
+
+        var length = (buffer[0] << 24)
+            | (buffer[1] << 16)
+            | (buffer[2] << 8)
+            | buffer[3];
+        return length > 0
+            && length <= maximumPayloadLength
+            && buffer.Count >= length + 4;
     }
 }

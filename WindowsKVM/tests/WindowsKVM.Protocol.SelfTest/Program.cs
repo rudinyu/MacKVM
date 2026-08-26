@@ -23,6 +23,10 @@ internal static class Program
             TestCloseBarrierRequiresMutualCompletionProof();
             TestCompletePairingStateMachine();
             TestRejectedDecisionIsTerminal();
+            TestSecureSessionHandshakeRoundTrip();
+            TestSecureSessionChannelEncryptsBothDirections();
+            TestSecureSessionRejectsTamperedHandshake();
+            TestSecureSessionDrainsCoalescedFrames();
             Console.WriteLine("WindowsKVM protocol self-test: PASS");
             return 0;
         }
@@ -248,6 +252,135 @@ internal static class Program
             ),
             "verification code must be deterministic"
         );
+    }
+
+    private static void TestSecureSessionHandshakeRoundTrip()
+    {
+        using var fixture = SecureFixture.Create();
+        var frame = SecureSessionWireCodec.Encode(
+            fixture.InitiatorHandshake,
+            fixture.InitiatorSigningKey
+        );
+        var buffer = frame.ToList();
+        var messages = SecureSessionWireCodec.DecodeAvailableFrames(buffer);
+        Assert(messages.Count == 1, "one secure handshake should decode");
+        Assert(
+            messages[0].Kind == SecureSessionWireMessageKind.Handshake,
+            "secure handshake kind changed"
+        );
+        Assert(
+            messages[0].Handshake!.Sender.Id == fixture.InitiatorHandshake.Sender.Id,
+            "secure handshake sender changed"
+        );
+        Assert(buffer.Count == 0, "secure handshake frame was not consumed");
+    }
+
+    private static void TestSecureSessionChannelEncryptsBothDirections()
+    {
+        using var fixture = SecureFixture.Create();
+        using var initiatorChannel = new SecureSessionChannel(
+            SecureSessionRole.Initiator,
+            fixture.InitiatorEphemeralKey,
+            fixture.InitiatorHandshake,
+            fixture.ResponderHandshake
+        );
+        using var responderChannel = new SecureSessionChannel(
+            SecureSessionRole.Responder,
+            fixture.ResponderEphemeralKey,
+            fixture.InitiatorHandshake,
+            fixture.ResponderHandshake
+        );
+
+        var packet = initiatorChannel.Seal("connect"u8);
+        Assert(
+            Encoding.UTF8.GetString(responderChannel.Open(packet)) == "connect",
+            "responder could not decrypt the initiator packet"
+        );
+        AssertThrowsSecure(
+            () => responderChannel.Open(packet),
+            SecureSessionWireErrorCode.UnexpectedMessage,
+            "secure packet replay should be rejected"
+        );
+
+        var response = responderChannel.Seal("ready"u8);
+        Assert(
+            Encoding.UTF8.GetString(initiatorChannel.Open(response)) == "ready",
+            "initiator could not decrypt the responder packet"
+        );
+    }
+
+    private static void TestSecureSessionRejectsTamperedHandshake()
+    {
+        using var fixture = SecureFixture.Create();
+        var frame = SecureSessionWireCodec.Encode(
+            fixture.InitiatorHandshake,
+            fixture.InitiatorSigningKey
+        );
+        var payload = Encoding.UTF8.GetString(frame, 4, frame.Length - 4);
+        const string signaturePrefix = "\"signature\":\"";
+        var signatureStart = payload.IndexOf(signaturePrefix, StringComparison.Ordinal)
+            + signaturePrefix.Length;
+        Assert(signatureStart > signaturePrefix.Length, "secure signature is missing");
+        var bytes = Encoding.UTF8.GetBytes(payload);
+        bytes[signatureStart] = bytes[signatureStart] == (byte)'A'
+            ? (byte)'B'
+            : (byte)'A';
+        Buffer.BlockCopy(bytes, 0, frame, 4, bytes.Length);
+        AssertThrowsSecure(
+            () => SecureSessionWireCodec.DecodeAvailableFrames(frame.ToList()),
+            SecureSessionWireErrorCode.InvalidSignature,
+            "tampered secure handshake should be rejected"
+        );
+    }
+
+    private static void TestSecureSessionDrainsCoalescedFrames()
+    {
+        var buffer = new List<byte>();
+        for (var index = 0; index < SecureSessionWireCodec.MaximumFramesPerDecode + 1; index++)
+        {
+            buffer.AddRange(SecureSessionWireCodec.Encode(
+                new SecurePacket(Guid.NewGuid(), (ulong)index, [0x01])
+            ));
+        }
+
+        var firstBatch = SecureSessionWireCodec.DecodeAvailableFrames(buffer);
+        Assert(
+            firstBatch.Count == SecureSessionWireCodec.MaximumFramesPerDecode,
+            "secure decoder should return one bounded batch"
+        );
+        Assert(
+            SecureSessionWireCodec.HasCompleteFrame(buffer),
+            "secure decoder should retain a coalesced complete frame"
+        );
+
+        var secondBatch = SecureSessionWireCodec.DecodeAvailableFrames(buffer);
+        Assert(secondBatch.Count == 1, "secure decoder should drain the retained frame");
+        Assert(buffer.Count == 0, "all coalesced secure frames should be consumed");
+    }
+
+    private static void AssertThrowsSecure(
+        Action action,
+        SecureSessionWireErrorCode expected,
+        string message
+    )
+    {
+        try
+        {
+            action();
+        }
+        catch (SecureSessionWireException ex) when (ex.Code == expected)
+        {
+            return;
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException(
+                $"{message}; got {ex.GetType().Name}: {ex.Message}",
+                ex
+            );
+        }
+
+        throw new InvalidOperationException(message);
     }
 
     private static void TestFoundationJsonEscaping()
@@ -510,5 +643,100 @@ internal static class Program
         {
             throw new InvalidOperationException(message);
         }
+    }
+
+    private sealed class SecureFixture : IDisposable
+    {
+        public ECDsa InitiatorSigningKey { get; }
+        public ECDsa ResponderSigningKey { get; }
+        public ECDiffieHellman InitiatorEphemeralKey { get; }
+        public ECDiffieHellman ResponderEphemeralKey { get; }
+        public SecureSessionHandshake InitiatorHandshake { get; }
+        public SecureSessionHandshake ResponderHandshake { get; }
+
+        private SecureFixture(
+            ECDsa initiatorSigningKey,
+            ECDsa responderSigningKey,
+            ECDiffieHellman initiatorEphemeralKey,
+            ECDiffieHellman responderEphemeralKey,
+            SecureSessionHandshake initiatorHandshake,
+            SecureSessionHandshake responderHandshake
+        )
+        {
+            InitiatorSigningKey = initiatorSigningKey;
+            ResponderSigningKey = responderSigningKey;
+            InitiatorEphemeralKey = initiatorEphemeralKey;
+            ResponderEphemeralKey = responderEphemeralKey;
+            InitiatorHandshake = initiatorHandshake;
+            ResponderHandshake = responderHandshake;
+        }
+
+        public static SecureFixture Create()
+        {
+            var initiatorSigningKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+            var responderSigningKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+            var initiatorEphemeralKey = ECDiffieHellman.Create(
+                ECCurve.NamedCurves.nistP256
+            );
+            var responderEphemeralKey = ECDiffieHellman.Create(
+                ECCurve.NamedCurves.nistP256
+            );
+            var initiator = new PeerIdentity(
+                Guid.NewGuid(),
+                "Windows Initiator",
+                PairingCryptoAccess.ToX963(
+                    initiatorSigningKey.ExportParameters(false).Q
+                )
+            );
+            var responder = new PeerIdentity(
+                Guid.NewGuid(),
+                "Windows Responder",
+                PairingCryptoAccess.ToX963(
+                    responderSigningKey.ExportParameters(false).Q
+                )
+            );
+            var sessionID = Guid.NewGuid();
+            return new SecureFixture(
+                initiatorSigningKey,
+                responderSigningKey,
+                initiatorEphemeralKey,
+                responderEphemeralKey,
+                SecureSessionHandshake.Create(
+                    sessionID,
+                    SecureSessionRole.Initiator,
+                    initiator,
+                    "Windows x64",
+                    initiatorEphemeralKey
+                ),
+                SecureSessionHandshake.Create(
+                    sessionID,
+                    SecureSessionRole.Responder,
+                    responder,
+                    "Windows ARM64",
+                    responderEphemeralKey
+                )
+            );
+        }
+
+        public void Dispose()
+        {
+            InitiatorSigningKey.Dispose();
+            ResponderSigningKey.Dispose();
+            InitiatorEphemeralKey.Dispose();
+            ResponderEphemeralKey.Dispose();
+        }
+    }
+}
+
+internal static class PairingCryptoAccess
+{
+    public static byte[] ToX963(ECPoint point)
+    {
+        if (point.X is null || point.Y is null)
+        {
+            throw new CryptographicException("The P-256 public point is missing.");
+        }
+
+        return [0x04, .. point.X, .. point.Y];
     }
 }

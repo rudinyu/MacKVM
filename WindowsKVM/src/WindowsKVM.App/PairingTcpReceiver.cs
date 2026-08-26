@@ -31,6 +31,7 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
     private readonly string model;
     private readonly int requestedPort;
     private readonly bool autoAccept;
+    private readonly Action<PeerIdentity>? pairingCompleted;
     private TcpListener listener;
     // ECDsa signing is kept serialized, but a slow network write must never
     // block another connection's challenge or decision.
@@ -57,13 +58,17 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
         DeviceCredentials credentials,
         string model,
         int requestedPort,
-        bool autoAccept
+        bool autoAccept,
+        Action<PeerIdentity>? pairingCompleted = null,
+        object? signingLock = null
     )
     {
         this.credentials = credentials;
         this.model = model;
         this.requestedPort = requestedPort;
         this.autoAccept = autoAccept;
+        this.pairingCompleted = pairingCompleted;
+        this.signingLock = signingLock ?? new object();
         listener = CreateListener(requestedPort);
     }
 
@@ -116,7 +121,7 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
         Console.WriteLine("Advertised as _mackvm._tcp; allow the app on Private networks if Windows asks.");
         Console.WriteLine(autoAccept
             ? "Automatic pairing acceptance is enabled for this test run."
-            : "When a code appears, compare it with the initiating Mac and type y to accept.");
+            : "When an incoming request appears, compare the verification code and type y/yes to accept.");
         Console.WriteLine("Press Ctrl-C or Enter to stop.");
 
         Console.CancelKeyPress += OnCancelKeyPress;
@@ -237,6 +242,8 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
     {
         using var ownedClient = client;
         await using var stream = client.GetStream();
+        var remoteEndpoint = client.Client.RemoteEndPoint?.ToString() ?? "unknown endpoint";
+        Console.WriteLine($"Incoming pairing connection from {remoteEndpoint}.");
         using var handshakeCancellation = CancellationTokenSource.CreateLinkedTokenSource(
             serverToken
         );
@@ -282,7 +289,12 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
 
         try
         {
-            while (!token.IsCancellationRequested && client.Connected)
+            // TcpClient.Connected is only a snapshot of the last socket
+            // operation and can be false during a valid accepted connection,
+            // especially for IPv4-mapped IPv6 peers. Let ReadAsync be the
+            // source of truth: zero means orderly EOF and an exception means
+            // that the transport failed.
+            while (!token.IsCancellationRequested)
             {
                 var count = await stream.ReadAsync(readBuffer, token);
                 if (count == 0)
@@ -301,6 +313,9 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
                 }
                 foreach (var message in messages)
                 {
+                    Console.WriteLine(
+                        $"Pairing message received: {message.Kind} from {message.Sender.Name}."
+                    );
                     // The responder's decision must be serialized before a
                     // concurrently arriving initiator decision can generate a
                     // completion. The prompt task owns the local decision;
@@ -319,6 +334,15 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
                     lock (gate)
                     {
                         result = session.Receive(message);
+                    }
+
+                    if (result.Completed)
+                    {
+                        // Persist trust before sending the final close-barrier
+                        // frame. If the local file cannot be updated, do not
+                        // advertise a pairing that secure-session admission
+                        // cannot honor.
+                        RecordPairingCompletion(session);
                     }
 
                     await SendResultAsync(stream, result, outputLock, token);
@@ -363,15 +387,29 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
         }
         catch (PairingWireException ex)
         {
-            Console.Error.WriteLine($"Pairing connection rejected: {ex.Code}.");
+            Console.Error.WriteLine(
+                $"Pairing connection rejected: {ex.Code} ({ex.Message})."
+            );
         }
         catch (PairingSessionException ex)
         {
             Console.Error.WriteLine($"Pairing session rejected: {ex.Message}");
         }
+        catch (SocketException ex)
+        {
+            Console.Error.WriteLine(
+                $"Pairing transport socket failed ({ex.SocketErrorCode}): {ex.Message}"
+            );
+        }
         catch (IOException ex)
         {
             Console.Error.WriteLine($"Pairing connection closed: {ex.Message}");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(
+                $"Pairing connection failed ({ex.GetType().Name}): {ex.Message}"
+            );
         }
         finally
         {
@@ -409,8 +447,16 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
         var accepted = autoAccept;
         if (!autoAccept)
         {
-            Console.WriteLine($"Pairing code: {code}");
-            Console.Write("Does the initiating Mac show the same code? [y/N] ");
+            Console.WriteLine();
+            Console.WriteLine(
+                $"Incoming pairing request from {session.Peer?.Name ?? "unknown peer"}."
+            );
+            Console.WriteLine($"Verification code: {code}");
+            Console.Write(
+                "Accept pairing? Compare this code with the initiating Mac "
+                    + "and type y/yes [y/N]: "
+            );
+            Console.Out.Flush();
             string? answer;
             try
             {
@@ -437,6 +483,10 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
 
             accepted = string.Equals(answer?.Trim(), "y", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(answer?.Trim(), "yes", StringComparison.OrdinalIgnoreCase);
+            if (!accepted)
+            {
+                Console.WriteLine("Pairing declined.");
+            }
         }
         else
         {
@@ -451,6 +501,13 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
                 result = session.Respond(accepted);
             }
 
+            if (result.Completed)
+            {
+                // See the main receive loop: trust must be durable before the
+                // final completion frame is released to the peer.
+                RecordPairingCompletion(session);
+            }
+
             await SendResultAsync(stream, result, outputLock, token);
             resolveConsent(accepted);
             if (result.Completed)
@@ -459,13 +516,30 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
             }
         }
         catch (Exception ex) when (ex is InvalidOperationException
-            or PairingSessionException or IOException)
+            or PairingSessionException or IOException or InvalidDataException)
         {
             Console.Error.WriteLine($"Pairing decision failed: {ex.Message}");
+            // A trust-file rejection is expected input validation, not a
+            // reason to fault the prompt task. Cancel this connection so the
+            // outer finally releases both admission slots deterministically.
+            resolveConsent(false);
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
         }
+    }
+
+    private void RecordPairingCompletion(PairingSession session)
+    {
+        if (session.Peer is not { } peer || pairingCompleted is null)
+        {
+            return;
+        }
+
+        // Let persistence failures abort the final completion path. The
+        // caller will report the failure and the peer will not receive a
+        // success frame that cannot be honored by the secure listener.
+        pairingCompleted(peer);
     }
 
     /// <summary>

@@ -99,15 +99,19 @@ the ad-hoc code signature without trying to execute the cross-built app.
 
 For the complete build procedure, see the standalone
 [Windows build guide](WINDOWS_BUILD.md).
+The Windows component scope and current W2 feature status are also listed in
+the [WindowsKVM README](WindowsKVM/README.md).
 
 The Windows branch uses C#/.NET 8 for the native Windows side; Swift is not
-used for the Windows UI, tray integration, input APIs, or firewall setup. W1
+used for the Windows UI, tray integration, input APIs, or firewall setup. W2
 now includes the platform-neutral protocol library, signed pairing state
-machine, console receiver, DPAPI-protected identity, and a dependency-free
-`_mackvm._tcp` mDNS advertiser. It can establish a trust relationship with
-MacKVM 1.00.00, but it is not yet a usable Windows KVM. W2 will add WinUI 3,
-Raw Input, SendInput, secure control sessions, global hotkeys, and the final
-least-privilege Windows Firewall UX while keeping the same wire protocol.
+machine, console receiver, DPAPI-protected identity, a dependency-free mDNS
+advertiser, and an authenticated encrypted secure Connect responder. It can
+establish a trust relationship with MacKVM 1.00.00 and complete the secure
+handshake, but it is not yet a usable Windows KVM. WinUI 3, Raw Input,
+SendInput, encrypted control messages, global hotkeys, tray integration, and
+the final least-privilege Windows Firewall UX remain later Windows work while
+keeping the same wire protocol.
 
 The publish targets are Windows x64 (`win-x64`, also called `x86_64`) and
 Windows ARM64 (`win-arm64`); 32-bit `i686` is intentionally unsupported. Run
@@ -135,7 +139,7 @@ official
 and [.NET deployment](https://learn.microsoft.com/en-us/dotnet/core/deploying/)
 documentation when setting up a Windows build host.
 
-The W1 receiver uses a dual-mode TCP listener and advertises both A and AAAA
+The W2 receiver uses dual-mode TCP listeners and advertises both A and AAAA
 records through IPv4/IPv6 mDNS when those interfaces are available. It falls
 back to IPv4 when the host has no usable IPv6 interface. The macOS
 `scripts/ci.sh` runs the Windows checks automatically when `dotnet` is

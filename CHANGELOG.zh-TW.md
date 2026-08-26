@@ -2,6 +2,59 @@
 
 # 變更記錄
 
+## 1.01.02（build 79）— 2026-08-26
+
+本次修補補齊 Windows W2 交付文件，並統一 macOS 與 Windows build metadata 中的版本。
+
+### 文件
+
+- 新增英文與繁體中文 WindowsKVM component README，說明 secure Connect、信任儲存、
+  相容性、建置與測試步驟。
+- 在 repository 根目錄文件加入 component README 連結。
+
+## 1.01.01（build 78）— 2026-08-26
+
+本次修補依 review 結果強化 Windows W2 secure-session responder。
+
+### 修正
+
+- 限制未認證 secure-session 的連線嘗試，避免閒置 TCP client 佔滿八個 handshake slot。
+- 以有上限的 batch drain 合併傳入的加密 frame；單次 read 超過 16 個 frame 不再誤斷線。
+- pairing 與 secure-session responder 共用 ECDSA signing lock。
+- Windows trust record 改為交易式寫入，且在送出最後 pairing-completion frame 前先持久化。
+- 認證後的 partial frame 五秒後逾時，並將 mDNS／listener task 的非預期失敗回報到 console entry point。
+
+## 1.01.00（build 77）— 2026-08-26
+
+本次功能版本加入 Windows W2 secure Connect responder，並維持與 MacKVM 1.00.00
+相容的簽章配對 protocol。
+
+### 新增
+
+- 廣播獨立的 `_mackvm-secure._tcp` service，只接受完成配對流程後記錄的 Mac
+  公開 identity。
+- 完成簽章的 ephemeral P-256 handshake，使用 HKDF-SHA256 產生雙向金鑰，並以
+  ChaCha20-Poly1305 驗證加密 key confirmation 與序號防重播。
+- 將已配對 Mac 的公開 identity 原子寫入
+  `%LOCALAPPDATA%\MacKVM\trusted-peers.json`；identity key 改變時拒絕連線。
+- 新增雙向加密、重播拒絕與竄改 handshake 的 protocol self-test。
+
+### 限制
+
+- Windows Raw Input／SendInput、加密 control message、tray UI、全域快捷鍵與最後的
+  防火牆 UX 尚未在此 build 啟用。
+
+## 1.00.02（build 76）— 2026-08-25
+
+本次修補讓 Windows CLI 配對流程可觀察且更可靠。
+
+### 修正
+
+- 不再使用可能過時的 `TcpClient.Connected` 快照判斷已 accept 的配對連線；改以
+  `ReadAsync` 的 EOF／錯誤結果判斷連線狀態。
+- Windows CLI 會顯示傳入裝置、驗證碼與明確的 **Accept pairing?** 提示，並記錄每個
+  收到的 pairing frame 與拒絕原因，方便排查防火牆與傳輸問題。
+
 ## 1.00.01（build 75）— 2026-08-25
 
 本次修補強化 Windows 配對 scaffold 與本機驗證流程。

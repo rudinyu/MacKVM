@@ -66,13 +66,15 @@ Developer ID Application、hardened runtime，並在公開發佈前完成 Apple 
 
 ### Windows 開發（Windows 分支）
 
-完整建置流程請參閱獨立的 [Windows 建置手冊](WINDOWS_BUILD.zh-TW.md)。
+完整建置流程請參閱獨立的 [Windows 建置手冊](WINDOWS_BUILD.zh-TW.md)；Windows component
+範圍與目前 W2 功能狀態請參閱 [WindowsKVM README](WindowsKVM/README.zh-TW.md)。
 
 Windows 端改用 C#/.NET 8，不用 Swift 處理 Windows UI、常駐列、輸入 API 或防火牆設定。
-W1 已包含跨平台 protocol library、簽章配對 state machine、console receiver、DPAPI
-保護的 identity 與免外部套件的 `_mackvm._tcp` mDNS 廣播器；可以和 MacKVM 1.00.00
-建立信任關係，但還不是完整可用的 Windows KVM。W2 會加入 WinUI 3、Raw Input、SendInput、
-加密控制 session、全域快捷鍵與最小權限的 Windows Firewall UX，同時維持相同 wire protocol。
+W2 已包含跨平台 protocol library、簽章配對 state machine、console receiver、DPAPI
+保護的 identity、免外部套件的 mDNS 廣播器，以及可完成驗證加密 Connect 的 responder。
+它可以和 MacKVM 1.00.00 建立信任關係並完成 secure handshake，但還不是完整可用的
+Windows KVM。WinUI 3、Raw Input、SendInput、加密控制 message、全域快捷鍵、tray integration
+與最小權限的 Windows Firewall UX 仍待後續實作，同時維持相同 wire protocol。
 
 支援的建置目標是 Windows x64（`win-x64`，也稱 `x86_64`）與 Windows ARM64（`win-arm64`），
 刻意不支援 32-bit `i686`。請在安裝 .NET 8 SDK 的 Windows 建置主機上執行（後續加入 WinUI
@@ -105,7 +107,7 @@ pwsh ./scripts/build-windows.ps1 -Architecture both -Plan
 [Windows app development](https://learn.microsoft.com/en-us/windows/apps/) 與
 [.NET deployment](https://learn.microsoft.com/en-us/dotnet/core/deploying/) 說明。
 
-W1 receiver 使用 dual-mode TCP listener；主機有可用介面時，會透過 IPv4／IPv6 mDNS
+W2 receiver 使用 dual-mode TCP listener；主機有可用介面時，會透過 IPv4／IPv6 mDNS
 廣播 A 與 AAAA 記錄。若主機沒有可用 IPv6 介面，會回退到 IPv4。macOS 的
 `scripts/ci.sh` 在找到 `dotnet` 時會自動執行 Windows 檢查；沒有 Windows SDK 的 Mac
 會略過這部分。使用 `RUN_WINDOWS_CI=1 ./scripts/ci.sh` 可將 Windows 檢查設為必要。
