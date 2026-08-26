@@ -3,13 +3,14 @@
 # MacKVM 使用手冊
 
 MacKVM 是 macOS app，提供選單列入口與一般控制視窗，讓 14 吋 M5 Pro MacBook Pro
-與 2019 Intel MacBook Pro 共用一組鍵盤、滑鼠，並可選擇切換 BenQ MA270U 螢幕。
+與 2019 Intel MacBook Pro 共用一組鍵盤、滑鼠與觸控板，並可選擇切換 BenQ MA270U 螢幕。
 
 ## 硬體與接線
 
 - M5 Pro 以 USB-C 連接 MA270U 的視訊／資料連接埠。
 - Intel Mac 以 USB-C／Thunderbolt 轉接器連接 HDMI。
-- 鍵盤與滑鼠接在 M5 Pro 或 MA270U USB hub；HDMI 不會把 USB hub 傳給 Intel Mac。
+- 外接鍵盤與滑鼠接在 M5 Pro 或 MA270U USB hub；HDMI 不會把 USB hub 傳給 Intel Mac。
+  兩台 Mac 的本機鍵盤、滑鼠與觸控板仍都可以發起控制。
 - 建議選 **One keyboard on M5 Pro (USB-C)**。只有兩台 Mac 都透過實體 USB switch
   看見鍵盤與滑鼠時，才選 **External USB switch (bidirectional)**。
 
@@ -63,10 +64,10 @@ notarization。
    Intel 新安裝會以 HDMI 1 作為本機路由；舊版若保存了 USB-C 設定，請重新套用 Intel 預設。
 4. 用 **Show other Mac** 測試；若原生探索或切換失敗，查看診斷、確認線材直接連接，再用
    MA270U OSD 手動切換。若只是切換螢幕，可按 **Return display to this Mac**；控制中的
-   緊急快速鍵或接收端的 **Return keyboard and mouse to [M5 Mac]** 操作可恢復本機路由。
+   緊急快速鍵或接收端的 **Return keyboard, mouse, and trackpad to [M5 Mac]** 操作可恢復本機路由。
    在 M5 Pro 按 **Show other Mac** 時，若控制前置條件已完成，也會使用先切畫面的流程
-   分享鍵盤滑鼠；**Share keyboard and mouse with [Intel Mac]** 仍是明確的等效操作。Intel
-   Mac 只有在未啟用該配對裝置的無縫控制時才需要按 **Allow**。
+   分享鍵盤、滑鼠與觸控板；**Share keyboard, mouse, and trackpad with [other Mac]** 仍是明確的等效操作。
+   接收端只有在未啟用該配對裝置的無縫控制時才需要按 **Allow**。
 
 ### 找出不同螢幕的 input mapping
 
@@ -108,8 +109,8 @@ mapping 原始碼。按下 Ctrl-C 或收到 SIGTERM 時會停止候選值迴圈�
    **Retry pairing**。在 M5／Intel 配置中，由 Intel Mac 發起可作為 Intel 尚未允許外部
    連入時的 workaround；配對協定本身不綁定架構。
 3. 兩邊的簽署決定都完成後，MacKVM 會自動嘗試建立加密連線；若狀態仍是 idle，
-   可在已配對裝置列按 **Connect**。鍵盤與滑鼠接在 M5 Pro 時，請按
-   **Show other Mac** 或 **Share keyboard and mouse with [Intel Mac]**；在 M5 Pro 兩者
+   可在已配對裝置列按 **Connect**。外接鍵盤與滑鼠接在 M5 Pro 時，請按
+   **Show other Mac** 或 **Share keyboard, mouse, and trackpad with [other Mac]**；在 M5 Pro 兩者
    都會先切換螢幕，再送出控制請求。
 4. 新配對的接收端會自動啟用該已釘選 Mac 的無縫控制。若要每次控制都重新按
    **Allow**，請在 **Paired device information** 關閉
@@ -118,11 +119,15 @@ mapping 原始碼。按下 Ctrl-C 或收到 SIGTERM 時會停止候選值迴圈�
    macOS 原生 Allow／Deny／Review 通知。
 5. M5 Pro 可隨時按 `Control-Option-Command-Escape` 中斷共享；全域
    `Control-Option-Command-K` 適用於已手動選好的螢幕輸入，不必開啟選單即可切換鍵盤／
-   滑鼠控制，且不會啟動自動 DDC；閒置時開始請求、控制中或接收中返回本機／控制端。
+   滑鼠／觸控板控制，且不會啟動自動 DDC；閒置時開始請求、控制中或接收中返回本機／控制端。
    `Control-Option-Command-O` 沿用 **Show other Mac** 的受保護流程，自動先切換螢幕，再請求
-   鍵盤／滑鼠控制；如果本機正在接收控制，則結束接收並把螢幕與輸入還給控制端。要從 Intel Mac
-   切回 M5 Pro，請在 Intel Mac 按 **Return keyboard and mouse to [M5 Mac]**；
-   控制端也可按 **Return keyboard and mouse to this Mac**。
+   鍵盤／滑鼠／觸控板控制；如果本機正在接收控制，則結束接收並把螢幕與輸入還給控制端。要從 Intel Mac
+   切回 M5 Pro，請在 Intel Mac 按 **Return keyboard, mouse, and trackpad to [M5 Mac]**；
+   控制端也可按 **Return keyboard, mouse, and trackpad to this Mac**。
+
+公開 Quartz 事件路徑會轉送觸控板移動、點按、拖曳、次要點按、精準雙軸捲動、慣性相位與
+macOS 暴露出的 pressure。Pinch、旋轉、三指工作區滑動等 AppKit-only 手勢無法透過公開
+`CGEvent` 全域注入，因此不列入本版本驗收範圍。
 
 重連使用有上限的退避時間；已啟用無縫控制的配對裝置不需再次按 Allow，關閉該選項的
 裝置才需要重新取得控制同意。**Disconnect**、**Forget** 與 **Quit** 會清除重連意圖。

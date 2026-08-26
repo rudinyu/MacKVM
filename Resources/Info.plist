@@ -21,9 +21,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.00.00</string>
+	<string>1.100.00</string>
 	<key>CFBundleVersion</key>
-	<string>74</string>
+	<string>75</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
 	<key>NSBonjourServices</key>
@@ -32,7 +32,7 @@
 		<string>_mackvm-secure._tcp</string>
 	</array>
 	<key>NSInputMonitoringUsageDescription</key>
-	<string>MacKVM captures keyboard and mouse events only while you control your paired Mac.</string>
+	<string>MacKVM captures keyboard, mouse, and trackpad events only while you control your paired Mac.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>MacKVM discovers and connects to your paired Mac on the local network.</string>
 </dict>

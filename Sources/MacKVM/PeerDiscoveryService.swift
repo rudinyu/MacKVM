@@ -131,7 +131,7 @@ final class PeerDiscoveryService: ObservableObject {
     /// the shared keyboard. A newly completed pairing enables the receiver's
     /// local seamless-control authorization; an existing peer can opt out in
     /// its paired-device settings and return to per-request Allow actions.
-    var onPairingCompleted: ((UUID) -> Void)?
+    var onPairingCompleted: ((UUID, UInt64) -> Void)?
 
     let identity: PeerIdentity
     let localModel: String
@@ -1863,7 +1863,7 @@ final class PeerDiscoveryService: ObservableObject {
                 service.pairingActivity = .idle
             }
         }
-        onPairingCompleted?(peerID)
+        onPairingCompleted?(peerID, job.expectedRegistryGeneration)
         publishStatus("Paired with \(job.peer.name)")
 
         guard requestIsTracked else { return }

@@ -178,6 +178,61 @@ final class SecureSessionSleepLifecycleTests: XCTestCase {
         XCTAssertEqual(snapshot.desiredPeerID, peerID)
     }
 
+    func testStaleAutomaticPairingCallbackCannotUndoDisconnect() throws {
+        let service = try makeService()
+        let peerID = UUID()
+
+        service.connect(to: peerID)
+        _ = service.sleepLifecycleSnapshot
+        service.disconnect()
+        XCTAssertNil(service.sleepLifecycleSnapshot.desiredPeerID)
+
+        // Pairing completion is delivered asynchronously in production. If
+        // its callback was already queued when Disconnect ran, it must not
+        // recreate the selected peer until the user explicitly presses
+        // Connect again.
+        service.connectAutomaticallyAfterPairing(to: peerID)
+        XCTAssertNil(service.sleepLifecycleSnapshot.desiredPeerID)
+
+        service.connect(to: peerID)
+        XCTAssertEqual(service.sleepLifecycleSnapshot.desiredPeerID, peerID)
+    }
+
+    func testFreshPairingGenerationCanAutoConnectAfterDisconnect() throws {
+        let service = try makeService()
+        let peerID = UUID()
+
+        service.connect(to: peerID)
+        _ = service.sleepLifecycleSnapshot
+        service.disconnect()
+
+        // The test fixture starts at trust generation 0. A completion from a
+        // new Forget-and-pair cycle carries generation 1 and may clear the
+        // old deliberate-disconnect gate.
+        service.connectAutomaticallyAfterPairing(
+            to: peerID,
+            pairingGeneration: 1
+        )
+        XCTAssertEqual(service.sleepLifecycleSnapshot.desiredPeerID, peerID)
+    }
+
+    func testAutomaticPairingCallbackPreservesSleepLatch() throws {
+        let service = try makeService()
+        let peerID = UUID()
+
+        service.prepareForSleep()
+        service.connectAutomaticallyAfterPairing(
+            to: peerID,
+            pairingGeneration: 1
+        )
+
+        let snapshot = service.sleepLifecycleSnapshot
+        XCTAssertTrue(snapshot.isSystemSleeping)
+        XCTAssertEqual(snapshot.desiredPeerID, peerID)
+
+        service.resumeAfterWake()
+    }
+
     // MARK: - Workspace notification wiring
 
     func testWorkspaceNotificationsDriveTheSessionLifecycle() throws {

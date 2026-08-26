@@ -31,7 +31,7 @@ Intel Mac 的 `/Applications`，再開啟各自架構的 app。
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.00.00-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.100.00-universal.dmg.sha256)
 ```
 
 本機 ad-hoc 簽章只能用於測試；正式散布必須使用 Developer ID、hardened runtime
@@ -77,8 +77,9 @@ transport 與 VCP `0x60` 狀態。若型號 mapping 不明，明確執行掃描�
    中斷測試，請先確認線材直接連接，再讓 MacKVM 探索原生 DDC bridge。
 5. 在任一台 Mac 按 **Detect DDC-capable displays**，明確選取要控制的外接螢幕。
 6. M5 Pro 按 **M5 / USB-C preset**；Intel Mac 按 **Intel / HDMI preset**。
-7. 鍵盤與滑鼠接 M5 Pro 或 MA270U USB hub，選 **One keyboard on M5 Pro (USB-C)**。
-   HDMI 不會把 hub 的 USB 資料傳給 Intel Mac。
+7. 外接鍵盤與滑鼠接 M5 Pro 或 MA270U USB hub，選 **One keyboard on M5 Pro (USB-C)**。
+   HDMI 不會把 hub 的 USB 資料傳給 Intel Mac；兩台 Mac 的本機鍵盤、滑鼠與觸控板
+   都可以發起控制。
 8. 只有在兩台 Mac 都能看見實體 USB switch 的裝置時，才選雙向模式。
 
 預期結果：MA270U 的 EDID mapping 會讓 M5 Pro USB-C 路徑使用 VCP 19（`0x13`），Intel
@@ -86,7 +87,7 @@ HDMI 1 使用 VCP 17（`0x11`）。其他型號使用自己的 mapping；螢幕�
 仍靜默忽略未公告的輸入值。新增型號前先執行診斷掃描。
 
 預期結果：**Show other Mac** 顯示指定 HDMI；在 M5 Pro
-若控制前置條件已完成，**Show other Mac** 同時開始受保護的鍵盤／滑鼠分享；若前置
+若控制前置條件已完成，**Show other Mac** 同時開始受保護的鍵盤／滑鼠／觸控板分享；若前置
 條件未完成，仍只執行顯示器切換並讓實體輸入留在本機；原生 DDC/CI 失敗時五秒內回報
 診斷並可用 OSD 手動切換，不能悄悄改用不明顯示器。
 
@@ -117,28 +118,31 @@ HDMI 1 使用 VCP 17（`0x11`）。其他型號使用自己的 mapping；螢幕�
 
 1. 連線後拔除網路或讓 peer 暫時離線。
 2. 重新連接網路，觀察 0／1／2／4…30 秒退避重連。
-3. 測試 **Disconnect**、**Forget** 與退出 app。
+3. 分別在 M5 Pro 與 Intel Mac 上測試 **Disconnect**。兩個方向都要確認對端也停止
+   工作階段，而且在再次按 **Connect** 前不會立刻自動重連；再測試 **Forget** 與退出 app。
 4. M5 Pro 正在控制 Intel Mac 時讓 M5 Pro 進入休眠，確認 Intel Mac 會釋放遠端輸入並
    自動顯示斷線，不需要手動按 **Disconnect**。
 5. 喚醒 M5 Pro，等待安全工作階段重新連線；不先在 Intel Mac 按 **Disconnect**，直接測試
-   鍵盤／滑鼠 Hotkey。
+   鍵盤／滑鼠／觸控板 Hotkey。
 
 預期結果：網路中斷立即停止遠端輸入並釋放按鍵／滑鼠按鈕；重連不需要重新配對，
 已啟用無縫控制的 peer 也不需要再次按 **Allow**。手動 Disconnect、Forget 或 Quit
 不會再次自動連線。系統休眠會先關閉舊傳輸，喚醒後從本機輸入狀態重新連回先前選取的
 peer。
 
-## 6. 鍵盤、滑鼠與控制同意
+## 6. 鍵盤、滑鼠、觸控板與控制同意
 
 1. 配對完成後，在接收端的 **Paired device information** 確認該配對 Mac 的
    **Automatically allow control from this Mac** 已開啟。
-2. M5 Pro 控制端按 **Show other Mac**（或明確的 **Share keyboard and mouse with [Intel Mac]**），
-   確認不需再次按 Allow 即可開始控制，且螢幕與鍵盤路由一致。
+2. 任一台 Mac 的控制端按 **Show other Mac**（或明確的 **Share keyboard, mouse, and trackpad with [other Mac]**），
+   確認不需再次按 Allow 即可開始控制，且螢幕與鍵盤、滑鼠、觸控板路由一致。
 3. 在接收端關閉 **Automatically allow control from this Mac**，回到本機後再次請求控制。
 4. 接收端分別測試選單中的 **Allow**、**Deny**、逾時，以及選單關閉時的原生通知
    **Allow**、**Deny**、**Review in MacKVM**。
 5. 鎖定接收端，確認通知的 Allow 需要 macOS 身份驗證。
-6. 測試打字、移動、點擊、拖曳、滾輪、修飾鍵與四連點。
+6. 測試打字、移動、點擊、拖曳、滾輪、修飾鍵與四連點。觸控板要測試游標移動、主要
+   點按／輕點、次要點按／雙指點按、點按拖曳，以及雙指雙軸捲動；硬體有提供時，再測
+   精準高解析度位移、捲動開始／持續／結束相位、慣性與拖曳 pressure。
 7. 控制中在控制端切換輸入法（例如開關注音，不改變實體鍵盤配置），確認連線不受
    影響、打出的字元正確。
 8. 把兩台 Mac 在**系統設定 → 鍵盤 → 輸入來源**設成真正不同的實體鍵盤配置（例如
@@ -153,8 +157,9 @@ peer。
 12. 在配置不同的狀態下，打一個接收端配置沒有對應字元的按鍵，確認遠端輸入安全
     停止（清楚的狀態訊息、沒有卡住的按鍵或滑鼠按鈕），之後重新請求控制能正常
     成功。測試後把兩台恢復成相同鍵盤配置。
-13. 如果手邊有更新前（還沒做跨配置重映射）的舊版 MacKVM，跟目前版本配對，把兩台
-    設成不同鍵盤配置，雙向各測一次請求控制。
+13. 如果手邊有尚未支援已驗證 Disconnect 能力的舊版 MacKVM，跟目前版本嘗試建立
+    安全連線，雙向各測一次。確認目前版本清楚提示兩台 Mac 都必須升級後才能建立
+    安全工作階段；完成兩端升級後再繼續後面的控制測試，不要在混合版本工作階段測試。
 14. 如果手邊有 ISO 或 JIS 實體鍵盤，把兩台設成含有該鍵盤的不同配置，控制中打該
     鍵盤特有的按鍵（例如左 Shift 旁的 ISO 鍵）。
 15. 控制中按住控制端實體鍵盤的音量鍵與亮度鍵，確認只有接收端的音量／亮度改變，
@@ -163,29 +168,31 @@ peer。
     或睡眠對話框）；按 Caps Lock 確認只切換一次、不會誤觸發兩次。
 17. 連線閒置時按 `Control-Option-Command-O`，確認沿用受保護的 **Show other Mac**
     流程：先切換螢幕，再在不開啟選單的情況下開始控制請求；若未啟用無縫控制，接收端
-    按 Allow 後，確認螢幕與鍵盤／滑鼠控制權一起移動。
+    按 Allow 後，確認螢幕與鍵盤／滑鼠／觸控板控制權一起移動。
 18. 在正在接收控制的 Mac 再按一次 `Control-Option-Command-O`，確認接收結束，控制端的
-    螢幕與鍵盤／滑鼠控制權都恢復。
+    螢幕與鍵盤／滑鼠／觸控板控制權都恢復。
 19. 先用螢幕 OSD（或其他已驗證的手動方式）切換螢幕輸入，再按
-    `Control-Option-Command-K`，確認螢幕路由不變但鍵盤／滑鼠控制權開始切換；再次按 K
+    `Control-Option-Command-K`，確認螢幕路由不變但鍵盤／滑鼠／觸控板控制權開始切換；再次按 K
     確認控制權返回本機。再用 `Control-Option-Command-Escape` 重複返回測試，也用
-    **Return keyboard and mouse to this Mac** 結束控制；接收端 Intel Mac 按
-    **Return keyboard and mouse to [M5 Mac]** 返回。
+    **Return keyboard, mouse, and trackpad to this Mac** 結束控制；接收端 Intel Mac 按
+    **Return keyboard, mouse, and trackpad to [M5 Mac]** 返回。
 20. 若使用雙向 USB switch，在接收端手動切好螢幕後按 `Control-Option-Command-K`，確認
     控制權切換到另一端，再按一次返回。
 
-預期結果：手動切好螢幕輸入後，`Control-Option-Command-K` 只切換鍵盤／滑鼠控制權，
+預期結果：手動切好螢幕輸入後，`Control-Option-Command-K` 只切換鍵盤／滑鼠／觸控板控制權，
 不會啟動自動 DDC 螢幕路由；可在閒置、控制中與接收中切換正確控制狀態；
-`Control-Option-Command-O` 會沿用受保護的先切螢幕流程，讓螢幕與鍵盤／滑鼠控制權一起移動，
+`Control-Option-Command-O` 會沿用受保護的先切螢幕流程，讓螢幕與鍵盤／滑鼠／觸控板控制權一起移動，
 並能從接收端結束接收、同時恢復兩者；新配對且啟用無縫控制時不需再次按 Allow；關閉後，接收端按 Allow 前不會抑制本機輸入；控制結束、斷線與取消後不會留下按住
 的按鍵或滑鼠按鈕；過期通知不能授權另一個請求；切換輸入法不再誤判為配置不符；
-步驟 9 的 Cmd-Z 即使兩台字母位置不同，也要在接收端觸發 Undo——必須落在接收端
+觸控板移動、主要／次要點按、拖曳、精準雙軸捲動、相位／慣性與硬體暴露出的 pressure
+都要在兩個方向保留；Pinch、旋轉、三指工作區滑動是 AppKit-only 手勢，公開 `CGEvent`
+無法全域注入，不列入本版驗收；步驟 9 的 Cmd-Z 即使兩台字母位置不同，也要在接收端觸發 Undo——必須落在接收端
 真正打得出「z」的按鍵上，不是寄送端原始 keyCode 在接收端配置下代表的字元（以
 US 控制、德文接收為例，那會是「y」）；步驟 10 確認寄送端 Caps Lock 開著時，同一個
 快捷鍵觸發結果一樣，不會變成 Cmd-Shift-Z（Redo）或其他快捷鍵；步驟 11 放開字母鍵後不會留下卡住或持續連發的字元，連發中途
-放開 Shift 不會改變最後放開時對應到的本機按鍵；步驟 13 如果配置不同，目前版本
-應該在同意畫面前就拒絕舊版的請求（狀態訊息會提到版本差異），而不是先授權、打第
-一個字才中斷；步驟 14 的 ISO／JIS 特有按鍵要打出正確字元，不是照 ANSI 位置解讀
+放開 Shift 不會改變最後放開時對應到的本機按鍵；步驟 13 的混合版本安全工作階段
+應該在控制同意畫面前就拒絕，狀態訊息清楚要求兩台 Mac 都升級，而不是靜默降級成
+沒有已驗證 Disconnect 的 EOF 斷線協定；步驟 14 的 ISO／JIS 特有按鍵要打出正確字元，不是照 ANSI 位置解讀
 的結果；
 只有真的找不到對應字元的按鍵才會安全中止連線；電源鍵在任何情況下都不會傳送到
 接收端。
@@ -219,7 +226,7 @@ Acceptance record。
 | 探索／配對 |  |  |  |
 | 裝置資料／支援複製 |  |  |  |
 | 安全重連 |  |  |  |
-| 鍵盤／滑鼠 |  |  |  |
+| 鍵盤／滑鼠／觸控板 |  |  |  |
 | 媒體／系統鍵 |  |  |  |
 | 跨配置鍵盤重映射 |  |  |  |
 | 控制同意／接收端停止 |  |  |  |

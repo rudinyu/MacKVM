@@ -2,6 +2,23 @@
 
 # Changelog
 
+## 1.100.00 (build 75) — 2026-08-26
+
+This release completes the local keyboard, mouse, and trackpad sharing path
+for both Apple Silicon and Intel Macs, while retaining the documented external
+USB wiring requirements.
+
+### Fixed
+
+- Forward trackpad-compatible pointer input, including clicks, secondary
+  clicks, drag pressure when available, high-resolution two-axis scrolling,
+  scroll phase, momentum, and line/pixel units.
+- Allow either Mac to originate local keyboard, mouse, and trackpad control;
+  the physical USB switch topology remains separately validated when external
+  devices must be shared.
+- Keep sleep/wake teardown and explicit disconnect handling from leaving the
+  peer session or Hotkey path stuck.
+
 ## 1.00.00 (build 74) — 2026-08-24
 
 This is the first formal MacKVM release. It includes the complete secure

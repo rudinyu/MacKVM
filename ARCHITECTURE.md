@@ -5,7 +5,7 @@
 ## Current scope
 
 The repository implements discovery, mutual pairing, a persistent encrypted
-session, validated keyboard and mouse forwarding, explicit receiver consent and
+session, validated keyboard, mouse, and trackpad forwarding, explicit receiver consent and
 safe local-return controls, a sequential macOS setup checklist, and native
 DDC/CI monitor input switching.
 
@@ -120,7 +120,7 @@ The pairing protocol currently works as follows:
    only after **Allow** is selected does its injection queue become ready and
    return a matching grant. The controlling
    Mac then captures selected
-   keyboard, mouse, and scroll events with a suppressing `CGEventTap`, validates
+   keyboard, mouse, and trackpad pointer/scroll events with a suppressing `CGEventTap`, validates
    and encrypts them, and sends them through the secure session. The receiver
    validates them again and injects them using `CGEvent`; either side can end
    control safely.
@@ -155,7 +155,7 @@ flowchart LR
     Apple["M5 Pro 14-inch MacBook Pro<br/>USB-C"] -->|"USB-C video + data + power"| USBC["MA270U USB-C input"]
     HDMI --> Monitor["BenQ MA270U 4K"]
     USBC --> Monitor
-    Input["Keyboard + mouse"] -->|"CGEventTap"| Control["Encrypted MacKVM control session"]
+    Input["Keyboard + mouse + trackpad"] -->|"CGEventTap"| Control["Encrypted MacKVM control session"]
     Control -->|"CGEvent injection"| Target["Active Mac"]
     Control -->|"control lifecycle"| DDC["MonitorController"]
     DDC -->|"native DDC/CI<br/>IOAVService or IOI2C"| Monitor
@@ -219,7 +219,7 @@ hub to the Intel host. Therefore the recommended one-way topology is:
 
 ```mermaid
 flowchart LR
-    KM["Keyboard + mouse"] --> HUB["M5 Pro directly or MA270U USB hub"]
+    KM["External keyboard + mouse"] --> HUB["M5 Pro directly or MA270U USB hub"]
     HUB --> M5["M5 Pro / USB-C"]
     M5 -->|"MacKVM request + encrypted input"| INTEL["2019 Intel / HDMI target"]
     SWITCH["Optional external USB switch"] --> M5
@@ -227,11 +227,13 @@ flowchart LR
 ```
 
 `InputTopologyController` persists an explicit mode on each Mac. **One
-keyboard on M5 Pro (USB-C)** permits the Apple Silicon host to initiate input
-sharing and keeps the Intel HDMI host receive-only. **External USB switch
-(bidirectional)** permits either host, but the app cannot detect or validate
-that physical switch; manual verification on both Macs is required. Receiving
-remote control remains available in either mode.
+keyboard on M5 Pro (USB-C)** documents the external keyboard and mouse path,
+but either Mac can initiate software control from its local keyboard, mouse, or
+trackpad; HDMI still does not carry the monitor's USB hub upstream. **External
+USB switch (bidirectional)** permits either host to see the external devices,
+but the app cannot detect or validate that physical switch; manual verification
+on both Macs is required. Receiving remote control remains available in either
+mode.
 
 ## What needs to change before this is a real KVM
 
@@ -285,14 +287,20 @@ peer can use the receiver's local one-time authorization; otherwise the
 receiver must confirm the request before events are suppressed locally and
 forwarded remotely.
 The controller can press **Control–Option–Command–Escape** to interrupt sharing,
-while the receiver can use **Return keyboard and mouse to [M5 Mac]** to release
+while the receiver can use **Return keyboard, mouse, and trackpad to [M5 Mac]** to release
 injected input and return control to the controller.
 The global **Control–Option–Command–K** shortcut toggles the same route: it
 starts a normal control request while idle and returns input when either side
 is actively controlling or receiving. The independent
 **Control–Option–Command–O** shortcut shares the guarded **Show other Mac**
-route: it changes the monitor input before requesting keyboard/mouse control,
+route: it changes the monitor input before requesting keyboard, mouse, and trackpad control,
 and ends receiving to restore the controller's display and input.
+
+The public Quartz event path preserves trackpad movement, clicks, drags,
+secondary clicks, precise two-axis scrolling, scroll phase and momentum, and
+pressure when macOS exposes it. AppKit-only gestures such as pinch, rotate, and
+three-finger workspace swipes cannot be globally injected through public
+`CGEvent` and remain outside this release's acceptance scope.
 
 `SecureSessionService` remembers only a user-selected paired peer for automatic
 reconnect. `NSWorkspace` sleep/wake notifications close the active transport
@@ -388,7 +396,7 @@ behavior are covered by the automated test suite.
 3. In **System Settings → Displays → Arrange**, make the MA270U the main
    display on both Macs.
 4. In the MacKVM menu, keep **One keyboard on M5 Pro (USB-C)** for the
-   current wiring and connect the keyboard/mouse to the M5 Pro or its MA270U
+   current wiring and connect the external keyboard/mouse to the M5 Pro or its MA270U
    USB hub. HDMI cannot carry the monitor hub upstream to the Intel Mac. Only
    select **External USB switch (bidirectional)** after both Macs visibly see
    the devices through a physical switch.
@@ -442,8 +450,9 @@ behavior are covered by the automated test suite.
     app automatically attempts to connect the encrypted session. If it remains idle, select **Connect** on
     one paired row. When the encrypted session is connected, **Show other Mac**
     on the physical-input M5 Pro follows the guarded display-first path and
-    starts the keyboard/mouse request when its prerequisites are ready.
-    **Share keyboard and mouse with [Intel Mac]** is the explicit equivalent.
+    starts the keyboard, mouse, and trackpad request when its prerequisites are
+    ready. **Share keyboard, mouse, and trackpad with [Intel Mac]** is the
+    explicit equivalent.
 14. The controlling Mac needs both Input Monitoring and Accessibility because
     its active event tap suppresses local input while forwarding it. The
     receiving Mac must select **Allow** before input is sent only to the
@@ -452,9 +461,9 @@ behavior are covered by the automated test suite.
     **Allow**, **Deny**, or **Review in MacKVM** action; Review opens an
     explicit approval dialog, Allow requires macOS authentication if the
     receiver is locked, and old/expired actions are ignored. Press
-    **Control–Option–Command–Escape** or use **Return keyboard and mouse to
+    **Control–Option–Command–Escape** or use **Return keyboard, mouse, and trackpad to
     this Mac** on the controller; the receiver can also select **Return
-    keyboard and mouse to [M5 Mac]**. If DDC cannot switch the monitor, follow the diagnostic and
+    keyboard, mouse, and trackpad to [M5 Mac]**. If DDC cannot switch the monitor, follow the diagnostic and
     select the requested input through the OSD. A display-only route can be
     restored with **Return display to this Mac**, even when the global
     emergency shortcut could not be registered.
@@ -463,7 +472,7 @@ After an authenticated transport loss, the selected peer is retried with
 bounded backoff and no new pairing. A seamless-authorized peer does not need a
 fresh Allow action; an opted-out peer does. Use **Disconnect** or **Forget** to
 clear the reconnect intent. The emergency shortcut or the receiver's
-**Return keyboard and mouse to [M5 Mac]** action ends an active or waiting
+**Return keyboard, mouse, and trackpad to [M5 Mac]** action ends an active or waiting
 remote-control request before restoring the local display and input. If
 the bootstrap screen reports an identity/keychain mismatch, use its
 explicit reset action, relaunch, and pair both Macs again.

@@ -5,13 +5,13 @@
 ## 系統範圍
 
 MacKVM 是 macOS 選單列與一般視窗工具，實作附近裝置探索、雙方配對、持久化加密連線、
-鍵盤與滑鼠轉送、接收端明確同意、安全返回、權限設定檢查與原生 DDC/CI 螢幕輸入切換。
+鍵盤、滑鼠與觸控板轉送、接收端明確同意、安全返回、權限設定檢查與原生 DDC/CI 螢幕輸入切換。
 
 ```mermaid
 flowchart LR
     A["M5 Pro\nMacKVM.app"] <-->|"Bonjour 探索"| B["可信任本機網路"]
     C["2019 Intel\nMacKVM.app"] <-->|"簽署配對與加密控制"| B
-    A --> D["鍵盤／滑鼠擷取"]
+    A --> D["鍵盤／滑鼠／觸控板擷取"]
     D --> E["Allow 後的遠端輸入"]
     E --> C
     A --> F["PairedPeerProfile\n名稱／型號／時間／指紋"]
@@ -76,14 +76,15 @@ flowchart LR
     Apple["14 吋 M5 Pro MacBook Pro"] -->|"USB-C 視訊／資料／供電"| USB["MA270U USB-C"]
     HDMI --> Monitor["BenQ MA270U 4K"]
     USB --> Monitor
-    Keyboard["鍵盤與滑鼠"] -->|"M5 Pro 或 MA270U USB hub"| Apple
+    Keyboard["外接鍵盤與滑鼠"] -->|"M5 Pro 或 MA270U USB hub"| Apple
     Apple -->|"加密控制"| Intel
     Apple -->|"原生 DDC/CI\nIOAVService／IOI2C"| Monitor
 ```
 
-HDMI 只傳送影像，不會把 MA270U USB hub 上游給 Intel host。因此目前建議選
-**One keyboard on M5 Pro (USB-C)**，讓 M5 Pro 發起控制、Intel Mac 接收控制。
-只有在實體 USB switch 讓兩台 Mac 都看到裝置時，才選
+HDMI 只傳送影像，不會把 MA270U USB hub 上游給 Intel host。因此
+**One keyboard on M5 Pro (USB-C)** 描述的是外接鍵盤與滑鼠的接線，不再限制
+控制發起端；兩台 Mac 都可使用自己的鍵盤、滑鼠與觸控板發起軟體控制。
+只有在實體 USB switch 讓兩台 Mac 都看到外接裝置時，才選
 **External USB switch (bidirectional)**；app 無法從軟體驗證 switch 是否存在。
 
 ### 原生 DDC/CI 傳輸
@@ -162,12 +163,16 @@ stateDiagram-v2
 輸入來源與配對。配對完成後 MacKVM 會自動嘗試建立安全連線；若仍顯示 idle，可在已配對
 裝置列按 **Connect**。日常操作時，在 **Paired device information** 查看或修改名稱、
 關閉無縫控制授權，
-需要回報問題按 **Copy support information**。實體鍵盤與滑鼠接在 M5 Pro 時，按
+需要回報問題按 **Copy support information**。在任一台 Mac 按
 **Show other Mac** 會沿用受保護的先切畫面流程，並在控制前置條件完成時開始分享；
-**Share keyboard and mouse with [Intel Mac]** 是明確的等效操作。要從 Intel Mac 返回 M5 Pro，接收端按
-**Return keyboard and mouse to [M5 Mac]**，控制端也可按
-**Return keyboard and mouse to this Mac** 可交還控制權；在手動選好螢幕輸入後，使用
-`Control-Option-Command-K` 可在閒置／控制中切換鍵盤／滑鼠控制，或用
+**Share keyboard, mouse, and trackpad with [other Mac]** 是明確的等效操作。要從 Intel Mac 返回 M5 Pro，接收端按
+**Return keyboard, mouse, and trackpad to [M5 Mac]**，控制端也可按
+**Return keyboard, mouse, and trackpad to this Mac** 交還控制權；在手動選好螢幕輸入後，使用
+`Control-Option-Command-K` 可在閒置／控制中切換鍵盤／滑鼠／觸控板控制，或用
 `Control-Option-Command-Escape` 緊急中斷。獨立的
 `Control-Option-Command-O` 沿用 **Show other Mac** 的受保護流程，先切換螢幕再請求
-鍵盤／滑鼠控制；如果本機正在接收控制，則結束接收並把螢幕與輸入還給控制端。
+鍵盤／滑鼠／觸控板控制；如果本機正在接收控制，則結束接收並把螢幕與輸入還給控制端。
+
+公開 Quartz 事件路徑會轉送觸控板移動、點按、拖曳、次要點按、精準雙軸捲動、慣性相位與
+macOS 暴露出的 pressure。Pinch、旋轉、三指工作區滑動等 AppKit-only 手勢無法透過公開
+`CGEvent` 全域注入，因此不列入本版本驗收範圍。

@@ -3,15 +3,16 @@
 # MacKVM user manual
 
 MacKVM is a macOS app with a menu-bar entry and a full control window for
-sharing one keyboard, mouse, and optionally a BenQ MA270U display between a
+sharing one keyboard, mouse, and trackpad, plus an optional BenQ MA270U display, between a
 14-inch M5 Pro MacBook Pro and a 2019 Intel MacBook Pro.
 
 ## Hardware and wiring
 
 - Connect the M5 Pro to the MA270U USB-C video/data port.
 - Connect the Intel Mac to HDMI through a USB-C/Thunderbolt adapter.
-- Connect the keyboard and mouse to the M5 Pro or the MA270U USB hub. HDMI does
-  not carry the monitor hub upstream to the Intel Mac.
+- Connect the external keyboard and mouse to the M5 Pro or the MA270U USB hub.
+  HDMI does not carry the monitor hub upstream to the Intel Mac. The built-in
+  keyboard, mouse, and trackpad on either Mac can still request control.
 - Use **One keyboard on M5 Pro (USB-C)** for the recommended one-way topology.
   Use **External USB switch (bidirectional)** only when both Macs visibly see a
   real physical USB switch.
@@ -73,11 +74,12 @@ steal focus; use the menu-bar icon or activate MacKVM from the Dock to reopen it
 4. Use **Show other Mac** to verify switching. If native detection or
    switching fails, read the diagnostic, check the direct cable path, and use
    the MA270U OSD. For a display-only route, use **Return display to this Mac**;
-   the emergency shortcut and the receiver's **Return keyboard and mouse to
-   [M5 Mac]** action restore the local route during control.
-   On the M5 Pro, **Show other Mac** also performs the guarded keyboard/mouse
-   hand-off when control prerequisites are ready. **Share keyboard and mouse
-   with [Intel Mac]** remains the explicit equivalent; the Intel Mac selects
+   the emergency shortcut and the receiver's **Return keyboard, mouse, and
+   trackpad to [M5 Mac]** action restore the local route during control.
+   On either Mac, **Show other Mac** also performs the guarded keyboard, mouse,
+   and trackpad hand-off when control prerequisites are ready. **Share keyboard,
+   mouse, and trackpad with [other Mac]** remains the explicit equivalent; the
+   receiver selects
    **Allow** unless seamless control was enabled for the paired M5 Pro.
 
 ### Diagnose a monitor-specific input mapping
@@ -126,8 +128,8 @@ See the [diagnostic guide](../Tools/DDCDiagnostic/README.md).
    not yet been approved; the protocol is not architecture-specific.
 3. After both signed decisions complete, MacKVM automatically attempts to
    connect the encrypted session. If it remains idle, select
-   **Connect** on a paired row. With the keyboard and mouse connected to the M5 Pro, use
-   **Show other Mac** or **Share keyboard and mouse with [Intel Mac]**; on the
+   **Connect** on a paired row. With the external keyboard and mouse connected to the M5 Pro, use
+   **Show other Mac** or **Share keyboard, mouse, and trackpad with [other Mac]**; on the
    M5 Pro both use the display-first route and request control in one action.
    The controlling Mac needs both Input
    Monitoring and Accessibility for its active event tap.
@@ -139,14 +141,20 @@ See the [diagnostic guide](../Tools/DDCDiagnostic/README.md).
 5. The M5 Pro can interrupt sharing at any time with
    `Control-Option-Command-Escape`. The global
    `Control-Option-Command-K` shortcut is for a manually selected monitor
-   input: it toggles keyboard/mouse ownership without running automatic DDC
+   input: it toggles keyboard, mouse, and trackpad ownership without running automatic DDC
    switching, starts a request while idle, and returns input while controlling
    or receiving. `Control-Option-Command-O` follows the guarded **Show other
    Mac** route: it automatically switches the display before requesting
-   keyboard/mouse control, or ends receiving and restores the controller's
+   keyboard, mouse, and trackpad control, or ends receiving and restores the controller's
    display and input. To switch back from Intel, select
-   **Return keyboard and mouse to [M5 Mac]** on the Intel Mac. The controller
-   can also select **Return keyboard and mouse to this Mac**.
+   **Return keyboard, mouse, and trackpad to [M5 Mac]** on the Intel Mac. The controller
+   can also select **Return keyboard, mouse, and trackpad to this Mac**.
+
+The public Quartz event path forwards trackpad movement, clicks, drags,
+secondary clicks, precise two-axis scrolling, scroll phase and momentum, and
+pressure when macOS exposes it. AppKit-only gestures such as pinch, rotate, and
+three-finger workspace swipes cannot be globally injected through public
+`CGEvent` and are outside this release's acceptance scope.
 
 Reconnection uses bounded backoff. A peer with seamless control authorization
 can resume without another prompt; an opted-out peer requires fresh control
