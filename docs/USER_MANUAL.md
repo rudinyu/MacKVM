@@ -151,10 +151,14 @@ See the [diagnostic guide](../Tools/DDCDiagnostic/README.md).
    can also select **Return keyboard, mouse, and trackpad to this Mac**.
 
 The public Quartz event path forwards trackpad movement, clicks, drags,
-secondary clicks, precise two-axis scrolling, scroll phase and momentum, and
-pressure when macOS exposes it. AppKit-only gestures such as pinch, rotate, and
-three-finger workspace swipes cannot be globally injected through public
-`CGEvent` and are outside this release's acceptance scope.
+secondary clicks, precise two-axis scrolling, and scroll phase and momentum. A
+shared trackpad therefore acts as a pointing device, not as a gesture surface:
+`CGEvent` publishes constructors for keyboard, mouse, and scroll wheel only, so
+no multi-touch gesture can be injected on the receiving Mac. Pinch, rotate,
+smart zoom, three- and four-finger swipes, Mission Control, App Exposé, and
+Launchpad all stay local to the controlling Mac. The pressure value macOS
+reports on a click is carried, but the force-click stage transition is not, so
+Look Up and QuickLook do not activate on the receiver.
 
 Reconnection uses bounded backoff. A peer with seamless control authorization
 can resume without another prompt; an opted-out peer requires fresh control

@@ -173,6 +173,9 @@ stateDiagram-v2
 `Control-Option-Command-O` 沿用 **Show other Mac** 的受保護流程，先切換螢幕再請求
 鍵盤／滑鼠／觸控板控制；如果本機正在接收控制，則結束接收並把螢幕與輸入還給控制端。
 
-公開 Quartz 事件路徑會轉送觸控板移動、點按、拖曳、次要點按、精準雙軸捲動、慣性相位與
-macOS 暴露出的 pressure。Pinch、旋轉、三指工作區滑動等 AppKit-only 手勢無法透過公開
-`CGEvent` 全域注入，因此不列入本版本驗收範圍。
+公開 Quartz 事件路徑會轉送觸控板移動、點按、拖曳、次要點按、精準雙軸捲動與捲動相位／
+慣性。擷取用的 event tap 只訂閱 keyboard、mouse、scroll-wheel 與 NSSystemDefined 型別，
+而 `CGEvent` 也只公開鍵盤、滑鼠與滾輪的建構子，所以多點觸控手勢既沒有被擷取、也無法
+透過公開 API 注入：兩指縮放、旋轉、智慧型縮放、三指與四指滑動、Mission Control、
+App Exposé 與 Launchpad 都只作用在控制端本機。點按事件上的 pressure 數值會轉送，但
+`NSEventTypePressure` 的 stage 轉換不會，所以接收端不會觸發 force click。

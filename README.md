@@ -28,8 +28,10 @@ The current MVP provides:
   directional HKDF keys, ChaChaPoly encryption, and replay-protected counters.
 - validated keyboard, mouse, and trackpad event forwarding over that encrypted
   session, including high-resolution two-axis trackpad scrolling, scroll phase
-  and momentum, click/drag/secondary-click state, and pressure when macOS
-  exposes it, plus an allowlisted set of media, volume, and brightness keys;
+  and momentum, click/drag/secondary-click state, and the reported pressure
+  value, plus an allowlisted set of media, volume, and brightness keys (see
+  [Trackpad support scope](#trackpad-support-scope) for what gestures do not
+  cross the session);
 - a sequential Local Network, Input Monitoring, and Accessibility setup
   checklist that prevents overlapping macOS permission prompts and refreshes
   when MacKVM becomes active again;
@@ -58,6 +60,33 @@ The current MVP provides:
 - native DDC/CI input switching through IOKit on both Apple Silicon and Intel,
   including display discovery, stable display selection, diagnostics, and a
   manual OSD fallback when the monitor or cable does not expose DDC/CI.
+
+## Trackpad support scope
+
+A shared trackpad acts as a pointing device, not as a gesture surface. This is
+a platform boundary, not a configuration problem: CoreGraphics publishes event
+constructors for keyboard, mouse, and scroll wheel only, so a gesture captured
+on the controlling Mac has no supported way to be injected on the receiving
+Mac.
+
+Forwarded:
+
+- pointer movement, left/right/other button clicks, drags, and click counts;
+- two-finger scrolling at trackpad resolution, including fractional deltas,
+  scroll phase, and momentum (inertia), in both pixel and line units;
+- the pressure value macOS reports on a click, carried alongside the event.
+
+Not forwarded:
+
+- pinch to zoom, rotate, and two-finger smart zoom (double tap);
+- three- and four-finger swipes, Mission Control, App Exposé, and Launchpad;
+- force-click *stages* — the pressure value travels, but the stage transition
+  that triggers Look Up, QuickLook, and variable-speed controls does not, so
+  force click does not activate on the receiving Mac;
+- any other multi-touch gesture.
+
+Unsupported gestures stay local: performing one on the controlling Mac affects
+that Mac, and nothing is sent to the peer.
 
 ## Requirements
 
@@ -340,11 +369,8 @@ keyboard, mouse, and supported trackpad pointer/scroll event set. Select the
 app's **External USB switch (bidirectional)** mode only when a real USB switch
 makes the external devices visible to both Macs.
 
-The public Quartz event API carries trackpad movement, clicks, drags, precise
-two-axis scrolling, inertia phases, and exposed pressure. AppKit-only gestures
-such as pinch, rotate, and three-finger workspace swipes are not globally
-injectable through public `CGEvent`; they remain outside this release's
-acceptance scope.
+See [Trackpad support scope](#trackpad-support-scope) for exactly which
+trackpad input crosses the session and which gestures stay local.
 
 This keeps DDC/CI communication on the more reliable USB-C connection.
 

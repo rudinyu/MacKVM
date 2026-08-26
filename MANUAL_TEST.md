@@ -304,10 +304,11 @@ Expected:
   receiving Mac.
 - The first keyboard, mouse, or trackpad event after **Allow** is not lost.
 - Trackpad movement, primary/secondary clicks, dragging, precise two-axis
-  scrolling, phase/momentum, and exposed pressure are preserved in both
-  directions. Pinch, rotate, and three-finger workspace swipes are not
-  accepted because public `CGEvent` cannot globally inject those AppKit-only
-  gestures.
+  scrolling, and phase/momentum are preserved in both directions. Multi-touch
+  gestures are out of scope and must stay local to the controlling Mac: pinch,
+  rotate, smart zoom, three- and four-finger swipes, Mission Control, App
+  Exposé, and Launchpad. Force click must not activate on the receiver: the
+  pressure value is carried, but the stage transition is not.
 - Pointer coordinates remain bounded to the receiving main display.
 - Four-click sequences are delivered.
 - Disconnect/end paths release every held key and mouse button.

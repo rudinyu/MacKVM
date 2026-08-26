@@ -195,10 +195,13 @@ trackpad control on either Mac.
    display and input.
 
 The public Quartz event path forwards trackpad movement, clicks, drags,
-secondary clicks, precise two-axis scrolling, momentum phases, and exposed
-pressure. AppKit-only gestures such as pinch, rotate, and three-finger
-workspace swipes cannot be globally injected through public `CGEvent` and are
-not part of this release's acceptance scope.
+secondary clicks, precise two-axis scrolling, and momentum phases. A shared
+trackpad acts as a pointing device, not a gesture surface: `CGEvent` publishes
+constructors for keyboard, mouse, and scroll wheel only, so pinch, rotate,
+smart zoom, three- and four-finger swipes, Mission Control, App Exposé, and
+Launchpad stay local to the controlling Mac. The pressure value on a click is
+carried, but the force-click stage transition is not, so force click does not
+activate on the receiver.
 
 After a transport loss, MacKVM reconnects with bounded backoff. A peer with
 seamless control authorization can resume control without another prompt;

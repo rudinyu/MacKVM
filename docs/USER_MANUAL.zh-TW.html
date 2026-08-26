@@ -210,7 +210,7 @@
         <li>控制端按 <strong>Return keyboard, mouse, and trackpad to this Mac</strong> 可結束共享。</li>
         <li>要從 Intel Mac 切回 M5 Pro，接收端按 <strong>Return keyboard, mouse, and trackpad to [M5 Mac]</strong>，會立即停止注入、釋放可能按住的按鍵／滑鼠按鈕，並通知控制端。</li>
         <li>M5 Pro 的緊急停止快捷鍵：<strong>Control-Option-Command-Escape</strong>；全域 <strong>Control-Option-Command-K</strong> 適用於手動選好的螢幕輸入，不必開啟選單即可切換鍵盤／滑鼠／觸控板控制，且不會啟動自動 DDC；閒置時開始請求、控制中或接收中返回本機／控制端。<strong>Control-Option-Command-O</strong> 沿用受保護的 <strong>Show other Mac</strong> 流程，自動先切換螢幕再請求鍵盤／滑鼠／觸控板控制；如果本機正在接收控制，則結束接收並把螢幕與輸入還給控制端。</li>
-        <li>公開 Quartz 事件路徑會轉送觸控板移動、點按、拖曳、次要點按、精準雙軸捲動、慣性相位與 macOS 暴露出的 pressure。Pinch、旋轉、三指工作區滑動等 AppKit-only 手勢無法透過公開 <code>CGEvent</code> 全域注入。</li>
+        <li>公開 Quartz 事件路徑會轉送觸控板移動、點按、拖曳、次要點按、精準雙軸捲動與捲動相位／慣性。共用的觸控板等同指標裝置而非手勢介面：<code>CGEvent</code> 只公開鍵盤、滑鼠與滾輪的建構子，任何多點觸控手勢都無法在接收端注入。兩指縮放、旋轉、智慧型縮放、三指與四指滑動、Mission Control、App Exposé 與 Launchpad 都只作用在控制端本機。點按事件上的 pressure 數值會轉送，但 force click 的 stage 轉換不會，所以接收端不會觸發「查詢」與 QuickLook。</li>
         <li>網路中斷時，MacKVM 會立刻把鍵盤、滑鼠與觸控板控制歸還本機，並釋放可能按住的按鍵、滑鼠按鈕與觸控板狀態。</li>
         <li>如果是已連線的 peer 暫時離線，MacKVM 會以 0／1／2／4…30 秒的退避
           自動重連；已啟用無縫控制的配對裝置不需再次按 <strong>Allow</strong>，關閉授權的

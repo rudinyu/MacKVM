@@ -297,10 +297,14 @@ route: it changes the monitor input before requesting keyboard, mouse, and track
 and ends receiving to restore the controller's display and input.
 
 The public Quartz event path preserves trackpad movement, clicks, drags,
-secondary clicks, precise two-axis scrolling, scroll phase and momentum, and
-pressure when macOS exposes it. AppKit-only gestures such as pinch, rotate, and
-three-finger workspace swipes cannot be globally injected through public
-`CGEvent` and remain outside this release's acceptance scope.
+secondary clicks, precise two-axis scrolling, and scroll phase and momentum.
+The capture tap subscribes to keyboard, mouse, scroll-wheel, and NSSystemDefined
+types only, and `CGEvent` publishes constructors for keyboard, mouse, and scroll
+wheel alone, so multi-touch gestures are neither captured nor injectable through
+public API: pinch, rotate, smart zoom, three- and four-finger swipes, Mission
+Control, App Exposé, and Launchpad remain local to the controlling Mac. The
+pressure value on a click is carried; the `NSEventTypePressure` stage transition
+is not, so force click does not activate on the receiver.
 
 `SecureSessionService` remembers only a user-selected paired peer for automatic
 reconnect. `NSWorkspace` sleep/wake notifications close the active transport

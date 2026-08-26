@@ -125,9 +125,12 @@ mapping 原始碼。按下 Ctrl-C 或收到 SIGTERM 時會停止候選值迴圈�
    切回 M5 Pro，請在 Intel Mac 按 **Return keyboard, mouse, and trackpad to [M5 Mac]**；
    控制端也可按 **Return keyboard, mouse, and trackpad to this Mac**。
 
-公開 Quartz 事件路徑會轉送觸控板移動、點按、拖曳、次要點按、精準雙軸捲動、慣性相位與
-macOS 暴露出的 pressure。Pinch、旋轉、三指工作區滑動等 AppKit-only 手勢無法透過公開
-`CGEvent` 全域注入，因此不列入本版本驗收範圍。
+公開 Quartz 事件路徑會轉送觸控板移動、點按、拖曳、次要點按、精準雙軸捲動與捲動相位／
+慣性。因此共用的觸控板等同指標裝置而非手勢介面：`CGEvent` 只公開鍵盤、滑鼠與滾輪的
+建構子，任何多點觸控手勢都無法在接收端注入。兩指縮放、旋轉、智慧型縮放、三指與四指
+滑動、Mission Control、App Exposé 與 Launchpad 都只作用在控制端本機。macOS 在點按
+事件上回報的 pressure 數值會轉送，但 force click 的 stage 轉換不會，所以接收端不會
+觸發「查詢」與 QuickLook。
 
 重連使用有上限的退避時間；已啟用無縫控制的配對裝置不需再次按 Allow，關閉該選項的
 裝置才需要重新取得控制同意。**Disconnect**、**Forget** 與 **Quit** 會清除重連意圖。
