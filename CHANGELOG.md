@@ -2,6 +2,22 @@
 
 # Changelog
 
+## 1.100.01 (build 76) — 2026-08-26
+
+This patch release hardens cross-Mac input and secure-session teardown after
+the 1.100.00 release.
+
+### Fixed
+
+- Keep horizontal and vertical scroll deltas consistent with the single unit
+  carried by the remote-input protocol, including tilt-wheel events.
+- Clamp reported pointer pressure instead of dropping events that could leave
+  a remote button state unmatched.
+- Preserve reconnect intent when pairing completion races an in-flight
+  handshake, and keep explicit disconnects from restarting a close in flight.
+- Suppress automatic reconnect after an explicit disconnect even when the
+  selected peer has already been cleared.
+
 ## 1.100.00 (build 75) — 2026-08-26
 
 This release completes the local keyboard, mouse, and trackpad sharing path
