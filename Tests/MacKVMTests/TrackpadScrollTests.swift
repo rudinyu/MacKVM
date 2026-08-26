@@ -97,4 +97,42 @@ final class TrackpadScrollTests: XCTestCase {
             ).pressure
         )
     }
+
+    func testBothAxesShareOneResolvedScrollUnit() {
+        // A tilt-wheel event whose vertical axis is empty resolves the
+        // vertical axis to the line default while the horizontal axis falls
+        // back to its pixel point delta. The wire format carries one unit, so
+        // sending the horizontal delta under the vertical axis' unit would
+        // scroll sideways by lines instead of pixels.
+        let tiltOnly = ScrollEventEncoding.capturedScrollEvent(
+            isContinuous: false,
+            horizontal: (fixedPoint: 0, point: 4, legacy: 0),
+            vertical: (fixedPoint: 0, point: 0, legacy: 0)
+        )
+        XCTAssertEqual(tiltOnly.unit, .pixel)
+        XCTAssertEqual(tiltOnly.horizontal, 4)
+        XCTAssertEqual(tiltOnly.vertical, 0)
+
+        // The mirror case: the dominant vertical axis keeps its line unit and
+        // the disagreeing horizontal axis is re-read from its line field.
+        let wheelWithTilt = ScrollEventEncoding.capturedScrollEvent(
+            isContinuous: false,
+            horizontal: (fixedPoint: 0, point: 4, legacy: 0),
+            vertical: (fixedPoint: 0, point: 0, legacy: -6)
+        )
+        XCTAssertEqual(wheelWithTilt.unit, .line)
+        XCTAssertEqual(wheelWithTilt.vertical, -6)
+        XCTAssertEqual(wheelWithTilt.horizontal, 0)
+    }
+
+    func testAgreeingAxesKeepBothDeltas() {
+        let captured = ScrollEventEncoding.capturedScrollEvent(
+            isContinuous: true,
+            horizontal: (fixedPoint: 0.5, point: 1, legacy: 0),
+            vertical: (fixedPoint: -1.25, point: -1, legacy: 0)
+        )
+        XCTAssertEqual(captured.unit, .pixel)
+        XCTAssertEqual(captured.horizontal, 0.5)
+        XCTAssertEqual(captured.vertical, -1.25)
+    }
 }

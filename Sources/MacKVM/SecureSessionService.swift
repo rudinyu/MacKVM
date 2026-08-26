@@ -56,12 +56,17 @@ enum SecureSessionDisconnectPolicy {
         localRole: SecureSessionRole,
         retriesAfterRemoval: Bool,
         desiredPeerMatches: Bool,
+        hasDesiredPeer: Bool,
         suppressesReconnect: Bool
     ) -> Bool {
         // A close marker suppresses recovery for the peer that was just
-        // deliberately closed. It must not suppress recovery for a different
-        // peer that remains selected as the user's reconnect target.
-        guard !(suppressesReconnect && desiredPeerMatches) else { return false }
+        // deliberately closed. `disconnect()` clears the desired peer before
+        // the contexts are removed, so the common case reaches here with no
+        // desired peer at all and must still be suppressed. Only a *different*
+        // peer that remains the user's reconnect target keeps recovery alive.
+        let suppressesThisPeer = suppressesReconnect
+            && (desiredPeerMatches || !hasDesiredPeer)
+        guard !suppressesThisPeer else { return false }
         return removedActiveContext
             || localRole == .initiator
             || (retriesAfterRemoval && desiredPeerMatches)
@@ -332,6 +337,25 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                 })
             if hasExistingSession {
                 guard authenticatedContext != nil else {
+                    // A pairing callback can race the very handshake it
+                    // triggered. That in-flight context is the session this
+                    // callback asked for, so record the intent instead of
+                    // telling the user to disconnect a session they just
+                    // created; otherwise this Mac ends up authenticated with
+                    // no reconnect target at all.
+                    if automaticPairing,
+                       contexts.values.contains(
+                           where: { $0.expectedPeer?.id == peerID }
+                       ) {
+                        desiredPeerID = peerID
+                        cancelReconnect(resetAttempt: true)
+                        logSecurePhase(
+                            "connect.intent-recorded-pending-handshake",
+                            peerID: peerID,
+                            detail: "automatic-pairing-race"
+                        )
+                        return
+                    }
                     logSecurePhase(
                         "connect.rejected-existing-session",
                         peerID: peerID,
@@ -589,10 +613,19 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                 // marker after the already-queued handshake bytes instead of
                 // turning the peer's EOF into an apparent network failure.
                 context.epoch = connectionEpoch.current()
+                if context.isClosing {
+                    // An authenticated close is already in flight. Restarting
+                    // it here would take the cancel path and hand the peer a
+                    // bare EOF, which is exactly the ambiguity the close
+                    // marker exists to remove: the peer would keep its
+                    // reconnect intent and immediately rebuild the session.
+                    context.suppressesReconnect = true
+                    continue
+                }
                 if context.channel != nil {
                     context.suppressesReconnect = true
                     sendDisconnectSignal(for: context)
-                } else if !context.isClosing {
+                } else {
                     context.connection.cancel()
                     remove(context)
                 }
@@ -1879,6 +1912,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             localRole: context.localRole,
             retriesAfterRemoval: context.retriesAfterRemoval,
             desiredPeerMatches: desiredPeerID == peerID,
+            hasDesiredPeer: desiredPeerID != nil,
             suppressesReconnect: context.suppressesReconnect
         )
         if !startedPendingConnect && shouldRetry && !preferredIncomingPending {

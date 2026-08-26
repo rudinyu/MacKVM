@@ -175,6 +175,79 @@ enum ScrollEventEncoding {
         return CapturedScroll(delta: point, unit: .pixel)
     }
 
+    struct CapturedScrollEvent {
+        let horizontal: Double
+        let vertical: Double
+        let unit: ScrollEventUnit
+    }
+
+    /// Resolves both axes together, because the wire format carries a single
+    /// `scrollEventUnit` for the event. Taking the unit from one axis while
+    /// sending the other axis' delta alongside it makes the receiver
+    /// reinterpret that delta in the wrong unit, so the axes must agree here.
+    static func capturedScrollEvent(
+        isContinuous: Bool,
+        horizontal: (fixedPoint: Double, point: Double, legacy: Double),
+        vertical: (fixedPoint: Double, point: Double, legacy: Double)
+    ) -> CapturedScrollEvent {
+        let capturedHorizontal = capturedScroll(
+            isContinuous: isContinuous,
+            fixedPoint: horizontal.fixedPoint,
+            point: horizontal.point,
+            legacy: horizontal.legacy
+        )
+        let capturedVertical = capturedScroll(
+            isContinuous: isContinuous,
+            fixedPoint: vertical.fixedPoint,
+            point: vertical.point,
+            legacy: vertical.legacy
+        )
+        guard capturedHorizontal.unit != capturedVertical.unit else {
+            return CapturedScrollEvent(
+                horizontal: capturedHorizontal.delta,
+                vertical: capturedVertical.delta,
+                unit: capturedVertical.unit
+            )
+        }
+        // The axes disagree only when one of them fell back to a field whose
+        // unit differs from the event's device unit. Adopt the unit of the
+        // axis carrying the larger movement, then re-read the other axis from
+        // the field that actually matches that unit. Rescaling between pixels
+        // and lines would need a device line height that CoreGraphics does
+        // not expose here, so an axis with no matching field contributes 0
+        // rather than a delta that is wrong by an order of magnitude.
+        let unit = abs(capturedHorizontal.delta) > abs(capturedVertical.delta)
+            ? capturedHorizontal.unit
+            : capturedVertical.unit
+        return CapturedScrollEvent(
+            horizontal: delta(
+                for: unit,
+                in: horizontal,
+                resolved: capturedHorizontal
+            ),
+            vertical: delta(
+                for: unit,
+                in: vertical,
+                resolved: capturedVertical
+            ),
+            unit: unit
+        )
+    }
+
+    private static func delta(
+        for unit: ScrollEventUnit,
+        in axis: (fixedPoint: Double, point: Double, legacy: Double),
+        resolved: CapturedScroll
+    ) -> Double {
+        guard resolved.unit != unit else { return resolved.delta }
+        switch unit {
+        case .pixel:
+            return axis.point
+        case .line:
+            return axis.legacy
+        }
+    }
+
     /// Converts a validated scroll delta to CoreGraphics' signed 16.16
     /// integer representation without allowing an overflowing conversion.
     static func fixedPointValue(_ value: Double) -> Int64 {
@@ -807,35 +880,36 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
             let isContinuous = event.getIntegerValueField(
                 .scrollWheelEventIsContinuous
             ) != 0
-            let capturedHorizontal = ScrollEventEncoding.capturedScroll(
+            let captured = ScrollEventEncoding.capturedScrollEvent(
                 isContinuous: isContinuous,
-                fixedPoint: event.getDoubleValueField(
-                    .scrollWheelEventFixedPtDeltaAxis2
+                horizontal: (
+                    fixedPoint: event.getDoubleValueField(
+                        .scrollWheelEventFixedPtDeltaAxis2
+                    ),
+                    point: event.getDoubleValueField(
+                        .scrollWheelEventPointDeltaAxis2
+                    ),
+                    legacy: event.getDoubleValueField(
+                        .scrollWheelEventDeltaAxis2
+                    )
                 ),
-                point: event.getDoubleValueField(
-                    .scrollWheelEventPointDeltaAxis2
-                ),
-                legacy: event.getDoubleValueField(
-                    .scrollWheelEventDeltaAxis2
-                )
-            )
-            let capturedVertical = ScrollEventEncoding.capturedScroll(
-                isContinuous: isContinuous,
-                fixedPoint: event.getDoubleValueField(
-                    .scrollWheelEventFixedPtDeltaAxis1
-                ),
-                point: event.getDoubleValueField(
-                    .scrollWheelEventPointDeltaAxis1
-                ),
-                legacy: event.getDoubleValueField(
-                    .scrollWheelEventDeltaAxis1
+                vertical: (
+                    fixedPoint: event.getDoubleValueField(
+                        .scrollWheelEventFixedPtDeltaAxis1
+                    ),
+                    point: event.getDoubleValueField(
+                        .scrollWheelEventPointDeltaAxis1
+                    ),
+                    legacy: event.getDoubleValueField(
+                        .scrollWheelEventDeltaAxis1
+                    )
                 )
             )
             return RemoteInputEvent(
                 kind: .scroll,
                 modifierFlags: flags,
-                scrollDeltaX: capturedHorizontal.delta,
-                scrollDeltaY: capturedVertical.delta,
+                scrollDeltaX: captured.horizontal,
+                scrollDeltaY: captured.vertical,
                 scrollPhase: ScrollPhase(
                     rawValue: Int(
                         event.getIntegerValueField(.scrollWheelEventScrollPhase)
@@ -848,7 +922,7 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
                         )
                     )
                 ),
-                scrollEventUnit: capturedVertical.unit
+                scrollEventUnit: captured.unit
             )
         case .tapDisabledByTimeout:
             if let eventTap {
@@ -941,10 +1015,14 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
                 location: location
             )
         }
-        let pressure = event.getDoubleValueField(.mouseEventPressure)
-        guard pressure.isFinite, (0...1).contains(pressure) else {
-            return nil
-        }
+        // Clamp rather than reject. Dropping the whole event on an unexpected
+        // pressure reading can break a down/up pair, and an unmatched down
+        // leaves the receiver holding that button for the rest of the control
+        // session. This matches how clickCount is bounded below.
+        let reportedPressure = event.getDoubleValueField(.mouseEventPressure)
+        let pressure = reportedPressure.isFinite
+            ? min(1, max(0, reportedPressure))
+            : 0
         return RemoteInputEvent(
             kind: kind,
             modifierFlags: flags,
