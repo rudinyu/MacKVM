@@ -6,10 +6,10 @@ using WindowsKVM.Protocol;
 namespace WindowsKVM;
 
 /// <summary>
-/// W2 secure-session responder. It authenticates a MacKVM peer that was
+/// W3 secure-session responder. It authenticates a MacKVM peer that was
 /// previously approved by the pairing receiver, completes the signed P-256 /
-/// ChaChaPoly handshake, and keeps the encrypted TCP session alive. Windows
-/// input capture and control-message handling are intentionally a later step.
+/// ChaChaPoly handshake, then receives authenticated control messages and
+/// injects keyboard/mouse events through the Windows SendInput API.
 /// </summary>
 internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
 {
@@ -18,10 +18,14 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
     private const int MaximumConnectionAttemptsPerWindow = 32;
     private const long ConnectionAttemptWindowMilliseconds = 10_000;
     private const int MaximumReadSize = SecureSessionWireCodec.MaximumFramePayloadLength + 4;
-    private const int MaximumAuthenticatedPacketCount = 256;
-    private const long MaximumAuthenticatedPayloadBytes = 4 * 1024 * 1024;
+    // Match the macOS receiver's sustained input budget. This is deliberately
+    // per-second rather than a lifetime cap so ordinary high-polling mice do
+    // not disconnect an otherwise healthy authenticated session.
+    private const int MaximumAuthenticatedPacketsPerSecond = 8_192;
+    private const long MaximumAuthenticatedBytesPerSecond = 8 * 1024 * 1024;
     private static readonly TimeSpan HandshakeTimeout = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan PartialFrameTimeout = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan ControlPromptTimeout = TimeSpan.FromSeconds(15);
     private static readonly string SecureServiceType = "_mackvm-secure._tcp.local";
     private readonly DeviceCredentials credentials;
     private readonly WindowsTrustStore trustStore;
@@ -40,6 +44,12 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
     private readonly HashSet<Guid> activePeerIDs = [];
     private readonly object activePeerLock = new();
     private readonly object signingLock;
+    private readonly bool autoAcceptControl;
+    private readonly Func<string, CancellationToken, Task<bool>>? promptConsent;
+    private readonly WindowsInputSink inputSink = new();
+    private readonly object activeControlLock = new();
+    private Guid? activeControlPeerID;
+    private Guid? activeControlRequestID;
     private MdnsAdvertiser? advertiser;
     private Task? advertiserTask;
     private Task? advertiserMonitorTask;
@@ -55,7 +65,9 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
         WindowsTrustStore trustStore,
         string model,
         int requestedPort = 0,
-        object? signingLock = null
+        object? signingLock = null,
+        bool autoAcceptControl = false,
+        Func<string, CancellationToken, Task<bool>>? promptConsent = null
     )
     {
         this.credentials = credentials;
@@ -63,6 +75,8 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
         this.model = model;
         this.requestedPort = requestedPort;
         this.signingLock = signingLock ?? new object();
+        this.autoAcceptControl = autoAcceptControl;
+        this.promptConsent = promptConsent;
         listener = CreateListener(requestedPort);
     }
 
@@ -182,6 +196,7 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
 
         connectionSlots.Dispose();
         unauthenticatedSlots.Dispose();
+        inputSink.Dispose();
         cancellation.Dispose();
     }
 
@@ -371,9 +386,13 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
         var authenticated = false;
         var unauthenticatedSlotHeld = true;
         long partialFrameDeadline = 0;
-        var authenticatedPacketCount = 0;
-        long authenticatedPayloadBytes = 0;
-        var announcedPayloadWarning = false;
+        var authenticatedPayloadBudget = new InboundPayloadBudget(
+            MaximumAuthenticatedPacketsPerSecond,
+            MaximumAuthenticatedBytesPerSecond
+        );
+        var controlRequestID = new SessionControlRequestState();
+        WindowsControlReleaseHotKey? releaseHotKey = null;
+        using var outputLock = new SemaphoreSlim(1, 1);
         var buffer = new List<byte>();
         var readBuffer = new byte[16 * 1024];
         var remote = client.Client.RemoteEndPoint?.ToString() ?? "unknown endpoint";
@@ -440,6 +459,20 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
                                 throw new SecureSessionWireException(
                                     SecureSessionWireErrorCode.InvalidSignature,
                                     "The secure-session peer is not paired."
+                                );
+                            }
+
+                            if (initiator.DisconnectSignalVersion
+                                != SecureSessionHandshake.CurrentDisconnectSignalVersion)
+                            {
+                                Console.Error.WriteLine(
+                                    $"Secure session rejected: peer {Short(initiator.Sender.Id)} "
+                                        + "does not support the authenticated disconnect signal. "
+                                        + "Update MacKVM before connecting."
+                                );
+                                throw new SecureSessionWireException(
+                                    SecureSessionWireErrorCode.UnsupportedCapability,
+                                    "The secure-session disconnect capability is required."
                                 );
                             }
 
@@ -522,29 +555,227 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
                             continue;
                         }
 
-                        // W2 deliberately proves transport authentication
-                        // first. Keep the channel alive while the Windows
-                        // input/control implementation is developed in the
-                        // next step, but do not interpret an encrypted payload
-                        // as input yet.
-                        authenticatedPacketCount++;
-                        authenticatedPayloadBytes += plaintext.LongLength;
-                        if (authenticatedPacketCount > MaximumAuthenticatedPacketCount
-                            || authenticatedPayloadBytes > MaximumAuthenticatedPayloadBytes)
+                        if (SecureSessionControlSignal.IsDisconnect(plaintext))
+                        {
+                            await SendSecureSignalAsync(
+                                channel,
+                                stream,
+                                outputLock,
+                                SecureSessionControlSignal.DisconnectAcknowledgement,
+                                token
+                            );
+                            Console.WriteLine(
+                                $"Secure session disconnect received from {Short(activePeerID)}."
+                            );
+                            return;
+                        }
+
+                        if (SecureSessionControlSignal.IsDisconnectAcknowledgement(
+                                plaintext
+                            ))
+                        {
+                            throw new SecureSessionWireException(
+                                SecureSessionWireErrorCode.UnexpectedMessage,
+                                "Unexpected secure-session disconnect acknowledgement."
+                            );
+                        }
+
+                        if (!authenticatedPayloadBudget.Allows(
+                                plaintext.Length,
+                                Environment.TickCount64
+                            ))
                         {
                             throw new SecureSessionWireException(
                                 SecureSessionWireErrorCode.PayloadTooLarge,
                                 "The secure-session authenticated payload budget was exceeded."
                             );
                         }
-                        if (!announcedPayloadWarning)
+
+                        var controlMessage = ControlMessageCodec.Decode(plaintext);
+                        if (controlMessage.Kind == ControlMessageKind.RequestControl)
                         {
-                            announcedPayloadWarning = true;
-                            Console.WriteLine(
-                                "Encrypted control payload received; Windows input control "
-                                    + "is not enabled in this build."
+                            // A hotkey teardown clears the request state before
+                            // its network acknowledgement completes. Dispose
+                            // the old message-thread registration here, on the
+                            // receive loop, before accepting a new request.
+                            if (controlRequestID.Value is null && releaseHotKey is not null)
+                            {
+                                releaseHotKey.Dispose();
+                                releaseHotKey = null;
+                            }
+                            if (controlRequestID.Value is not null)
+                            {
+                                throw new SecureSessionWireException(
+                                    SecureSessionWireErrorCode.UnexpectedMessage,
+                                    "A secure session cannot contain a second control request."
+                                );
+                            }
+
+                            var requestID = controlMessage.RequestID
+                                ?? throw new SecureSessionWireException(
+                                    SecureSessionWireErrorCode.InvalidHandshake,
+                                    "A control request has no request ID."
+                                );
+                            var peerID = activePeerID
+                                ?? throw new SecureSessionWireException(
+                                    SecureSessionWireErrorCode.InvalidHandshake,
+                                    "The authenticated peer identity is missing."
+                                );
+                            var accepted = await RequestControlConsentAsync(
+                                controlMessage,
+                                peerID,
+                                token
                             );
+                            if (!accepted || !TryActivateControl(peerID, requestID))
+                            {
+                                await SendControlMessageAsync(
+                                    channel,
+                                    stream,
+                                    outputLock,
+                                    new ControlMessage(
+                                        ControlMessageKind.ControlDenied,
+                                        requestID
+                                    ),
+                                    token
+                                );
+                                Console.WriteLine(
+                                    $"Denied Windows control request {Short(requestID)}."
+                                );
+                                continue;
+                            }
+
+                            controlRequestID.Set(requestID);
+                            try
+                            {
+                                releaseHotKey = new WindowsControlReleaseHotKey(() =>
+                                {
+                                    _ = EndControlFromHotKeyAsync(
+                                        peerID,
+                                        requestID,
+                                        channel,
+                                        stream,
+                                        outputLock,
+                                        () => controlRequestID.ClearIf(requestID),
+                                        token
+                                    );
+                                });
+                            }
+                            catch (Exception ex)
+                            {
+                                EndActiveControl(peerID, requestID);
+                                controlRequestID.ClearIf(requestID);
+                                Console.Error.WriteLine(
+                                    $"Could not register the Windows release hotkey: {ex.Message}"
+                                );
+                                await SendControlMessageAsync(
+                                    channel,
+                                    stream,
+                                    outputLock,
+                                    new ControlMessage(
+                                        ControlMessageKind.ControlDenied,
+                                        requestID
+                                    ),
+                                    token
+                                );
+                                continue;
+                            }
+
+                            await SendControlMessageAsync(
+                                channel,
+                                stream,
+                                outputLock,
+                                new ControlMessage(
+                                    ControlMessageKind.ControlGranted,
+                                    requestID
+                                ),
+                                token
+                            );
+                            Console.WriteLine(
+                                $"Windows control granted for {Short(requestID)}. "
+                                    + "Ctrl+Alt+Shift+Esc returns input locally."
+                            );
+                            continue;
                         }
+
+                        if (controlMessage.Kind == ControlMessageKind.Input)
+                        {
+                            var requestID = controlMessage.RequestID
+                                ?? throw new SecureSessionWireException(
+                                    SecureSessionWireErrorCode.InvalidHandshake,
+                                    "An input message has no request ID."
+                                );
+                            if (activePeerID is null
+                                || controlRequestID.Value != requestID
+                                || controlMessage.Input is null)
+                            {
+                                throw new SecureSessionWireException(
+                                    SecureSessionWireErrorCode.UnexpectedMessage,
+                                    "Input arrived without an active Windows control grant."
+                                );
+                            }
+
+                            // A release hotkey can race with one final packet
+                            // already in the TCP receive buffer. It is safe to
+                            // ignore that packet after the authenticated grant
+                            // has been ended, but an unknown request ID remains
+                            // a protocol violation.
+                            if (!IsControlActive(activePeerID.Value, requestID))
+                            {
+                                continue;
+                            }
+
+                            try
+                            {
+                                inputSink.Receive(controlMessage.Input);
+                            }
+                            catch (WindowsInputException ex)
+                            {
+                                Console.Error.WriteLine(
+                                    $"Windows input injection failed; ending control: {ex.Message}"
+                                );
+                                EndActiveControl(activePeerID.Value, requestID);
+                                controlRequestID.ClearIf(requestID);
+                                releaseHotKey?.Dispose();
+                                releaseHotKey = null;
+                                await SendControlMessageAsync(
+                                    channel,
+                                    stream,
+                                    outputLock,
+                                    new ControlMessage(
+                                        ControlMessageKind.EndControl,
+                                        requestID
+                                    ),
+                                    token
+                                );
+                            }
+                            continue;
+                        }
+
+                        if (controlMessage.Kind == ControlMessageKind.EndControl)
+                        {
+                            var requestID = controlMessage.RequestID
+                                ?? throw new SecureSessionWireException(
+                                    SecureSessionWireErrorCode.InvalidHandshake,
+                                    "An end-control message has no request ID."
+                                );
+                            if (activePeerID is not null
+                                && controlRequestID.Value == requestID
+                                && EndActiveControl(activePeerID.Value, requestID))
+                            {
+                                controlRequestID.ClearIf(requestID);
+                                releaseHotKey?.Dispose();
+                                releaseHotKey = null;
+                                Console.WriteLine(
+                                    $"Windows control ended by the Mac ({Short(requestID)})."
+                                );
+                            }
+                            continue;
+                        }
+
+                        throw new SecureSessionWireException(
+                            SecureSessionWireErrorCode.UnexpectedMessage,
+                            "The Windows responder received an unexpected control response."
+                        );
                     }
 
                     if (!SecureSessionWireCodec.HasCompleteFrame(buffer))
@@ -619,6 +850,14 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
         }
         finally
         {
+            releaseHotKey?.Dispose();
+            if (activePeerID is { } endingPeer
+                && controlRequestID.Value is { } endingRequest)
+            {
+                EndActiveControl(endingPeer, endingRequest);
+            }
+
+            outputLock.Dispose();
             channel?.Dispose();
             if (activePeerID is { } peerID)
             {
@@ -631,6 +870,192 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
                 unauthenticatedSlots.Release();
             }
             connectionSlots.Release();
+        }
+    }
+
+    private async Task<bool> RequestControlConsentAsync(
+        ControlMessage request,
+        Guid peerID,
+        CancellationToken token
+    )
+    {
+        var remoteVersion = request.ProtocolVersion
+            ?? ControlProtocolCompatibility.MinimumCompatibleVersion;
+        var remoteMinimum = request.MinimumProtocolVersion ?? remoteVersion;
+        if (remoteVersion < ControlProtocolCompatibility.MinimumCompatibleVersion
+            || remoteMinimum > ControlProtocolCompatibility.CurrentVersion
+            || remoteMinimum > remoteVersion)
+        {
+            Console.Error.WriteLine(
+                $"Control request from {Short(peerID)} uses an incompatible protocol."
+            );
+            return false;
+        }
+
+        if (autoAcceptControl)
+        {
+            Console.WriteLine(
+                $"Control request from {Short(peerID)} accepted (--yes)."
+            );
+            return true;
+        }
+
+        if (promptConsent is null)
+        {
+            Console.Error.WriteLine(
+                "Control request denied because no console consent provider is available."
+            );
+            return false;
+        }
+
+        using var promptTimeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+        promptTimeout.CancelAfter(ControlPromptTimeout);
+        try
+        {
+            return await promptConsent(
+                $"Allow keyboard/mouse control from {Short(peerID)}? y/N: ",
+                promptTimeout.Token
+            ).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (promptTimeout.IsCancellationRequested)
+        {
+            Console.Error.WriteLine("Control request timed out and was denied.");
+            return false;
+        }
+    }
+
+    private bool TryActivateControl(Guid peerID, Guid requestID)
+    {
+        lock (activeControlLock)
+        {
+            if (activeControlRequestID is not null)
+            {
+                return false;
+            }
+
+            inputSink.Begin();
+            activeControlPeerID = peerID;
+            activeControlRequestID = requestID;
+            return true;
+        }
+    }
+
+    private bool IsControlActive(Guid peerID, Guid requestID)
+    {
+        lock (activeControlLock)
+        {
+            return activeControlPeerID == peerID
+                && activeControlRequestID == requestID
+                && inputSink.IsActive;
+        }
+    }
+
+    private bool EndActiveControl(Guid peerID, Guid requestID)
+    {
+        lock (activeControlLock)
+        {
+            if (activeControlPeerID != peerID || activeControlRequestID != requestID)
+            {
+                return false;
+            }
+
+            activeControlPeerID = null;
+            activeControlRequestID = null;
+            inputSink.End();
+            return true;
+        }
+    }
+
+    private async Task EndControlFromHotKeyAsync(
+        Guid peerID,
+        Guid requestID,
+        SecureSessionChannel? channel,
+        NetworkStream stream,
+        SemaphoreSlim outputLock,
+        Action clearRequest,
+        CancellationToken token
+    )
+    {
+        if (!EndActiveControl(peerID, requestID))
+        {
+            return;
+        }
+
+        // Clear the receive-loop admission state immediately after the local
+        // input sink is released. The acknowledgement may be delayed by the
+        // network, but a new control request must not be rejected as a second
+        // active request during that delay.
+        clearRequest();
+
+        Console.WriteLine(
+            $"Windows control returned locally by hotkey ({Short(requestID)})."
+        );
+        if (channel is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await SendControlMessageAsync(
+                channel,
+                stream,
+                outputLock,
+                new ControlMessage(ControlMessageKind.EndControl, requestID),
+                token
+            ).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or SocketException
+            or ObjectDisposedException or OperationCanceledException)
+        {
+            Console.Error.WriteLine(
+                $"Could not notify MacKVM that Windows control ended: {ex.Message}"
+            );
+        }
+    }
+
+    private static async Task SendControlMessageAsync(
+        SecureSessionChannel channel,
+        NetworkStream stream,
+        SemaphoreSlim outputLock,
+        ControlMessage message,
+        CancellationToken token
+    )
+    {
+        var payload = ControlMessageCodec.Encode(message);
+        await outputLock.WaitAsync(token).ConfigureAwait(false);
+        try
+        {
+            var packet = channel.Seal(payload);
+            var frame = SecureSessionWireCodec.Encode(packet);
+            await stream.WriteAsync(frame, token).ConfigureAwait(false);
+            await stream.FlushAsync(token).ConfigureAwait(false);
+        }
+        finally
+        {
+            outputLock.Release();
+        }
+    }
+
+    private static async Task SendSecureSignalAsync(
+        SecureSessionChannel channel,
+        NetworkStream stream,
+        SemaphoreSlim outputLock,
+        ReadOnlyMemory<byte> signal,
+        CancellationToken token
+    )
+    {
+        await outputLock.WaitAsync(token).ConfigureAwait(false);
+        try
+        {
+            var packet = channel.Seal(signal.Span);
+            var frame = SecureSessionWireCodec.Encode(packet);
+            await stream.WriteAsync(frame, token).ConfigureAwait(false);
+            await stream.FlushAsync(token).ConfigureAwait(false);
+        }
+        finally
+        {
+            outputLock.Release();
         }
     }
 
@@ -652,4 +1077,45 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
 
     private static string Short(Guid? id)
         => id is null ? "none" : id.Value.ToString("N")[..8];
+
+    private static string Short(Guid id) => id.ToString("N")[..8];
+
+    private sealed class SessionControlRequestState
+    {
+        private readonly object gate = new();
+        private Guid? value;
+
+        public Guid? Value
+        {
+            get
+            {
+                lock (gate)
+                {
+                    return value;
+                }
+            }
+        }
+
+        public void Set(Guid? requestID)
+        {
+            lock (gate)
+            {
+                value = requestID;
+            }
+        }
+
+        public bool ClearIf(Guid requestID)
+        {
+            lock (gate)
+            {
+                if (value != requestID)
+                {
+                    return false;
+                }
+
+                value = null;
+                return true;
+            }
+        }
+    }
 }

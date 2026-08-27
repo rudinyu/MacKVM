@@ -19,7 +19,8 @@ MacKVM 是原生 macOS 應用程式，提供選單列入口與一般控制視窗
 - 使用短期 P-256 金鑰交換、方向分離 HKDF、ChaChaPoly 與序號計數器的加密連線。
 - 驗證後的鍵盤、滑鼠、滾輪與修飾鍵轉送，以及明確的 Allow／Deny 控制同意。
 - Local Network、Input Monitoring、Accessibility 的循序設定檢查。
-- Launch MacKVM at Login、通知 Allow／Deny／Review、斷線安全返回與自動重連。
+- Launch MacKVM at Login、通知 Allow／Deny／Review、斷線安全返回與自動重連（最多五次，
+  指數退避每次延遲上限 30 秒）。
 - 防止 HDMI-only Intel Mac 誤宣稱具備雙向實體輸入的拓撲模式。
 - 透過 IOKit 原生 DDC/CI 在 Apple Silicon 與 Intel 切換螢幕輸入、探索支援 DDC 的
   顯示器、保存穩定識別碼、顯示診斷，並在螢幕不支援時提供 OSD 備援。
@@ -31,8 +32,9 @@ MacKVM 是原生 macOS 應用程式，提供選單列入口與一般控制視窗
 - M5 Pro 14 吋 MacBook Pro：USB-C 連接 BenQ MA270U。
 - 2019 16 吋 Intel MacBook Pro：USB-C／Thunderbolt 3 轉 HDMI 連接螢幕。
 - 鍵盤與滑鼠：接在 M5 Pro，或接到 MA270U USB hub；HDMI 不會傳送 USB hub。
-- 目前建議選 **One keyboard on M5 Pro (USB-C)**，由 M5 Pro 發起控制，Intel Mac
-  接收控制。只有在兩台 Mac 都透過實體 USB switch 看見裝置時，才使用雙向模式。
+- 目前建議選 **One keyboard on M5 Pro (USB-C)**，外接鍵盤與滑鼠由 M5 Pro 持有，
+  但兩台 Mac 都可以使用自己的鍵盤、滑鼠或觸控板發起軟體控制。只有在兩台 Mac
+  都透過實體 USB switch 看見外接裝置時，才使用雙向模式。
 
 ## 需求
 
@@ -67,14 +69,16 @@ Developer ID Application、hardened runtime，並在公開發佈前完成 Apple 
 ### Windows 開發（Windows 分支）
 
 完整建置流程請參閱獨立的 [Windows 建置手冊](WINDOWS_BUILD.zh-TW.md)；Windows component
-範圍與目前 W2 功能狀態請參閱 [WindowsKVM README](WindowsKVM/README.zh-TW.md)。
+範圍與目前 W3 功能狀態請參閱 [WindowsKVM README](WindowsKVM/README.zh-TW.md)。
 
 Windows 端改用 C#/.NET 8，不用 Swift 處理 Windows UI、常駐列、輸入 API 或防火牆設定。
-W2 已包含跨平台 protocol library、簽章配對 state machine、console receiver、DPAPI
-保護的 identity、免外部套件的 mDNS 廣播器，以及可完成驗證加密 Connect 的 responder。
-它可以和 MacKVM 1.00.00 建立信任關係並完成 secure handshake，但還不是完整可用的
-Windows KVM。WinUI 3、Raw Input、SendInput、加密控制 message、全域快捷鍵、tray integration
-與最小權限的 Windows Firewall UX 仍待後續實作，同時維持相同 wire protocol。
+W3 已包含跨平台 protocol library、簽章配對 state machine、console receiver、DPAPI
+保護的 identity、免外部套件的 mDNS 廣播器、驗證加密 Connect、嚴格的 control message／
+input 驗證、Windows SendInput 注入、釋放所有輸入狀態，以及 Ctrl+Alt+Shift+Esc 緊急交還
+快捷鍵。它仍是 console Windows KVM；WinUI 3、Raw Input 擷取、tray integration 與最小
+權限的 Windows Firewall UX 仍待後續實作，同時維持相同 wire protocol。Secure Connect 需要
+MacKVM 簽名的 `disconnectSignalVersion` capability（MacKVM 1.100.00／build 75 加入）；舊版
+Mac 仍可配對，但 secure-session admission 會 fail closed，直到兩端都更新。
 
 支援的建置目標是 Windows x64（`win-x64`，也稱 `x86_64`）與 Windows ARM64（`win-arm64`），
 刻意不支援 32-bit `i686`。請在安裝 .NET 8 SDK 的 Windows 建置主機上執行（後續加入 WinUI
@@ -107,7 +111,7 @@ pwsh ./scripts/build-windows.ps1 -Architecture both -Plan
 [Windows app development](https://learn.microsoft.com/en-us/windows/apps/) 與
 [.NET deployment](https://learn.microsoft.com/en-us/dotnet/core/deploying/) 說明。
 
-W2 receiver 使用 dual-mode TCP listener；主機有可用介面時，會透過 IPv4／IPv6 mDNS
+W3 receiver 使用 dual-mode TCP listener；主機有可用介面時，會透過 IPv4／IPv6 mDNS
 廣播 A 與 AAAA 記錄。若主機沒有可用 IPv6 介面，會回退到 IPv4。macOS 的
 `scripts/ci.sh` 在找到 `dotnet` 時會自動執行 Windows 檢查；沒有 Windows SDK 的 Mac
 會略過這部分。使用 `RUN_WINDOWS_CI=1 ./scripts/ci.sh` 可將 Windows 檢查設為必要。

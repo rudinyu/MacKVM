@@ -36,10 +36,13 @@ The current MVP provides:
 - injected-event marking that prevents input feedback loops;
 - explicit Allow/Deny control consent on the receiving Mac, deterministic
   collision handling, and a receiver-side stop action;
-- explicit physical-input topology modes that prevent the HDMI-only Intel Mac
-  from claiming bidirectional input unless an external USB switch is present;
-- network-path monitoring with bounded automatic reconnect after Wi-Fi,
-  sleep/wake, or peer-service interruptions;
+- explicit physical-input topology modes that document the HDMI USB limitation:
+  external devices remain on the M5 Pro in the recommended mode, while either
+  Mac's own local keyboard, mouse, or trackpad can request control; a real USB
+  switch is required for bidirectional external-device input;
+- network-path monitoring with at most five automatic reconnect attempts after
+  Wi-Fi, sleep/wake, or peer-service interruptions (exponential delays are
+  capped at 30 seconds);
 - a control-protocol compatibility check before consent, cross-layout keyboard
   remapping so typing keys still produce the right characters when the two
   Macs use different keyboard layouts, and a safe identity-reset path when the
@@ -99,19 +102,22 @@ the ad-hoc code signature without trying to execute the cross-built app.
 
 For the complete build procedure, see the standalone
 [Windows build guide](WINDOWS_BUILD.md).
-The Windows component scope and current W2 feature status are also listed in
+The Windows component scope and current W3 feature status are also listed in
 the [WindowsKVM README](WindowsKVM/README.md).
 
 The Windows branch uses C#/.NET 8 for the native Windows side; Swift is not
-used for the Windows UI, tray integration, input APIs, or firewall setup. W2
-now includes the platform-neutral protocol library, signed pairing state
-machine, console receiver, DPAPI-protected identity, a dependency-free mDNS
-advertiser, and an authenticated encrypted secure Connect responder. It can
-establish a trust relationship with MacKVM 1.00.00 and complete the secure
-handshake, but it is not yet a usable Windows KVM. WinUI 3, Raw Input,
-SendInput, encrypted control messages, global hotkeys, tray integration, and
-the final least-privilege Windows Firewall UX remain later Windows work while
-keeping the same wire protocol.
+used for the Windows UI, tray integration, input APIs, or firewall setup. W3
+includes the platform-neutral protocol library, signed pairing state machine,
+console receiver, DPAPI-protected identity, dependency-free mDNS advertiser,
+authenticated encrypted secure Connect responder, strict control-message and
+input validation, Windows SendInput injection, release-all cleanup, and the
+Ctrl+Alt+Shift+Esc emergency return shortcut. It is still a console Windows
+KVM; WinUI 3, Raw Input capture, tray integration, and the final
+least-privilege Windows Firewall UX remain later work while keeping the same
+wire protocol. Secure Connect requires MacKVM's signed
+`disconnectSignalVersion` capability (introduced in MacKVM 1.100.00/build 75);
+pairing with older Mac builds remains possible, but secure-session admission
+fails closed until both endpoints are updated.
 
 The publish targets are Windows x64 (`win-x64`, also called `x86_64`) and
 Windows ARM64 (`win-arm64`); 32-bit `i686` is intentionally unsupported. Run
@@ -139,7 +145,7 @@ official
 and [.NET deployment](https://learn.microsoft.com/en-us/dotnet/core/deploying/)
 documentation when setting up a Windows build host.
 
-The W2 receiver uses dual-mode TCP listeners and advertises both A and AAAA
+The W3 receiver uses dual-mode TCP listeners and advertises both A and AAAA
 records through IPv4/IPv6 mDNS when those interfaces are available. It falls
 back to IPv4 when the host has no usable IPv6 interface. The macOS
 `scripts/ci.sh` runs the Windows checks automatically when `dotnet` is
@@ -177,7 +183,7 @@ The package is built from a fresh staging directory and writes a portable
 SHA-256 sidecar next to the DMG. Verify the pair from the `dist` directory:
 
 ```sh
-(cd dist && shasum -a 256 -c MacKVM-1.00.00-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.02.02-universal.dmg.sha256)
 ```
 
 For distribution to another Mac, sign with a Developer ID Application
@@ -344,13 +350,16 @@ display and then requests keyboard/mouse control; when this Mac is receiving
 control, it ends receiving and restores the controller's display and input.
 
 After an authenticated transport loss, MacKVM releases local input immediately
-and retries the last user-selected peer with a bounded 0/1/2/4…30-second
-backoff. A deliberate **Disconnect**, **Forget**, or **Quit** clears that
-reconnect intent. Pairing is not repeated; a paired peer with seamless control
-authorization can resume control without another prompt, while an opted-out
-peer must be granted again. If the keyboard layout changes while control is live,
-the receiver stops remote input and asks both users to choose the same macOS
-input source before trying again.
+and retries the last user-selected peer with at most five scheduled attempts
+(1/2/4/8/16-second exponential delays; each delay is capped at 30 seconds).
+Once those attempts are exhausted, a later network-service readiness event or
+explicit restart is required before the retry budget resets. A deliberate
+**Disconnect**, **Forget**, or **Quit** clears that reconnect intent. Pairing is
+not repeated; a paired peer with seamless control authorization can resume
+control without another prompt, while an opted-out peer must be granted again.
+If the keyboard layout changes while control is live, the receiver stops remote
+input and asks both users to choose the same macOS input source before trying
+again.
 
 If the app cannot load its Keychain identity, the error view offers **Reset this
 Mac identity**. Use it only after confirming that the old identity should be
@@ -372,10 +381,11 @@ Chinese HTML manual, and the matching Markdown files in `docs/`.
 - Keyboard and mouse: connect to the M5 Pro directly or through the MA270U
   USB hub. HDMI does not carry the monitor hub upstream to the Intel Mac.
 
-This is a one-way physical input topology: the M5 Pro can request control of
-the Intel Mac, while the Intel Mac can receive control. Select the app's
-**External USB switch (bidirectional)** mode only when a real USB switch makes
-the devices visible to both Macs.
+This is a one-way physical USB topology: the M5 Pro owns the external keyboard
+and mouse because HDMI carries no USB data upstream. Both Macs can still use
+their own local keyboard, mouse, or trackpad to request software control.
+Select **External USB switch (bidirectional)** only when a real USB switch makes
+the external devices visible to both Macs.
 
 This keeps DDC/CI communication on the more reliable USB-C connection.
 

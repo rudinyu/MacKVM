@@ -82,9 +82,10 @@ flowchart LR
 ```
 
 HDMI 只傳送影像，不會把 MA270U USB hub 上游給 Intel host。因此目前建議選
-**One keyboard on M5 Pro (USB-C)**，讓 M5 Pro 發起控制、Intel Mac 接收控制。
-只有在實體 USB switch 讓兩台 Mac 都看到裝置時，才選
-**External USB switch (bidirectional)**；app 無法從軟體驗證 switch 是否存在。
+**One keyboard on M5 Pro (USB-C)**，讓外接鍵盤與滑鼠留在 M5 Pro；兩台 Mac
+仍可用各自本機的鍵盤、滑鼠或觸控板發起軟體控制。只有在實體 USB switch
+讓兩台 Mac 都看到外接裝置時，才選 **External USB switch (bidirectional)**；
+app 無法從軟體驗證 switch 是否存在。
 
 ### 原生 DDC/CI 傳輸
 
@@ -139,9 +140,11 @@ stateDiagram-v2
     disconnected --> connected: 有上限的自動重連
 ```
 
-`NWPathMonitor` 在網路不可用時暫停重連，恢復後使用 0／1／2／4…30 秒退避。手動
-**Disconnect**、**Forget** 或退出 app 會清除重連目標。控制請求與鍵盤輸入會檢查
-協定版本和 keyboard layout；不相容時在同意前拒絕，控制中途變更 layout 則安全停止。
+`NWPathMonitor` 在網路不可用時暫停重連，恢復後最多排程五次重試（1／2／4／8／16 秒的
+指數退避，每次延遲上限 30 秒）。五次都失敗後，要等網路服務回報 ready 或明確重新啟動
+才會重設重試額度。手動 **Disconnect**、**Forget** 或退出 app 會清除重連目標。控制請求
+與鍵盤輸入會檢查協定版本和 keyboard layout；不相容時在同意前拒絕，控制中途變更 layout
+則安全停止。
 
 ## 防護邊界
 

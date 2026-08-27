@@ -195,7 +195,7 @@ final class ControlCoordinator: ObservableObject {
             return false
         }
         guard localControlAllowed() else {
-            status = "This Mac has no physical keyboard/mouse path in the selected topology"
+            status = "Local input sharing is disabled in the selected topology"
             return false
         }
         guard !isRemoteInputTearingDown else {
@@ -286,12 +286,12 @@ final class ControlCoordinator: ObservableObject {
     private func toggleControlFromHotKey(displayAlreadyRemote: Bool) {
         if isReceivingControl {
             endReceivingControl(
-                reason: "Hotkey returned keyboard and mouse to this Mac"
+                reason: "Hotkey returned keyboard, mouse, and trackpad locally"
             )
             return
         }
         if state == .controlling || state == .suspended {
-            stopControl(reason: "Hotkey returned keyboard and mouse locally")
+            stopControl(reason: "Hotkey returned keyboard, mouse, and trackpad locally")
             return
         }
         _ = requestControl(displayAlreadyRemote: displayAlreadyRemote)

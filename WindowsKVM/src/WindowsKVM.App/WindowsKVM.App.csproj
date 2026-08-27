@@ -7,9 +7,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>WindowsKVM</AssemblyName>
     <RootNamespace>WindowsKVM</RootNamespace>
-    <Version>1.01.02</Version>
-    <AssemblyVersion>1.01.02.0</AssemblyVersion>
-    <FileVersion>1.01.02.0</FileVersion>
+    <Version>1.02.02</Version>
+    <AssemblyVersion>1.02.02.0</AssemblyVersion>
+    <FileVersion>1.02.02.0</FileVersion>
     <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
     <Platforms>x64;ARM64</Platforms>
     <PublishTrimmed>false</PublishTrimmed>

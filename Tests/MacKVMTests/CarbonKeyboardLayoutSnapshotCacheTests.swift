@@ -19,7 +19,11 @@ final class CarbonKeyboardLayoutSnapshotCacheTests: XCTestCase {
     func testIdentifierAndReverseMapArePublishedAsOneSnapshot() {
         var identifierCalls = 0
         var reverseMapCalls = 0
+        var forwardMapCalls = 0
         let map = KeyboardLayoutReverseMap(
+            translator: SnapshotTestLayout()
+        )
+        let forwardMap = KeyboardLayoutForwardMap(
             translator: SnapshotTestLayout()
         )
         let cache = CarbonKeyboardLayoutSnapshotCache(
@@ -30,6 +34,10 @@ final class CarbonKeyboardLayoutSnapshotCacheTests: XCTestCase {
             reverseMapSource: {
                 reverseMapCalls += 1
                 return map
+            },
+            forwardMapSource: {
+                forwardMapCalls += 1
+                return forwardMap
             }
         )
 
@@ -37,6 +45,16 @@ final class CarbonKeyboardLayoutSnapshotCacheTests: XCTestCase {
         XCTAssertNotNil(cache.currentReverseMap())
         XCTAssertEqual(identifierCalls, 1)
         XCTAssertEqual(reverseMapCalls, 1)
+        XCTAssertEqual(forwardMapCalls, 1)
+        XCTAssertEqual(
+            cache.currentSnapshot()?.forwardMap?.character(
+                forKeyCode: 0,
+                shift: false,
+                option: false,
+                capsLock: false
+            ),
+            "a"
+        )
     }
 
     func testMissingReverseMapDoesNotPublishAnIdentifier() {

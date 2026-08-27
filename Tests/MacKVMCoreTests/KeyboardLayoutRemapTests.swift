@@ -49,6 +49,41 @@ final class KeyboardLayoutRemapTests: XCTestCase {
         )
     }
 
+    func testForwardMapUsesTheSameLayoutGenerationWithoutCallingTranslatorAtLookup() {
+        let layout = StubLayout(characters: [
+            .init(keyCode: 0, shift: false, option: false, capsLock: false): "a",
+            .init(keyCode: 0, shift: true, option: false, capsLock: false): "A"
+        ])
+        let map = KeyboardLayoutForwardMap(translator: layout)
+
+        XCTAssertEqual(
+            map.character(
+                forKeyCode: 0,
+                shift: false,
+                option: false,
+                capsLock: false
+            ),
+            "a"
+        )
+        XCTAssertEqual(
+            map.character(
+                forKeyCode: 0,
+                shift: true,
+                option: false,
+                capsLock: false
+            ),
+            "A"
+        )
+        XCTAssertNil(
+            map.character(
+                forKeyCode: 36,
+                shift: false,
+                option: false,
+                capsLock: false
+            )
+        )
+    }
+
     func testFindsShiftedKey() {
         let layout = StubLayout(characters: [
             .init(keyCode: 18, shift: false, option: false, capsLock: false): "1",

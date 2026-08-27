@@ -24,9 +24,15 @@ internal static class Program
             TestCompletePairingStateMachine();
             TestRejectedDecisionIsTerminal();
             TestSecureSessionHandshakeRoundTrip();
+            TestSecureSessionDisconnectCapabilityRoundTrip();
+            TestSecureSessionDisconnectSignalsRequireExactPayload();
             TestSecureSessionChannelEncryptsBothDirections();
             TestSecureSessionRejectsTamperedHandshake();
             TestSecureSessionDrainsCoalescedFrames();
+            TestControlMessageRoundTrip();
+            TestRemoteInputValidation();
+            TestMacVirtualKeyMap();
+            TestInboundPayloadBudgetUsesRollingWindows();
             Console.WriteLine("WindowsKVM protocol self-test: PASS");
             return 0;
         }
@@ -261,6 +267,11 @@ internal static class Program
             fixture.InitiatorHandshake,
             fixture.InitiatorSigningKey
         );
+        var json = Encoding.UTF8.GetString(frame, 4, frame.Length - 4);
+        Assert(
+            json.Contains("\"disconnectSignalVersion\":1", StringComparison.Ordinal),
+            "secure handshake must advertise the disconnect capability"
+        );
         var buffer = frame.ToList();
         var messages = SecureSessionWireCodec.DecodeAvailableFrames(buffer);
         Assert(messages.Count == 1, "one secure handshake should decode");
@@ -273,6 +284,62 @@ internal static class Program
             "secure handshake sender changed"
         );
         Assert(buffer.Count == 0, "secure handshake frame was not consumed");
+        Assert(
+            messages[0].Handshake!.DisconnectSignalVersion
+                == SecureSessionHandshake.CurrentDisconnectSignalVersion,
+            "secure handshake disconnect capability changed"
+        );
+    }
+
+    private static void TestSecureSessionDisconnectCapabilityRoundTrip()
+    {
+        using var fixture = SecureFixture.Create();
+        var legacy = SecureSessionHandshake.Create(
+            fixture.InitiatorHandshake.SessionID,
+            SecureSessionRole.Initiator,
+            fixture.InitiatorHandshake.Sender,
+            fixture.InitiatorHandshake.SenderModel,
+            fixture.InitiatorEphemeralKey,
+            disconnectSignalVersion: null
+        );
+        var frame = SecureSessionWireCodec.Encode(
+            legacy,
+            fixture.InitiatorSigningKey
+        );
+        var decoded = SecureSessionWireCodec.DecodeAvailableFrames(frame.ToList());
+        Assert(decoded.Count == 1, "legacy secure handshake should decode");
+        Assert(
+            decoded[0].Handshake!.DisconnectSignalVersion is null,
+            "legacy handshake must not gain a disconnect capability"
+        );
+    }
+
+    private static void TestSecureSessionDisconnectSignalsRequireExactPayload()
+    {
+        Assert(
+            SecureSessionControlSignal.IsDisconnect(
+                SecureSessionControlSignal.Disconnect.Span
+            ),
+            "disconnect signal should match exactly"
+        );
+        Assert(
+            !SecureSessionControlSignal.IsDisconnect(
+                Encoding.UTF8.GetBytes("MacKVM secure session disconnect v2")
+            ),
+            "future disconnect signal must not be accepted"
+        );
+        Assert(
+            SecureSessionControlSignal.IsDisconnectAcknowledgement(
+                SecureSessionControlSignal.DisconnectAcknowledgement.Span
+            ),
+            "disconnect acknowledgement should match exactly"
+        );
+        Assert(
+            !SecureSessionControlSignal.IsDisconnectAcknowledgement(
+                SecureSessionControlSignal.Disconnect.Span
+            ),
+            "disconnect signal must not be treated as its acknowledgement"
+        );
     }
 
     private static void TestSecureSessionChannelEncryptsBothDirections()
@@ -356,6 +423,165 @@ internal static class Program
         var secondBatch = SecureSessionWireCodec.DecodeAvailableFrames(buffer);
         Assert(secondBatch.Count == 1, "secure decoder should drain the retained frame");
         Assert(buffer.Count == 0, "all coalesced secure frames should be consumed");
+    }
+
+    private static void TestControlMessageRoundTrip()
+    {
+        var requestID = Guid.Parse("00112233-4455-6677-8899-AABBCCDDEEFF");
+        var request = ControlMessage.RequestControl(requestID, "com.apple.keylayout.US");
+        var encoded = ControlMessageCodec.Encode(request);
+        var json = Encoding.UTF8.GetString(encoded);
+        Assert(json.Contains("\"requestControl\"", StringComparison.Ordinal),
+            "control kind must use the lower-camel wire spelling");
+        var decoded = ControlMessageCodec.Decode(encoded);
+        Assert(decoded.Kind == ControlMessageKind.RequestControl,
+            "control request kind changed during round-trip");
+        Assert(decoded.RequestID == requestID,
+            "control request ID changed during round-trip");
+        Assert(decoded.ProtocolVersion == ControlProtocolCompatibility.CurrentVersion,
+            "control protocol version changed during round-trip");
+
+        var input = new RemoteInputEvent(
+            RemoteInputKind.KeyDown,
+            keyCode: 0,
+            modifierFlags: 0,
+            character: "a"
+        );
+        var inputMessage = ControlMessage.InputMessage(input, requestID);
+        var inputRoundTrip = ControlMessageCodec.Decode(
+            ControlMessageCodec.Encode(inputMessage)
+        );
+        Assert(inputRoundTrip.Kind == ControlMessageKind.Input
+            && inputRoundTrip.Input?.KeyCode == 0,
+            "input control message did not round-trip");
+    }
+
+    private static void TestRemoteInputValidation()
+    {
+        var valid = new RemoteInputEvent(
+            RemoteInputKind.MouseMoved,
+            location: new NormalizedPoint(0.5, 0.5)
+        );
+        Assert(RemoteInputCodec.Decode(RemoteInputCodec.Encode(valid)).Location?.X == 0.5,
+            "normalized mouse location did not round-trip");
+
+        var invalid = new RemoteInputEvent(
+            RemoteInputKind.KeyDown,
+            keyCode: 0,
+            modifierFlags: ulong.MaxValue,
+            character: "a"
+        );
+        AssertThrowsRemote(
+            () => RemoteInputCodec.Encode(invalid),
+            RemoteInputErrorCode.InvalidFields,
+            "unknown modifier bits must be rejected");
+
+        var invalidMedia = new RemoteInputEvent(
+            RemoteInputKind.SystemDefined,
+            isPressed: true,
+            mediaKey: (MediaKey)999
+        );
+        AssertThrowsRemote(
+            () => RemoteInputCodec.Encode(invalidMedia),
+            RemoteInputErrorCode.InvalidFields,
+            "unknown media keys must be rejected");
+
+        var invalidScroll = new RemoteInputEvent(
+            RemoteInputKind.Scroll,
+            scrollDeltaX: 0,
+            scrollDeltaY: 1,
+            scrollPhase: (ScrollPhase)64
+        );
+        AssertThrowsRemote(
+            () => RemoteInputCodec.Encode(invalidScroll),
+            RemoteInputErrorCode.InvalidFields,
+            "unknown scroll phases must be rejected");
+
+        var mousePressure = new RemoteInputEvent(
+            RemoteInputKind.MouseMoved,
+            location: new NormalizedPoint(0.5, 0.5),
+            pressure: 0.5
+        );
+        AssertThrowsRemote(
+            () => RemoteInputCodec.Encode(mousePressure),
+            RemoteInputErrorCode.InvalidFields,
+            "mouse movement must not carry pointer pressure");
+
+        var scrollPressure = new RemoteInputEvent(
+            RemoteInputKind.Scroll,
+            scrollDeltaX: 0,
+            scrollDeltaY: 1,
+            pressure: 0.5
+        );
+        AssertThrowsRemote(
+            () => RemoteInputCodec.Encode(scrollPressure),
+            RemoteInputErrorCode.InvalidFields,
+            "scroll events must not carry pointer pressure");
+
+        var preciseScroll = new RemoteInputEvent(
+            RemoteInputKind.Scroll,
+            scrollDeltaX: 0.25,
+            scrollDeltaY: -1.5,
+            scrollPhase: ScrollPhase.Changed,
+            scrollMomentumPhase: ScrollMomentumPhase.Continue,
+            scrollEventUnit: ScrollEventUnit.Pixel
+        );
+        var preciseRoundTrip = RemoteInputCodec.Decode(
+            RemoteInputCodec.Encode(preciseScroll)
+        );
+        Assert(
+            preciseRoundTrip.ScrollEventUnit == ScrollEventUnit.Pixel
+                && preciseRoundTrip.ScrollMomentumPhase == ScrollMomentumPhase.Continue
+                && preciseRoundTrip.ScrollDeltaY == -1.5,
+            "pixel scroll metadata must round-trip with the macOS wire contract"
+        );
+
+        var pressurePointer = new RemoteInputEvent(
+            RemoteInputKind.LeftMouseDown,
+            location: new NormalizedPoint(0.5, 0.5),
+            buttonNumber: 0,
+            clickCount: 1,
+            pressure: 0.75
+        );
+        Assert(
+            RemoteInputCodec.Decode(RemoteInputCodec.Encode(pressurePointer)).Pressure == 0.75,
+            "pointer pressure must round-trip"
+        );
+    }
+
+    private static void TestMacVirtualKeyMap()
+    {
+        Assert(
+            MacVirtualKeyMap.TryGet(122, out var f1)
+                && f1.VirtualKey == 0x70,
+            "Apple F1 must map to Windows VK_F1"
+        );
+        Assert(
+            MacVirtualKeyMap.TryGet(119, out var end)
+                && end.VirtualKey == 0x23
+                && end.Extended,
+            "Apple End must map to Windows VK_END"
+        );
+        Assert(
+            MacVirtualKeyMap.TryGet(117, out var delete)
+                && delete.VirtualKey == 0x2E
+                && delete.Extended,
+            "Apple forward delete must map to Windows VK_DELETE"
+        );
+        Assert(
+            MacVirtualKeyMap.TryGet(113, out var f15)
+                && f15.VirtualKey == 0x7E,
+            "Apple F15 must map to Windows VK_F15"
+        );
+    }
+
+    private static void TestInboundPayloadBudgetUsesRollingWindows()
+    {
+        var budget = new InboundPayloadBudget(2, 10);
+        Assert(budget.Allows(4, 1_000), "first payload should be admitted");
+        Assert(budget.Allows(6, 1_001), "second payload should be admitted");
+        Assert(!budget.Allows(1, 1_002), "packet budget should apply within a window");
+        Assert(budget.Allows(1, 2_000), "budget should reset after one second");
     }
 
     private static void AssertThrowsSecure(
@@ -630,6 +856,24 @@ internal static class Program
             action();
         }
         catch (PairingSessionException)
+        {
+            return;
+        }
+
+        throw new InvalidOperationException(message);
+    }
+
+    private static void AssertThrowsRemote(
+        Action action,
+        RemoteInputErrorCode expected,
+        string message
+    )
+    {
+        try
+        {
+            action();
+        }
+        catch (RemoteInputException ex) when (ex.Code == expected)
         {
             return;
         }

@@ -33,11 +33,11 @@ Intel Mac。建置腳本會驗證 Mach-O 架構與 ad-hoc 簽章。
 
 完整流程請參閱獨立的 [Windows 建置手冊](WINDOWS_BUILD.zh-TW.md)。
 
-Windows 分支改用 C#/.NET 8，不用 Swift。W1 已包含跨平台 protocol library、簽章配對
-state machine、console receiver、DPAPI 保護的 identity 與 `_mackvm._tcp` mDNS 廣播器；
-可以和 MacKVM 1.00.00 建立信任關係，但還不是完整可用的 Windows KVM。W2 會加入 WinUI 3
-常駐列介面、Raw Input、SendInput、加密控制 session、快捷鍵與有範圍的 Windows Firewall
-UX，讓 Windows 端能共用 Mac 上的鍵盤與滑鼠。
+Windows 分支改用 C#/.NET 8，不用 Swift。目前 W3 console receiver 已包含跨平台 protocol
+library、簽章配對 state machine、DPAPI 保護的 identity、雙堆疊 mDNS、驗證加密控制
+session、Windows `SendInput` 注入、輸入釋放與緊急交還快捷鍵。WinUI／tray UI、Raw Input
+擷取與完整的最小權限 Windows Firewall 精靈仍是後續工作；目前 receiver 在取得同意後已能
+共用 Mac 上的鍵盤與滑鼠。
 
 請在 Windows 建置主機安裝 .NET 8 SDK；加入 WinUI 後，建議使用含 Windows App SDK workload
 的 Visual Studio 2022。兩個支援的 native 目標如下：
@@ -121,7 +121,7 @@ transport 與 VCP `0x60` 輸入狀態。唯讀報告可保存為：
 ./scripts/verify-release.sh \
   --app dist/universal/MacKVM.app \
   --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.00.00-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.02.02-universal.dmg.sha256)
 ```
 
 ad-hoc 簽章只適合本機測試。要提供給其他 Mac，請使用 Developer ID Application、
@@ -207,9 +207,10 @@ KVM 圖示或 Dock 重新開啟。
    自動切換螢幕，再請求鍵盤／滑鼠控制；如果本機正在接收控制，則結束接收並把螢幕與輸入
    還給控制端。
 
-連線中斷後 MacKVM 會以有上限的退避時間重連；已啟用無縫控制的配對裝置不需再次按
-Allow，關閉該選項的裝置才需要重新取得控制同意。**Disconnect**、**Forget** 與
-**Quit** 會清除重連意圖。
+連線中斷後，MacKVM 最多排程五次重連，使用 1／2／4／8／16 秒的指數退避（每次延遲上限
+30 秒）。五次都失敗後，等網路服務回報 ready 或明確重新啟動才會重設重試額度。已啟用
+無縫控制的配對裝置不需再次提示；其他裝置需要重新取得控制同意。**Disconnect**、
+**Forget** 與 **Quit** 會清除重連意圖。
 
 ## 裝置資料與支援資訊
 

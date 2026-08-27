@@ -2,6 +2,61 @@
 
 # Changelog
 
+## 1.02.02 (build 82) — 2026-08-27
+
+This patch closes the remaining review findings around network recovery,
+keyboard-layout transitions, release documentation, and regression coverage.
+
+### Fixed
+
+- Stop Bonjour recovery after five scheduled attempts; readiness callbacks from
+  both Bonjour services reset the bounded backoff cycle.
+- Fail closed for remappable captured key-down events while the Carbon layout
+  snapshot is stale, including matching repeats and key-ups.
+- Align installation, manual, and component documentation with the current W3
+  feature set and the 1.02.02/build 82 release artifacts.
+
+### Tests
+
+- Add deterministic tests for the retry limit/backoff policy and stale-layout
+  capture behavior.
+
+## 1.02.01 (build 81) — 2026-08-26
+
+This release aligns the Windows W3 receiver with the current macOS secure-session
+contract and brings the corresponding macOS lifecycle fixes into the Windows
+development branch.
+
+### Added
+
+- Sign and validate the `disconnectSignalVersion` secure-session capability as
+  a separate handshake extension on both platforms.
+- Exchange authenticated encrypted disconnect and acknowledgement markers so a
+  deliberate close does not fall back to ambiguous EOF teardown.
+- Add Windows protocol self-tests for capability round-trips and exact control
+  signal matching.
+- Sync the macOS secure-session sleep/wake, disconnect policy, input topology,
+  trackpad scroll, and protocol tests required by the current Mac build line.
+
+### Fixed
+
+- Keep Windows authenticated input sessions alive with a rolling per-second
+  packet/byte budget instead of a cumulative 256-packet cap.
+- Correct Apple function/navigation/keypad mappings for Windows `SendInput`,
+  including End, PageUp/PageDown, Forward Delete, and F1–F20.
+- Preserve scroll unit, phase, momentum, and pointer-pressure metadata across
+  the Windows protocol; pixel scroll no longer becomes a full 120-unit wheel.
+- Synchronize Windows hotkey teardown state and require both secure Bonjour
+  services to report `.ready` before resetting network recovery backoff.
+- Use a notification-driven macOS forward keyboard-layout cache so Carbon is
+  not queried for every captured keyDown.
+
+### Compatibility
+
+- Signed pairing remains compatible with MacKVM 1.00.00 and later.
+- Secure Connect requires MacKVM 1.100.00/build 75 or later; older peers are
+  rejected with an explicit upgrade-required error.
+
 ## 1.01.02 (build 79) — 2026-08-26
 
 This patch documents the Windows W2 deliverable and aligns the reported
@@ -16,8 +71,6 @@ application version across the macOS and Windows build metadata.
 ## 1.01.01 (build 78) — 2026-08-26
 
 This patch hardens the Windows W2 secure-session responder after review.
-
-### Fixed
 
 - Rate-limit unauthenticated secure-session connection attempts so idle TCP
   clients cannot starve the eight active handshake slots.

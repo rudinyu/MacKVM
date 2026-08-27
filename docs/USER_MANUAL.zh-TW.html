@@ -43,7 +43,7 @@
 <body>
   <main>
     <header>
-      <div class="badge">MacKVM 1.00.00</div>
+      <div class="badge">MacKVM 1.02.02（build 82）</div>
       <h1>MacKVM 使用手冊</h1>
       <p class="lede">提供選單列入口與一般控制視窗，讓兩台 MacBook Pro 共用一組鍵盤、滑鼠，並可選擇切換 BenQ MA270U 螢幕的 macOS app。</p>
       <p><a href="USER_MANUAL.html" lang="en">English Version</a> · <a href="USER_MANUAL.zh-TW.md">Markdown 版本</a></p>
@@ -98,7 +98,7 @@
       <p>要建立 DMG，可使用：</p>
       <pre><code>./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist &amp;&amp; shasum -a 256 -c MacKVM-1.00.00-universal.dmg.sha256)</code></pre>
+(cd dist &amp;&amp; shasum -a 256 -c MacKVM-1.02.02-universal.dmg.sha256)</code></pre>
       <p>DMG 會從乾淨的暫存目錄建立，並在旁邊產生可攜式 SHA-256 檔案；驗證結果應顯示 <strong>OK</strong>。</p>
       <p>未提供 Developer ID 時是 ad-hoc 簽章，只適合本機測試；跨電腦散布前請用
         <code>--sign "Developer ID Application: …" --require-developer-id</code>，
@@ -115,8 +115,8 @@
       <ol>
         <li>在 MacKVM 的 <strong>Physical input path</strong> 保持
           <strong>One keyboard on M5 Pro (USB-C)</strong>。</li>
-        <li>這個模式會允許 M5 Pro 發起控制，並在 Intel Mac 上停用發起控制按鈕；
-          Intel Mac 仍然可以接收遠端控制。</li>
+        <li>這個模式讓外接鍵盤與滑鼠留在 M5 Pro，因為 HDMI 不會提供 USB upstream
+          路徑；兩台 Mac 仍可用各自本機的鍵盤、滑鼠或觸控板發起軟體控制。</li>
         <li>若使用實體 USB switch，先確認兩台 Mac 的 macOS 都能看到同一組鍵盤與
           滑鼠，再在兩台選擇 <strong>External USB switch (bidirectional)</strong>。
           app 無法從軟體偵測 switch 是否真的存在。</li>
@@ -211,10 +211,7 @@
         <li>要從 Intel Mac 切回 M5 Pro，接收端按 <strong>Return keyboard and mouse to [M5 Mac]</strong>，會立即停止注入、釋放可能按住的按鍵／滑鼠按鈕，並通知控制端。</li>
         <li>M5 Pro 的緊急停止快捷鍵：<strong>Control-Option-Command-Escape</strong>；全域 <strong>Control-Option-Command-K</strong> 適用於手動選好的螢幕輸入，不必開啟選單即可切換鍵盤／滑鼠控制，且不會啟動自動 DDC；閒置時開始請求、控制中或接收中返回本機／控制端。<strong>Control-Option-Command-O</strong> 沿用受保護的 <strong>Show other Mac</strong> 流程，自動先切換螢幕再請求鍵盤／滑鼠控制；如果本機正在接收控制，則結束接收並把螢幕與輸入還給控制端。</li>
         <li>網路中斷時，MacKVM 會立刻把鍵盤與滑鼠控制歸還本機，並釋放可能按住的按鍵和滑鼠按鈕。</li>
-        <li>如果是已連線的 peer 暫時離線，MacKVM 會以 0／1／2／4…30 秒的退避
-          自動重連；已啟用無縫控制的配對裝置不需再次按 <strong>Allow</strong>，關閉授權的
-          裝置才會重新要求控制同意。
-          手動 <strong>Disconnect</strong>、<strong>Forget</strong> 或退出 app 會清除重連意圖。</li>
+        <li>如果是已連線的 peer 暫時離線，MacKVM 最多排程五次自動重連，使用 1／2／4／8／16 秒的指數退避（每次延遲上限 30 秒）。五次都失敗後，等網路服務回報 ready 或明確重新啟動才會重設重試額度；已啟用無縫控制的配對裝置不需再次按 <strong>Allow</strong>，關閉授權的裝置才會重新要求控制同意。手動 <strong>Disconnect</strong>、<strong>Forget</strong> 或退出 app 會清除重連意圖。</li>
         <li>控制請求會比較兩台 Mac 的協定版本和鍵盤輸入來源。配置不同時會在
           Allow 前拒絕；控制中途切換輸入法也會停止遠端輸入，請在兩台選相同輸入來源
           後重新請求控制。</li>
@@ -229,7 +226,7 @@
       </div>
       <ol>
         <li>在 M5 Pro 執行 arm64 app，在 Intel Mac 執行 x86_64 app；兩台完成本機網路、輸入監控與輔助使用權限後，以相同驗證碼配對。</li>
-        <li>使用 <strong>One keyboard on M5 Pro (USB-C)</strong> 時，把鍵盤與滑鼠接到 M5 Pro 或 MA270U USB hub。確認 M5 Pro 可以發起控制，Intel Mac 可以接收控制，而 Intel Mac 的發起按鈕停用。</li>
+        <li>使用 <strong>One keyboard on M5 Pro (USB-C)</strong> 時，把外接鍵盤與滑鼠接到 M5 Pro 或 MA270U USB hub。確認 M5 Pro 可以發起控制，Intel Mac 的本機鍵盤或觸控板也可以發起控制；外接裝置仍留在 M5 Pro，除非安裝實體 USB switch。</li>
         <li>若使用實體 USB switch，兩台都選 <strong>External USB switch (bidirectional)</strong>，先確認兩個 macOS 都看得到鍵盤與滑鼠，再測試雙向控制。</li>
         <li>觀察 MA270U OSD：USB-C 應顯示 M5 Pro，HDMI 1（或你選定的 HDMI 輸入）應顯示 Intel Mac。DDC/CI 失敗時，改用 OSD 手動切換並記錄診斷文字。</li>
         <li>控制中測試 <strong>Return keyboard and mouse to [M5 Mac]</strong>、緊急快捷鍵、拔插網路與退出 app；確認本機輸入恢復，沒有按鍵或滑鼠按鈕卡住。</li>
@@ -255,7 +252,7 @@
     </section>
 
     <footer>
-      <p>MacKVM 使用手冊 · 對應版本 1.00.00 · 最後更新 2026-08-24</p>
+      <p>MacKVM 使用手冊 · 對應版本 1.02.02（build 82）· 最後更新 2026-08-27</p>
     </footer>
   </main>
 </body>

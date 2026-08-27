@@ -2,6 +2,47 @@
 
 # 變更記錄
 
+## 1.02.02（build 82）— 2026-08-27
+
+本次修補完成 network recovery、鍵盤配置切換、版本文件與回歸測試的最後整理。
+
+### 修正
+
+- Bonjour recovery 最多只排程五次；兩個 Bonjour 服務都實際 ready 後會重設退避週期。
+- Carbon keyboard layout snapshot 暫時失效時，對需要重映射的 key-down、重複事件與
+  對應 key-up 採 fail-closed，不再以可能錯誤的 raw keycode 傳送。
+- 安裝手冊、驗收手冊與 Windows W3 文件同步到 1.02.02／build 82 及目前功能。
+
+### 測試
+
+- 新增重試上限／退避策略與 stale keyboard layout capture 的 deterministic regression tests。
+
+## 1.02.01（build 81）— 2026-08-26
+
+本版本讓 Windows W3 receiver 與目前 macOS secure-session contract 對齊，並把相對應的
+macOS lifecycle 修正同步到 Windows 開發分支。
+
+### 新增
+
+- 兩端以獨立 handshake extension 簽名與驗證 `disconnectSignalVersion` secure-session capability。
+- 交換已認證、加密的 disconnect 與 acknowledgement marker，刻意結束時不再退回語意不明的 EOF 關閉。
+- 新增 Windows capability round-trip 與 exact control signal matching protocol self-test。
+- 同步目前 Mac build line 所需的 macOS secure-session 睡眠／喚醒、disconnect policy、input topology、
+  trackpad scroll 與 protocol tests。
+
+### 修正
+
+- Windows 認證輸入 session 改用每秒封包／位元組 rolling budget，不再累計 256 個封包後誤斷線。
+- 修正 Apple function／navigation／keypad 到 Windows `SendInput` 的對應，包含 End、PageUp／PageDown、Forward Delete 與 F1–F20。
+- Windows protocol 保留 scroll unit、phase、momentum 與 pointer pressure；pixel scroll 不再被放大成完整 120 單位滾輪。
+- 同步 Windows hotkey teardown 狀態，且 secure Bonjour 的 listener 與 browser 都實際 `.ready` 後才重設 network recovery backoff。
+- macOS 改用 notification-driven forward keyboard-layout cache，擷取每個 keyDown 不再查詢 Carbon。
+
+### 相容性
+
+- 簽章配對仍與 MacKVM 1.00.00 以上版本相容。
+- Secure Connect 需要 MacKVM 1.100.00／build 75 以上；舊 peer 會明確回報需要升級。
+
 ## 1.01.02（build 79）— 2026-08-26
 
 本次修補補齊 Windows W2 交付文件，並統一 macOS 與 Windows build metadata 中的版本。
@@ -15,8 +56,6 @@
 ## 1.01.01（build 78）— 2026-08-26
 
 本次修補依 review 結果強化 Windows W2 secure-session responder。
-
-### 修正
 
 - 限制未認證 secure-session 的連線嘗試，避免閒置 TCP client 佔滿八個 handshake slot。
 - 以有上限的 batch drain 合併傳入的加密 frame；單次 read 超過 16 個 frame 不再誤斷線。

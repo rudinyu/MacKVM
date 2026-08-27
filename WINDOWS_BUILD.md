@@ -2,14 +2,13 @@
 
 # Windows build guide
 
-This guide builds the Windows branch of MacKVM. The current W2 deliverable is
+This guide builds the Windows branch of MacKVM. The current W3 deliverable is
 a C#/.NET 8 protocol library, signed pairing state machine, console receiver,
-DPAPI-backed identity, and dependency-free mDNS advertisers for both pairing
-and secure Connect. It can establish a signed trust relationship with
-MacKVM 1.00.00 and complete an authenticated encrypted session. It is not yet
-the full Windows KVM: WinUI 3, Raw Input, SendInput, encrypted control
-messages, hotkeys, tray integration, and the final firewall UX remain later
-Windows work.
+DPAPI-backed identity, dependency-free mDNS advertisers, authenticated
+encrypted Connect, strict control/input validation, Windows SendInput
+injection, release-all teardown, and an emergency local-return hotkey. It is
+not yet the full Windows UI: WinUI 3, Raw Input capture, tray integration, and
+the final firewall UX remain later Windows work.
 
 ## Requirements
 
@@ -19,11 +18,18 @@ Windows work.
 - PowerShell 5.1 or PowerShell 7.
 - Git, if cloning the repository on the Windows build host.
 
-The signed pairing receiver works on the Windows 10 baseline above. W2 secure
+The signed pairing receiver works on the Windows 10 baseline above. W3 secure
 Connect additionally requires Windows build `10.0.20142` or later because .NET
 8 uses the Windows CNG ChaCha20-Poly1305 implementation for the encrypted
 session. On an older build the executable keeps pairing available and reports
 that secure Connect is disabled.
+
+The Mac peer must be MacKVM 1.100.00/build 75 or later for secure Connect. That
+release added the signed `disconnectSignalVersion` capability and encrypted
+disconnect acknowledgement used to close an authenticated session safely.
+Windows still accepts the signed pairing flow from MacKVM 1.00.00 and later,
+but rejects an old secure-session handshake with an explicit upgrade-required
+error instead of silently downgrading to an unauthenticated EOF close.
 
 The supported native publish targets are Windows x64 (`win-x64`, also called
 `x86_64`) and Windows ARM64 (`win-arm64`). 32-bit `i686` is not supported.
@@ -87,9 +93,9 @@ Confirm the executable before starting a test:
 .\WindowsKVM.exe --version
 ```
 
-The current W2 test build reports `WindowsKVM 1.01.02 (build 79)`.
+The current W3 test build reports `WindowsKVM 1.02.02 (build 82)`.
 
-After publishing on Windows, start the W2 receiver:
+After publishing on Windows, start the W3 receiver:
 
 ```powershell
 .\dist\windows\arm64\WindowsKVM.exe --pairing-listen --name "Windows ARM64"
@@ -118,9 +124,21 @@ After a successful pairing, Windows records the Mac's public identity in
 Windows device and press **Connect**. The Windows console should print
 `Incoming secure-session connection`, `Secure handshake response sent`, and
 `Secure session authenticated with ...`. A Windows W1 pairing made before W2
-did not create this trust record; re-pair that Mac once with the W2 executable
+did not create this trust record; re-pair that Mac once with the W3 executable
 before testing Connect. A changed public key is rejected rather than silently
 replaced.
+
+After Connect, choose **Request keyboard and mouse control** on MacKVM. The
+Windows console asks for a local `y`/`yes` decision (or accepts automatically
+when `--yes` is used). Once granted, Windows prints `Windows control granted`
+and injects the authenticated Mac input with `SendInput`. Press
+`Ctrl+Alt+Shift+Esc` on Windows to release all held input and return control
+locally; ending control from MacKVM has the same release-all behavior.
+
+If the Mac reports `peer-upgrade-required` or Windows reports that the peer
+does not support the authenticated disconnect signal, update both endpoints to
+the current branch/build before testing Connect again. Pairing compatibility
+alone is not enough for secure Connect.
 
 The receiver uses a dual-mode TCP listener when the host can bind IPv6, and the
 mDNS advertiser publishes only address records that match the active listener:
@@ -131,7 +149,7 @@ dual-stack bind falls back to IPv4, IPv4-only discovery is advertised.
 The identity private key is stored under `%LOCALAPPDATA%\MacKVM` protected by
 Windows DPAPI. Do not copy `identity.json` to another computer. The public
 peer trust list is separate and contains no private key. Pairing completion is
-persisted by the macOS peer and the Windows W2 console records the approved
+persisted by the macOS peer and the Windows W3 console records the approved
 Mac identity for secure Connect admission.
 
 If the saved identity cannot be decrypted or fails validation, the receiver
@@ -189,9 +207,10 @@ Get-Item .\dist\windows\x64\WindowsKVM.exe
 Get-Item .\dist\windows\arm64\WindowsKVM.exe
 ```
 
-The script already rejects an unexpected PE machine type. W2 completes signed
-pairing and the encrypted Connect handshake, but it does not yet provide
-Windows input control.
+The script already rejects an unexpected PE machine type. W3 completes signed
+pairing, the encrypted Connect handshake, authenticated control-message
+validation, and Windows input control. A real Windows host is still required
+to exercise `SendInput` and the global release hotkey.
 
 ## Troubleshooting
 
@@ -205,7 +224,7 @@ Windows input control.
 - **Wrong architecture**: use `x64` for Windows x86_64 and `arm64` for Windows
   ARM64; do not pass `x86` or `i686`.
 
-The Windows executable is not included in macOS DMG packaging. W2 proves the
-cross-platform signed pairing flow and authenticated encrypted Connect. The
-keyboard/mouse hand-off, Windows input APIs, hotkeys, and tray UI are still
-required before a Windows release is declared usable.
+The Windows executable is not included in macOS DMG packaging. W3 proves the
+cross-platform signed pairing flow, authenticated encrypted Connect, and the
+console keyboard/mouse hand-off. WinUI/tray integration and polished firewall
+UX are still required before a Windows GUI release is declared usable.

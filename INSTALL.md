@@ -39,13 +39,13 @@ Mach-O architecture and the ad-hoc signature.
 For the complete procedure, see the standalone
 [Windows build guide](WINDOWS_BUILD.md).
 
-The Windows branch uses C#/.NET 8 rather than Swift. W1 contains the
-platform-neutral protocol library, signed pairing state machine, console
-receiver, DPAPI-protected identity, and `_mackvm._tcp` mDNS advertisement. It
-can establish trust with MacKVM 1.00.00, but it is not yet a usable Windows KVM.
-W2 will add the WinUI 3 tray UI, Raw Input capture, SendInput injection,
-encrypted control sessions, hotkeys, and scoped Windows Firewall UX so it can
-share the Mac's keyboard and mouse.
+The Windows branch uses C#/.NET 8 rather than Swift. The current W3 console
+receiver contains the platform-neutral protocol library, signed pairing state
+machine, DPAPI-protected identity, dual-stack mDNS advertisement, authenticated
+encrypted control sessions, Windows `SendInput` injection, input release, and
+the emergency local-return shortcut. WinUI/tray UI, Raw Input capture, and a
+polished scoped Windows Firewall wizard remain future work; the current
+receiver already shares the Mac's keyboard and mouse after consent.
 
 On a Windows build host, install the .NET 8 SDK. Visual Studio 2022 with the
 Windows App SDK workload is recommended once the WinUI layer is added. Build
@@ -139,7 +139,7 @@ Create and verify a universal DMG for local testing:
 ./scripts/verify-release.sh \
   --app dist/universal/MacKVM.app \
   --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.00.00-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.02.02-universal.dmg.sha256)
 ```
 
 Ad-hoc signing is suitable only for local testing. For distribution to
@@ -242,10 +242,12 @@ the keyboard and mouse through a real physical USB switch.
    mouse control, or ends receiving and restores the controller's display and
    input.
 
-After a transport loss, MacKVM reconnects with bounded backoff. A peer with
-seamless control authorization can resume control without another prompt;
-otherwise it requires fresh consent. **Disconnect**, **Forget**, and **Quit**
-clear reconnect intent.
+After a transport loss, MacKVM schedules at most five reconnect attempts with
+1/2/4/8/16-second exponential delays (each delay is capped at 30 seconds). A
+network-service readiness event or explicit restart resets an exhausted retry
+budget. A peer with seamless control authorization can resume control without
+another prompt; otherwise it requires fresh consent. **Disconnect**,
+**Forget**, and **Quit** clear reconnect intent.
 
 ## Device profiles and support information
 

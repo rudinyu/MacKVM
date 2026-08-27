@@ -33,7 +33,7 @@ Release check (from the M5 Pro) is also available:
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.00.00-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.02.02-universal.dmg.sha256)
 ```
 
 Expected: the app reports both `arm64` and `x86_64`, and an ad-hoc signature
@@ -120,8 +120,10 @@ Expected:
 1. Leave **Physical input path** set to **One keyboard on M5 Pro (USB-C)**.
 2. Connect the keyboard and mouse to the M5 Pro directly or through the
    MA270U USB hub. Do not assume the Intel HDMI cable carries USB data.
-3. On the Intel Mac, verify that **Request keyboard and mouse control** is disabled
-   in this mode, while the Intel Mac can still receive remote control.
+3. In this mode, verify that the external keyboard and mouse remain attached to
+   the M5 Pro, while either Mac's own local keyboard, mouse, or trackpad can
+   request remote control. The Intel Mac must not be described as a physical
+   USB input host unless a real USB switch is connected.
 4. If an external USB switch is installed, select **External USB switch
    (bidirectional)** on both Macs and verify that both macOS systems see the
    keyboard and mouse before trying either control direction.
@@ -195,6 +197,9 @@ Expected:
 2. Disconnect and reconnect from each Mac.
 3. Quit one app, reopen it, and reconnect.
 4. Turn Wi-Fi off during a connection, then restore it.
+5. Keep the peer unavailable through all retry attempts, then restore the
+   network and confirm that no more than five attempts are scheduled; a later
+   network-service readiness event or explicit restart permits a fresh budget.
 
 Expected:
 
@@ -440,10 +445,12 @@ or macOS privacy prompts.
 1. Launch the arm64 app on the M5 Pro and the x86_64 app on the Intel Mac.
    Complete Local Network, Input Monitoring, and Accessibility on both Macs,
    then pair them with matching verification codes.
-2. With **One keyboard on M5 Pro (USB-C)** selected, connect the keyboard and
-   mouse to the M5 Pro or the MA270U USB hub. Verify the M5 Pro can request
-   control and the Intel Mac can receive it, while the Intel Mac's request
-   action remains disabled.
+2. With **One keyboard on M5 Pro (USB-C)** selected, connect the external
+   keyboard and mouse to the M5 Pro or the MA270U USB hub. Verify the M5 Pro
+   can request control, and also verify that the Intel Mac's own built-in
+   keyboard/trackpad can request control when it is the active local device.
+   The external USB devices remain on the M5 Pro because HDMI carries no USB
+   upstream path.
 3. If using a physical USB switch, connect it to both Macs, select
    **External USB switch (bidirectional)** on both, verify both systems see the
    devices, and test control in both directions. Do not rely on the app to

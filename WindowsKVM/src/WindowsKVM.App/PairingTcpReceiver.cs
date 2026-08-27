@@ -5,9 +5,9 @@ using WindowsKVM.Protocol;
 namespace WindowsKVM;
 
 /// <summary>
-/// W1 console receiver. It is intentionally limited to pairing and trust
-/// establishment; input capture/injection and the encrypted control channel
-/// are the next Windows feature step. A MacKVM 1.00.00 peer can discover this
+/// Console pairing receiver shared by the W3 secure-session responder. It
+/// owns the process-wide console reader so pairing and control consent cannot
+/// race each other for a line of input. A MacKVM 1.00.00 peer can discover this
 /// listener over mDNS and complete the signed verification flow.
 /// </summary>
 internal sealed class PairingTcpReceiver : IAsyncDisposable
@@ -614,6 +614,35 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
                     pendingAcceptance = null;
                 }
             }
+        }
+    }
+
+    /// <summary>
+    /// Shares the single console reader with the secure-session receiver.
+    /// Pairing and control consent must never call Console.ReadLine directly
+    /// from separate tasks, otherwise one prompt can consume the other
+    /// prompt's answer.
+    /// </summary>
+    internal async Task<bool> PromptYesNoAsync(string prompt, CancellationToken token)
+    {
+        Console.Write(prompt);
+        Console.Out.Flush();
+        try
+        {
+            var answer = await ReadAcceptanceLineAsync(token).ConfigureAwait(false);
+            return string.Equals(answer?.Trim(), "y", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(answer?.Trim(), "yes", StringComparison.OrdinalIgnoreCase);
+        }
+        catch (AcceptancePromptBusyException)
+        {
+            Console.Error.WriteLine(
+                "Control request denied: another confirmation is already waiting for input."
+            );
+            return false;
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            return false;
         }
     }
 

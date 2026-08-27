@@ -9,7 +9,7 @@ namespace WindowsKVM.Protocol;
 /// <summary>
 /// Runtime capability checks for the authenticated secure-session transport.
 /// Older Windows 10 builds can still use signed pairing, but cannot establish
-/// W2 without the platform ChaCha20-Poly1305 primitive.
+/// W3 without the platform ChaCha20-Poly1305 primitive.
 /// </summary>
 public static class SecureSessionCapabilities
 {
@@ -20,9 +20,9 @@ public static class SecureSessionCapabilities
 }
 
 /// <summary>
-/// The authenticated secure-session protocol shared with MacKVM. W2 only
-/// establishes the encrypted channel; control messages are handled by the
-/// later Windows input-control implementation.
+/// The authenticated secure-session protocol shared with MacKVM. W3 carries
+/// validated control messages over the encrypted channel; Windows-specific
+/// input injection remains in the application layer.
 /// </summary>
 [JsonConverter(typeof(SecureSessionRoleJsonConverter))]
 public enum SecureSessionRole
@@ -101,6 +101,8 @@ internal sealed class SecureSessionWireKindJsonConverter
 
 public sealed class SecureSessionHandshake
 {
+    public const int CurrentDisconnectSignalVersion = 1;
+
     [JsonPropertyName("sessionID")]
     public Guid SessionID { get; }
 
@@ -113,6 +115,14 @@ public sealed class SecureSessionHandshake
     [JsonPropertyName("senderModel")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? SenderModel { get; }
+
+    /// <summary>
+    /// Signed secure-session close capability. The value is optional on the
+    /// wire so the decoder can produce an explicit upgrade error for legacy
+    /// peers instead of silently downgrading to EOF teardown.
+    /// </summary>
+    [JsonIgnore]
+    public int? DisconnectSignalVersion { get; }
 
     [JsonPropertyName("ephemeralPublicKey")]
     public byte[] EphemeralPublicKey { get; }
@@ -127,7 +137,8 @@ public sealed class SecureSessionHandshake
         PeerIdentity? sender,
         string? senderModel,
         byte[]? ephemeralPublicKey,
-        byte[]? nonce
+        byte[]? nonce,
+        int? disconnectSignalVersion = CurrentDisconnectSignalVersion
     )
     {
         SessionID = sessionID;
@@ -136,6 +147,7 @@ public sealed class SecureSessionHandshake
         SenderModel = senderModel is null
             ? null
             : PeerMetadataValidation.ValidatedModel(senderModel);
+        DisconnectSignalVersion = disconnectSignalVersion;
         EphemeralPublicKey = ephemeralPublicKey?.ToArray()
             ?? throw new JsonException("The ephemeral public key is missing.");
         Nonce = nonce?.ToArray()
@@ -147,7 +159,8 @@ public sealed class SecureSessionHandshake
         SecureSessionRole role,
         PeerIdentity sender,
         string? senderModel,
-        ECDiffieHellman ephemeralKey
+        ECDiffieHellman ephemeralKey,
+        int? disconnectSignalVersion = CurrentDisconnectSignalVersion
     )
     {
         var parameters = ephemeralKey.ExportParameters(includePrivateParameters: false);
@@ -157,9 +170,34 @@ public sealed class SecureSessionHandshake
             sender,
             senderModel,
             PairingCrypto.ToX963(parameters.Q),
-            PairingVerificationCode.MakeContribution()
+            PairingVerificationCode.MakeContribution(),
+            disconnectSignalVersion
         );
     }
+}
+
+/// <summary>
+/// Authenticated control markers used by the secure transport itself. They
+/// are encrypted inside a SecurePacket and are not ControlMessage payloads.
+/// </summary>
+public static class SecureSessionControlSignal
+{
+    private static readonly byte[] DisconnectBytes =
+        Encoding.UTF8.GetBytes("MacKVM secure session disconnect v1");
+    private static readonly byte[] DisconnectAcknowledgementBytes =
+        Encoding.UTF8.GetBytes(
+            "MacKVM secure session disconnect acknowledgement v1"
+        );
+
+    public static ReadOnlyMemory<byte> Disconnect => DisconnectBytes;
+    public static ReadOnlyMemory<byte> DisconnectAcknowledgement
+        => DisconnectAcknowledgementBytes;
+
+    public static bool IsDisconnect(ReadOnlySpan<byte> payload)
+        => payload.SequenceEqual(DisconnectBytes);
+
+    public static bool IsDisconnectAcknowledgement(ReadOnlySpan<byte> payload)
+        => payload.SequenceEqual(DisconnectAcknowledgementBytes);
 }
 
 public sealed class SecurePacket
@@ -222,6 +260,7 @@ public enum SecureSessionWireErrorCode
     InvalidSignature,
     InvalidIdentityName,
     InvalidModel,
+    UnsupportedCapability,
     UnexpectedMessage,
     PayloadTooLarge
 }
@@ -257,6 +296,14 @@ internal sealed class SecureSessionWireEnvelope
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public byte[]? SenderModelSignature { get; }
 
+    [JsonPropertyName("disconnectSignalVersion")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? DisconnectSignalVersion { get; }
+
+    [JsonPropertyName("disconnectSignalVersionSignature")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public byte[]? DisconnectSignalVersionSignature { get; }
+
     [JsonPropertyName("packet")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public SecurePacket? Packet { get; }
@@ -268,7 +315,9 @@ internal sealed class SecureSessionWireEnvelope
         byte[]? signature,
         string? senderModel,
         byte[]? senderModelSignature,
-        SecurePacket? packet
+        SecurePacket? packet,
+        int? disconnectSignalVersion = null,
+        byte[]? disconnectSignalVersionSignature = null
     )
     {
         Kind = kind;
@@ -276,6 +325,9 @@ internal sealed class SecureSessionWireEnvelope
         Signature = signature?.ToArray();
         SenderModel = senderModel;
         SenderModelSignature = senderModelSignature?.ToArray();
+        DisconnectSignalVersion = disconnectSignalVersion;
+        DisconnectSignalVersionSignature =
+            disconnectSignalVersionSignature?.ToArray();
         Packet = packet;
     }
 }
@@ -285,6 +337,13 @@ internal sealed record SecureSessionModelExtension(
     [property: JsonPropertyName("role")] SecureSessionRole Role,
     [property: JsonPropertyName("senderID")] Guid SenderID,
     [property: JsonPropertyName("model")] string Model
+);
+
+internal sealed record SecureSessionDisconnectExtension(
+    [property: JsonPropertyName("sessionID")] Guid SessionID,
+    [property: JsonPropertyName("role")] SecureSessionRole Role,
+    [property: JsonPropertyName("senderID")] Guid SenderID,
+    [property: JsonPropertyName("version")] int Version
 );
 
 public static class SecureSessionWireCodec
@@ -315,7 +374,8 @@ public static class SecureSessionWireCodec
             handshake.Sender,
             senderModel: null,
             handshake.EphemeralPublicKey,
-            handshake.Nonce
+            handshake.Nonce,
+            disconnectSignalVersion: null
         );
         var handshakeData = CanonicalJson.Serialize(baseHandshake);
         var signature = signingKey.SignData(
@@ -339,13 +399,33 @@ public static class SecureSessionWireCodec
             );
         }
 
+        byte[]? disconnectCapabilitySignature = null;
+        if (handshake.DisconnectSignalVersion is { } version)
+        {
+            var extensionData = CanonicalJson.Serialize(
+                new SecureSessionDisconnectExtension(
+                    handshake.SessionID,
+                    handshake.Role,
+                    handshake.Sender.Id,
+                    version
+                )
+            );
+            disconnectCapabilitySignature = signingKey.SignData(
+                extensionData,
+                HashAlgorithmName.SHA256,
+                DSASignatureFormat.Rfc3279DerSequence
+            );
+        }
+
         return EncodeEnvelope(new SecureSessionWireEnvelope(
             SecureSessionWireKind.Handshake,
             baseHandshake,
             signature,
             handshake.SenderModel,
             modelSignature,
-            null
+            null,
+            handshake.DisconnectSignalVersion,
+            disconnectCapabilitySignature
         ));
     }
 
@@ -356,7 +436,9 @@ public static class SecureSessionWireCodec
             null,
             null,
             null,
-            packet
+            packet,
+            disconnectSignalVersion: null,
+            disconnectSignalVersionSignature: null
         ));
 
     public static IReadOnlyList<SecureSessionWireMessage> DecodeAvailableFrames(
@@ -419,7 +501,9 @@ public static class SecureSessionWireCodec
                 || envelope.Handshake is not null
                 || envelope.Signature is not null
                 || envelope.SenderModel is not null
-                || envelope.SenderModelSignature is not null)
+                || envelope.SenderModelSignature is not null
+                || envelope.DisconnectSignalVersion is not null
+                || envelope.DisconnectSignalVersionSignature is not null)
             {
                 throw new SecureSessionWireException(
                     SecureSessionWireErrorCode.InvalidFrame,
@@ -460,7 +544,8 @@ public static class SecureSessionWireCodec
             envelope.Handshake.Sender,
             senderModel: null,
             envelope.Handshake.EphemeralPublicKey,
-            envelope.Handshake.Nonce
+            envelope.Handshake.Nonce,
+            disconnectSignalVersion: null
         ));
         if (!publicKey.VerifyData(
                 handshakeData,
@@ -476,13 +561,18 @@ public static class SecureSessionWireCodec
         }
 
         var model = ValidateModelExtension(envelope, publicKey);
+        var disconnectSignalVersion = ValidateDisconnectCapability(
+            envelope,
+            publicKey
+        );
         return SecureSessionWireMessage.FromHandshake(new SecureSessionHandshake(
             envelope.Handshake.SessionID,
             envelope.Handshake.Role,
             envelope.Handshake.Sender,
             model,
             envelope.Handshake.EphemeralPublicKey,
-            envelope.Handshake.Nonce
+            envelope.Handshake.Nonce,
+            disconnectSignalVersion
         ));
     }
 
@@ -527,6 +617,50 @@ public static class SecureSessionWireCodec
         }
 
         return envelope.SenderModel;
+    }
+
+    private static int? ValidateDisconnectCapability(
+        SecureSessionWireEnvelope envelope,
+        ECDsa publicKey
+    )
+    {
+        if (envelope.DisconnectSignalVersion is null
+            && envelope.DisconnectSignalVersionSignature is null)
+        {
+            return null;
+        }
+
+        if (envelope.DisconnectSignalVersion is not { } version
+            || envelope.DisconnectSignalVersionSignature is null)
+        {
+            throw new SecureSessionWireException(
+                SecureSessionWireErrorCode.InvalidHandshake,
+                "The secure-session disconnect capability is incomplete."
+            );
+        }
+
+        var extensionData = CanonicalJson.Serialize(
+            new SecureSessionDisconnectExtension(
+                envelope.Handshake!.SessionID,
+                envelope.Handshake.Role,
+                envelope.Handshake.Sender.Id,
+                version
+            )
+        );
+        if (!publicKey.VerifyData(
+                extensionData,
+                envelope.DisconnectSignalVersionSignature,
+                HashAlgorithmName.SHA256,
+                DSASignatureFormat.Rfc3279DerSequence
+            ))
+        {
+            throw new SecureSessionWireException(
+                SecureSessionWireErrorCode.InvalidSignature,
+                "The secure-session disconnect capability signature is invalid."
+            );
+        }
+
+        return version;
     }
 
     private static ECDsa ImportSigningPublicKey(byte[] key)

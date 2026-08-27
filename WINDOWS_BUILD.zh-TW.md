@@ -2,11 +2,11 @@
 
 # Windows 建置手冊
 
-本手冊說明如何建置 MacKVM 的 Windows 分支。目前 W2 內容是 C#/.NET 8 protocol
-library、簽章配對 state machine、console receiver、DPAPI identity，以及配對與 secure
-Connect 的免外部套件 mDNS 廣播器；可以與 MacKVM 1.00.00 建立簽章信任關係並完成加密
-session 驗證。這還不是完整 Windows KVM；WinUI 3、Raw Input、SendInput、加密控制
-message、快捷鍵、tray integration 與最後的防火牆 UX 會在後續 Windows 階段實作。
+本手冊說明如何建置 MacKVM 的 Windows 分支。目前 W3 內容是 C#/.NET 8 protocol
+library、簽章配對 state machine、console receiver、DPAPI identity、配對與 secure
+Connect 的免外部套件 mDNS 廣播器、嚴格 control／input 驗證、Windows SendInput 注入、
+釋放所有輸入狀態，以及緊急交還快捷鍵。這還不是完整 Windows UI；WinUI 3、Raw Input
+擷取、tray integration 與最後的防火牆 UX 會在後續 Windows 階段實作。
 
 ## 建置需求
 
@@ -15,10 +15,15 @@ message、快捷鍵、tray integration 與最後的防火牆 UX 會在後續 Win
 - PowerShell 5.1 或 PowerShell 7。
 - 如果要在 Windows 建置主機抓取原始碼，需要 Git。
 
-簽章配對接收端支援上述 Windows 10 基線。W2 secure Connect 另外需要
+簽章配對接收端支援上述 Windows 10 基線。W3 secure Connect 另外需要
 `10.0.20142` 或更新的 Windows build，因為 .NET 8 會使用 Windows CNG 的
 ChaCha20-Poly1305 實作來建立加密連線。較舊版本仍可配對，但執行檔會明確
 顯示 secure Connect 已停用。
+
+Mac peer 必須使用 MacKVM 1.100.00／build 75 或更新版本才能使用 secure Connect。
+該版本加入簽名的 `disconnectSignalVersion` capability 與加密 disconnect acknowledgement，
+用來安全結束已認證的 session。Windows 仍接受 MacKVM 1.00.00 以上的簽章配對，
+但對舊 secure-session handshake 會明確回報需要升級，不會靜默降級成未認證的 EOF 關閉。
 
 支援的 native publish 目標是 Windows x64（`win-x64`，也稱 `x86_64`）與
 Windows ARM64（`win-arm64`）。不支援 32-bit `i686`。
@@ -80,9 +85,9 @@ reference graph 中的每個 project，避免 `net8.0` protocol library 與
 .\WindowsKVM.exe --version
 ```
 
-目前 W2 測試 build 應顯示 `WindowsKVM 1.01.02 (build 79)`。
+目前 W3 測試 build 應顯示 `WindowsKVM 1.02.02 (build 82)`。
 
-在 Windows publish 後啟動 W2 receiver：
+在 Windows publish 後啟動 W3 receiver：
 
 ```powershell
 .\dist\windows\arm64\WindowsKVM.exe --pairing-listen --name "Windows ARM64"
@@ -105,8 +110,18 @@ TCP port。CLI 也會列出每個收到的 pairing frame，以及配對被拒絕
 `%LOCALAPPDATA%\MacKVM\trusted-peers.json`。接著在 MacKVM 選取已配對的 Windows 裝置並
 按 **Connect**；Windows CLI 應依序顯示 `Incoming secure-session connection`、
 `Secure handshake response sent` 與 `Secure session authenticated with ...`。W1 舊版配對不會
-建立這份 trust record，第一次測試 W2 Connect 前請用 W2 executable 重新配對一次。若公開
+建立這份 trust record，第一次測試 W3 Connect 前請用 W3 executable 重新配對一次。若公開
 key 改變，程式會拒絕而不會默默覆寫信任。
+
+Connect 後，在 MacKVM 選 **Request keyboard and mouse control**。Windows console 會要求
+本機輸入 `y`／`yes`（測試時可用 `--yes` 自動接受）。取得控制後會顯示
+`Windows control granted`，並用 `SendInput` 注入已驗證的 Mac 輸入。在 Windows 按
+`Ctrl+Alt+Shift+Esc` 會釋放所有按住的輸入並把控制權交回本機；從 MacKVM 結束 control
+也有相同的 release-all 行為。
+
+如果 Mac 顯示 `peer-upgrade-required`，或 Windows 顯示 peer 不支援 authenticated
+disconnect signal，請先把兩端更新到目前 branch／build 再測試 Connect。只有配對相容
+並不代表 secure Connect 相容。
 
 主機能綁定 IPv6 時，receiver 使用 dual-mode TCP listener；mDNS 廣播器只會發布與實際
 listener 相符的位址記錄：IPv4 使用 A、IPv6 使用 AAAA。Windows 具有 IPv6 介面與多播
@@ -115,8 +130,8 @@ IPv4 discovery，避免公布無法連線的 IPv6 endpoint。
 
 Windows peer identity 會放在 `%LOCALAPPDATA%\MacKVM`，private key 使用 Windows
 DPAPI 保護，絕對不要把 `identity.json` 複製到另一台電腦。公開 peer trust list 分開保存，
-不含 private key。W2 console 會在配對完成後記錄 Mac identity，供 secure Connect admission
-使用；鍵盤／滑鼠控制尚未啟用。
+不含 private key。W3 console 會在配對完成後記錄 Mac identity，供 secure Connect admission
+使用，並在加密 control message 通過驗證後注入鍵盤／滑鼠。
 
 如果既有 identity 無法解密或驗證失敗，receiver 會 fail closed，不會默默產生新的
 identity。請先在所有曾信任這台 Windows 的 Mac 忘記舊 peer，再明確刪除損壞的
@@ -169,8 +184,9 @@ Get-Item .\dist\windows\x64\WindowsKVM.exe
 Get-Item .\dist\windows\arm64\WindowsKVM.exe
 ```
 
-腳本本身已會拒絕錯誤的 PE machine type。W2 receiver 可以完成與 macOS 的簽章配對與
-加密 Connect handshake，但尚未提供完整的 Windows 輸入控制功能。
+腳本本身已會拒絕錯誤的 PE machine type。W3 receiver 可以完成與 macOS 的簽章配對、
+加密 Connect handshake、control message 驗證與 Windows 輸入控制；仍需在真實 Windows
+主機驗證 `SendInput` 與全域交還快捷鍵。
 
 ## 常見問題
 
@@ -183,5 +199,6 @@ Get-Item .\dist\windows\arm64\WindowsKVM.exe
 - **架構錯誤**：Windows x86_64 使用 `x64`，Windows ARM64 使用 `arm64`；不要傳入
   `x86` 或 `i686`。
 
-Windows executable 尚未加入 macOS DMG packaging。W2 已驗證跨平台簽章配對與加密 Connect；
-鍵盤／滑鼠接管與交還、Windows input API、快捷鍵與 tray UI 完成後，才會宣告 Windows 版可用。
+Windows executable 尚未加入 macOS DMG packaging。W3 已驗證跨平台簽章配對、加密 Connect
+與 console 鍵盤／滑鼠接管；WinUI／tray integration 與完整防火牆 UX 完成後，才會宣告
+Windows GUI 版可用。

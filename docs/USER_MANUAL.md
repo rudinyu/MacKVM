@@ -6,15 +6,18 @@ MacKVM is a macOS app with a menu-bar entry and a full control window for
 sharing one keyboard, mouse, and optionally a BenQ MA270U display between a
 14-inch M5 Pro MacBook Pro and a 2019 Intel MacBook Pro.
 
+Current release: **1.02.02 (build 82)**.
+
 ## Hardware and wiring
 
 - Connect the M5 Pro to the MA270U USB-C video/data port.
 - Connect the Intel Mac to HDMI through a USB-C/Thunderbolt adapter.
 - Connect the keyboard and mouse to the M5 Pro or the MA270U USB hub. HDMI does
   not carry the monitor hub upstream to the Intel Mac.
-- Use **One keyboard on M5 Pro (USB-C)** for the recommended one-way topology.
-  Use **External USB switch (bidirectional)** only when both Macs visibly see a
-  real physical USB switch.
+- Use **One keyboard on M5 Pro (USB-C)** for the recommended one-way physical
+  USB topology. Either Mac can still request software control from its own
+  local input. Use **External USB switch (bidirectional)** only when both Macs
+  visibly see a real physical USB switch.
 
 ## Install and build
 
@@ -148,9 +151,12 @@ See the [diagnostic guide](../Tools/DDCDiagnostic/README.md).
    **Return keyboard and mouse to [M5 Mac]** on the Intel Mac. The controller
    can also select **Return keyboard and mouse to this Mac**.
 
-Reconnection uses bounded backoff. A peer with seamless control authorization
-can resume without another prompt; an opted-out peer requires fresh control
-consent. **Disconnect**, **Forget**, and **Quit** clear reconnect intent.
+Reconnection uses at most five scheduled attempts with 1/2/4/8/16-second
+exponential delays (each delay is capped at 30 seconds). Once the retry budget is
+exhausted, a network-service readiness event or explicit restart resets it. A
+peer with seamless control authorization can resume without another prompt; an
+opted-out peer requires fresh control consent. **Disconnect**, **Forget**, and
+**Quit** clear reconnect intent.
 
 ## Paired profiles and support information
 

@@ -4,14 +4,13 @@ using System.Runtime.InteropServices;
 namespace WindowsKVM;
 
 /// <summary>
-/// W2 console entry point. Pairing and the authenticated secure-session
-/// responder run together; privileged Raw Input/SendInput code is a later
-/// Windows feature step.
+/// W3 console entry point. Pairing, authenticated Connect, Windows
+/// SendInput, and the emergency local-release shortcut run together.
 /// </summary>
 internal static class Program
 {
-    private const string ApplicationVersion = "1.01.02";
-    private const string ApplicationBuild = "79";
+    private const string ApplicationVersion = "1.02.02";
+    private const string ApplicationBuild = "82";
 
     private static async Task<int> Main(string[] args)
     {
@@ -40,7 +39,7 @@ internal static class Program
         {
             Console.WriteLine(
                 $"WindowsKVM {ApplicationVersion} (build {ApplicationBuild}); "
-                    + $"W2 secure-session receiver; protocol v{ControlProtocolCompatibility.CurrentVersion}."
+                    + $"W3 secure-session receiver; protocol v{ControlProtocolCompatibility.CurrentVersion}."
             );
             Console.WriteLine(
                 "Run with --pairing-listen to advertise pairing and secure Connect services."
@@ -69,13 +68,23 @@ internal static class Program
             // ECDsa instances are not used concurrently. Both pairing and
             // secure-session responders share this short critical section.
             var signingLock = new object();
+            await using var receiver = new PairingTcpReceiver(
+                credentials,
+                model,
+                port,
+                autoAccept,
+                trustStore.Record,
+                signingLock
+            );
             await using var secureReceiver = SecureSessionCapabilities
                 .ChaCha20Poly1305Supported
                 ? new SecureSessionTcpReceiver(
                     credentials,
                     trustStore,
                     model,
-                    signingLock: signingLock
+                    signingLock: signingLock,
+                    autoAcceptControl: autoAccept,
+                    promptConsent: receiver.PromptYesNoAsync
                 )
                 : null;
             if (secureReceiver is null)
@@ -86,19 +95,13 @@ internal static class Program
                         + "or later is required for ChaCha20-Poly1305. Pairing remains available."
                 );
             }
-            else
+            var pairingTask = receiver.RunAsync();
+            // Start the pairing receiver first so the shared console reader is
+            // ready before a secure Connect request can ask for consent.
+            if (secureReceiver is not null)
             {
                 secureReceiver.Start();
             }
-            await using var receiver = new PairingTcpReceiver(
-                credentials,
-                model,
-                port,
-                autoAccept,
-                trustStore.Record,
-                signingLock
-            );
-            var pairingTask = receiver.RunAsync();
             if (secureReceiver is not null)
             {
                 var completed = await Task.WhenAny(pairingTask, secureReceiver.Failure);
@@ -147,11 +150,16 @@ internal static class Program
         );
         Console.WriteLine("  --name            Display name stored in the Windows identity (first run only).");
         Console.WriteLine("  --port            TCP port; 0 selects an available port (default).");
-        Console.WriteLine("  --yes             Auto-accept the verification code (test-only convenience).");
+        Console.WriteLine(
+            "  --yes             Auto-accept pairing and control requests (test-only convenience)."
+        );
         Console.WriteLine("  --version         Print the WindowsKVM application version and build.");
         Console.WriteLine();
         Console.WriteLine(
-            "W2 secure Connect is implemented; Windows keyboard/mouse control is not enabled yet."
+            "W3 secure Connect receives authenticated Mac input via SendInput."
+        );
+        Console.WriteLine(
+            "  Ctrl+Alt+Shift+Esc returns keyboard/mouse control to Windows."
         );
     }
 }

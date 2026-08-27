@@ -43,7 +43,7 @@
 <body>
   <main>
     <header>
-      <div class="badge">MacKVM 1.00.00</div>
+      <div class="badge">MacKVM 1.02.02 (build 82)</div>
       <h1>MacKVM User Manual</h1>
       <p class="lede">A macOS app with a KVM menu-bar entry and full control window for sharing one keyboard, mouse, and optionally a BenQ MA270U display between two MacBook Pro computers.</p>
       <p><a href="USER_MANUAL.zh-TW.html" lang="zh-Hant">繁體中文版</a> · <a href="USER_MANUAL.md">Markdown version</a></p>
@@ -95,7 +95,7 @@
       <p>Create and verify a DMG:</p>
       <pre><code>./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist &amp;&amp; shasum -a 256 -c MacKVM-1.00.00-universal.dmg.sha256)</code></pre>
+(cd dist &amp;&amp; shasum -a 256 -c MacKVM-1.02.02-universal.dmg.sha256)</code></pre>
       <p>The DMG is built from a clean staging directory and produces a portable SHA-256 sidecar. Ad-hoc signing is for local testing; distribution requires Developer ID, hardened runtime, and Apple notarization.</p>
     </section>
 
@@ -104,7 +104,7 @@
       <div class="notice"><strong>Important:</strong> HDMI carries video only. It does not upstream the MA270U USB hub to the 2019 Intel Mac. Connect the keyboard and mouse to the M5 Pro directly or through the MA270U USB hub.</div>
       <ol>
         <li>Keep <strong>One keyboard on M5 Pro (USB-C)</strong> selected in <strong>Physical input path</strong>.</li>
-        <li>This mode lets the M5 Pro request control and keeps the Intel Mac receive-only; the Intel Mac can still receive remote input.</li>
+        <li>This mode keeps the external USB keyboard and mouse on the M5 Pro because HDMI carries no USB upstream path. Either Mac can still request software control from its own local keyboard, mouse, or trackpad.</li>
         <li>Select <strong>External USB switch (bidirectional)</strong> only after both Macs visibly see the keyboard and mouse through a real physical USB switch.</li>
       </ol>
     </section>
@@ -188,7 +188,7 @@
         <li>Use <strong>Return keyboard and mouse to this Mac</strong> on the controller. To switch back from Intel, the receiver selects <strong>Return keyboard and mouse to [M5 Mac]</strong>.</li>
         <li>Emergency shortcut on the M5 Pro: <strong>Control-Option-Command-Escape</strong>. The global <strong>Control-Option-Command-K</strong> shortcut is for a manually selected monitor input: it toggles keyboard/mouse ownership without running automatic DDC switching, starts a request while idle, and returns input while controlling or receiving. <strong>Control-Option-Command-O</strong> follows the guarded <strong>Show other Mac</strong> route: it automatically switches the display before requesting keyboard/mouse control, or ends receiving and restores the controller's display and input.</li>
         <li>Network loss immediately returns input locally and releases held keys and mouse buttons.</li>
-        <li>A peer reconnects with bounded 0/1/2/4…30-second backoff. Seamless authorization resumes control without another prompt; an opted-out peer requires fresh consent. <strong>Disconnect</strong>, <strong>Forget</strong>, and <strong>Quit</strong> clear reconnect intent.</li>
+        <li>A peer reconnects with at most five scheduled attempts using 1/2/4/8/16-second exponential delays (each delay is capped at 30 seconds). A later network-service readiness event or explicit restart resets an exhausted retry budget. Seamless authorization resumes control without another prompt; an opted-out peer requires fresh consent. <strong>Disconnect</strong>, <strong>Forget</strong>, and <strong>Quit</strong> clear reconnect intent.</li>
         <li>A keyboard-layout mismatch is rejected before consent; a layout change during control safely ends remote input.</li>
       </ul>
     </section>
@@ -198,7 +198,7 @@
       <div class="notice">Run this section on the actual 14-inch M5 Pro, 2019 16-inch Intel MacBook Pro, and BenQ MA270U. CI cannot emulate monitor DDC/CI, a physical USB switch, or macOS privacy prompts.</div>
       <ol>
         <li>Run arm64 on the M5 Pro and x86_64 on the Intel Mac; complete permissions and pair with matching codes.</li>
-        <li>With the one-way topology, verify the M5 Pro can request control, the Intel Mac can receive it, and the Intel request button is disabled.</li>
+        <li>With the one-way physical USB topology, verify the M5 Pro can request control and that the Intel Mac's own local keyboard or trackpad can also request control. The external USB devices remain on the M5 Pro unless a physical USB switch is installed.</li>
         <li>If using a physical USB switch, verify both Macs see the devices before testing bidirectional control.</li>
         <li>Watch the MA270U OSD while testing USB-C and HDMI switching. Record DDC diagnostics and test manual OSD fallback.</li>
         <li>During control test Return keyboard and mouse to [M5 Mac], the emergency shortcut, network unplug/reconnect, and quitting; no key or mouse button may remain stuck.</li>
@@ -220,7 +220,7 @@
     </section>
 
     <footer>
-      <p>MacKVM User Manual · Version 1.00.00 · Updated 2026-08-24</p>
+      <p>MacKVM User Manual · Version 1.02.02 (build 82) · Updated 2026-08-27</p>
     </footer>
   </main>
 </body>

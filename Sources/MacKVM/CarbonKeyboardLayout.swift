@@ -48,7 +48,19 @@ struct CarbonKeyboardLayoutProvider: KeyboardLayoutProviding {
     private let snapshotCache: CarbonKeyboardLayoutSnapshotCache
 
     init() {
-        snapshotCache = CarbonKeyboardLayoutSnapshotCache()
+        snapshotCache = CarbonKeyboardLayoutSnapshotCache(
+            snapshotMapSource: { () -> (
+                reverseMap: KeyboardLayoutReverseMap,
+                forwardMap: KeyboardLayoutForwardMap?
+            )? in
+                guard let translator = CarbonKeyboardLayout.currentTranslator()
+                else { return nil }
+                return (
+                    KeyboardLayoutReverseMap(translator: translator),
+                    KeyboardLayoutForwardMap(translator: translator)
+                )
+            }
+        )
     }
 
     func currentIdentifier() -> String? {
@@ -67,6 +79,17 @@ struct CarbonKeyboardLayoutProvider: KeyboardLayoutProviding {
 struct KeyboardLayoutSnapshot {
     let identifier: String
     let reverseMap: KeyboardLayoutReverseMap
+    let forwardMap: KeyboardLayoutForwardMap?
+
+    init(
+        identifier: String,
+        reverseMap: KeyboardLayoutReverseMap,
+        forwardMap: KeyboardLayoutForwardMap? = nil
+    ) {
+        self.identifier = identifier
+        self.reverseMap = reverseMap
+        self.forwardMap = forwardMap
+    }
 }
 
 /// Publishes the layout identifier and its reverse map as one immutable
@@ -76,9 +99,16 @@ struct KeyboardLayoutSnapshot {
 /// The older individual cache types below remain small, independently tested
 /// building blocks, but production input uses this combined cache.
 final class CarbonKeyboardLayoutSnapshotCache {
+    typealias SnapshotMaps = (
+        reverseMap: KeyboardLayoutReverseMap,
+        forwardMap: KeyboardLayoutForwardMap?
+    )
+    typealias SnapshotMapSource = () -> SnapshotMaps?
     private let lock = NSLock()
     private let identifierSource: () -> String?
     private let reverseMapSource: () -> KeyboardLayoutReverseMap?
+    private let forwardMapSource: () -> KeyboardLayoutForwardMap?
+    private let snapshotMapSource: SnapshotMapSource?
     private var snapshot: KeyboardLayoutSnapshot?
     private var needsRefresh = true
     private var invalidationGeneration: UInt64 = 0
@@ -93,17 +123,27 @@ final class CarbonKeyboardLayoutSnapshotCache {
             guard let translator = CarbonKeyboardLayout.currentTranslator()
             else { return nil }
             return KeyboardLayoutReverseMap(translator: translator)
-        }
+        },
+        forwardMapSource: @escaping () -> KeyboardLayoutForwardMap? = {
+            nil
+        },
+        snapshotMapSource: SnapshotMapSource? = nil
     ) {
         self.identifierSource = identifierSource
         self.reverseMapSource = reverseMapSource
+        self.forwardMapSource = forwardMapSource
+        self.snapshotMapSource = snapshotMapSource
         let notificationName = Notification.Name(
             kTISNotifySelectedKeyboardInputSourceChanged as String
         )
         notificationToken = DistributedNotificationCenter.default().addObserver(
             forName: notificationName,
             object: nil,
-            queue: nil
+            // Keep invalidation on the main queue so the Carbon/TIS observer
+            // and the snapshot refresh share one thread. The callback only
+            // flips the lock-protected stale bit; no Carbon work is done
+            // until `refreshOnMainThread` runs.
+            queue: OperationQueue.main
         ) { [weak self] _ in
             self?.invalidate()
         }
@@ -187,7 +227,13 @@ final class CarbonKeyboardLayoutSnapshotCache {
         // Keep both Carbon reads in the same main-thread refresh. If a
         // notification arrives during either read, discard the entire pair.
         let nextIdentifier = identifierSource()
-        let nextReverseMap = nextIdentifier.flatMap { _ in reverseMapSource() }
+        let maps: SnapshotMaps? = nextIdentifier.flatMap { _ in
+            if let snapshotMapSource {
+                return snapshotMapSource()
+            }
+            guard let reverseMap = reverseMapSource() else { return nil }
+            return (reverseMap, forwardMapSource())
+        }
 
         lock.lock()
         guard invalidationGeneration == generation else {
@@ -195,7 +241,7 @@ final class CarbonKeyboardLayoutSnapshotCache {
             scheduleRefreshOnMainThread()
             return
         }
-        guard let nextIdentifier, let nextReverseMap else {
+        guard let nextIdentifier, let maps else {
             snapshot = nil
             needsRefresh = true
             lock.unlock()
@@ -203,7 +249,8 @@ final class CarbonKeyboardLayoutSnapshotCache {
         }
         snapshot = KeyboardLayoutSnapshot(
             identifier: nextIdentifier,
-            reverseMap: nextReverseMap
+            reverseMap: maps.reverseMap,
+            forwardMap: maps.forwardMap
         )
         needsRefresh = false
         lock.unlock()
@@ -216,10 +263,10 @@ final class CarbonKeyboardLayoutSnapshotCache {
 /// can be tested without depending on a particular host's TIS state.
 /// `TISGetInputSourceProperty` is called once during main-thread
 /// initialization and when a notification invalidates the cache. The
-/// notification observer itself only flips the invalidation bit, so it is
-/// safe for it to run on the posting thread; all Carbon reads remain on the
-/// main thread. Background readers copy the short String under the lock and
-/// immediately continue while the cache is fresh.
+/// notification observer is delivered on the main queue and only flips the
+/// invalidation bit; all Carbon reads remain on the main thread. Background
+/// readers copy the short String under the lock and immediately continue
+/// while the cache is fresh.
 final class CarbonKeyboardLayoutIdentifierCache {
     private let lock = NSLock()
     private let identifierSource: () -> String?
@@ -244,12 +291,11 @@ final class CarbonKeyboardLayoutIdentifierCache {
         notificationToken = DistributedNotificationCenter.default().addObserver(
             forName: notificationName,
             object: nil,
-            // Do not enqueue invalidation on `.main`: an input event could
-            // otherwise observe the old identifier while this callback is
-            // waiting behind other main-thread work. The callback does no
-            // Carbon work and only marks the value stale before scheduling
-            // the main-thread refresh.
-            queue: nil
+            // The notification callback only invalidates the lock-protected
+            // cache. Keep that callback on the main thread as required by
+            // Carbon/TIS ownership; the actual map rebuild is also performed
+            // by the main-thread refresh below.
+            queue: OperationQueue.main
         ) { [weak self] _ in
             self?.invalidate()
         }
@@ -375,7 +421,7 @@ final class CarbonKeyboardLayoutReverseMapCache {
         notificationToken = DistributedNotificationCenter.default().addObserver(
             forName: notificationName,
             object: nil,
-            queue: nil
+            queue: OperationQueue.main
         ) { [weak self] _ in
             self?.invalidate()
         }

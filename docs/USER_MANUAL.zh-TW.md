@@ -5,13 +5,16 @@
 MacKVM 是 macOS app，提供選單列入口與一般控制視窗，讓 14 吋 M5 Pro MacBook Pro
 與 2019 Intel MacBook Pro 共用一組鍵盤、滑鼠，並可選擇切換 BenQ MA270U 螢幕。
 
+目前版本：**1.02.02（build 82）**。
+
 ## 硬體與接線
 
 - M5 Pro 以 USB-C 連接 MA270U 的視訊／資料連接埠。
 - Intel Mac 以 USB-C／Thunderbolt 轉接器連接 HDMI。
 - 鍵盤與滑鼠接在 M5 Pro 或 MA270U USB hub；HDMI 不會把 USB hub 傳給 Intel Mac。
-- 建議選 **One keyboard on M5 Pro (USB-C)**。只有兩台 Mac 都透過實體 USB switch
-  看見鍵盤與滑鼠時，才選 **External USB switch (bidirectional)**。
+- 建議選 **One keyboard on M5 Pro (USB-C)** 作為單一實體 USB 路徑；兩台 Mac
+  仍可使用各自本機的鍵盤、滑鼠或觸控板發起軟體控制。只有兩台 Mac 都透過實體
+  USB switch 看見外接裝置時，才選 **External USB switch (bidirectional)**。
 
 ## 安裝與建置
 
@@ -124,8 +127,10 @@ mapping 原始碼。按下 Ctrl-C 或收到 SIGTERM 時會停止候選值迴圈�
    切回 M5 Pro，請在 Intel Mac 按 **Return keyboard and mouse to [M5 Mac]**；
    控制端也可按 **Return keyboard and mouse to this Mac**。
 
-重連使用有上限的退避時間；已啟用無縫控制的配對裝置不需再次按 Allow，關閉該選項的
-裝置才需要重新取得控制同意。**Disconnect**、**Forget** 與 **Quit** 會清除重連意圖。
+重連最多排程五次，使用 1／2／4／8／16 秒的指數退避（每次延遲上限 30 秒）。五次都
+失敗後，等網路服務回報 ready 或明確重新啟動才會重設重試額度。已啟用無縫控制的配對
+裝置不需再次按 Allow；關閉該選項的裝置需要重新取得控制同意。**Disconnect**、
+**Forget** 與 **Quit** 會清除重連意圖。
 
 ## 配對裝置與支援資訊
 

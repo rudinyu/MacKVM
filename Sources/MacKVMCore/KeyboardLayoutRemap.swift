@@ -92,3 +92,71 @@ public struct KeyboardLayoutReverseMap: Sendable {
         table[character]
     }
 }
+
+/// A forward lookup table for the sender side of cross-layout remapping.
+/// Carbon is queried while the layout snapshot is rebuilt; key events then
+/// perform an ordinary dictionary lookup instead of calling UCKeyTranslate.
+public struct KeyboardLayoutForwardMap: Sendable {
+    private var table: [UInt32: String]
+
+    private static let modifierCombinations:
+        [(shift: Bool, option: Bool, capsLock: Bool)] = [
+        (false, false, false),
+        (true, false, false),
+        (false, false, true),
+        (false, true, false),
+        (true, false, true),
+        (true, true, false),
+        (false, true, true),
+        (true, true, true)
+    ]
+
+    public init(translator: any UnicodeLayoutCharacterProviding) {
+        var table: [UInt32: String] = [:]
+        for keyCode in RemappableKeyCodes.all {
+            for combination in Self.modifierCombinations {
+                guard let character = translator.character(
+                    forKeyCode: keyCode,
+                    shift: combination.shift,
+                    option: combination.option,
+                    capsLock: combination.capsLock
+                ) else {
+                    continue
+                }
+                table[Self.key(
+                    keyCode: keyCode,
+                    shift: combination.shift,
+                    option: combination.option,
+                    capsLock: combination.capsLock
+                )] = character
+            }
+        }
+        self.table = table
+    }
+
+    public func character(
+        forKeyCode keyCode: UInt16,
+        shift: Bool,
+        option: Bool,
+        capsLock: Bool
+    ) -> String? {
+        table[Self.key(
+            keyCode: keyCode,
+            shift: shift,
+            option: option,
+            capsLock: capsLock
+        )]
+    }
+
+    private static func key(
+        keyCode: UInt16,
+        shift: Bool,
+        option: Bool,
+        capsLock: Bool
+    ) -> UInt32 {
+        UInt32(keyCode)
+            | (shift ? 1 << 16 : 0)
+            | (option ? 1 << 17 : 0)
+            | (capsLock ? 1 << 18 : 0)
+    }
+}

@@ -1,12 +1,13 @@
 import Foundation
 
-/// Describes where the physical keyboard and mouse are connected.  MacKVM
-/// cannot create a USB path through an HDMI cable, so this setting is an
-/// explicit safety boundary rather than an attempt to infer hardware.
+/// Describes where external USB keyboard and mouse devices are connected.
+/// MacKVM cannot create a USB path through an HDMI cable, but every Mac can
+/// still originate remote control from its own keyboard, mouse, or trackpad.
+/// This setting documents the physical wiring without incorrectly treating
+/// the HDMI path as a limit on software input sharing.
 public enum InputTopologyMode: String, CaseIterable, Codable, Sendable {
-    /// The MA270U USB-C path is attached to the Apple Silicon Mac.  The
-    /// Intel Mac is an HDMI-only display host and can receive control, but it
-    /// cannot originate keyboard/mouse input until the devices are switched.
+    /// The MA270U USB-C path carries the external devices to the Apple Silicon
+    /// Mac. The HDMI path does not carry those external USB devices.
     case singleHostOnM5Pro
 
     /// Both Macs can see the same keyboard and mouse through an external USB
@@ -32,15 +33,11 @@ public enum InputTopologyMode: String, CaseIterable, Codable, Sendable {
         }
     }
 
-    /// Whether this Mac is allowed to originate a control request.  Receiving
-    /// control remains safe and available in either mode.
-    public func allowsLocalControl(isAppleSilicon: Bool) -> Bool {
-        switch self {
-        case .singleHostOnM5Pro:
-            return isAppleSilicon
-        case .externalUsbSwitch:
-            return true
-        }
+    /// Whether this Mac may originate a control request from its local input
+    /// devices. Built-in keyboard/trackpad input is local to each Mac, so the
+    /// answer is independent of CPU architecture and external USB wiring.
+    public func allowsLocalControl(isAppleSilicon _: Bool) -> Bool {
+        true
     }
 }
 

@@ -215,7 +215,9 @@ candidate loop while still attempting to restore the starting input.
 ### Physical input topology (P0)
 
 The monitor's HDMI input is a video path; it does not upstream the MA270U USB
-hub to the Intel host. Therefore the recommended one-way topology is:
+hub to the Intel host. Therefore the recommended one-way physical USB topology
+keeps external devices on the M5 Pro, while either Mac can still originate a
+software control request from its own local input:
 
 ```mermaid
 flowchart LR
@@ -227,10 +229,11 @@ flowchart LR
 ```
 
 `InputTopologyController` persists an explicit mode on each Mac. **One
-keyboard on M5 Pro (USB-C)** permits the Apple Silicon host to initiate input
-sharing and keeps the Intel HDMI host receive-only. **External USB switch
-(bidirectional)** permits either host, but the app cannot detect or validate
-that physical switch; manual verification on both Macs is required. Receiving
+keyboard on M5 Pro (USB-C)** documents that the external USB devices stay on the
+M5 Pro; it does not disable requests from the Intel Mac's built-in keyboard,
+mouse, or trackpad. **External USB switch (bidirectional)** permits either host
+to use the shared external devices, but the app cannot detect or validate that
+physical switch; manual verification on both Macs is required. Receiving
 remote control remains available in either mode.
 
 ## What needs to change before this is a real KVM
@@ -296,9 +299,11 @@ and ends receiving to restore the controller's display and input.
 
 `SecureSessionService` remembers only a user-selected paired peer for automatic
 reconnect. `NWPathMonitor` pauses attempts while the network path is unavailable
-and resumes with a bounded exponential backoff (0/1/2/4…30 seconds) after a
-path or Bonjour update. A deliberate Disconnect, Forget, or app stop clears the
-desired peer. Reconnection returns both Macs to a local-input state; a peer
+and resumes with at most five scheduled attempts (1/2/4/8/16-second
+exponential delays; each delay is capped at 30 seconds) after a path or Bonjour
+update. Once the retry budget is exhausted, a network-service readiness event or
+explicit restart resets it. A deliberate Disconnect, Forget, or app stop clears
+the desired peer. Reconnection returns both Macs to a local-input state; a peer
 with seamless authorization can be granted again automatically, while an
 opted-out peer must confirm the request again.
 
@@ -457,10 +462,12 @@ behavior are covered by the automated test suite.
     restored with **Return display to this Mac**, even when the global
     emergency shortcut could not be registered.
 
-After an authenticated transport loss, the selected peer is retried with
-bounded backoff and no new pairing. A seamless-authorized peer does not need a
-fresh Allow action; an opted-out peer does. Use **Disconnect** or **Forget** to
-clear the reconnect intent. The emergency shortcut or the receiver's
+After an authenticated transport loss, the selected peer is retried with at
+most five scheduled attempts (1/2/4/8/16-second exponential delays, with each
+delay capped at 30 seconds) and no new pairing. A network-service readiness
+event or explicit restart resets an exhausted retry budget. A seamless-
+authorized peer does not need a fresh Allow action; an opted-out peer does. Use
+**Disconnect** or **Forget** to clear the reconnect intent. The emergency shortcut or the receiver's
 **Return keyboard and mouse to [M5 Mac]** action ends an active or waiting
 remote-control request before restoring the local display and input. If
 the bootstrap screen reports an identity/keychain mismatch, use its

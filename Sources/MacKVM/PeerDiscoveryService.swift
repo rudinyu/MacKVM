@@ -131,7 +131,7 @@ final class PeerDiscoveryService: ObservableObject {
     /// the shared keyboard. A newly completed pairing enables the receiver's
     /// local seamless-control authorization; an existing peer can opt out in
     /// its paired-device settings and return to per-request Allow actions.
-    var onPairingCompleted: ((UUID) -> Void)?
+    var onPairingCompleted: ((UUID, UInt64) -> Void)?
 
     let identity: PeerIdentity
     let localModel: String
@@ -429,9 +429,14 @@ final class PeerDiscoveryService: ObservableObject {
     }
 
     private func scheduleNetworkRecovery() {
-        guard networkRecoveryWorkItem == nil else { return }
-        let delay = min(pow(2.0, Double(networkRecoveryAttempt)), 30.0)
-        networkRecoveryAttempt = min(networkRecoveryAttempt + 1, 5)
+        guard NetworkRecoveryPolicy.shouldSchedule(
+            attempt: networkRecoveryAttempt,
+            hasPendingWork: networkRecoveryWorkItem != nil
+        ) else { return }
+        let delay = NetworkRecoveryPolicy.delay(
+            forAttempt: networkRecoveryAttempt
+        )
+        networkRecoveryAttempt += 1
         networkRecoveryGeneration &+= 1
         let recoveryGeneration = networkRecoveryGeneration
         let workItem = DispatchWorkItem { [weak self] in
@@ -1863,7 +1868,7 @@ final class PeerDiscoveryService: ObservableObject {
                 service.pairingActivity = .idle
             }
         }
-        onPairingCompleted?(peerID)
+        onPairingCompleted?(peerID, job.expectedRegistryGeneration)
         publishStatus("Paired with \(job.peer.name)")
 
         guard requestIsTracked else { return }

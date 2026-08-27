@@ -126,7 +126,8 @@ final class RemoteInputProtocolTests: XCTestCase {
             modifierFlags: 1 << 17,
             location: NormalizedPoint(x: 0.25, y: 0.75),
             buttonNumber: 0,
-            clickCount: 2
+            clickCount: 2,
+            pressure: 0.75
         )
 
         XCTAssertEqual(
@@ -155,6 +156,34 @@ final class RemoteInputProtocolTests: XCTestCase {
             location: NormalizedPoint(x: 0.25, y: 0.75),
             buttonNumber: 5,
             clickCount: 1
+        )
+
+        XCTAssertThrowsError(try RemoteInputCodec.encode(event)) { error in
+            XCTAssertEqual(error as? RemoteInputError, .invalidFields)
+        }
+    }
+
+    func testRejectsPressureOutsideThePlatformRange() {
+        for pressure in [-0.01, 1.01, .infinity, -.infinity, .nan] {
+            let event = RemoteInputEvent(
+                kind: .leftMouseDown,
+                location: NormalizedPoint(x: 0.25, y: 0.75),
+                buttonNumber: 0,
+                clickCount: 1,
+                pressure: pressure
+            )
+
+            XCTAssertThrowsError(try RemoteInputCodec.encode(event)) { error in
+                XCTAssertEqual(error as? RemoteInputError, .invalidFields)
+            }
+        }
+    }
+
+    func testMouseMovementCannotCarryPressure() {
+        let event = RemoteInputEvent(
+            kind: .mouseMoved,
+            location: NormalizedPoint(x: 0.25, y: 0.75),
+            pressure: 1
         )
 
         XCTAssertThrowsError(try RemoteInputCodec.encode(event)) { error in
@@ -219,12 +248,26 @@ final class RemoteInputProtocolTests: XCTestCase {
         }
     }
 
+    func testScrollRejectsPressure() {
+        let event = RemoteInputEvent(
+            kind: .scroll,
+            pressure: 0.5,
+            scrollDeltaX: 0,
+            scrollDeltaY: 1
+        )
+
+        XCTAssertThrowsError(try event.validated()) { error in
+            XCTAssertEqual(error as? RemoteInputError, .invalidFields)
+        }
+    }
+
     func testScrollCarriesTrackpadPhases() throws {
         let event = RemoteInputEvent(
             kind: .scroll,
-            scrollDeltaX: 0,
-            scrollDeltaY: 12,
-            scrollPhase: .changed
+            scrollDeltaX: 0.375,
+            scrollDeltaY: 12.125,
+            scrollPhase: .changed,
+            scrollEventUnit: .pixel
         )
 
         XCTAssertEqual(
@@ -238,7 +281,22 @@ final class RemoteInputProtocolTests: XCTestCase {
             kind: .scroll,
             scrollDeltaX: 0,
             scrollDeltaY: 3,
-            scrollMomentumPhase: .continue
+            scrollMomentumPhase: .continue,
+            scrollEventUnit: .pixel
+        )
+
+        XCTAssertEqual(
+            try RemoteInputCodec.decode(RemoteInputCodec.encode(event)),
+            event
+        )
+    }
+
+    func testScrollCarriesLineUnit() throws {
+        let event = RemoteInputEvent(
+            kind: .scroll,
+            scrollDeltaX: 0,
+            scrollDeltaY: 1,
+            scrollEventUnit: .line
         )
 
         XCTAssertEqual(
@@ -260,6 +318,7 @@ final class RemoteInputProtocolTests: XCTestCase {
 
         XCTAssertFalse(json.contains("scrollPhase"))
         XCTAssertFalse(json.contains("scrollMomentumPhase"))
+        XCTAssertFalse(json.contains("scrollEventUnit"))
         XCTAssertEqual(try RemoteInputCodec.decode(encoded), event)
     }
 
@@ -273,6 +332,7 @@ final class RemoteInputProtocolTests: XCTestCase {
 
         XCTAssertNil(decoded.scrollPhase)
         XCTAssertNil(decoded.scrollMomentumPhase)
+        XCTAssertNil(decoded.scrollEventUnit)
         XCTAssertEqual(decoded.scrollDeltaY, 5)
     }
 
@@ -280,7 +340,8 @@ final class RemoteInputProtocolTests: XCTestCase {
         let keyEvent = RemoteInputEvent(
             kind: .keyDown,
             keyCode: 12,
-            scrollPhase: .began
+            scrollPhase: .began,
+            scrollEventUnit: .pixel
         )
         let pointerEvent = RemoteInputEvent(
             kind: .leftMouseDown,
@@ -304,6 +365,15 @@ final class RemoteInputProtocolTests: XCTestCase {
         )
 
         XCTAssertThrowsError(try RemoteInputCodec.decode(unknownPhase))
+    }
+
+    func testRejectsUnknownScrollEventUnitValue() {
+        let unknownUnit = Data(
+            #"{"kind":"scroll","modifierFlags":0,"scrollDeltaX":0,"scrollDeltaY":1,"scrollEventUnit":2}"#
+                .utf8
+        )
+
+        XCTAssertThrowsError(try RemoteInputCodec.decode(unknownUnit))
     }
 
     func testSystemDefinedEventRoundTrips() throws {
