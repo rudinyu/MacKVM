@@ -32,6 +32,10 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
     private readonly int requestedPort;
     private readonly bool autoAccept;
     private readonly Action<PeerIdentity>? pairingCompleted;
+    private readonly Func<PeerIdentity, string, bool, CancellationToken, Task<bool>>? pairingConsent;
+    private readonly Func<PeerIdentity, bool>? peerKeyChanged;
+    private readonly Action<string>? status;
+    private readonly bool enableConsoleInput;
     private TcpListener listener;
     // ECDsa signing is kept serialized, but a slow network write must never
     // block another connection's challenge or decision.
@@ -60,7 +64,11 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
         int requestedPort,
         bool autoAccept,
         Action<PeerIdentity>? pairingCompleted = null,
-        object? signingLock = null
+        object? signingLock = null,
+        Func<PeerIdentity, string, bool, CancellationToken, Task<bool>>? pairingConsent = null,
+        Func<PeerIdentity, bool>? peerKeyChanged = null,
+        Action<string>? status = null,
+        bool enableConsoleInput = true
     )
     {
         this.credentials = credentials;
@@ -68,6 +76,10 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
         this.requestedPort = requestedPort;
         this.autoAccept = autoAccept;
         this.pairingCompleted = pairingCompleted;
+        this.pairingConsent = pairingConsent;
+        this.peerKeyChanged = peerKeyChanged;
+        this.status = status;
+        this.enableConsoleInput = enableConsoleInput;
         this.signingLock = signingLock ?? new object();
         listener = CreateListener(requestedPort);
     }
@@ -117,6 +129,7 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
         advertiserTask = advertiser.RunAsync();
         advertiserMonitorTask = MonitorAdvertiserAsync(advertiserTask);
         Console.WriteLine($"Pairing listener ready on TCP {Port}.");
+        PublishStatus($"Pairing listener ready on TCP {Port}.");
         Console.WriteLine($"Device: {credentials.Identity.Name} ({credentials.Identity.Id:D})");
         Console.WriteLine("Advertised as _mackvm._tcp; allow the app on Private networks if Windows asks.");
         Console.WriteLine(autoAccept
@@ -124,8 +137,11 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
             : "When an incoming request appears, compare the verification code and type y/yes to accept.");
         Console.WriteLine("Press Ctrl-C or Enter to stop.");
 
-        Console.CancelKeyPress += OnCancelKeyPress;
-        consoleInputTask = ConsoleInputLoopAsync(cancellation.Token);
+        if (enableConsoleInput)
+        {
+            Console.CancelKeyPress += OnCancelKeyPress;
+            consoleInputTask = ConsoleInputLoopAsync(cancellation.Token);
+        }
         var acceptTask = AcceptLoopAsync(cancellation.Token);
         await Task.WhenAny(acceptTask, stopRequested.Task, advertiserMonitorTask);
         await StopAsync();
@@ -244,6 +260,7 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
         await using var stream = client.GetStream();
         var remoteEndpoint = client.Client.RemoteEndPoint?.ToString() ?? "unknown endpoint";
         Console.WriteLine($"Incoming pairing connection from {remoteEndpoint}.");
+        PublishStatus($"Incoming pairing request from {remoteEndpoint}.");
         using var handshakeCancellation = CancellationTokenSource.CreateLinkedTokenSource(
             serverToken
         );
@@ -444,48 +461,72 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
         Action<bool> resolveConsent
     )
     {
+        var peer = session.Peer;
+        var replacesExistingKey = peer is not null
+            && peerKeyChanged?.Invoke(peer) == true;
         var accepted = autoAccept;
         if (!autoAccept)
         {
-            Console.WriteLine();
-            Console.WriteLine(
-                $"Incoming pairing request from {session.Peer?.Name ?? "unknown peer"}."
-            );
-            Console.WriteLine($"Verification code: {code}");
-            Console.Write(
-                "Accept pairing? Compare this code with the initiating Mac "
-                    + "and type y/yes [y/N]: "
-            );
-            Console.Out.Flush();
-            string? answer;
-            try
+            if (pairingConsent is not null)
             {
-                answer = await ReadAcceptanceLineAsync(token);
+                accepted = await pairingConsent(
+                    peer ?? throw new PairingSessionException(
+                        "The pairing peer identity is missing."
+                    ),
+                    code,
+                    replacesExistingKey,
+                    token
+                ).ConfigureAwait(false);
             }
-            catch (AcceptancePromptBusyException)
+            else
             {
-                // There is only one interactive console. Reject a second
-                // request immediately instead of leaving its peer waiting for
-                // the handshake timeout while the first prompt is active.
-                PairingSessionResult rejection;
-                lock (gate)
+                Console.WriteLine();
+                Console.WriteLine(
+                    $"Incoming pairing request from {peer?.Name ?? "unknown peer"}."
+                );
+                Console.WriteLine($"Verification code: {code}");
+                if (replacesExistingKey)
                 {
-                    rejection = session.Respond(false);
+                    Console.WriteLine(
+                        "Warning: this replaces the existing trusted key for this peer. "
+                            + "Continue only if you intentionally forgot or reset the old pairing."
+                    );
+                }
+                Console.Write(
+                    "Accept pairing? Compare this code with the initiating Mac "
+                        + "and type y/yes [y/N]: "
+                );
+                Console.Out.Flush();
+                string? answer;
+                try
+                {
+                    answer = await ReadAcceptanceLineAsync(token);
+                }
+                catch (AcceptancePromptBusyException)
+                {
+                    // There is only one interactive console. Reject a second
+                    // request immediately instead of leaving its peer waiting for
+                    // the handshake timeout while the first prompt is active.
+                    PairingSessionResult rejection;
+                    lock (gate)
+                    {
+                        rejection = session.Respond(false);
+                    }
+
+                    await SendResultAsync(stream, rejection, outputLock, token);
+                    resolveConsent(false);
+                    Console.Error.WriteLine(
+                        "Pairing rejected: another confirmation is already waiting for input."
+                    );
+                    return;
                 }
 
-                await SendResultAsync(stream, rejection, outputLock, token);
-                resolveConsent(false);
-                Console.Error.WriteLine(
-                    "Pairing rejected: another confirmation is already waiting for input."
-                );
-                return;
-            }
-
-            accepted = string.Equals(answer?.Trim(), "y", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(answer?.Trim(), "yes", StringComparison.OrdinalIgnoreCase);
-            if (!accepted)
-            {
-                Console.WriteLine("Pairing declined.");
+                accepted = string.Equals(answer?.Trim(), "y", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(answer?.Trim(), "yes", StringComparison.OrdinalIgnoreCase);
+                if (!accepted)
+                {
+                    Console.WriteLine("Pairing declined.");
+                }
             }
         }
         else
@@ -513,6 +554,7 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
             if (result.Completed)
             {
                 Console.WriteLine($"Paired with {session.Peer?.Name ?? "peer"}.");
+                PublishStatus($"Paired with {session.Peer?.Name ?? "peer"}.");
             }
         }
         catch (Exception ex) when (ex is InvalidOperationException
@@ -540,6 +582,19 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
         // caller will report the failure and the peer will not receive a
         // success frame that cannot be honored by the secure listener.
         pairingCompleted(peer);
+    }
+
+    private void PublishStatus(string message)
+    {
+        try
+        {
+            status?.Invoke(message);
+        }
+        catch
+        {
+            // Status observers are UI/logging conveniences. They must never
+            // change the authenticated pairing result or tear down a socket.
+        }
     }
 
     /// <summary>

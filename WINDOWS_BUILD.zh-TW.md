@@ -2,11 +2,11 @@
 
 # Windows 建置手冊
 
-本手冊說明如何建置 MacKVM 的 Windows 分支。目前 W3 內容是 C#/.NET 8 protocol
-library、簽章配對 state machine、console receiver、DPAPI identity、配對與 secure
+本手冊說明如何建置 MacKVM 的 Windows 分支。目前內容是 C#/.NET 8 protocol library、簽章
+配對 state machine、原生 Win32 狀態視窗與系統匣常駐 host、DPAPI identity、配對與 secure
 Connect 的免外部套件 mDNS 廣播器、嚴格 control／input 驗證、Windows SendInput 注入、
-釋放所有輸入狀態，以及緊急交還快捷鍵。這還不是完整 Windows UI；WinUI 3、Raw Input
-擷取、tray integration 與最後的防火牆 UX 會在後續 Windows 階段實作。
+釋放所有輸入狀態，以及緊急交還快捷鍵。Windows Raw Input 擷取與最後的防火牆 UX 會在
+後續 Windows 階段實作。
 
 ## 建置需求
 
@@ -20,10 +20,10 @@ Connect 的免外部套件 mDNS 廣播器、嚴格 control／input 驗證、Wind
 ChaCha20-Poly1305 實作來建立加密連線。較舊版本仍可配對，但執行檔會明確
 顯示 secure Connect 已停用。
 
-Mac peer 必須使用 MacKVM 1.100.00／build 75 或更新版本才能使用 secure Connect。
-該版本加入簽名的 `disconnectSignalVersion` capability 與加密 disconnect acknowledgement，
-用來安全結束已認證的 session。Windows 仍接受 MacKVM 1.00.00 以上的簽章配對，
-但對舊 secure-session handshake 會明確回報需要升級，不會靜默降級成未認證的 EOF 關閉。
+此 Windows beta 不相容於 MacKVM 1.00.00 正式版。Mac peer 必須使用包含簽名的
+`disconnectSignalVersion` capability 的 MacKVM build（MacKVM 1.100.00／build 75 加入），
+才能進行配對與 secure Connect。舊 peer 會明確回報需要升級，不會靜默降級成未認證的 EOF
+關閉。
 
 支援的 native publish 目標是 Windows x64（`win-x64`，也稱 `x86_64`）與
 Windows ARM64（`win-arm64`）。不支援 32-bit `i686`。
@@ -76,6 +76,8 @@ reference graph 中的每個 project，避免 `net8.0` protocol library 與
 
 腳本在第一個 publish 失敗時停止。成功時會列出每個 executable 偵測到的 PE 架構
 （`x64` 或 `arm64`）。
+repository CI 也會在 Windows runner 重複兩種 publish，因此本機 cross-build 不會是唯一的
+Windows 建置檢查。
 
 ## 啟動配對 receiver
 
@@ -85,16 +87,27 @@ reference graph 中的每個 project，避免 `net8.0` protocol library 與
 .\WindowsKVM.exe --version
 ```
 
-目前 W3 測試 build 應顯示 `WindowsKVM 1.02.02 (build 82)`。
+目前 UI 測試 build 應顯示 `WindowsKVM 1.02.08 (build 88)`。
 
-在 Windows publish 後啟動 W3 receiver：
+在 Windows publish 後啟動常駐 UI：
 
 ```powershell
-.\dist\windows\arm64\WindowsKVM.exe --pairing-listen --name "Windows ARM64"
+.\dist\windows\arm64\WindowsKVM.exe
 ```
 
-Mac 連入後，CLI 會顯示傳入裝置、六位數驗證碼與明確的 `Accept pairing?` 提示；請把
-驗證碼與發起配對的 Mac 畫面比對，再在 Windows 輸入 `y` 或 `yes`：
+UI 會加入 Windows 系統匣圖示、啟動兩個 listener，並以原生 Yes／No 對話框處理配對與
+控制同意。關閉狀態視窗只會隱藏；從視窗或系統匣選單選 **Quit WindowsKVM** 才會停止
+所有 listener。要做腳本測試時，使用 `--pairing-listen`；`--yes` 只適合受控測試，會自動
+接受配對與控制：
+
+狀態視窗沿用 macOS 面板順序，並提供兩種模式。螢幕小於 900×1120 像素，或視窗可用區域較窄／較矮時，
+會自動使用 **Simple mode**，保留 identity、就緒狀態、配對、控制權、防火牆、Refresh 與 Quit。
+**Advanced mode** 顯示完整的標題、**設定這台 PC**、**實體輸入路徑**、**附近的 Mac**、
+**鍵盤／滑鼠／觸控板**、**螢幕輸入**與**已配對裝置資訊**，小螢幕仍可捲動。標題列按鈕可在兩種模式間切換。
+Pair 與 Connect 仍由 MacKVM peer 發起，Windows 顯示相對應的同意對話框與即時狀態。
+
+若使用 console 模式，Mac 連入後 CLI 會顯示傳入裝置、六位數驗證碼與明確的
+`Accept pairing?` 提示；請把驗證碼與發起配對的 Mac 畫面比對，再在 Windows 輸入 `y` 或 `yes`：
 
 ```powershell
 .\dist\windows\x64\WindowsKVM.exe --pairing-listen --name "Windows x64"
@@ -102,19 +115,33 @@ Mac 連入後，CLI 會顯示傳入裝置、六位數驗證碼與明確的 `Acce
 
 只有在受控測試時才使用 `--yes`，它會自動接受驗證碼。receiver 會在區域網路廣播配對用的
 `_mackvm._tcp` 與 Connect 用的 `_mackvm-secure._tcp`，兩個 listener 預設都使用系統分配的
-TCP port。CLI 也會列出每個收到的 pairing frame，以及配對被拒絕時的詳細傳輸／protocol
-錯誤。Windows Defender Firewall 可能顯示標準的 Private network 提示；只在信任的區域網路
-允許此程式。程式不會偷偷新增寬鬆的防火牆規則。
+TCP port。console 模式會列出每個收到的 pairing frame，以及配對被拒絕時的詳細傳輸／protocol
+錯誤；UI 模式則將主要狀態顯示在狀態視窗。Windows Defender Firewall 可能顯示標準的
+Private network 提示；只在信任的區域網路允許此程式。程式不會偷偷新增寬鬆的防火牆規則。
+
+要從 console 檢查或移除 Windows 端的 trust pin，請先用 `--list-paired` 列出的完整 peer ID：
+
+```powershell
+.\dist\windows\x64\WindowsKVM.exe --list-paired
+.\dist\windows\x64\WindowsKVM.exe --forget <peer-id>
+```
+
+`--forget` 是一次性的持久化 trust-store 操作；按 Connect 前必須從 MacKVM 重新 Pair。
+如果另一個 WindowsKVM receiver 已經在執行，CLI 操作後請重新啟動它以重新載入 trust store，或改用
+UI 的 **Forget paired Mac** 關閉該 peer 的 active session。
 
 配對完成後，Windows 會把 Mac 的公開 identity 寫入
 `%LOCALAPPDATA%\MacKVM\trusted-peers.json`。接著在 MacKVM 選取已配對的 Windows 裝置並
-按 **Connect**；Windows CLI 應依序顯示 `Incoming secure-session connection`、
+按 **Connect**；console 模式的 Windows 應依序顯示 `Incoming secure-session connection`、
 `Secure handshake response sent` 與 `Secure session authenticated with ...`。W1 舊版配對不會
 建立這份 trust record，第一次測試 W3 Connect 前請用 W3 executable 重新配對一次。若公開
-key 改變，程式會拒絕而不會默默覆寫信任。
+key 改變，程式會拒絕而不會默默覆寫信任。若要在 Windows 端清除配對，請在 UI 的
+**Forget paired Mac** 按鈕操作；這會移除 Windows 端的 trust pin，之後必須從 Mac 重新 Pair
+才能 Connect。若 Mac identity key 也被重設，Windows 會在驗證碼對話框明確警告即將取代舊 pin，
+只有使用者確認後才會寫入；Secure Connect 或未同意的寫入永遠不會自動取代 key。
 
-Connect 後，在 MacKVM 選 **Request keyboard and mouse control**。Windows console 會要求
-本機輸入 `y`／`yes`（測試時可用 `--yes` 自動接受）。取得控制後會顯示
+Connect 後，在 MacKVM 選 **Request keyboard and mouse control**。UI 模式會顯示原生控制
+同意對話框；console 模式則要求本機輸入 `y`／`yes`（測試時可用 `--yes` 自動接受）。取得控制後會顯示
 `Windows control granted`，並用 `SendInput` 注入已驗證的 Mac 輸入。在 Windows 按
 `Ctrl+Alt+Shift+Esc` 會釋放所有按住的輸入並把控制權交回本機；從 MacKVM 結束 control
 也有相同的 release-all 行為。
@@ -199,6 +226,6 @@ Get-Item .\dist\windows\arm64\WindowsKVM.exe
 - **架構錯誤**：Windows x86_64 使用 `x64`，Windows ARM64 使用 `arm64`；不要傳入
   `x86` 或 `i686`。
 
-Windows executable 尚未加入 macOS DMG packaging。W3 已驗證跨平台簽章配對、加密 Connect
-與 console 鍵盤／滑鼠接管；WinUI／tray integration 與完整防火牆 UX 完成後，才會宣告
-Windows GUI 版可用。
+Windows executable 尚未加入 macOS DMG packaging。Windows UI 與 console host 共用跨平台
+簽章配對、加密 Connect 及鍵盤／滑鼠接管；仍需在 Windows 實機完成視覺、系統匣、防火牆與
+輸入注入驗收。

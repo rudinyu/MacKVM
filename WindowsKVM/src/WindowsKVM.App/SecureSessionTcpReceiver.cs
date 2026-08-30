@@ -41,11 +41,16 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
     private readonly Queue<long> recentConnectionAttempts = [];
     private readonly HashSet<Task> connections = [];
     private readonly object connectionLock = new();
+    private readonly object connectionContextLock = new();
+    private readonly HashSet<ConnectionContext> pendingConnectionContexts = [];
+    private readonly Dictionary<Guid, HashSet<ConnectionContext>> peerConnectionContexts = [];
     private readonly HashSet<Guid> activePeerIDs = [];
     private readonly object activePeerLock = new();
     private readonly object signingLock;
     private readonly bool autoAcceptControl;
     private readonly Func<string, CancellationToken, Task<bool>>? promptConsent;
+    private readonly Action<string>? status;
+    private readonly Action<bool>? controlStateChanged;
     private readonly WindowsInputSink inputSink = new();
     private readonly object activeControlLock = new();
     private Guid? activeControlPeerID;
@@ -67,7 +72,9 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
         int requestedPort = 0,
         object? signingLock = null,
         bool autoAcceptControl = false,
-        Func<string, CancellationToken, Task<bool>>? promptConsent = null
+        Func<string, CancellationToken, Task<bool>>? promptConsent = null,
+        Action<string>? status = null,
+        Action<bool>? controlStateChanged = null
     )
     {
         this.credentials = credentials;
@@ -77,6 +84,8 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
         this.signingLock = signingLock ?? new object();
         this.autoAcceptControl = autoAcceptControl;
         this.promptConsent = promptConsent;
+        this.status = status;
+        this.controlStateChanged = controlStateChanged;
         listener = CreateListener(requestedPort);
     }
 
@@ -88,6 +97,73 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
     /// secure endpoint cannot remain silently advertised as healthy.
     /// </summary>
     public Task Failure => failure.Task;
+
+    /// <summary>
+    /// Immediately revokes any secure sessions that could belong to a peer
+    /// whose local trust pin was forgotten. Anonymous handshakes are also
+    /// cancelled because they cannot yet be proven unrelated to that peer.
+    /// The trust store must be removed before calling this method so a racing
+    /// new handshake fails closed at admission.
+    /// </summary>
+    public void RevokePeer(Guid peerID)
+    {
+        if (peerID == Guid.Empty)
+        {
+            return;
+        }
+
+        ConnectionContext[] revoked;
+        lock (connectionContextLock)
+        {
+            var selected = new HashSet<ConnectionContext>();
+            if (peerConnectionContexts.Remove(peerID, out var peerContexts))
+            {
+                selected.UnionWith(peerContexts);
+            }
+
+            foreach (var context in pendingConnectionContexts)
+            {
+                if (context.PeerID is null || context.PeerID == peerID)
+                {
+                    selected.Add(context);
+                }
+            }
+
+            revoked = selected.ToArray();
+        }
+
+        foreach (var context in revoked)
+        {
+            try
+            {
+                context.Cancellation.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+                // The receive loop already reached teardown; closing the
+                // socket below is still harmless and idempotent.
+            }
+
+            try
+            {
+                context.Client.Close();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+        }
+
+        if (revoked.Length > 0)
+        {
+            Console.WriteLine(
+                $"Secure trust revoked for {Short(peerID)}; "
+                    + $"closed {revoked.Length} connection(s)."
+            );
+            PublishStatus(
+                $"Trust revoked for {Short(peerID)}; secure session disconnected."
+            );
+        }
+    }
 
     public void Start()
     {
@@ -116,6 +192,7 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
             acceptTask
         );
         Console.WriteLine($"Secure session listener ready on TCP {Port}.");
+        PublishStatus($"Secure Connect listener ready on TCP {Port}.");
         Console.WriteLine(
             "Advertised as _mackvm-secure._tcp; only paired Mac identities are accepted."
         );
@@ -285,6 +362,7 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
     private void ReportFailure(string message, Exception? inner = null)
     {
         Console.Error.WriteLine($"Secure session unavailable: {message}");
+        PublishStatus($"Secure Connect unavailable: {message}");
         failure.TrySetException(
             new InvalidOperationException(
                 $"The {SecureServiceType} endpoint stopped: {message}",
@@ -309,6 +387,10 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
             {
                 var client = await listener.AcceptTcpClientAsync(token);
                 client.NoDelay = true;
+                PublishStatus(
+                    $"Incoming Secure Connect connection from "
+                        + $"{client.Client.RemoteEndPoint?.ToString() ?? "unknown endpoint"}."
+                );
                 if (!TryAdmitConnectionAttempt())
                 {
                     Console.Error.WriteLine(
@@ -381,6 +463,12 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
         );
         handshakeCancellation.CancelAfter(HandshakeTimeout);
         var token = handshakeCancellation.Token;
+        var connectionContext = new ConnectionContext
+        {
+            Client = client,
+            Cancellation = handshakeCancellation
+        };
+        RegisterConnectionContext(connectionContext);
         SecureSessionChannel? channel = null;
         Guid? activePeerID = null;
         var authenticated = false;
@@ -485,6 +573,11 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
                             }
 
                             activePeerID = initiator.Sender.Id;
+                            AssociateConnectionContext(
+                                connectionContext,
+                                initiator.Sender.Id
+                            );
+                            token.ThrowIfCancellationRequested();
                             using var responderEphemeral = ECDiffieHellman.Create(
                                 ECCurve.NamedCurves.nistP256
                             );
@@ -550,6 +643,9 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
                             }
                             handshakeCancellation.CancelAfter(Timeout.InfiniteTimeSpan);
                             Console.WriteLine(
+                                $"Secure session authenticated with {Short(activePeerID)}."
+                            );
+                            PublishStatus(
                                 $"Secure session authenticated with {Short(activePeerID)}."
                             );
                             continue;
@@ -694,6 +790,9 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
                                 $"Windows control granted for {Short(requestID)}. "
                                     + "Ctrl+Alt+Shift+Esc returns input locally."
                             );
+                            PublishStatus(
+                                $"Keyboard/mouse control granted for {Short(requestID)}."
+                            );
                             continue;
                         }
 
@@ -768,6 +867,7 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
                                 Console.WriteLine(
                                     $"Windows control ended by the Mac ({Short(requestID)})."
                                 );
+                                PublishStatus("Keyboard/mouse control ended by the Mac.");
                             }
                             continue;
                         }
@@ -857,6 +957,7 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
                 EndActiveControl(endingPeer, endingRequest);
             }
 
+            UnregisterConnectionContext(connectionContext);
             outputLock.Dispose();
             channel?.Dispose();
             if (activePeerID is { } peerID)
@@ -926,6 +1027,7 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
 
     private bool TryActivateControl(Guid peerID, Guid requestID)
     {
+        var activated = false;
         lock (activeControlLock)
         {
             if (activeControlRequestID is not null)
@@ -936,8 +1038,11 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
             inputSink.Begin();
             activeControlPeerID = peerID;
             activeControlRequestID = requestID;
-            return true;
+            activated = true;
         }
+
+        PublishControlState(activated);
+        return activated;
     }
 
     private bool IsControlActive(Guid peerID, Guid requestID)
@@ -952,6 +1057,7 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
 
     private bool EndActiveControl(Guid peerID, Guid requestID)
     {
+        var ended = false;
         lock (activeControlLock)
         {
             if (activeControlPeerID != peerID || activeControlRequestID != requestID)
@@ -962,8 +1068,14 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
             activeControlPeerID = null;
             activeControlRequestID = null;
             inputSink.End();
-            return true;
+            ended = true;
         }
+
+        if (ended)
+        {
+            PublishControlState(false);
+        }
+        return ended;
     }
 
     private async Task EndControlFromHotKeyAsync(
@@ -990,6 +1102,7 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
         Console.WriteLine(
             $"Windows control returned locally by hotkey ({Short(requestID)})."
         );
+        PublishStatus("Keyboard/mouse control returned locally by hotkey.");
         if (channel is null)
         {
             return;
@@ -1059,6 +1172,47 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
         }
     }
 
+    private void RegisterConnectionContext(ConnectionContext context)
+    {
+        lock (connectionContextLock)
+        {
+            pendingConnectionContexts.Add(context);
+        }
+    }
+
+    private void AssociateConnectionContext(ConnectionContext context, Guid peerID)
+    {
+        lock (connectionContextLock)
+        {
+            pendingConnectionContexts.Remove(context);
+            context.PeerID = peerID;
+            if (!peerConnectionContexts.TryGetValue(peerID, out var contextsForPeer))
+            {
+                contextsForPeer = [];
+                peerConnectionContexts.Add(peerID, contextsForPeer);
+            }
+
+            contextsForPeer.Add(context);
+        }
+    }
+
+    private void UnregisterConnectionContext(ConnectionContext context)
+    {
+        lock (connectionContextLock)
+        {
+            pendingConnectionContexts.Remove(context);
+            if (context.PeerID is { } peerID
+                && peerConnectionContexts.TryGetValue(peerID, out var contextsForPeer))
+            {
+                contextsForPeer.Remove(context);
+                if (contextsForPeer.Count == 0)
+                {
+                    peerConnectionContexts.Remove(peerID);
+                }
+            }
+        }
+    }
+
     private bool TryReservePeer(Guid peerID)
     {
         lock (activePeerLock)
@@ -1079,6 +1233,39 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
         => id is null ? "none" : id.Value.ToString("N")[..8];
 
     private static string Short(Guid id) => id.ToString("N")[..8];
+
+    private sealed class ConnectionContext
+    {
+        public required TcpClient Client { get; init; }
+        public required CancellationTokenSource Cancellation { get; init; }
+        public Guid? PeerID { get; set; }
+    }
+
+    private void PublishStatus(string message)
+    {
+        try
+        {
+            status?.Invoke(message);
+        }
+        catch
+        {
+            // A UI observer must never alter secure-session admission or
+            // authenticated input handling.
+        }
+    }
+
+    private void PublishControlState(bool active)
+    {
+        try
+        {
+            controlStateChanged?.Invoke(active);
+        }
+        catch
+        {
+            // A UI observer must never hold the active-control lock or fault
+            // the receive loop.
+        }
+    }
 
     private sealed class SessionControlRequestState
     {

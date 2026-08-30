@@ -2,6 +2,98 @@
 
 # Changelog
 
+## 1.02.08 (build 88) — 2026-08-30
+
+This release adds console commands for inspecting and removing Windows-side
+paired-Mac trust pins.
+
+### Added
+
+- Add `--list-paired` to print each trusted Mac's friendly name, full peer ID,
+  and public-key fingerprint.
+- Add `--forget <peer-id>` to remove one trusted Mac from the Windows trust
+  store; pair again before pressing Connect.
+- Document that the one-shot CLI command changes durable trust, while an
+  already-running receiver must be restarted (or use the UI Forget action) to
+  close its in-memory active session.
+
+## 1.02.07 (build 87) — 2026-08-30
+
+This release adds Windows-side paired-Mac revocation so forgetting a pairing
+does not leave a stale trust pin that blocks the next pairing.
+
+### Added
+
+- Add **Forget paired Mac** to the Windows UI in both Simple and Advanced
+  modes.
+- Remove the selected Mac public-key pin transactionally from
+  `%LOCALAPPDATA%\\MacKVM\\trusted-peers.json` and close any active secure
+  session for that peer.
+- Load the existing Windows trust list at startup so Forget remains available
+  after a restart; pairing is required again after a Forget action.
+
+## 1.02.06 (build 86) — 2026-08-30
+
+This release makes a re-pair after a deliberately reset Mac identity explicit
+and reviewable instead of silently replacing a pinned public key.
+
+### Fixed
+
+- Keep Secure Connect fail-closed for changed peer keys.
+- Show a replacement warning in the Windows UI and console pairing prompt;
+  replace an old pin only after the signed verification-code flow is accepted
+  locally.
+
+## 1.02.05 (build 85) — 2026-08-30
+
+This release makes the Windows companion UI responsive on compact displays
+while keeping the complete macOS-aligned diagnostics available.
+
+### Added
+
+- Add automatic Simple mode selection for compact screens and a header toggle
+  to switch between Simple and Advanced modes.
+- Keep identity, readiness, pairing, control state, firewall, Refresh, and Quit
+  actions visible in Simple mode without requiring a long scroll.
+
+## 1.02.04 (build 84) — 2026-08-30
+
+This release aligns the Windows companion UI with the macOS setup panel while
+retaining the same pairing and secure-session runtime.
+
+### Added
+
+- Add a scrollable, macOS-aligned Windows status panel with setup readiness,
+  physical input path, nearby/paired peer, keyboard/mouse control, monitor
+  guidance, and support-information sections.
+- Add native status colors, live paired-peer and control-state updates, a
+  Windows Firewall settings action, and a local key-fingerprint display.
+- Publish matching Windows x64 and ARM64 UI test executables.
+
+## 1.02.03 (build 83) — 2026-08-27
+
+This release adds the first usable Windows desktop host while retaining the
+console path for automation and diagnostics.
+
+### Added
+
+- Add a native Win32 status window and resident notification-area tray icon.
+- Show pairing verification and authenticated control consent in native
+  Windows Yes/No dialogs instead of requiring a visible console.
+- Add single-instance protection, hide-to-tray behavior, explicit Quit cleanup,
+  runtime status updates, and public **Copy support information** output.
+- Share one runtime lifecycle between UI and CLI so trust storage, mDNS
+  advertising, secure-session admission, and release-all teardown stay
+  identical in both modes.
+- Add a least-privilege, per-monitor-DPI application manifest.
+- Verify the Windows desktop publish on a native Windows CI runner for both
+  x64 and ARM64 targets.
+
+### Compatibility
+
+- The Windows beta remains incompatible with MacKVM 1.00.00; use a Mac build
+  that signs `disconnectSignalVersion` (MacKVM 1.100.00/build 75 or later).
+
 ## 1.02.02 (build 82) — 2026-08-27
 
 This patch closes the remaining review findings around network recovery,
@@ -53,9 +145,10 @@ development branch.
 
 ### Compatibility
 
-- Signed pairing remains compatible with MacKVM 1.00.00 and later.
-- Secure Connect requires MacKVM 1.100.00/build 75 or later; older peers are
-  rejected with an explicit upgrade-required error.
+- The Windows beta is not compatible with the MacKVM 1.00.00 release.
+- Pairing and secure Connect require a MacKVM build with the signed
+  `disconnectSignalVersion` capability (introduced in MacKVM 1.100.00/build 75);
+  older peers are rejected with an explicit upgrade-required error.
 
 ## 1.01.02 (build 79) — 2026-08-26
 

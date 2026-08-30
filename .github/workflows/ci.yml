@@ -21,3 +21,21 @@ jobs:
         env:
           RUN_WINDOWS_CI: "1"
         run: ./scripts/ci.sh
+
+  build-windows-ui:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Build Windows desktop host
+        run: dotnet build WindowsKVM/src/WindowsKVM.App/WindowsKVM.App.csproj --configuration Release
+      - name: Publish x64 and ARM64 Windows hosts
+        shell: pwsh
+        run: .\scripts\build-windows.ps1 -Architecture both -OutputDirectory "$env:RUNNER_TEMP\mackvm-windows"
+      - name: Run protocol self-test
+        shell: pwsh
+        run: .\scripts\test-windows.ps1

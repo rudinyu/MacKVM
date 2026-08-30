@@ -1,17 +1,14 @@
+using System.Security.Cryptography;
 using WindowsKVM.Protocol;
-using System.Runtime.InteropServices;
 
 namespace WindowsKVM;
 
 /// <summary>
-/// W3 console entry point. Pairing, authenticated Connect, Windows
-/// SendInput, and the emergency local-release shortcut run together.
+/// Windows desktop and console entry point. Pairing, authenticated Connect,
+/// Windows SendInput, and the emergency local-release shortcut run together.
 /// </summary>
 internal static class Program
 {
-    private const string ApplicationVersion = "1.02.02";
-    private const string ApplicationBuild = "82";
-
     private static async Task<int> Main(string[] args)
     {
         if (!OperatingSystem.IsWindows())
@@ -30,15 +27,41 @@ internal static class Program
         if (args.Contains("--version", StringComparer.OrdinalIgnoreCase))
         {
             Console.WriteLine(
-                $"WindowsKVM {ApplicationVersion} (build {ApplicationBuild})"
+                $"WindowsKVM {WindowsKvmRuntime.ApplicationVersion} "
+                    + $"(build {WindowsKvmRuntime.ApplicationBuild})"
             );
             return 0;
+        }
+
+        if (args.Contains("--list-paired", StringComparer.OrdinalIgnoreCase))
+        {
+            return ListPairedPeers();
+        }
+
+        if (args.Contains("--forget", StringComparer.OrdinalIgnoreCase))
+        {
+            var peerIDText = ReadOption(args, "--forget");
+            if (!Guid.TryParse(peerIDText, out var peerID))
+            {
+                Console.Error.WriteLine(
+                    "--forget requires a complete peer UUID. Run --list-paired first."
+                );
+                return 2;
+            }
+
+            return ForgetPairedPeer(peerID);
+        }
+
+        if (args.Length == 0 || args.Contains("--ui", StringComparer.OrdinalIgnoreCase))
+        {
+            return WindowsTrayApplication.Run();
         }
 
         if (!args.Contains("--pairing-listen", StringComparer.OrdinalIgnoreCase))
         {
             Console.WriteLine(
-                $"WindowsKVM {ApplicationVersion} (build {ApplicationBuild}); "
+                $"WindowsKVM {WindowsKvmRuntime.ApplicationVersion} "
+                    + $"(build {WindowsKvmRuntime.ApplicationBuild}); "
                     + $"W3 secure-session receiver; protocol v{ControlProtocolCompatibility.CurrentVersion}."
             );
             Console.WriteLine(
@@ -60,34 +83,17 @@ internal static class Program
         var autoAccept = args.Contains("--yes", StringComparer.OrdinalIgnoreCase);
         try
         {
-            using var credentials = WindowsIdentityStore.LoadOrCreate(name);
-            var trustStore = WindowsTrustStore.Load();
-            var model = RuntimeInformation.OSArchitecture == Architecture.Arm64
-                ? "Windows ARM64"
-                : "Windows x64";
-            // ECDsa instances are not used concurrently. Both pairing and
-            // secure-session responders share this short critical section.
-            var signingLock = new object();
-            await using var receiver = new PairingTcpReceiver(
-                credentials,
-                model,
-                port,
+            await using var runtime = new WindowsKvmRuntime(
+                name,
                 autoAccept,
-                trustStore.Record,
-                signingLock
+                enableConsoleInput: true,
+                pairingPort: port
             );
-            await using var secureReceiver = SecureSessionCapabilities
-                .ChaCha20Poly1305Supported
-                ? new SecureSessionTcpReceiver(
-                    credentials,
-                    trustStore,
-                    model,
-                    signingLock: signingLock,
-                    autoAcceptControl: autoAccept,
-                    promptConsent: receiver.PromptYesNoAsync
-                )
-                : null;
-            if (secureReceiver is null)
+            // The runtime owns listener and advertiser shutdown. Console mode
+            // only supplies the lifecycle wait; consent remains the shared
+            // receiver prompt so pairing and control cannot race stdin.
+            runtime.Start();
+            if (!runtime.SecureConnectAvailable)
             {
                 Console.Error.WriteLine(
                     "Secure Connect is disabled on this Windows build; "
@@ -95,32 +101,7 @@ internal static class Program
                         + "or later is required for ChaCha20-Poly1305. Pairing remains available."
                 );
             }
-            var pairingTask = receiver.RunAsync();
-            // Start the pairing receiver first so the shared console reader is
-            // ready before a secure Connect request can ask for consent.
-            if (secureReceiver is not null)
-            {
-                secureReceiver.Start();
-            }
-            if (secureReceiver is not null)
-            {
-                var completed = await Task.WhenAny(pairingTask, secureReceiver.Failure);
-                if (completed == secureReceiver.Failure)
-                {
-                    await secureReceiver.Failure;
-                }
-                else
-                {
-                    // Do not turn an unexpected pairing-listener failure into
-                    // a successful process exit while the secure listener is
-                    // still shutting down.
-                    await pairingTask;
-                }
-            }
-            else
-            {
-                await pairingTask;
-            }
+            await runtime.WaitForShutdownAsync(CancellationToken.None);
             return 0;
         }
         catch (Exception ex)
@@ -139,10 +120,79 @@ internal static class Program
         return index >= 0 && index + 1 < args.Length ? args[index + 1] : null;
     }
 
+    private static int ListPairedPeers()
+    {
+        try
+        {
+            var peers = WindowsTrustStore.Load().Snapshot();
+            if (peers.Count == 0)
+            {
+                Console.WriteLine("No paired Macs are stored on this Windows account.");
+                return 0;
+            }
+
+            foreach (var peer in peers)
+            {
+                Console.WriteLine(
+                    $"{peer.Name}\t{peer.Id:D}\t{Fingerprint(peer.SigningPublicKey)}"
+                );
+            }
+
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Could not read paired Macs: {ex.Message}");
+            return 1;
+        }
+    }
+
+    private static int ForgetPairedPeer(Guid peerID)
+    {
+        try
+        {
+            var store = WindowsTrustStore.Load();
+            var peer = store.Snapshot().FirstOrDefault(candidate => candidate.Id == peerID);
+            if (!store.Remove(peerID))
+            {
+                Console.Error.WriteLine(
+                    $"No paired Mac with ID {peerID:D} is stored on this Windows account."
+                );
+                return 1;
+            }
+
+            Console.WriteLine(
+                $"Forgot paired Mac {peer?.Name ?? peerID.ToString("D")}. "
+                    + "Pair again from MacKVM before connecting."
+            );
+            Console.WriteLine(
+                "If another WindowsKVM receiver is already running, restart it "
+                    + "or use its UI Forget action to revoke an active session."
+            );
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Could not forget paired Mac: {ex.Message}");
+            return 1;
+        }
+    }
+
+    private static string Fingerprint(byte[] publicKey)
+        => string.Join(
+            ":",
+            SHA256.HashData(publicKey)
+                .Select(value => value.ToString("X2"))
+        );
+
     private static void PrintUsage()
     {
         Console.WriteLine("Usage:");
+        Console.WriteLine("  WindowsKVM.exe                 Start the resident Windows UI and tray icon.");
+        Console.WriteLine("  WindowsKVM.exe --ui             Start the resident Windows UI and tray icon.");
         Console.WriteLine("  WindowsKVM.exe --pairing-listen [--name <name>] [--port <port>] [--yes]");
+        Console.WriteLine("  WindowsKVM.exe --list-paired");
+        Console.WriteLine("  WindowsKVM.exe --forget <peer-id>");
         Console.WriteLine("  WindowsKVM.exe --version");
         Console.WriteLine();
         Console.WriteLine(
@@ -152,6 +202,12 @@ internal static class Program
         Console.WriteLine("  --port            TCP port; 0 selects an available port (default).");
         Console.WriteLine(
             "  --yes             Auto-accept pairing and control requests (test-only convenience)."
+        );
+        Console.WriteLine(
+            "  --list-paired     List trusted Mac IDs and public-key fingerprints."
+        );
+        Console.WriteLine(
+            "  --forget          Remove one trusted Mac ID; pair again before connecting."
         );
         Console.WriteLine("  --version         Print the WindowsKVM application version and build.");
         Console.WriteLine();

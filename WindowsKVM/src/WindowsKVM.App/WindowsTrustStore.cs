@@ -8,7 +8,8 @@ namespace WindowsKVM;
 /// Stores the public identities approved during Windows pairing. Public keys
 /// do not require DPAPI, but the file is kept under the current user's
 /// LocalAppData directory and written atomically. A changed key for an
-/// existing identity is rejected rather than silently replacing trust.
+/// existing identity is rejected by default; replacement is only possible
+/// when the completed pairing flow has obtained an explicit user decision.
 /// </summary>
 internal sealed class WindowsTrustStore
 {
@@ -53,7 +54,107 @@ internal sealed class WindowsTrustStore
         }
     }
 
-    public void Record(PeerIdentity identity)
+    /// <summary>
+    /// Returns a stable snapshot of every Mac identity currently trusted by
+    /// this Windows account. Each identity owns a copy of its public key so a
+    /// caller cannot mutate the store's admission data outside the lock.
+    /// </summary>
+    public IReadOnlyList<PeerIdentity> Snapshot()
+    {
+        lock (gate)
+        {
+            return peers.Values
+                .OrderBy(peer => peer.Name, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(peer => peer.Id)
+                .Select(CloneIdentity)
+                .ToArray();
+        }
+    }
+
+    /// <summary>
+    /// Removes one trusted Mac identity and durably persists the new snapshot.
+    /// The operation is transactional across processes: a failed write
+    /// restores the last successfully loaded in-memory state.
+    /// </summary>
+    public bool Remove(Guid peerID)
+    {
+        if (peerID == Guid.Empty)
+        {
+            throw new ArgumentException("The peer ID must not be empty.", nameof(peerID));
+        }
+
+        lock (gate)
+        {
+            using var processMutex = new Mutex(false, TrustStoreMutexName);
+            var ownsProcessMutex = false;
+            try
+            {
+                try
+                {
+                    processMutex.WaitOne();
+                    ownsProcessMutex = true;
+                }
+                catch (AbandonedMutexException)
+                {
+                    ownsProcessMutex = true;
+                }
+
+                var previous = new Dictionary<Guid, PeerIdentity>(peers);
+                try
+                {
+                    ReloadLocked();
+                    if (!peers.Remove(peerID))
+                    {
+                        return false;
+                    }
+
+                    SaveLocked();
+                    return true;
+                }
+                catch
+                {
+                    peers.Clear();
+                    foreach (var entry in previous)
+                    {
+                        peers.Add(entry.Key, entry.Value);
+                    }
+
+                    throw;
+                }
+            }
+            finally
+            {
+                if (ownsProcessMutex)
+                {
+                    processMutex.ReleaseMutex();
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Returns whether an incoming identity would replace a different pinned
+    /// public key. The pairing receiver uses this only to add a warning to the
+    /// verification-code prompt; it does not by itself change trust.
+    /// </summary>
+    public bool HasDifferentKey(PeerIdentity identity)
+    {
+        lock (gate)
+        {
+            return peers.TryGetValue(identity.Id, out var trusted)
+                && !KeysEqual(trusted, identity);
+        }
+    }
+
+    /// <summary>
+    /// Records a completed, user-approved pairing. A changed key remains
+    /// fail-closed unless <paramref name="allowKeyReplacement"/> is true.
+    /// The return value is true when an existing key was replaced.
+    /// </summary>
+    public bool Record(
+        PeerIdentity identity,
+        bool allowKeyReplacement = false
+    )
     {
         ValidateIdentity(identity);
         lock (gate)
@@ -79,6 +180,7 @@ internal sealed class WindowsTrustStore
                 }
 
                 var previous = new Dictionary<Guid, PeerIdentity>(peers);
+                var replacedExistingKey = false;
                 try
                 {
                     ReloadLocked();
@@ -87,9 +189,14 @@ internal sealed class WindowsTrustStore
                     {
                         if (!KeysEqual(existing!, identity))
                         {
-                            throw new InvalidDataException(
-                                "The pairing peer key changed; forget the old peer before pairing again."
-                            );
+                            if (!allowKeyReplacement)
+                            {
+                                throw new InvalidDataException(
+                                    "The pairing peer key changed; explicitly approve re-pairing before replacing the old key."
+                                );
+                            }
+
+                            replacedExistingKey = true;
                         }
 
                         peers[identity.Id] = identity;
@@ -100,6 +207,7 @@ internal sealed class WindowsTrustStore
                     }
 
                     SaveLocked();
+                    return replacedExistingKey;
                 }
                 catch
                 {
@@ -229,6 +337,9 @@ internal sealed class WindowsTrustStore
                 lhs.SigningPublicKey,
                 rhs.SigningPublicKey
             );
+
+    private static PeerIdentity CloneIdentity(PeerIdentity identity)
+        => new(identity.Id, identity.Name, identity.SigningPublicKey);
 
     private sealed record StoredPeer(
         Guid Id,

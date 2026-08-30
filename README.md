@@ -106,23 +106,28 @@ The Windows component scope and current W3 feature status are also listed in
 the [WindowsKVM README](WindowsKVM/README.md).
 
 The Windows branch uses C#/.NET 8 for the native Windows side; Swift is not
-used for the Windows UI, tray integration, input APIs, or firewall setup. W3
-includes the platform-neutral protocol library, signed pairing state machine,
-console receiver, DPAPI-protected identity, dependency-free mDNS advertiser,
-authenticated encrypted secure Connect responder, strict control-message and
-input validation, Windows SendInput injection, release-all cleanup, and the
-Ctrl+Alt+Shift+Esc emergency return shortcut. It is still a console Windows
-KVM; WinUI 3, Raw Input capture, tray integration, and the final
-least-privilege Windows Firewall UX remain later work while keeping the same
-wire protocol. Secure Connect requires MacKVM's signed
-`disconnectSignalVersion` capability (introduced in MacKVM 1.100.00/build 75);
-pairing with older Mac builds remains possible, but secure-session admission
-fails closed until both endpoints are updated.
+used for the Windows UI, tray integration, input APIs, or firewall setup. The
+current Windows UI follows the macOS MacKVM panel order in a scrollable native
+Win32 window: identity/setup status, physical input path, nearby/paired peers,
+keyboard/mouse control, monitor guidance, and support information. It starts
+the signed pairing and secure-session receivers, shows pairing/control consent
+with native Windows dialogs, keeps a resident system-tray icon, and provides
+live status plus public support-information copy.
+The same host still supports the console `--pairing-listen` mode for scripted
+testing. It includes the platform-neutral protocol library, DPAPI-protected
+identity, dependency-free mDNS advertiser, authenticated encrypted secure
+Connect responder, strict control-message and input validation, Windows
+SendInput injection, release-all cleanup, and the Ctrl+Alt+Shift+Esc emergency
+return shortcut. This Windows beta is not compatible with the MacKVM 1.00.00
+release. Use a MacKVM build with the signed `disconnectSignalVersion`
+capability (introduced in MacKVM 1.100.00/build 75) on the Mac peer; an older
+peer is rejected with an explicit upgrade-required result instead of being
+silently downgraded.
 
 The publish targets are Windows x64 (`win-x64`, also called `x86_64`) and
 Windows ARM64 (`win-arm64`); 32-bit `i686` is intentionally unsupported. Run
 the script on a Windows build host with the .NET 8 SDK (Visual Studio 2022 is
-recommended for the later WinUI work):
+recommended for Windows desktop debugging):
 
 ```powershell
 .\scripts\build-windows.ps1 -Architecture x64
@@ -144,8 +149,10 @@ official
 [Windows app development](https://learn.microsoft.com/en-us/windows/apps/)
 and [.NET deployment](https://learn.microsoft.com/en-us/dotnet/core/deploying/)
 documentation when setting up a Windows build host.
+GitHub Actions also builds both Windows publish targets and runs the protocol
+self-test on a Windows runner.
 
-The W3 receiver uses dual-mode TCP listeners and advertises both A and AAAA
+The Windows receiver uses dual-mode TCP listeners and advertises both A and AAAA
 records through IPv4/IPv6 mDNS when those interfaces are available. It falls
 back to IPv4 when the host has no usable IPv6 interface. The macOS
 `scripts/ci.sh` runs the Windows checks automatically when `dotnet` is

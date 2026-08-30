@@ -2,6 +2,77 @@
 
 # 變更記錄
 
+## 1.02.08（build 88）— 2026-08-30
+
+本版本為 Windows console CLI 新增檢查與移除已配對 Mac trust pin 的指令。
+
+### 新增
+
+- 新增 `--list-paired`，列出每個受信任 Mac 的友善名稱、完整 peer ID 與公開金鑰指紋。
+- 新增 `--forget <peer-id>`，從 Windows trust store 移除指定 Mac；按 Connect 前必須重新 Pair。
+- 文件說明 one-shot CLI 只會修改持久化 trust；若已有 receiver 在執行，請重新啟動它，或使用 UI 的
+  Forget 動作關閉記憶體中的 active session。
+
+## 1.02.07（build 87）— 2026-08-30
+
+本版本加入 Windows 端的已配對 Mac 撤銷功能，避免 Forget 後留下過期 trust pin，導致下一次配對無法完成。
+
+### 新增
+
+- Windows UI 的 Simple mode 與 Advanced mode 都新增 **Forget paired Mac**。
+- 以交易式方式從 `%LOCALAPPDATA%\\MacKVM\\trusted-peers.json` 移除選取的 Mac 公開金鑰，並關閉該 Mac 的既有 secure session。
+- 啟動時載入既有 Windows trust list，因此重新啟動後仍可使用 Forget；Forget 後必須重新 Pair 才能 Connect。
+
+## 1.02.06（build 86）— 2026-08-30
+
+本版本讓 Mac identity 刻意重設後的重新配對變成明確且可檢查的流程，不再靜默取代已釘選的公開金鑰。
+
+### 修正
+
+- Secure Connect 遇到 peer key 改變時維持 fail closed。
+- Windows UI 與 console 配對提示顯示取代警告；只有簽章驗證碼流程在本機獲得同意後才會取代舊 pin。
+
+## 1.02.05（build 85）— 2026-08-30
+
+本版本讓 Windows companion UI 能在小螢幕自動採用精簡版面，同時保留完整的 macOS 對齊診斷資訊。
+
+### 新增
+
+- 小螢幕自動啟用 Simple mode，並在標題列提供 Simple／Advanced 模式切換。
+- Simple mode 保留 identity、就緒狀態、配對、控制權、防火牆、Refresh 與 Quit，不需長距離捲動。
+
+## 1.02.04（build 84）— 2026-08-30
+
+本版本讓 Windows companion UI 的資訊層級與 macOS 設定面板對齊，同時沿用相同的配對與
+secure-session runtime。
+
+### 新增
+
+- 新增可捲動且與 macOS 對齊的 Windows 狀態面板，包含設定就緒狀態、實體輸入路徑、附近／已配對
+  裝置、鍵盤滑鼠控制、螢幕說明與支援資訊區段。
+- 新增原生狀態顏色、即時已配對 peer／控制狀態更新、Windows 防火牆設定入口，以及本機金鑰指紋顯示。
+- 產生對應的 Windows x64 與 ARM64 UI 測試執行檔。
+
+## 1.02.03（build 83）— 2026-08-27
+
+本版本加入第一個可用的 Windows desktop host，同時保留 console 模式供自動化與診斷。
+
+### 新增
+
+- 新增原生 Win32 狀態視窗與常駐 Windows 系統匣圖示。
+- 配對驗證與已認證控制同意改用原生 Windows Yes／No 對話框，不必保持 console 視窗開啟。
+- 新增單一執行個體保護、關閉視窗隱藏到系統匣、明確 Quit 清理、runtime 狀態更新，以及公開的
+  **複製支援資訊**。
+- UI 與 CLI 共用同一套 runtime lifecycle，trust storage、mDNS 廣播、secure-session admission
+  與 release-all teardown 在兩種模式保持一致。
+- 新增最小權限與 per-monitor DPI 的 Windows application manifest。
+- GitHub Actions 新增原生 Windows runner，驗證 x64 與 ARM64 兩種 desktop publish。
+
+### 相容性
+
+- Windows beta 仍不相容於 MacKVM 1.00.00；請使用會簽署 `disconnectSignalVersion` 的 Mac build
+  （MacKVM 1.100.00／build 75 以上）。
+
 ## 1.02.02（build 82）— 2026-08-27
 
 本次修補完成 network recovery、鍵盤配置切換、版本文件與回歸測試的最後整理。
@@ -40,8 +111,9 @@ macOS lifecycle 修正同步到 Windows 開發分支。
 
 ### 相容性
 
-- 簽章配對仍與 MacKVM 1.00.00 以上版本相容。
-- Secure Connect 需要 MacKVM 1.100.00／build 75 以上；舊 peer 會明確回報需要升級。
+- Windows beta 不相容於 MacKVM 1.00.00 正式版。
+- 配對與 secure Connect 都需要包含簽名 `disconnectSignalVersion` capability 的 MacKVM build
+  （MacKVM 1.100.00／build 75 加入）；舊 peer 會明確回報需要升級。
 
 ## 1.01.02（build 79）— 2026-08-26
 

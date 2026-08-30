@@ -72,17 +72,19 @@ Developer ID Application、hardened runtime，並在公開發佈前完成 Apple 
 範圍與目前 W3 功能狀態請參閱 [WindowsKVM README](WindowsKVM/README.zh-TW.md)。
 
 Windows 端改用 C#/.NET 8，不用 Swift 處理 Windows UI、常駐列、輸入 API 或防火牆設定。
-W3 已包含跨平台 protocol library、簽章配對 state machine、console receiver、DPAPI
-保護的 identity、免外部套件的 mDNS 廣播器、驗證加密 Connect、嚴格的 control message／
-input 驗證、Windows SendInput 注入、釋放所有輸入狀態，以及 Ctrl+Alt+Shift+Esc 緊急交還
-快捷鍵。它仍是 console Windows KVM；WinUI 3、Raw Input 擷取、tray integration 與最小
-權限的 Windows Firewall UX 仍待後續實作，同時維持相同 wire protocol。Secure Connect 需要
-MacKVM 簽名的 `disconnectSignalVersion` capability（MacKVM 1.100.00／build 75 加入）；舊版
-Mac 仍可配對，但 secure-session admission 會 fail closed，直到兩端都更新。
+目前 Windows UI 以可捲動的原生 Win32 視窗沿用 macOS MacKVM 面板順序，包含 identity／設定狀態、
+實體輸入路徑、附近／已配對 peer、鍵盤滑鼠控制、螢幕說明與支援資訊。它會啟動簽章配對與
+secure-session receiver，以原生 Windows 對話框顯示配對／控制同意，提供常駐系統匣圖示、狀態資訊與公開支援資訊複製；仍保留
+`--pairing-listen` console 模式供腳本測試。功能包含跨平台 protocol library、DPAPI 保護的
+identity、免外部套件的 mDNS 廣播器、驗證加密 Connect、嚴格的 control message／input 驗證、
+Windows SendInput 注入、釋放所有輸入狀態，以及 Ctrl+Alt+Shift+Esc 緊急交還快捷鍵，同時維持
+相同 wire protocol。此 Windows beta **不相容於 MacKVM 1.00.00 正式版**。Mac peer 必須使用包含簽名
+`disconnectSignalVersion` capability 的 MacKVM build（MacKVM 1.100.00／build 75 加入）；
+舊 peer 會明確回報需要升級，不會靜默降級。
 
 支援的建置目標是 Windows x64（`win-x64`，也稱 `x86_64`）與 Windows ARM64（`win-arm64`），
-刻意不支援 32-bit `i686`。請在安裝 .NET 8 SDK 的 Windows 建置主機上執行（後續加入 WinUI
-後，建議使用含 Windows App SDK workload 的 Visual Studio 2022）：
+刻意不支援 32-bit `i686`。請在安裝 .NET 8 SDK 的 Windows 建置主機上執行（建議使用
+Visual Studio 2022 進行 Windows desktop 除錯）：
 
 ```powershell
 .\scripts\build-windows.ps1 -Architecture x64
@@ -109,9 +111,10 @@ pwsh ./scripts/build-windows.ps1 -Architecture both -Plan
 
 準備 Windows 建置主機時，請參閱官方的
 [Windows app development](https://learn.microsoft.com/en-us/windows/apps/) 與
-[.NET deployment](https://learn.microsoft.com/en-us/dotnet/core/deploying/) 說明。
+[.NET deployment](https://learn.microsoft.com/en-us/dotnet/core/deploying/) 說明。GitHub Actions
+也會在 Windows runner 建置兩種 Windows publish 目標並執行 protocol self-test。
 
-W3 receiver 使用 dual-mode TCP listener；主機有可用介面時，會透過 IPv4／IPv6 mDNS
+Windows receiver 使用 dual-mode TCP listener；主機有可用介面時，會透過 IPv4／IPv6 mDNS
 廣播 A 與 AAAA 記錄。若主機沒有可用 IPv6 介面，會回退到 IPv4。macOS 的
 `scripts/ci.sh` 在找到 `dotnet` 時會自動執行 Windows 檢查；沒有 Windows SDK 的 Mac
 會略過這部分。使用 `RUN_WINDOWS_CI=1 ./scripts/ci.sh` 可將 Windows 檢查設為必要。
