@@ -1,0 +1,26 @@
+# SwiftPM build products. The glob also covers ad-hoc copies such as
+# .build-before-review/ that reviews and bisects leave behind.
+.build*/
+.swiftpm/
+
+# Release artifacts produced by scripts/build-app.sh,
+# scripts/build-ddc-diagnostic.sh, and scripts/package-dmg.sh: MacKVM.app
+# bundles, per-architecture and universal output, dist/.staging, the
+# ddc-diagnostic binaries, and the packaged .dmg images.
+dist/
+
+# Xcode per-user state
+xcuserdata/
+*.xcuserstate
+
+# macOS Finder metadata
+.DS_Store
+
+# Local agent workflow, instruction, and review files. These stay on the
+# machine and must never reach GitHub; .codex/ was previously removed from
+# the tree for this reason.
+.claude/
+.codex/
+CLAUDE.md
+AGENTS.md
+CODEX_*.md

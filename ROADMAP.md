@@ -3,7 +3,7 @@
 [Architecture](ARCHITECTURE.md) · [Installation guide](INSTALL.md) ·
 [Security status](SECURITY.md) · [繁體中文](ROADMAP.zh-TW.md)
 
-This roadmap is written against the 1.00.00 source tree. Every gap below was
+This roadmap is written against the 1.100.02 source tree. Every gap below was
 confirmed in code rather than inferred from the documentation, and each item
 records the files a change would start from.
 
@@ -16,13 +16,13 @@ queues and buffers on every inbound path, and explicit receiver consent with
 safe teardown of held keys and buttons. Those areas need maintenance, not new
 design.
 
-What the project lacks is daily usability. MacKVM is currently correct but
-tiring to use: it forwards a narrow slice of input, requires a full
-request/consent round trip for every switch, and maps only one display.
+What the project lacks is daily usability. MacKVM still needs clipboard
+synchronization, edge crossing, and multi-display mapping, but its local input
+path now covers keyboard, mouse, and the public Quartz trackpad event surface.
 
 | Area | Current behavior | Starting point |
 | --- | --- | --- |
-| Forwarded input | Keyboard (with cross-layout remapping), mouse, scroll (with phase/momentum), and an allowlisted set of media keys; no clipboard yet | [`RemoteInputProtocol.swift:3`](Sources/MacKVMCore/RemoteInputProtocol.swift:3) |
+| Forwarded input | Keyboard (with cross-layout remapping), mouse, trackpad pointer/click/drag, high-resolution two-axis scroll (with line/pixel units, phase/momentum), pressure when exposed, and an allowlisted set of media keys; no clipboard yet | [`RemoteInputProtocol.swift:3`](Sources/MacKVMCore/RemoteInputProtocol.swift:3) |
 | Pairing transport | Either Mac can initiate; waiting Firewall/listener attempts can be canceled and retried without restarting the app | [`PeerDiscoveryService.swift:401`](Sources/MacKVM/PeerDiscoveryService.swift:401) |
 | Switching | Menu → Request → local one-time authorization for newly paired peers; Allow/Deny remains available when revoked | [`ControlCoordinator.swift:163`](Sources/MacKVM/ControlCoordinator.swift:163) |
 | Pointer mapping | Main display only; other screens clamp to its edge | [`InputServices.swift:1154`](Sources/MacKVM/InputServices.swift:1154) |
@@ -38,15 +38,15 @@ request/consent round trip for every switch, and maps only one display.
 | F2 | Edge crossing and pre-authorized peers | High | Medium | P0 |
 | F3 | Media and system key forwarding | High | Low | **Done** |
 | F4 | Multi-display mapping | Medium | Medium | P1 |
-| F5 | Scroll fidelity | Medium | Low | **Done** |
+| F5 | Trackpad pointer and scroll fidelity | Medium | Low | **Done** |
 | F6 | Keyboard layout remapping | Medium | Medium | **Done** |
 | F7 | Native DDC without external helper | Medium | Medium | **Done** |
 | F8 | Three or more Macs | Low | High | P2 |
 | F9 | Notarized release and updates | Low | Medium | P2 |
 | F10 | Connection diagnostics | Low | Low | P2 |
-| F11 | Trackpad gestures | Medium | Unknown | P3 |
+| F11 | High-level trackpad gestures | Medium | Unknown | P3 |
 | F12 | File transfer and drag and drop | Low | High | P3 |
-| F13 | Waking a sleeping Mac | Low | Low | P3 |
+| F13 | Sleep/wake reconnect | Low | Low | **Done** |
 
 Impact is measured against daily two-Mac use, not against feature parity with
 other KVM software.
@@ -137,12 +137,14 @@ already reserves a version range, so a v2 negotiation path exists.
 
 ### F5. Scroll fidelity — completed
 
-`RemoteInputEvent` now carries optional `scrollPhase` and
-`scrollMomentumPhase` fields mirroring `CGScrollPhase` and
-`CGMomentumScrollPhase`. A missing field means "no phase," so a plain mouse
-wheel and a legacy peer both produce exactly the payload they always did;
-only a trackpad's phased scroll stream adds the extra fields, letting the
-receiver reproduce macOS inertia instead of discrete steps.
+`RemoteInputEvent` now carries trackpad-compatible pointer pressure and optional
+scroll metadata: high-resolution fixed-point deltas, line/pixel units,
+continuous scrolling, `scrollPhase`, and `scrollMomentumPhase` mirroring
+`CGScrollPhase` and `CGMomentumScrollPhase`. A missing field means "no phase,"
+so a plain mouse wheel and a legacy peer remain compatible; a trackpad's
+precise, phased scroll stream lets the receiver reproduce macOS inertia instead
+of discrete steps. Click, secondary-click, drag, and pointer events use the
+same validated encrypted path.
 
 ### F6. Keyboard layout remapping — completed
 
@@ -286,19 +288,20 @@ bounded event-log indicators for diagnosing stuttering remote input.
 
 ## P3 — needs a spike first
 
-- **F11. Trackpad gestures.** Pinch to zoom and multi-finger swipes.
-  Synthesizing gesture events through CGEvent is limited and may require
-  private API; scope this only after a research spike.
+- **F11. High-level trackpad gestures.** Pinch to zoom, rotate, and
+  multi-finger workspace swipes remain outside the public `CGEvent` surface.
+  Keep them as a research item because synthesis may require private API or a
+  different event-injection layer.
 - **F12. File transfer and drag and drop.** Requires fragmentation,
   backpressure, and progress reporting, and materially widens the attack
   surface.
-- **F13. Waking a sleeping Mac.** Nothing works when the target is asleep.
-  Either a Wake-on-LAN magic packet or an option to hold the target awake while
-  paired.
+- F13 sleep/wake reconnect is complete: the active transport closes before
+  system sleep and the selected peer is retried after wake. Waking a Mac that
+  is already powered off or unreachable remains outside this app's scope.
 
 ## Suggested order
 
-F3, F5, F6, and F7 are done. **F1** is next: it is self-contained, leaves the
+F3, F5, F6, F7, and F13 are done. **F1** is next: it is self-contained, leaves the
 control state machine untouched, and — now that F3/F5/F6 have each added a
 protocol field and shipped safely — is a well-rehearsed shape of change to
 make.

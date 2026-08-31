@@ -5,7 +5,7 @@
 MacKVM is the native macOS client for the RemoteMac self-hosted relay.
 
 MacKVM is a native macOS app with both a menu-bar entry and a regular window
-for sharing one keyboard, mouse, and optional monitor switching between two
+for sharing a keyboard, mouse, and trackpad, with optional monitor switching, between two
 Macs on the same local network.
 
 The current MVP provides:
@@ -26,9 +26,12 @@ The current MVP provides:
   private keys, credentials, or network endpoints;
 - a persistent authenticated session using signed ephemeral P-256 key exchange,
   directional HKDF keys, ChaChaPoly encryption, and replay-protected counters.
-- validated keyboard, mouse, and scroll event forwarding over that encrypted
-  session, including trackpad scroll phase and momentum for native inertia and
-  an allowlisted set of media, volume, and brightness keys;
+- validated keyboard, mouse, and trackpad event forwarding over that encrypted
+  session, including high-resolution two-axis trackpad scrolling, scroll phase
+  and momentum, click/drag/secondary-click state, and the reported pressure
+  value, plus an allowlisted set of media, volume, and brightness keys (see
+  [Trackpad support scope](#trackpad-support-scope) for what gestures do not
+  cross the session);
 - a sequential Local Network, Input Monitoring, and Accessibility setup
   checklist that prevents overlapping macOS permission prompts and refreshes
   when MacKVM becomes active again;
@@ -36,8 +39,9 @@ The current MVP provides:
 - injected-event marking that prevents input feedback loops;
 - explicit Allow/Deny control consent on the receiving Mac, deterministic
   collision handling, and a receiver-side stop action;
-- explicit physical-input topology modes that prevent the HDMI-only Intel Mac
-  from claiming bidirectional input unless an external USB switch is present;
+- explicit physical-input topology modes that document the external USB path;
+  each Mac can still originate software control from its own keyboard, mouse,
+  and trackpad, regardless of CPU architecture or HDMI wiring;
 - network-path monitoring with bounded automatic reconnect after Wi-Fi,
   sleep/wake, or peer-service interruptions;
 - a control-protocol compatibility check before consent, cross-layout keyboard
@@ -48,14 +52,41 @@ The current MVP provides:
   actions, so the receiver can respond while the menu is closed;
 - local input suppression while controlling and an emergency
   `Control-Option-Command-Escape` return shortcut, plus a
-  `Control-Option-Command-K` shortcut for toggling keyboard/mouse ownership
+  `Control-Option-Command-K` shortcut for toggling keyboard, mouse, and trackpad ownership
   after the monitor input has been selected manually, and a
   `Control-Option-Command-O` guarded display-first shortcut that automatically
-  switches the display before transferring keyboard/mouse ownership like
+  switches the display before transferring keyboard, mouse, and trackpad ownership like
   **Show other Mac**;
 - native DDC/CI input switching through IOKit on both Apple Silicon and Intel,
   including display discovery, stable display selection, diagnostics, and a
   manual OSD fallback when the monitor or cable does not expose DDC/CI.
+
+## Trackpad support scope
+
+A shared trackpad acts as a pointing device, not as a gesture surface. This is
+a platform boundary, not a configuration problem: CoreGraphics publishes event
+constructors for keyboard, mouse, and scroll wheel only, so a gesture captured
+on the controlling Mac has no supported way to be injected on the receiving
+Mac.
+
+Forwarded:
+
+- pointer movement, left/right/other button clicks, drags, and click counts;
+- two-finger scrolling at trackpad resolution, including fractional deltas,
+  scroll phase, and momentum (inertia), in both pixel and line units;
+- the pressure value macOS reports on a click, carried alongside the event.
+
+Not forwarded:
+
+- pinch to zoom, rotate, and two-finger smart zoom (double tap);
+- three- and four-finger swipes, Mission Control, App Exposé, and Launchpad;
+- force-click *stages* — the pressure value travels, but the stage transition
+  that triggers Look Up, QuickLook, and variable-speed controls does not, so
+  force click does not activate on the receiving Mac;
+- any other multi-touch gesture.
+
+Unsupported gestures stay local: performing one on the controlling Mac affects
+that Mac, and nothing is sent to the peer.
 
 ## Requirements
 
@@ -126,7 +157,7 @@ The package is built from a fresh staging directory and writes a portable
 SHA-256 sidecar next to the DMG. Verify the pair from the `dist` directory:
 
 ```sh
-(cd dist && shasum -a 256 -c MacKVM-1.00.00-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.100.02-universal.dmg.sha256)
 ```
 
 For distribution to another Mac, sign with a Developer ID Application
@@ -207,11 +238,13 @@ matching **Settings** shortcut instead.
 In the MacKVM menu:
 
 1. Under **Physical input path**, keep **One keyboard on M5 Pro (USB-C)** for
-   the current wiring. Connect the keyboard and mouse to the M5 Pro directly
-   or through the MA270U USB hub. HDMI carries video only, so the Intel Mac
-   cannot originate a control request in this mode. If both Macs really see
-   the devices through an external USB switch, select **External USB switch
-   (bidirectional)** on both Macs and test both directions first.
+   the current external-device wiring. Connect the external keyboard and mouse
+   to the M5 Pro directly or through the MA270U USB hub. HDMI carries video
+   only, so those external USB devices remain attached to the M5 Pro; the
+   Intel Mac can nevertheless originate control from its own keyboard, mouse,
+   and trackpad. If both Macs see the external devices through a real USB
+   switch, select **External USB switch (bidirectional)** on both Macs and test
+   both directions first.
 2. On either Mac, select **Detect DDC-capable displays** and choose the display
    explicitly. MacKVM saves a stable native DDC selector rather than assuming
    display number 1; a display that is not rediscovered cannot enable automatic
@@ -233,18 +266,19 @@ In the MacKVM menu:
    fails, read the **DDC diagnostic**, check the direct cable path, and use the
    OSD input menu as the fallback. For a display-only route, use **Return
    display to this Mac**; during control, the emergency shortcut or the
-   receiver's **Return keyboard and mouse to [M5 Mac]** action restores the
+   receiver's **Return keyboard, mouse, and trackpad to [M5 Mac]** action restores the
    local route.
-   On the M5 Pro, **Show other Mac** also starts the guarded keyboard/mouse
-   hand-off when the control prerequisites are ready. **Share keyboard and
-   mouse with [Intel Mac]** remains the explicit equivalent; the Intel Mac
-   selects **Allow** unless seamless control was enabled for the paired M5 Pro.
+   On either Mac, **Show other Mac** also starts the guarded keyboard, mouse,
+   and trackpad hand-off when the control prerequisites are ready. **Share
+   keyboard, mouse, and trackpad with [other Mac]** remains the explicit
+   equivalent; the receiver selects **Allow** unless seamless control was
+   enabled for the paired peer.
 
 After the receiving Mac accepts the matching code, the initiating Mac must
 compare the same code and select **Confirm code**. Both signed decisions are
 required before MacKVM automatically attempts to connect the encrypted
 session. If the session remains idle, select **Connect** on a paired row. When
-one Mac selects **Request keyboard and mouse control**, the
+one Mac selects **Request keyboard, mouse, and trackpad control**, the
 controlling Mac must have both Input Monitoring and Accessibility so its
 active event tap can capture and suppress the physical input. The receiving
 Mac must also have Accessibility before it selects **Allow** or **Deny**. If its MacKVM menu is closed, macOS shows a
@@ -255,7 +289,7 @@ expired notification cannot start control. **Allow** requires macOS
 authentication when the receiver is locked. Only the explicit **Enable** setup
 action can show the optional macOS notification-permission prompt; otherwise
 MacKVM falls back to a visible menu-bar warning and the window/menu controls. It can always
-select **Return keyboard and mouse to [M5 Mac]** to release injected
+select **Return keyboard, mouse, and trackpad to [M5 Mac]** to release injected
 keys/buttons and return control to the controller. If macOS notifications are
 disabled, its KVM menu-bar icon shows a warning symbol and the same
 request remains in the menu.
@@ -273,23 +307,23 @@ by default, so the first request does not depend on seeing the receiving
 display or sharing a second keyboard. This is a local one-time authorization,
 not a wire-level grant; disable it from **Paired device information** to return
 to per-request Allow prompts. Use the emergency shortcut or the receiver's
-**Return keyboard and mouse to [M5 Mac]** action to stop an active or waiting
-remote-control request and restore the local display and keyboard.
+**Return keyboard, mouse, and trackpad to [M5 Mac]** action to stop an active or
+waiting remote-control request and restore the local display and input.
 
-For the MA270U wiring, the M5 Pro is the controller because the physical
-keyboard and mouse are connected to it. After sharing starts, press
+For the MA270U wiring, the M5 Pro owns the external keyboard and mouse, but
+either MacBook can be the software controller from its local keyboard, mouse,
+and trackpad. After sharing starts, press
 **Control-Option-Command-Escape** on the M5 Pro at any time to interrupt the
-session and return the keyboard and mouse locally. To switch back from the
-Intel Mac, open its MacKVM menu and select **Return keyboard and mouse to [M5
-Mac]**; the Intel receiver releases input and the monitor route returns to the
-M5 Pro.
+session and return input locally. The receiving Mac can select **Return
+keyboard, mouse, and trackpad to [other Mac]**; it releases injected input and
+the monitor route returns to the controller.
 The global **Control-Option-Command-K** shortcut is for a manually selected
-monitor route: it toggles keyboard/mouse ownership without running automatic
+monitor route: it toggles keyboard, mouse, and trackpad ownership without running automatic
 DDC display switching. It starts a request while idle and returns input while
 controlling or receiving.
 The **Control-Option-Command-O** shortcut follows the guarded display-first
 **Show other Mac** route: when this Mac owns the local route, it switches the
-display and then requests keyboard/mouse control; when this Mac is receiving
+display and then requests keyboard, mouse, and trackpad control; when this Mac is receiving
 control, it ends receiving and restores the controller's display and input.
 
 After an authenticated transport loss, MacKVM releases local input immediately
@@ -300,6 +334,12 @@ authorization can resume control without another prompt, while an opted-out
 peer must be granted again. If the keyboard layout changes while control is live,
 the receiver stops remote input and asks both users to choose the same macOS
 input source before trying again.
+
+When macOS is about to sleep, MacKVM closes the secure transport before network
+suspension so the peer immediately returns to local input. After wake, the
+previously selected paired peer is discovered and reconnected automatically;
+keyboard, mouse, and trackpad Hotkeys are then available without a manual
+Disconnect action.
 
 If the app cannot load its Keychain identity, the error view offers **Reset this
 Mac identity**. Use it only after confirming that the old identity should be
@@ -318,13 +358,19 @@ Chinese HTML manual, and the matching Markdown files in `docs/`.
 
 - Apple Silicon MacBook Pro: USB-C to the BenQ MA270U
 - Intel 2019 MacBook Pro: USB-C/Thunderbolt 3 to HDMI
-- Keyboard and mouse: connect to the M5 Pro directly or through the MA270U
-  USB hub. HDMI does not carry the monitor hub upstream to the Intel Mac.
+- External keyboard and mouse: connect to the M5 Pro directly or through the
+  MA270U USB hub. HDMI does not carry the monitor hub upstream to the Intel
+  Mac. The built-in keyboard, mouse, and trackpad on either Mac remain valid
+  local control sources.
 
-This is a one-way physical input topology: the M5 Pro can request control of
-the Intel Mac, while the Intel Mac can receive control. Select the app's
-**External USB switch (bidirectional)** mode only when a real USB switch makes
-the devices visible to both Macs.
+This is a one-way external USB topology, not a one-way software-control
+topology: either Mac can request control and the receiver can inject the full
+keyboard, mouse, and supported trackpad pointer/scroll event set. Select the
+app's **External USB switch (bidirectional)** mode only when a real USB switch
+makes the external devices visible to both Macs.
+
+See [Trackpad support scope](#trackpad-support-scope) for exactly which
+trackpad input crosses the session and which gestures stay local.
 
 This keeps DDC/CI communication on the more reliable USB-C connection.
 

@@ -103,6 +103,12 @@ final class ControlCoordinator: ObservableObject {
     private var activeOutboundRequestID: UUID?
     private var activeControlRequestCompletion: ((Bool) -> Void)?
     private var activeControlDisplayAlreadyRemote = false
+    /// Whether MacKVM owns the display route for the active outbound session.
+    /// Plain requests and the combined display-first flow switch the monitor
+    /// themselves and must restore it when control ends. The manual-monitor
+    /// hotkey (K) starts control after the user routed the display by hand,
+    /// so its session must never trigger a DDC switch in either direction.
+    private var activeControlManagesDisplayRoute = true
     private var activeInboundControlRequest: IncomingControlRequest?
     /// Published separately from `pendingIncomingControlRequest` because the
     /// request is cleared before Accessibility setup completes. Views must not
@@ -195,7 +201,7 @@ final class ControlCoordinator: ObservableObject {
             return false
         }
         guard localControlAllowed() else {
-            status = "This Mac has no physical keyboard/mouse path in the selected topology"
+            status = "Local input sharing is disabled in the selected topology"
             return false
         }
         guard !isRemoteInputTearingDown else {
@@ -240,6 +246,7 @@ final class ControlCoordinator: ObservableObject {
     @discardableResult
     func requestControl(
         displayAlreadyRemote: Bool = false,
+        managesDisplayRoute: Bool = true,
         completion: ((Bool) -> Void)? = nil
     ) -> Bool {
         guard canRequestControl() else {
@@ -252,6 +259,7 @@ final class ControlCoordinator: ObservableObject {
             activeOutboundRequestID = requestID
             activeControlRequestCompletion = completion
             activeControlDisplayAlreadyRemote = displayAlreadyRemote
+            activeControlManagesDisplayRoute = managesDisplayRoute
             status = "Waiting for the other Mac to grant control…"
             send(
                 ControlMessage.requestControl(
@@ -286,15 +294,20 @@ final class ControlCoordinator: ObservableObject {
     private func toggleControlFromHotKey(displayAlreadyRemote: Bool) {
         if isReceivingControl {
             endReceivingControl(
-                reason: "Hotkey returned keyboard and mouse to this Mac"
+                reason: "Hotkey returned keyboard, mouse, and trackpad locally"
             )
             return
         }
         if state == .controlling || state == .suspended {
-            stopControl(reason: "Hotkey returned keyboard and mouse locally")
+            stopControl(reason: "Hotkey returned keyboard, mouse, and trackpad locally")
             return
         }
-        _ = requestControl(displayAlreadyRemote: displayAlreadyRemote)
+        // The manual-monitor variant starts control on a display the user
+        // routed by hand; that session never owns the DDC route.
+        _ = requestControl(
+            displayAlreadyRemote: displayAlreadyRemote,
+            managesDisplayRoute: !displayAlreadyRemote
+        )
     }
 
     private func completeActiveControlRequest(_ succeeded: Bool) {
@@ -327,6 +340,7 @@ final class ControlCoordinator: ObservableObject {
         // the normal stop callback for requests that have not been
         // pre-routed, but do not enqueue a second restoration operation.
         let displayWasAlreadyRemote = activeControlDisplayAlreadyRemote
+        let sessionManagedDisplayRoute = activeControlManagesDisplayRoute
         requestTimeout?.cancel()
         requestTimeout = nil
         inputCapture.stopCapture()
@@ -336,6 +350,7 @@ final class ControlCoordinator: ObservableObject {
             state = machine.state
             activeOutboundRequestID = nil
             activeControlDisplayAlreadyRemote = false
+            activeControlManagesDisplayRoute = true
             if let requestID {
                 send(
                     ControlMessage(
@@ -348,7 +363,10 @@ final class ControlCoordinator: ObservableObject {
         if wasWaitingForControlGrant {
             completeActiveControlRequest(false)
         }
-        if wasControlling
+        // A live manual-monitor (K) session must end input without touching
+        // the display the user routed by hand; the plain and combined routes
+        // still restore the local display here.
+        if (wasControlling && sessionManagedDisplayRoute)
             || (wasWaitingForControlGrant && !displayWasAlreadyRemote) {
             onControllingStopped?()
         }
@@ -573,6 +591,7 @@ final class ControlCoordinator: ObservableObject {
                state == .controlling || state == .suspended {
                 let wasControlling = state == .controlling
                 let wasWaitingForControlGrant = state == .suspended
+                let sessionManagedDisplayRoute = activeControlManagesDisplayRoute
                 requestTimeout?.cancel()
                 requestTimeout = nil
                 inputCapture.stopCapture()
@@ -580,10 +599,13 @@ final class ControlCoordinator: ObservableObject {
                 state = machine.state
                 activeOutboundRequestID = nil
                 activeControlDisplayAlreadyRemote = false
+                activeControlManagesDisplayRoute = true
                 if wasWaitingForControlGrant {
                     completeActiveControlRequest(false)
                 }
-                if wasControlling {
+                // The peer ending a manual-monitor (K) session returns input
+                // only; the display stays on the route the user set by hand.
+                if wasControlling && sessionManagedDisplayRoute {
                     onControllingStopped?()
                 }
                 status = "The other Mac ended control; input is local"

@@ -33,7 +33,7 @@ Release check (from the M5 Pro) is also available:
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.00.00-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.100.02-universal.dmg.sha256)
 ```
 
 Expected: the app reports both `arm64` and `x86_64`, and an ad-hoc signature
@@ -98,7 +98,7 @@ scan before accepting a new model mapping.
 Expected:
 
 - **Show other Mac** on the M5 Pro selects HDMI 1 and starts the guarded
-  keyboard/mouse hand-off when control prerequisites are ready.
+  keyboard, mouse, and trackpad hand-off when control prerequisites are ready.
 - If control prerequisites are not ready, **Show other Mac** still performs
   the display-only route and leaves the physical input local.
 - A reconnect or additional display does not silently redirect DDC to display
@@ -118,17 +118,18 @@ Expected:
 ### Physical input path (P0)
 
 1. Leave **Physical input path** set to **One keyboard on M5 Pro (USB-C)**.
-2. Connect the keyboard and mouse to the M5 Pro directly or through the
-   MA270U USB hub. Do not assume the Intel HDMI cable carries USB data.
-3. On the Intel Mac, verify that **Request keyboard and mouse control** is disabled
-   in this mode, while the Intel Mac can still receive remote control.
+2. Connect the external keyboard and mouse to the M5 Pro directly or through
+   the MA270U USB hub. Do not assume the Intel HDMI cable carries USB data.
+3. On both Macs, verify that **Request keyboard, mouse, and trackpad control** is
+   available after setup, and that either Mac can receive remote control.
 4. If an external USB switch is installed, select **External USB switch
    (bidirectional)** on both Macs and verify that both macOS systems see the
-   keyboard and mouse before trying either control direction.
+   external keyboard and mouse before trying either control direction.
 
 Expected:
 
-- The recommended mode never advertises a false bidirectional HDMI path.
+- The recommended mode never advertises a false bidirectional HDMI USB path,
+  but it does not disable local software control from the Intel Mac.
 - The external-switch mode warns that hardware cannot be detected by software;
   selecting the mode after verifying both Macs see the devices is the user's
   acknowledgement, and it permits both directions.
@@ -192,9 +193,16 @@ Expected:
 ## 5. Secure reconnect
 
 1. Press **Connect**.
-2. Disconnect and reconnect from each Mac.
+2. Click **Disconnect** on the M5 Pro and then on the Intel Mac in separate
+   runs. In both directions, verify the peer also stops the session and the
+   local Mac does not immediately reconnect until **Connect** is selected.
 3. Quit one app, reopen it, and reconnect.
 4. Turn Wi-Fi off during a connection, then restore it.
+5. While the M5 Pro is actively controlling the Intel Mac, put the M5 Pro to
+   sleep. Confirm the Intel Mac releases remote input and reports a disconnected
+   session without requiring a manual **Disconnect** click.
+6. Wake the M5 Pro and wait for the secure session to reconnect. Confirm the
+  keyboard, mouse, and trackpad Hotkeys work without first disconnecting from the Intel Mac.
 
 Expected:
 
@@ -203,15 +211,17 @@ Expected:
   and mouse buttons.
 - Reconnect succeeds without repeating pairing; seamless-authorized peers can
   resume control without another Allow prompt.
+- A system sleep closes the old transport before networking suspends; wake
+  reconnects the previously selected peer and starts from local input.
 
-## 6. Keyboard and mouse control
+## 6. Keyboard, mouse, and trackpad control
 
 1. After pairing, open **Paired device information** on the receiver and verify
    **Automatically allow control from this Mac** is enabled for the paired
    controller.
-2. Close the receiver menu, then from the M5 Pro request control of the Intel
-   Mac. Verify control starts without a second Allow action and the monitor and
-   keyboard route agree.
+2. Close the receiver menu, then request control from the M5 Pro's or Intel
+   Mac's local keyboard, mouse, or trackpad. Verify control starts without a
+   second Allow action and the monitor and input route agree.
 3. Turn off **Automatically allow control from this Mac** on the receiver,
    then request control again after returning input locally.
 4. Verify the Intel Mac receives a native macOS notification naming the M5 Pro
@@ -221,7 +231,11 @@ Expected:
    must require authentication before it accepts the action.
 6. Open the menu and select **Allow**. Repeat once with **Deny** and once by
    waiting for the timeout.
-7. Type, move, click, drag, scroll, and use modifier shortcuts.
+7. Type, move, click, drag, and use modifier shortcuts. On a trackpad, test
+   pointer movement, primary click/tap, secondary click/two-finger click,
+   click-and-drag, and two-finger scrolling in both axes. When the trackpad
+   exposes them, test precise deltas, scroll start/continue/end phases,
+   inertial momentum, and pressure during a drag.
 8. Rapidly click at least four times immediately after selecting **Allow**.
 9. Move the pointer onto a secondary display, if connected.
 10. Hold a modifier and mouse button, then disconnect the network.
@@ -239,8 +253,8 @@ Expected:
     changing its underlying physical keyboard layout. Press keys throughout.
 16. Set the two Macs to genuinely different physical keyboard layouts in
     **System Settings → Keyboard → Input Sources** (for example US on one,
-    Dvorak or a European ABC layout on the other). Request keyboard and mouse
-    control, then type
+    Dvorak or a European ABC layout on the other). Request keyboard, mouse, and
+    trackpad control, then type
     letters, numbers, and symbol keys, including combinations that need Shift,
     Option, and Caps Lock on at least one of the two layouts.
 17. Still on differing layouts — ideally with one Mac set to a layout where
@@ -259,9 +273,12 @@ Expected:
     again from the same Mac.
 21. Restore both Macs to the same keyboard layout before continuing to the
     next section.
-22. If an older MacKVM build (from before cross-layout remapping) is
-    available, pair it with a current build, set the two Macs to differing
-    keyboard layouts, and request control from either side.
+22. If an older MacKVM build (from before the authenticated Disconnect
+    capability) is available, pair it with a current build and attempt a
+    secure connection from either side. Confirm the current build clearly says
+    both Macs must be updated before a secure session can start. Update both
+    Macs before continuing; do not use a mixed-version session for the
+    remaining control tests.
 23. If ISO or JIS keyboard hardware is available, set the two Macs to
     differing layouts including that hardware and type its layout-specific
     keys (for example the ISO key next to the left Shift key) during control.
@@ -283,14 +300,21 @@ Expected:
 - If notifications are disabled, MacKVM shows a warning symbol beside its
   keyboard menu-bar icon and preserves the manual Allow/Deny controls in the
   menu.
-- While controlling, input reaches only the receiving Mac.
-- The first keyboard/mouse event after **Allow** is not lost.
+- While controlling, keyboard, mouse, and trackpad input reaches only the
+  receiving Mac.
+- The first keyboard, mouse, or trackpad event after **Allow** is not lost.
+- Trackpad movement, primary/secondary clicks, dragging, precise two-axis
+  scrolling, and phase/momentum are preserved in both directions. Multi-touch
+  gestures are out of scope and must stay local to the controlling Mac: pinch,
+  rotate, smart zoom, three- and four-finger swipes, Mission Control, App
+  Exposé, and Launchpad. Force click must not activate on the receiver: the
+  pressure value is carried, but the stage transition is not.
 - Pointer coordinates remain bounded to the receiving main display.
 - Four-click sequences are delivered.
 - Disconnect/end paths release every held key and mouse button.
-- Using the emergency shortcut or the receiver's **Return keyboard and mouse
-  to [M5 Mac]** action while a request is active or waiting stops remote
-  capture and restores the local display and keyboard route.
+- Using the emergency shortcut or the receiver's **Return keyboard, mouse, and
+  trackpad to [M5 Mac]** action while a request is active or waiting stops
+  remote capture and restores the local display and input route.
 - After a display-only **Show other Mac**, **Return display to this Mac** is
   available even when the global emergency shortcut could not be registered.
 - A second inbound control request is denied without disturbing the active one.
@@ -318,11 +342,11 @@ Expected:
   status message, no stuck key or mouse button, local input still works
   immediately afterward — rather than injecting the wrong character, and a
   fresh control request from the same Mac succeeds normally afterward.
-- In step 20, the current build denies the older build's request before the
-  consent prompt when the layouts differ (status names the version gap)
-  rather than granting it and ending control on the first remappable
-  keystroke; requests with matching layouts, or from the older build acting
-  as receiver, are unaffected.
+- In step 20, a mixed-version secure session is rejected before any control
+  consent prompt, and the current build's status says both Macs must be
+  updated before connecting. This is an explicit compatibility gate for the
+  authenticated Disconnect protocol, rather than a silent downgrade to plain
+  EOF teardown.
 - In step 21, the ISO/JIS-specific keys type the correct character, not
   whatever an ANSI interpretation of the same position would produce.
 - The volume and brightness keys in step 22 change the setting only on the
@@ -335,37 +359,50 @@ Expected:
 ## 7. Safe return and monitor routing
 
 1. On the M5 Pro, select **Show other Mac** (or the explicit
-   **Share keyboard and mouse with [Intel Mac]** action) and verify that the
+   **Share keyboard, mouse, and trackpad with [Intel Mac]** action) and verify that the
    display switches before input capture starts.
 2. With the session connected and idle, press **Control-Option-Command-O** and
    verify that it follows the guarded **Show other Mac** route: the monitor
    switches first, then the control request starts without opening the menu.
    After the receiver accepts (when seamless control is disabled), verify that
-   the display and keyboard/mouse ownership move together.
-3. From the Mac that is receiving control, press **Control-Option-Command-O**
-   again and verify that receiving ends and the controller's display and
-   keyboard/mouse ownership are restored.
-4. Manually switch the monitor input with its OSD (or another verified manual
-   method), then press **Control-Option-Command-K** and verify that keyboard /
-   mouse control starts while the monitor route stays unchanged. Press K again
-   and verify that input returns locally; repeat the return check with
-   **Control-Option-Command-Escape**.
-5. Repeat using **Return keyboard and mouse to this Mac**.
-6. From the receiving Intel Mac, select **Return keyboard and mouse to [M5 Mac]** while a key and a
+   the display and keyboard, mouse, and trackpad ownership move together.
+3. While the M5 Pro is controlling, press **Control-Option-Command-O** a
+   second time on the M5 Pro itself (the same shared keyboard) and verify
+   that control ends and both the display and keyboard, mouse, and trackpad
+   ownership return to the M5 Pro.
+4. From the Mac that is receiving control, press **Control-Option-Command-O**
+   and verify that receiving ends and the controller's display and
+   keyboard, mouse, and trackpad ownership are restored. Forwarded hotkeys
+   are ignored as injected events, so this step needs a keyboard physically
+   attached to the receiving Mac.
+5. Manually switch the monitor input with its OSD (or another verified manual
+   method), then press **Control-Option-Command-K** and verify that keyboard,
+   mouse, and trackpad control starts while the monitor route stays unchanged. Press K again
+   and verify that input returns locally **and the monitor route still stays
+   on the manually selected input — no DDC switch fires when the K session
+   ends**; repeat the return check with **Control-Option-Command-Escape** and
+   with the receiver's **Return keyboard, mouse, and trackpad to [M5 Mac]**
+   action, confirming the manually routed monitor is untouched in all three.
+6. Repeat using **Return keyboard, mouse, and trackpad to this Mac**.
+7. From the receiving Intel Mac, select **Return keyboard, mouse, and trackpad to [M5 Mac]** while a key and a
    mouse button are held by the controlling Mac.
-7. Repeat the hotkey test from the receiving Mac when a bidirectional USB path
+8. Repeat the hotkey test from the receiving Mac when a bidirectional USB path
    is configured; verify it returns control to the controller.
-8. Repeat while DDC/CI is disabled or unavailable and confirm the OSD fallback.
-9. Quit MacKVM while the monitor shows the other Mac.
-10. Repeat step 9 while this Mac is receiving remote control.
+9. Repeat while DDC/CI is disabled or unavailable and confirm the OSD fallback.
+10. Quit MacKVM while the monitor shows the other Mac.
+11. Repeat step 10 while this Mac is receiving remote control.
 
 Expected:
 
 - The shortcut is consumed locally and immediately stops forwarding.
 - After a manual monitor-input selection, `Control-Option-Command-K` starts or
-  ends only the keyboard/mouse control route without opening the menu.
+  ends only the keyboard, mouse, and trackpad control route without opening the
+  menu; ending a K session — by K, Escape, or the peer's return action — never
+  triggers a DDC switch, and the monitor stays on the manually selected input.
+- A second controller-side `Control-Option-Command-O` press ends the combined
+  session and restores both the display and input to the controller.
 - `Control-Option-Command-O` follows the guarded display-first route: it moves
-  the display and keyboard/mouse ownership together, and from the receiving
+  the display and keyboard, mouse, and trackpad ownership together, and from the receiving
   side it ends receiving and restores both to the controller.
 - The receiving Mac can stop a live session without disconnecting or quitting;
   both held keys and mouse buttons are released before the peer is notified.
@@ -442,8 +479,8 @@ or macOS privacy prompts.
    then pair them with matching verification codes.
 2. With **One keyboard on M5 Pro (USB-C)** selected, connect the keyboard and
    mouse to the M5 Pro or the MA270U USB hub. Verify the M5 Pro can request
-   control and the Intel Mac can receive it, while the Intel Mac's request
-   action remains disabled.
+   control and the Intel Mac can receive it. Also repeat from the Intel Mac's
+   local keyboard, mouse, or trackpad.
 3. If using a physical USB switch, connect it to both Macs, select
    **External USB switch (bidirectional)** on both, verify both systems see the
    devices, and test control in both directions. Do not rely on the app to
@@ -451,10 +488,10 @@ or macOS privacy prompts.
 4. Use **Show other Mac** while watching the MA270U OSD: HDMI 1 (or the
    selected HDMI input) must show the Intel Mac. If DDC/CI fails, use the OSD
    manually and record the diagnostic text.
-5. During an active control session, test the menu-bar **Return keyboard and mouse to [M5 Mac]**
+5. During an active control session, test the menu-bar **Return keyboard, mouse, and trackpad to [M5 Mac]**
    action, the emergency shortcut, a network unplug/reconnect, and a quit.
-   Confirm the local keyboard/mouse returns and no key or mouse button remains
-   stuck.
+   Confirm the local keyboard, mouse, and trackpad route returns and no key,
+   mouse button, or trackpad gesture state remains stuck.
 
 ## Acceptance record
 
