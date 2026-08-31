@@ -169,18 +169,26 @@ peer。
 17. 連線閒置時按 `Control-Option-Command-O`，確認沿用受保護的 **Show other Mac**
     流程：先切換螢幕，再在不開啟選單的情況下開始控制請求；若未啟用無縫控制，接收端
     按 Allow 後，確認螢幕與鍵盤／滑鼠／觸控板控制權一起移動。
-18. 在正在接收控制的 Mac 再按一次 `Control-Option-Command-O`，確認接收結束，控制端的
-    螢幕與鍵盤／滑鼠／觸控板控制權都恢復。
-19. 先用螢幕 OSD（或其他已驗證的手動方式）切換螢幕輸入，再按
+18. 控制進行中，在控制端 M5 Pro（同一把共用鍵盤）再按一次
+    `Control-Option-Command-O`，確認控制結束，螢幕與鍵盤／滑鼠／觸控板控制權
+    都返回 M5 Pro。
+19. 在正在接收控制的 Mac 按 `Control-Option-Command-O`，確認接收結束，控制端的
+    螢幕與鍵盤／滑鼠／觸控板控制權都恢復。轉送過去的快捷鍵會被視為注入事件而忽略，
+    所以這一步需要接收端接有實體鍵盤。
+20. 先用螢幕 OSD（或其他已驗證的手動方式）切換螢幕輸入，再按
     `Control-Option-Command-K`，確認螢幕路由不變但鍵盤／滑鼠／觸控板控制權開始切換；再次按 K
-    確認控制權返回本機。再用 `Control-Option-Command-Escape` 重複返回測試，也用
+    確認控制權返回本機，**且螢幕路由仍停在手動選擇的輸入——K session 結束時不可
+    觸發任何 DDC 切換**。再用 `Control-Option-Command-Escape` 重複返回測試，也用
     **Return keyboard, mouse, and trackpad to this Mac** 結束控制；接收端 Intel Mac 按
-    **Return keyboard, mouse, and trackpad to [M5 Mac]** 返回。
-20. 若使用雙向 USB switch，在接收端手動切好螢幕後按 `Control-Option-Command-K`，確認
+    **Return keyboard, mouse, and trackpad to [M5 Mac]** 返回——這三種結束方式都不可
+    動到手動路由的螢幕。
+21. 若使用雙向 USB switch，在接收端手動切好螢幕後按 `Control-Option-Command-K`，確認
     控制權切換到另一端，再按一次返回。
 
 預期結果：手動切好螢幕輸入後，`Control-Option-Command-K` 只切換鍵盤／滑鼠／觸控板控制權，
-不會啟動自動 DDC 螢幕路由；可在閒置、控制中與接收中切換正確控制狀態；
+不會啟動自動 DDC 螢幕路由——不論用 K、Escape 或對端的返回動作結束，螢幕都停在手動
+選擇的輸入；控制端再按一次 `Control-Option-Command-O` 會結束合併 session，螢幕與
+輸入一起返回控制端；可在閒置、控制中與接收中切換正確控制狀態；
 `Control-Option-Command-O` 會沿用受保護的先切螢幕流程，讓螢幕與鍵盤／滑鼠／觸控板控制權一起移動，
 並能從接收端結束接收、同時恢復兩者；新配對且啟用無縫控制時不需再次按 Allow；關閉後，接收端按 Allow 前不會抑制本機輸入；控制結束、斷線與取消後不會留下按住
 的按鍵或滑鼠按鈕；過期通知不能授權另一個請求；切換輸入法不再誤判為配置不符；

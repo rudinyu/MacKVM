@@ -366,28 +366,41 @@ Expected:
    switches first, then the control request starts without opening the menu.
    After the receiver accepts (when seamless control is disabled), verify that
    the display and keyboard, mouse, and trackpad ownership move together.
-3. From the Mac that is receiving control, press **Control-Option-Command-O**
-   again and verify that receiving ends and the controller's display and
-   keyboard, mouse, and trackpad ownership are restored.
-4. Manually switch the monitor input with its OSD (or another verified manual
+3. While the M5 Pro is controlling, press **Control-Option-Command-O** a
+   second time on the M5 Pro itself (the same shared keyboard) and verify
+   that control ends and both the display and keyboard, mouse, and trackpad
+   ownership return to the M5 Pro.
+4. From the Mac that is receiving control, press **Control-Option-Command-O**
+   and verify that receiving ends and the controller's display and
+   keyboard, mouse, and trackpad ownership are restored. Forwarded hotkeys
+   are ignored as injected events, so this step needs a keyboard physically
+   attached to the receiving Mac.
+5. Manually switch the monitor input with its OSD (or another verified manual
    method), then press **Control-Option-Command-K** and verify that keyboard,
    mouse, and trackpad control starts while the monitor route stays unchanged. Press K again
-   and verify that input returns locally; repeat the return check with
-   **Control-Option-Command-Escape**.
-5. Repeat using **Return keyboard, mouse, and trackpad to this Mac**.
-6. From the receiving Intel Mac, select **Return keyboard, mouse, and trackpad to [M5 Mac]** while a key and a
+   and verify that input returns locally **and the monitor route still stays
+   on the manually selected input — no DDC switch fires when the K session
+   ends**; repeat the return check with **Control-Option-Command-Escape** and
+   with the receiver's **Return keyboard, mouse, and trackpad to [M5 Mac]**
+   action, confirming the manually routed monitor is untouched in all three.
+6. Repeat using **Return keyboard, mouse, and trackpad to this Mac**.
+7. From the receiving Intel Mac, select **Return keyboard, mouse, and trackpad to [M5 Mac]** while a key and a
    mouse button are held by the controlling Mac.
-7. Repeat the hotkey test from the receiving Mac when a bidirectional USB path
+8. Repeat the hotkey test from the receiving Mac when a bidirectional USB path
    is configured; verify it returns control to the controller.
-8. Repeat while DDC/CI is disabled or unavailable and confirm the OSD fallback.
-9. Quit MacKVM while the monitor shows the other Mac.
-10. Repeat step 9 while this Mac is receiving remote control.
+9. Repeat while DDC/CI is disabled or unavailable and confirm the OSD fallback.
+10. Quit MacKVM while the monitor shows the other Mac.
+11. Repeat step 10 while this Mac is receiving remote control.
 
 Expected:
 
 - The shortcut is consumed locally and immediately stops forwarding.
 - After a manual monitor-input selection, `Control-Option-Command-K` starts or
-  ends only the keyboard, mouse, and trackpad control route without opening the menu.
+  ends only the keyboard, mouse, and trackpad control route without opening the
+  menu; ending a K session — by K, Escape, or the peer's return action — never
+  triggers a DDC switch, and the monitor stays on the manually selected input.
+- A second controller-side `Control-Option-Command-O` press ends the combined
+  session and restores both the display and input to the controller.
 - `Control-Option-Command-O` follows the guarded display-first route: it moves
   the display and keyboard, mouse, and trackpad ownership together, and from the receiving
   side it ends receiving and restores both to the controller.

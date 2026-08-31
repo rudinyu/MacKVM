@@ -2,6 +2,16 @@
 
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Ending a `Control-Option-Command-K` session — by K, Escape, or the peer's
+  return action — no longer fires a DDC switch. The manual-monitor session is
+  now tracked as not owning the display route, so only the plain and combined
+  (`Control-Option-Command-O`) routes restore the local display when control
+  ends, matching the documented K contract of moving input only.
+
 ## 1.100.01 (build 76) — 2026-08-26
 
 This patch release hardens cross-Mac input and secure-session teardown after
