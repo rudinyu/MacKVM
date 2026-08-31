@@ -6,7 +6,7 @@ param(
     [ValidateSet("debug", "release")]
     [string]$Configuration = "release",
 
-    [string]$Project = "WindowsKVM/src/WindowsKVM.App/WindowsKVM.App.csproj",
+    [string]$Project = "WindowsKVM/src/WindowsKVM.Desktop/WindowsKVM.Desktop.csproj",
 
     [string]$OutputDirectory = "",
 

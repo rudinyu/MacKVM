@@ -17,9 +17,9 @@ CODEX_FEATURE_AUDIT.md
 **/.build/
 build/
 **/build/
-# Only the MacKVM bundle is an application artifact; do not use a generic
-# *.app pattern because WindowsKVM.App is a tracked source directory.
-MacKVM.app/
+# Ignore macOS application bundles at any depth. The Windows source project is
+# named WindowsKVM.Desktop so Finder does not mistake its directory for a .app.
+*.app/
 *.dmg
 *.dmg.sha256
 ddc-diagnostic-*

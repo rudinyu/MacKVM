@@ -71,7 +71,7 @@ if [[ "$run_windows_ci" != "0" && "$run_windows_ci" != "false" ]] \
       ;;
   esac
   dotnet build \
-    WindowsKVM/src/WindowsKVM.App/WindowsKVM.App.csproj \
+    WindowsKVM/src/WindowsKVM.Desktop/WindowsKVM.Desktop.csproj \
     --configuration Release \
     -p:EnableWindowsTargeting=true
   dotnet publish \

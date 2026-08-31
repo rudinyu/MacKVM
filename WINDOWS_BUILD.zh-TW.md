@@ -87,7 +87,7 @@ Windows 建置檢查。
 .\WindowsKVM.exe --version
 ```
 
-目前 UI 測試 build 應顯示 `WindowsKVM 1.02.09 (build 89)`。
+目前 UI 測試 build 應顯示 `WindowsKVM 1.02.10 (build 90)`。
 
 在 Windows publish 後啟動常駐 UI：
 
@@ -194,7 +194,7 @@ Plan 模式不會建立 `dist/windows`。
 
 ```powershell
 .\scripts\build-windows.ps1 `
-  -Project WindowsKVM/src/WindowsKVM.App/WindowsKVM.App.csproj `
+  -Project WindowsKVM/src/WindowsKVM.Desktop/WindowsKVM.Desktop.csproj `
   -OutputDirectory dist/windows-local `
   -Architecture x64
 ```

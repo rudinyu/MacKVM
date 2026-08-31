@@ -14,6 +14,12 @@ control lifecycle fixes while retaining the Windows companion changes.
   without triggering an unwanted DDC display switch.
 - Add regression coverage for local and peer-ended manual-monitor sessions.
 
+### Changed
+
+- Rename the Windows application source directory from `WindowsKVM.App` to
+  `WindowsKVM.Desktop` so macOS Finder does not present the tracked source as
+  an application bundle. Build outputs remain under the ignored `dist/` path.
+
 ## 1.02.09 (build 89) — 2026-08-31
 
 This release hardens the Windows companion after the P1/P2 review findings.

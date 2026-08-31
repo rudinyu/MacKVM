@@ -12,6 +12,12 @@
   還回本機，不會意外觸發 DDC 螢幕輸入切換。
 - 新增本機結束與 peer 結束手動螢幕工作階段的回歸測試。
 
+### 變更
+
+- 將 Windows 應用程式原始碼資料夾從 `WindowsKVM.App` 改名為
+  `WindowsKVM.Desktop`，避免 macOS Finder 將追蹤中的原始碼誤認為應用程式 bundle。
+  建置產物仍位於已忽略的 `dist/` 路徑。
+
 ## 1.02.09（build 89）— 2026-08-31
 
 本版修正 Windows companion 在 P1／P2 review 中發現的問題。

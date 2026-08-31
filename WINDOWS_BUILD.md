@@ -94,7 +94,7 @@ Confirm the executable before starting a test:
 .\WindowsKVM.exe --version
 ```
 
-The current UI test build reports `WindowsKVM 1.02.09 (build 89)`.
+The current UI test build reports `WindowsKVM 1.02.10 (build 90)`.
 
 After publishing on Windows, start the resident UI:
 
@@ -224,7 +224,7 @@ The script accepts a custom project and output directory for experiments:
 
 ```powershell
 .\scripts\build-windows.ps1 `
-  -Project WindowsKVM/src/WindowsKVM.App/WindowsKVM.App.csproj `
+  -Project WindowsKVM/src/WindowsKVM.Desktop/WindowsKVM.Desktop.csproj `
   -OutputDirectory dist/windows-local `
   -Architecture x64
 ```
