@@ -43,7 +43,7 @@
 <body>
   <main>
     <header>
-      <div class="badge">MacKVM 1.100.01</div>
+      <div class="badge">MacKVM 1.100.02</div>
       <h1>MacKVM 使用手冊</h1>
       <p class="lede">提供選單列入口與一般控制視窗，讓兩台 MacBook Pro 共用一組鍵盤、滑鼠與觸控板，並可選擇切換 BenQ MA270U 螢幕的 macOS app。</p>
       <p><a href="USER_MANUAL.html" lang="en">English Version</a> · <a href="USER_MANUAL.zh-TW.md">Markdown 版本</a></p>
@@ -98,7 +98,7 @@
       <p>要建立 DMG，可使用：</p>
       <pre><code>./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist &amp;&amp; shasum -a 256 -c MacKVM-1.100.01-universal.dmg.sha256)</code></pre>
+(cd dist &amp;&amp; shasum -a 256 -c MacKVM-1.100.02-universal.dmg.sha256)</code></pre>
       <p>DMG 會從乾淨的暫存目錄建立，並在旁邊產生可攜式 SHA-256 檔案；驗證結果應顯示 <strong>OK</strong>。</p>
       <p>未提供 Developer ID 時是 ad-hoc 簽章，只適合本機測試；跨電腦散布前請用
         <code>--sign "Developer ID Application: …" --require-developer-id</code>，
@@ -256,7 +256,7 @@
     </section>
 
     <footer>
-      <p>MacKVM 使用手冊 · 對應版本 1.100.01 · 最後更新 2026-08-26</p>
+      <p>MacKVM 使用手冊 · 對應版本 1.100.02 · 最後更新 2026-08-31</p>
     </footer>
   </main>
 </body>

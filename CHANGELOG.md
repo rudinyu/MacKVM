@@ -2,7 +2,7 @@
 
 # Changelog
 
-## Unreleased
+## 1.100.02 (build 77) — 2026-08-31
 
 ### Fixed
 
@@ -11,6 +11,10 @@
   now tracked as not owning the display route, so only the plain and combined
   (`Control-Option-Command-O`) routes restore the local display when control
   ends, matching the documented K contract of moving input only.
+- Extend the manual acceptance path to test the controller-side second
+  `Control-Option-Command-O` press when only the shared keyboard is attached,
+  while documenting that the receiver-side hotkey test requires a physical
+  keyboard on the receiver.
 
 ## 1.100.01 (build 76) — 2026-08-26
 
