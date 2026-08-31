@@ -2,6 +2,18 @@
 
 # Changelog
 
+## 1.02.10 (build 90) — 2026-08-31
+
+This maintenance release syncs the macOS core with the latest cross-Mac
+control lifecycle fixes while retaining the Windows companion changes.
+
+### Fixed
+
+- Keep the manual `Control-Option-Command-K` monitor route under the user's
+  control; ending that session returns keyboard, mouse, and trackpad input
+  without triggering an unwanted DDC display switch.
+- Add regression coverage for local and peer-ended manual-monitor sessions.
+
 ## 1.02.09 (build 89) — 2026-08-31
 
 This release hardens the Windows companion after the P1/P2 review findings.

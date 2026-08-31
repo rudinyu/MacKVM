@@ -121,6 +121,60 @@ final class ControlCoordinatorTests: XCTestCase {
         XCTAssertEqual(automaticRouteStartCount, 0)
     }
 
+    func testManualMonitorHotKeyStopKeepsTheMonitorRoute() {
+        let fixture = makeFixture()
+        var routeRestoreCount = 0
+        fixture.coordinator.onControllingStopped = {
+            routeRestoreCount += 1
+        }
+
+        fixture.capture.onSwitchControl?()
+        guard let requestID = fixture.transport.sentMessages.first?.requestID
+        else {
+            XCTFail("manual monitor hotkey did not send a control request")
+            return
+        }
+        fixture.transport.deliver(controlMessage(.controlGranted, requestID))
+        drainMainQueue()
+        XCTAssertEqual(fixture.coordinator.state, .controlling)
+
+        // The K session started on a display the user routed manually, so
+        // ending it must return input without triggering a DDC switch.
+        fixture.capture.onSwitchControl?()
+
+        XCTAssertEqual(fixture.coordinator.state, .connected)
+        XCTAssertEqual(routeRestoreCount, 0)
+        XCTAssertTrue(
+            fixture.transport.sentMessages.contains(
+                controlMessage(.endControl, requestID)
+            )
+        )
+    }
+
+    func testPeerEndingManualMonitorSessionKeepsTheMonitorRoute() {
+        let fixture = makeFixture()
+        var routeRestoreCount = 0
+        fixture.coordinator.onControllingStopped = {
+            routeRestoreCount += 1
+        }
+
+        fixture.capture.onSwitchControl?()
+        guard let requestID = fixture.transport.sentMessages.first?.requestID
+        else {
+            XCTFail("manual monitor hotkey did not send a control request")
+            return
+        }
+        fixture.transport.deliver(controlMessage(.controlGranted, requestID))
+        drainMainQueue()
+        XCTAssertEqual(fixture.coordinator.state, .controlling)
+
+        fixture.transport.deliver(controlMessage(.endControl, requestID))
+        drainMainQueue()
+
+        XCTAssertEqual(fixture.coordinator.state, .connected)
+        XCTAssertEqual(routeRestoreCount, 0)
+    }
+
     func testSwitchHotKeyReturnsControlLocally() {
         let fixture = makeFixture()
         XCTAssertTrue(fixture.coordinator.requestControl())

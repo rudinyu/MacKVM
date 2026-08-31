@@ -4,7 +4,25 @@
 CODEX_CLAUDE_REVIEW.md
 CODEX_REVIEW.md
 CODEX_FEATURE_AUDIT.md
-dist/
+
+# Release artifacts from both macOS and Windows builds. Keep the root rule
+# explicit for MacKVM output and the recursive rule for Windows companion
+# packages or any future platform-specific staging directory.
+/dist/
+**/dist/
+
+# macOS/Xcode and SwiftPM build products. App bundles, disk images, checksums,
+# and standalone diagnostics are generated under dist/ but remain ignored even
+# if a local script is changed to emit them elsewhere.
+**/.build/
+build/
+**/build/
+# Only the MacKVM bundle is an application artifact; do not use a generic
+# *.app pattern because WindowsKVM.App is a tracked source directory.
+MacKVM.app/
+*.dmg
+*.dmg.sha256
+ddc-diagnostic-*
 
 # Windows/.NET build outputs.
 **/bin/
