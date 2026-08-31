@@ -6,7 +6,7 @@ WindowsKVM 是 MacKVM 的 Windows companion。目前 Windows 版包含原生 Win
 host，可在區域網路上與 MacKVM 配對、完成 secure Connect 驗證，並接收加密鍵盤／滑鼠控制；
 另外保留 console 模式供自動化與防火牆診斷。
 
-## 目前功能 — 1.02.08（build 88）
+## 目前功能 — 1.02.09（build 89）
 
 Windows host 已包含：
 
@@ -62,7 +62,10 @@ Windows 狀態視窗沿用 macOS MacKVM 面板的資訊順序，並提供兩種�
 2. **設定這台 PC**：Local Network、Input Monitoring、Accessibility、防火牆設定、輸入就緒、
    控制請求通知與重新整理。
 3. **實體輸入路徑**：鍵盤／滑鼠／觸控板擁有者摘要與 Windows `SendInput` 路徑。
-4. **附近的 Mac**：配對 listener 狀態與最近配對的 Mac；Pair 與 Connect 仍由 MacKVM peer 發起。
+   選擇 **Local Windows input only** 會停用遠端控制請求（並釋放目前控制權）；切回第一個選項
+   才允許已配對的 Mac 再次請求控制。
+4. **附近的 Mac**：配對 listener 狀態與所有已信任 Mac 的選擇器（包含短裝置 ID）；先選取
+   peer 再使用 **Forget paired Mac**。Pair 與 Connect 仍由 MacKVM peer 發起。
 5. **鍵盤、滑鼠與觸控板**：權限狀態、目前控制狀態與本機交還快捷鍵。
 6. **螢幕輸入**：說明螢幕切換是選用功能，仍由 MacKVM 或螢幕 OSD 控制。
 7. **已配對裝置資訊**：目前 Mac 的公開 identity、**Forget paired Mac**、本機 identity 詳細資料與公開的

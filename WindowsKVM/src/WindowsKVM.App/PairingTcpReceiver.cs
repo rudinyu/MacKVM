@@ -31,7 +31,7 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
     private readonly string model;
     private readonly int requestedPort;
     private readonly bool autoAccept;
-    private readonly Action<PeerIdentity>? pairingCompleted;
+    private readonly Action<PeerIdentity, bool>? pairingCompleted;
     private readonly Func<PeerIdentity, string, bool, CancellationToken, Task<bool>>? pairingConsent;
     private readonly Func<PeerIdentity, bool>? peerKeyChanged;
     private readonly Action<string>? status;
@@ -63,7 +63,7 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
         string model,
         int requestedPort,
         bool autoAccept,
-        Action<PeerIdentity>? pairingCompleted = null,
+        Action<PeerIdentity, bool>? pairingCompleted = null,
         object? signingLock = null,
         Func<PeerIdentity, string, bool, CancellationToken, Task<bool>>? pairingConsent = null,
         Func<PeerIdentity, bool>? peerKeyChanged = null,
@@ -279,6 +279,7 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
         using var outputLock = new SemaphoreSlim(1, 1);
         var buffer = new List<byte>();
         var readBuffer = new byte[16 * 1024];
+        var localConsentAccepted = false;
 
         void ResolveConsent(bool accepted)
         {
@@ -359,7 +360,7 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
                         // frame. If the local file cannot be updated, do not
                         // advertise a pairing that secure-session admission
                         // cannot honor.
-                        RecordPairingCompletion(session);
+                        RecordPairingCompletion(session, localConsentAccepted);
                     }
 
                     await SendResultAsync(stream, result, outputLock, token);
@@ -383,7 +384,8 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
                             token,
                             result.VerificationCode,
                             outputLock,
-                            ResolveConsent
+                            ResolveConsent,
+                            accepted => localConsentAccepted = accepted && !autoAccept
                         );
                     }
 
@@ -458,7 +460,8 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
         CancellationToken token,
         string code,
         SemaphoreSlim outputLock,
-        Action<bool> resolveConsent
+        Action<bool> resolveConsent,
+        Action<bool> setLocalConsent
     )
     {
         var peer = session.Peer;
@@ -534,6 +537,11 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
             Console.WriteLine($"Pairing code: {code} (auto-accepting)");
         }
 
+        // Replacement authorization is tied to this explicit local decision,
+        // not to the receiver's auto-accept mode. The caller carries it to
+        // the durable completion callback for this exact connection.
+        setLocalConsent(accepted);
+
         PairingSessionResult result;
         try
         {
@@ -546,7 +554,10 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
             {
                 // See the main receive loop: trust must be durable before the
                 // final completion frame is released to the peer.
-                RecordPairingCompletion(session);
+                RecordPairingCompletion(
+                    session,
+                    allowKeyReplacement: accepted && !autoAccept
+                );
             }
 
             await SendResultAsync(stream, result, outputLock, token);
@@ -565,13 +576,17 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
             // reason to fault the prompt task. Cancel this connection so the
             // outer finally releases both admission slots deterministically.
             resolveConsent(false);
+            throw;
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
         }
     }
 
-    private void RecordPairingCompletion(PairingSession session)
+    private void RecordPairingCompletion(
+        PairingSession session,
+        bool allowKeyReplacement
+    )
     {
         if (session.Peer is not { } peer || pairingCompleted is null)
         {
@@ -581,7 +596,7 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
         // Let persistence failures abort the final completion path. The
         // caller will report the failure and the peer will not receive a
         // success frame that cannot be honored by the secure listener.
-        pairingCompleted(peer);
+        pairingCompleted(peer, allowKeyReplacement);
     }
 
     private void PublishStatus(string message)

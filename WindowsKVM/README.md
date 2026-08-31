@@ -8,7 +8,7 @@ authenticate a secure Connect session, and receive keyboard/mouse control over
 that encrypted session. A console mode remains available for automation and
 firewall diagnostics.
 
-## Current feature set — 1.02.08 (build 88)
+## Current feature set — 1.02.09 (build 89)
 
 The Windows host includes:
 
@@ -85,9 +85,12 @@ The full Advanced view contains:
    firewall settings, input readiness, control-request notifications, and a
    refresh action.
 3. **Physical input path** — the keyboard/mouse/trackpad ownership summary and
-   the Windows `SendInput` path.
-4. **Nearby Macs** — pairing listener state and the most recently paired Mac;
-   Pair and Connect are initiated from the MacKVM peer.
+   the Windows `SendInput` path. **Local Windows input only** disables remote
+   control admission (and releases any active grant); switch back to the first
+   option to allow a paired Mac to request control again.
+4. **Nearby Macs** — pairing listener state and a selector containing every
+   trusted Mac (including its short device ID); choose the peer before using
+   **Forget paired Mac**. Pair and Connect are initiated from the MacKVM peer.
 5. **Keyboard, mouse, and trackpad** — permission state, current control state,
    and the local-return hotkey.
 6. **Monitor input** — explains that display switching is optional and remains

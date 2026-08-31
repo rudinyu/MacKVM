@@ -2,6 +2,24 @@
 
 # Changelog
 
+## 1.02.09 (build 89) — 2026-08-31
+
+This release hardens the Windows companion after the P1/P2 review findings.
+
+### Fixed
+
+- Keep the notification-area icon on the legacy callback contract so double-click
+  and right-click still reopen or quit the hidden UI.
+- Require an explicit interactive consent decision before replacing a pinned Mac
+  public key; `--yes` no longer performs a silent key replacement.
+- Make **Local Windows input only** disable remote-control admission and release
+  any active Windows input grant immediately.
+
+### Added
+
+- Show every trusted Mac in the Windows UI selector and apply **Forget paired Mac**
+  to the selected peer instead of an arbitrary entry.
+
 ## 1.02.08 (build 88) — 2026-08-30
 
 This release adds console commands for inspecting and removing Windows-side

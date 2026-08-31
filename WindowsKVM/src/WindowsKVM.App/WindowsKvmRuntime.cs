@@ -11,8 +11,8 @@ namespace WindowsKVM;
 /// </summary>
 internal sealed class WindowsKvmRuntime : IAsyncDisposable
 {
-    public const string ApplicationVersion = "1.02.08";
-    public const string ApplicationBuild = "88";
+    public const string ApplicationVersion = "1.02.09";
+    public const string ApplicationBuild = "89";
 
     private readonly DeviceCredentials credentials;
     private readonly WindowsTrustStore trustStore;
@@ -42,7 +42,14 @@ internal sealed class WindowsKvmRuntime : IAsyncDisposable
             Model,
             requestedPort: pairingPort,
             autoAccept: autoAccept,
-            pairingCompleted: RecordPairing,
+            // Automatic pairing is intended for unattended test runs only.
+            // It may create a new pin, but it must never silently replace a
+            // different public key for an existing peer. Interactive UI/CLI
+            // consent is the explicit authorization required for replacement.
+            pairingCompleted: (peer, consentedToKeyReplacement) => RecordPairing(
+                peer,
+                allowKeyReplacement: consentedToKeyReplacement
+            ),
             signingLock: signingLock,
             pairingConsent: pairingConsent,
             peerKeyChanged: trustStore.HasDifferentKey,
@@ -78,6 +85,21 @@ internal sealed class WindowsKvmRuntime : IAsyncDisposable
     public bool IsStarted => Volatile.Read(ref started) != 0;
 
     public IReadOnlyList<PeerIdentity> TrustedPeers => trustStore.Snapshot();
+
+    /// <summary>
+    /// Controls whether a paired Mac may request or deliver keyboard/mouse
+    /// input. Pairing and the secure transport remain available when disabled.
+    /// </summary>
+    public void SetRemoteInputEnabled(bool enabled)
+    {
+        secureReceiver?.SetRemoteInputEnabled(enabled);
+        if (secureReceiver is null && !enabled)
+        {
+            PublishStatus(
+                "Local Windows input only; Secure Connect is unavailable on this build."
+            );
+        }
+    }
 
     public event Action<string>? StatusChanged;
 
@@ -191,7 +213,7 @@ internal sealed class WindowsKvmRuntime : IAsyncDisposable
         }
     }
 
-    private void RecordPairing(PeerIdentity peer)
+    private void RecordPairing(PeerIdentity peer, bool allowKeyReplacement)
     {
         // Persist before PairingTcpReceiver sends its completion barrier. A
         // UI callback is emitted only after the durable trust record exists.
@@ -202,7 +224,7 @@ internal sealed class WindowsKvmRuntime : IAsyncDisposable
         // for all other callers.
         var replacedExistingKey = trustStore.Record(
             peer,
-            allowKeyReplacement: true
+            allowKeyReplacement: allowKeyReplacement
         );
         try
         {

@@ -55,6 +55,11 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
     private readonly object activeControlLock = new();
     private Guid? activeControlPeerID;
     private Guid? activeControlRequestID;
+    // The UI can disable remote input without stopping the authenticated
+    // transport. Keep this gate separate from the active-control identity so
+    // a local-only selection immediately prevents new requests and releases
+    // any held Windows inputs.
+    private int remoteInputEnabled = 1;
     private MdnsAdvertiser? advertiser;
     private Task? advertiserTask;
     private Task? advertiserMonitorTask;
@@ -97,6 +102,38 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
     /// secure endpoint cannot remain silently advertised as healthy.
     /// </summary>
     public Task Failure => failure.Task;
+
+    /// <summary>
+    /// Enables or disables admission of remote keyboard/mouse control. Pairing
+    /// and the secure transport remain available when disabled. Disabling the
+    /// setting also releases any active Windows input sink immediately.
+    /// </summary>
+    public void SetRemoteInputEnabled(bool enabled)
+    {
+        Volatile.Write(ref remoteInputEnabled, enabled ? 1 : 0);
+        if (enabled)
+        {
+            PublishStatus("Remote keyboard and mouse input is enabled.");
+            return;
+        }
+
+        Guid? peerID;
+        Guid? requestID;
+        lock (activeControlLock)
+        {
+            peerID = activeControlPeerID;
+            requestID = activeControlRequestID;
+        }
+
+        if (peerID is { } peer && requestID is { } request)
+        {
+            EndActiveControl(peer, request);
+        }
+
+        PublishStatus(
+            "Local Windows input only; remote keyboard and mouse requests are disabled."
+        );
+    }
 
     /// <summary>
     /// Immediately revokes any secure sessions that could belong to a peer
@@ -699,6 +736,19 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
                                 releaseHotKey.Dispose();
                                 releaseHotKey = null;
                             }
+                            // Disabling remote input releases the shared sink
+                            // immediately, while this receive loop may not see
+                            // another packet until later. Treat that stale
+                            // request as ended so re-enabling the setting does
+                            // not leave this connection permanently blocked.
+                            if (controlRequestID.Value is { } staleRequest
+                                && activePeerID is { } stalePeer
+                                && !IsControlActive(stalePeer, staleRequest))
+                            {
+                                releaseHotKey?.Dispose();
+                                releaseHotKey = null;
+                                controlRequestID.ClearIf(staleRequest);
+                            }
                             if (controlRequestID.Value is not null)
                             {
                                 throw new SecureSessionWireException(
@@ -717,12 +767,35 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
                                     SecureSessionWireErrorCode.InvalidHandshake,
                                     "The authenticated peer identity is missing."
                                 );
+                            if (Volatile.Read(ref remoteInputEnabled) == 0)
+                            {
+                                await SendControlMessageAsync(
+                                    channel,
+                                    stream,
+                                    outputLock,
+                                    new ControlMessage(
+                                        ControlMessageKind.ControlDenied,
+                                        requestID
+                                    ),
+                                    token
+                                );
+                                Console.WriteLine(
+                                    $"Denied Windows control request {Short(requestID)} "
+                                        + "(remote input is disabled)."
+                                );
+                                PublishStatus(
+                                    "Remote control request denied: local Windows input only."
+                                );
+                                continue;
+                            }
                             var accepted = await RequestControlConsentAsync(
                                 controlMessage,
                                 peerID,
                                 token
                             );
-                            if (!accepted || !TryActivateControl(peerID, requestID))
+                            if (!accepted
+                                || Volatile.Read(ref remoteInputEnabled) == 0
+                                || !TryActivateControl(peerID, requestID))
                             {
                                 await SendControlMessageAsync(
                                     channel,
@@ -803,6 +876,46 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
                                     SecureSessionWireErrorCode.InvalidHandshake,
                                     "An input message has no request ID."
                                 );
+                            if (Volatile.Read(ref remoteInputEnabled) == 0)
+                            {
+                                // A local-only switch can race with one input
+                                // frame already buffered by TCP. Ignore it and
+                                // clear the request admission state rather than
+                                // injecting it or treating it as malformed.
+                                if (controlRequestID.Value == requestID)
+                                {
+                                    if (activePeerID is { } disabledPeer)
+                                    {
+                                        EndActiveControl(disabledPeer, requestID);
+                                    }
+                                    controlRequestID.ClearIf(requestID);
+                                    releaseHotKey?.Dispose();
+                                    releaseHotKey = null;
+                                    try
+                                    {
+                                        await SendControlMessageAsync(
+                                            channel,
+                                            stream,
+                                            outputLock,
+                                            new ControlMessage(
+                                                ControlMessageKind.EndControl,
+                                                requestID
+                                            ),
+                                            token
+                                        );
+                                    }
+                                    catch (Exception ex) when (ex is IOException
+                                        or SocketException
+                                        or ObjectDisposedException
+                                        or OperationCanceledException)
+                                    {
+                                        Console.Error.WriteLine(
+                                            $"Could not notify MacKVM that remote input was disabled: {ex.Message}"
+                                        );
+                                    }
+                                }
+                                continue;
+                            }
                             if (activePeerID is null
                                 || controlRequestID.Value != requestID
                                 || controlMessage.Input is null)
@@ -1030,7 +1143,11 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
         var activated = false;
         lock (activeControlLock)
         {
-            if (activeControlRequestID is not null)
+            // The local-only setting can change while a consent dialog is
+            // open. Re-check it under the same lock as activation so a stale
+            // approval can never acquire the Windows input sink.
+            if (Volatile.Read(ref remoteInputEnabled) == 0
+                || activeControlRequestID is not null)
             {
                 return false;
             }

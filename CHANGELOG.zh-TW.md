@@ -2,6 +2,22 @@
 
 # 變更記錄
 
+## 1.02.09（build 89）— 2026-08-31
+
+本版修正 Windows companion 在 P1／P2 review 中發現的問題。
+
+### 修正
+
+- 系統匣圖示維持 legacy callback contract，隱藏視窗仍可透過雙擊重新開啟，
+  右鍵仍可顯示選單並結束程式。
+- 只有明確的互動式同意才能替換已釘選的 Mac 公開金鑰；`--yes` 不再靜默替換金鑰。
+- **Local Windows input only** 會停用遠端控制 admission，並立即釋放目前的 Windows 輸入控制權。
+
+### 新增
+
+- Windows UI 顯示所有已信任的 Mac，**Forget paired Mac** 會套用到目前選取的 peer，
+  不再依賴不確定的清單順序。
+
 ## 1.02.08（build 88）— 2026-08-30
 
 本版本為 Windows console CLI 新增檢查與移除已配對 Mac trust pin 的指令。

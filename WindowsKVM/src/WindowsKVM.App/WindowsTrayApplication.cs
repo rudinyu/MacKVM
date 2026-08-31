@@ -56,11 +56,9 @@ internal sealed class WindowsTrayApplication : IDisposable
     private const uint TrackPopupMenuReturnCommand = 0x00000100;
     private const uint TrayAdd = 0x00000000;
     private const uint TrayDelete = 0x00000002;
-    private const uint TraySetVersion = 0x00000004;
     private const uint TrayFlagMessage = 0x00000001;
     private const uint TrayFlagIcon = 0x00000002;
     private const uint TrayFlagTip = 0x00000004;
-    private const uint TrayVersion = 4;
     private const int IconApplication = 32512;
     private const int CursorArrow = 32512;
     private const int SystemColorWindow = 5;
@@ -74,7 +72,10 @@ internal sealed class WindowsTrayApplication : IDisposable
     private const uint ComboBoxDropDownList = 0x0003;
     private const uint ComboBoxHasStrings = 0x0200;
     private const uint ComboBoxAddString = 0x0143;
+    private const uint ComboBoxGetCurrentSelection = 0x0147;
+    private const uint ComboBoxResetContent = 0x014B;
     private const uint ComboBoxSetCurrentSelection = 0x014E;
+    private const uint ComboBoxSelectionChanged = 0x0001;
     private const int ScrollBarVertical = 1;
     private const uint ScrollInfoRange = 0x0001;
     private const uint ScrollInfoPage = 0x0002;
@@ -122,7 +123,9 @@ internal sealed class WindowsTrayApplication : IDisposable
     private IntPtr inputReadyLabel;
     private IntPtr inputPathCombo;
     private IntPtr nearbyStatusLabel;
-    private IntPtr pairedPeerLabel;
+    // Drop-down selector keeps every trusted peer visible and gives Forget a
+    // concrete target instead of relying on the ordering of TrustStore.Snapshot().
+    private IntPtr pairedPeerSelector;
     private IntPtr pairedPeerDetailsLabel;
     private IntPtr forgetButton;
     private IntPtr controlStateLabel;
@@ -146,6 +149,9 @@ internal sealed class WindowsTrayApplication : IDisposable
     private string? pairedPeerID;
     private string? pairedPeerFullID;
     private string? pairedPeerFingerprint;
+    private int remoteInputEnabled = 1;
+    private readonly List<Guid> pairedPeerOptions = new();
+    private bool updatingPeerSelector;
     private int controlActive;
     private int scrollPosition;
     private long nextConsentID;
@@ -228,7 +234,8 @@ internal sealed class WindowsTrayApplication : IDisposable
         runtime.StatusChanged += OnRuntimeStatusChanged;
         runtime.PairingCompleted += OnPairingCompleted;
         runtime.ControlStateChanged += OnControlStateChanged;
-        SetPairedPeer(runtime.TrustedPeers.LastOrDefault());
+        SetPairedPeer(runtime.TrustedPeers.FirstOrDefault());
+        runtime.SetRemoteInputEnabled(enabled: true);
     }
 
     public static int Run()
@@ -601,13 +608,12 @@ internal sealed class WindowsTrayApplication : IDisposable
             captionFont,
             LabelColor.Secondary
         );
-        pairedPeerLabel = CreateLabel(
-            "No paired Macs yet",
+        pairedPeerSelector = CreateComboBox(
             32,
             968,
-            520,
-            30,
-            bodyFont
+            560,
+            34,
+            Array.Empty<string>()
         );
         pairedPeerDetailsLabel = CreateLabel(
             "Start Pair on the MacKVM peer; the verification dialog will appear here.",
@@ -1331,8 +1337,12 @@ internal sealed class WindowsTrayApplication : IDisposable
             );
         }
 
-        data.Version = TrayVersion;
-        _ = ShellNotifyIcon(TraySetVersion, ref data);
+        // Keep the legacy NOTIFYICON callback contract. NOTIFYICON_VERSION_4
+        // changes the event encoding (and uses WM_CONTEXTMENU for the right
+        // button), while HandleTrayMessage intentionally handles the legacy
+        // WM_LBUTTONDBLCLK/WM_RBUTTONUP values. Opting into v4 without decoding
+        // its packed lParam makes the tray icon unable to reopen or quit the
+        // hidden application.
     }
 
     private NotifyIconData MakeTrayData(uint flags) => new()
@@ -1388,7 +1398,22 @@ internal sealed class WindowsTrayApplication : IDisposable
                 return PaintStaticControl(wParam, lParam);
 
             case WindowMessageCommand:
-                HandleCommand(unchecked((int)wParam.ToInt64() & 0xFFFF));
+                var notification = unchecked((int)((wParam.ToInt64() >> 16) & 0xFFFF));
+                var command = unchecked((int)wParam.ToInt64() & 0xFFFF);
+                if (notification == ComboBoxSelectionChanged
+                    && lParam == inputPathCombo)
+                {
+                    HandleInputPathSelection();
+                }
+                else if (notification == ComboBoxSelectionChanged
+                    && lParam == pairedPeerSelector)
+                {
+                    HandlePairedPeerSelection();
+                }
+                else
+                {
+                    HandleCommand(command);
+                }
                 return IntPtr.Zero;
 
             case WindowMessageTray:
@@ -1446,6 +1471,58 @@ internal sealed class WindowsTrayApplication : IDisposable
                 SetForegroundWindow(window);
                 break;
         }
+    }
+
+    private void HandleInputPathSelection()
+    {
+        if (inputPathCombo == IntPtr.Zero)
+        {
+            return;
+        }
+
+        var selection = SendMessage(
+            inputPathCombo,
+            ComboBoxGetCurrentSelection,
+            IntPtr.Zero,
+            IntPtr.Zero
+        ).ToInt64();
+        var enabled = selection != 1;
+        Volatile.Write(ref remoteInputEnabled, enabled ? 1 : 0);
+        runtime.SetRemoteInputEnabled(enabled);
+        OnRuntimeStatusChanged(
+            enabled
+                ? "Remote keyboard and mouse input enabled."
+                : "Local Windows input only; remote control requests are disabled."
+        );
+    }
+
+    private void HandlePairedPeerSelection()
+    {
+        if (updatingPeerSelector || pairedPeerSelector == IntPtr.Zero)
+        {
+            return;
+        }
+
+        var selection = SendMessage(
+            pairedPeerSelector,
+            ComboBoxGetCurrentSelection,
+            IntPtr.Zero,
+            IntPtr.Zero
+        ).ToInt64();
+        if (selection < 0 || selection >= pairedPeerOptions.Count)
+        {
+            return;
+        }
+
+        var selectedID = pairedPeerOptions[(int)selection];
+        var peer = runtime.TrustedPeers.FirstOrDefault(candidate => candidate.Id == selectedID);
+        if (peer is null)
+        {
+            return;
+        }
+
+        SetPairedPeer(peer);
+        OnRuntimeStatusChanged($"Selected paired Mac {peer.Name}.");
     }
 
     private void OpenFirewallSettings()
@@ -1646,6 +1723,73 @@ internal sealed class WindowsTrayApplication : IDisposable
         );
     }
 
+    private void RefreshPairedPeerSelector(IReadOnlyList<WindowsKVM.Protocol.PeerIdentity> peers)
+    {
+        if (pairedPeerSelector == IntPtr.Zero)
+        {
+            return;
+        }
+
+        var selectedID = Volatile.Read(ref pairedPeerFullID);
+        var selectedIndex = -1;
+        pairedPeerOptions.Clear();
+        updatingPeerSelector = true;
+        try
+        {
+            _ = SendMessage(
+                pairedPeerSelector,
+                ComboBoxResetContent,
+                IntPtr.Zero,
+                IntPtr.Zero
+            );
+            foreach (var peer in peers)
+            {
+                pairedPeerOptions.Add(peer.Id);
+                _ = SendMessage(
+                    pairedPeerSelector,
+                    ComboBoxAddString,
+                    IntPtr.Zero,
+                    $"{peer.Name} ({peer.Id.ToString("N")[..8]})"
+                );
+                if (string.Equals(
+                        selectedID,
+                        peer.Id.ToString("D"),
+                        StringComparison.OrdinalIgnoreCase
+                    ))
+                {
+                    selectedIndex = pairedPeerOptions.Count - 1;
+                }
+            }
+
+            if (selectedIndex < 0 && peers.Count > 0)
+            {
+                // Snapshot order is deterministic and all peers remain
+                // selectable; this only chooses the initial fallback when a
+                // previously selected peer was removed.
+                selectedIndex = 0;
+                SetPairedPeer(peers[0]);
+            }
+            else if (peers.Count == 0 && selectedID is not null)
+            {
+                SetPairedPeer(null);
+            }
+
+            if (selectedIndex >= 0)
+            {
+                _ = SendMessage(
+                    pairedPeerSelector,
+                    ComboBoxSetCurrentSelection,
+                    (IntPtr)selectedIndex,
+                    IntPtr.Zero
+                );
+            }
+        }
+        finally
+        {
+            updatingPeerSelector = false;
+        }
+    }
+
     private void ForgetPairedMac()
     {
         var peerIDText = Volatile.Read(ref pairedPeerFullID);
@@ -1673,14 +1817,14 @@ internal sealed class WindowsTrayApplication : IDisposable
         {
             if (!runtime.ForgetPeer(peerID))
             {
-                SetPairedPeer(runtime.TrustedPeers.LastOrDefault());
+                SetPairedPeer(runtime.TrustedPeers.FirstOrDefault());
                 OnRuntimeStatusChanged(
                     "The paired Mac was already forgotten; pair again before connecting."
                 );
                 return;
             }
 
-            SetPairedPeer(runtime.TrustedPeers.LastOrDefault());
+            SetPairedPeer(runtime.TrustedPeers.FirstOrDefault());
             OnRuntimeStatusChanged(
                 $"Forgot {peerName}; pair again from MacKVM before connecting."
             );
@@ -1724,6 +1868,8 @@ internal sealed class WindowsTrayApplication : IDisposable
             SetWindowText(statusLabel, message);
         }
 
+        var peers = runtime.TrustedPeers;
+        RefreshPairedPeerSelector(peers);
         var peerName = Volatile.Read(ref pairedPeerName);
         var peerID = Volatile.Read(ref pairedPeerID);
         var peerFingerprint = Volatile.Read(ref pairedPeerFingerprint);
@@ -1734,8 +1880,6 @@ internal sealed class WindowsTrayApplication : IDisposable
                 "Listening for MacKVM pairing requests on the local network…"
             );
             SetLabelColor(nearbyStatusLabel, LabelColor.Secondary);
-            SetWindowText(pairedPeerLabel, "No paired Macs yet");
-            SetLabelColor(pairedPeerLabel, LabelColor.Default);
             SetWindowText(
                 pairedPeerDetailsLabel,
                 "Start Pair on the MacKVM peer; the verification dialog will appear here."
@@ -1745,8 +1889,6 @@ internal sealed class WindowsTrayApplication : IDisposable
         {
             SetWindowText(nearbyStatusLabel, $"Paired with {peerName}; ready for Connect.");
             SetLabelColor(nearbyStatusLabel, LabelColor.Green);
-            SetWindowText(pairedPeerLabel, $"✓ Paired with {peerName}");
-            SetLabelColor(pairedPeerLabel, LabelColor.Green);
             SetWindowText(
                 pairedPeerDetailsLabel,
                 $"Device ID: {peerID}\r\nKey fingerprint: {peerFingerprint}"
@@ -1755,15 +1897,20 @@ internal sealed class WindowsTrayApplication : IDisposable
         UpdateForgetButtonState(peerName is not null);
 
         var isControlActive = Volatile.Read(ref controlActive) != 0;
+        var remoteInputIsEnabled = Volatile.Read(ref remoteInputEnabled) != 0;
         SetWindowText(
             controlStateLabel,
-            isControlActive
+            !remoteInputIsEnabled
+                ? "Local Windows input only; remote control requests are disabled."
+                : isControlActive
                 ? "This Windows PC is receiving keyboard and mouse control."
                 : "Waiting for an authenticated Mac to request control."
         );
         SetLabelColor(
             controlStateLabel,
-            isControlActive ? LabelColor.Green : LabelColor.Secondary
+            !remoteInputIsEnabled
+                ? LabelColor.Orange
+                : isControlActive ? LabelColor.Green : LabelColor.Secondary
         );
 
         var secure = runtime.SecureConnectAvailable
@@ -1817,13 +1964,17 @@ internal sealed class WindowsTrayApplication : IDisposable
         );
         SetWindowText(
             simpleControlStateLabel,
-            isControlActive
+            !remoteInputIsEnabled
+                ? "Local Windows input only; remote control requests are disabled."
+                : isControlActive
                 ? "This Windows PC is receiving keyboard and mouse control."
                 : "Waiting for an authenticated Mac to request control."
         );
         SetLabelColor(
             simpleControlStateLabel,
-            isControlActive ? LabelColor.Green : LabelColor.Secondary
+            !remoteInputIsEnabled
+                ? LabelColor.Orange
+                : isControlActive ? LabelColor.Green : LabelColor.Secondary
         );
     }
 
