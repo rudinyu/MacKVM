@@ -2,6 +2,9 @@
 
 # Windows build guide
 
+For pairing, Secure Connect, mDNS, firewall, and console log collection, see
+the [cross-platform debugging guide](DEBUGGING.md).
+
 This guide builds the Windows branch of MacKVM. The current deliverable is a
 C#/.NET 8 protocol library, signed pairing state machine, native Win32 status
 window and resident tray host, DPAPI-backed identity, dependency-free mDNS
@@ -94,7 +97,7 @@ Confirm the executable before starting a test:
 .\WindowsKVM.exe --version
 ```
 
-The current UI test build reports `WindowsKVM 1.02.10 (build 90)`.
+The current UI test build reports `WindowsKVM 1.02.11 (build 91)`.
 
 After publishing on Windows, start the resident UI:
 

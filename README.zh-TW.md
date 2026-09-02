@@ -70,6 +70,8 @@ Developer ID Application、hardened runtime，並在公開發佈前完成 Apple 
 
 完整建置流程請參閱獨立的 [Windows 建置手冊](WINDOWS_BUILD.zh-TW.md)；Windows component
 範圍與目前 W3 功能狀態請參閱 [WindowsKVM README](WindowsKVM/README.zh-TW.md)。
+跨平台配對、Secure Connect、mDNS、防火牆與 DDC log 收集方式請參閱
+[除錯與診斷手冊](DEBUGGING.zh-TW.md)。
 
 Windows 端改用 C#/.NET 8，不用 Swift 處理 Windows UI、常駐列、輸入 API 或防火牆設定。
 目前 Windows UI 以可捲動的原生 Win32 視窗沿用 macOS MacKVM 面板順序，包含 identity／設定狀態、
@@ -185,5 +187,6 @@ repository，正常 CI 也會建置三種診斷目標。按下 Ctrl-C 或收到 
 - [繁體中文安全說明](SECURITY.zh-TW.md) · [English security status](SECURITY.md)
 - [繁體中文路線圖](ROADMAP.zh-TW.md) · [English roadmap](ROADMAP.md)
 - [繁體中文變更記錄](CHANGELOG.zh-TW.md) · [English changelog](CHANGELOG.md)
+- [繁體中文除錯手冊](DEBUGGING.zh-TW.md) · [English debugging guide](DEBUGGING.md)
 - [English HTML manual](docs/USER_MANUAL.html) · [繁體中文 HTML 使用手冊](docs/USER_MANUAL.zh-TW.html)
 - [English Markdown manual](docs/USER_MANUAL.md) · [繁體中文 Markdown 手冊](docs/USER_MANUAL.zh-TW.md)

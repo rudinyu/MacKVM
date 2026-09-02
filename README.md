@@ -104,6 +104,8 @@ For the complete build procedure, see the standalone
 [Windows build guide](WINDOWS_BUILD.md).
 The Windows component scope and current W3 feature status are also listed in
 the [WindowsKVM README](WindowsKVM/README.md).
+For cross-platform pairing, Secure Connect, mDNS, firewall, and DDC log
+collection, see the [debugging guide](DEBUGGING.md).
 
 The Windows branch uses C#/.NET 8 for the native Windows side; Swift is not
 used for the Windows UI, tray integration, input APIs, or firewall setup. The
@@ -408,5 +410,6 @@ HDMI 2.0 ports and one USB-C video/data/90 W port in the
 - [English security status](SECURITY.md) · [繁體中文安全說明](SECURITY.zh-TW.md)
 - [English roadmap](ROADMAP.md) · [繁體中文路線圖](ROADMAP.zh-TW.md)
 - [English changelog](CHANGELOG.md) · [繁體中文變更記錄](CHANGELOG.zh-TW.md)
+- [English debugging guide](DEBUGGING.md) · [繁體中文除錯手冊](DEBUGGING.zh-TW.md)
 - [English HTML manual](docs/USER_MANUAL.html) · [繁體中文 HTML 使用手冊](docs/USER_MANUAL.zh-TW.html)
 - [English Markdown manual](docs/USER_MANUAL.md) · [繁體中文 Markdown 手冊](docs/USER_MANUAL.zh-TW.md)

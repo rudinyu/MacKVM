@@ -6,7 +6,7 @@ WindowsKVM 是 MacKVM 的 Windows companion。目前 Windows 版包含原生 Win
 host，可在區域網路上與 MacKVM 配對、完成 secure Connect 驗證，並接收加密鍵盤／滑鼠控制；
 另外保留 console 模式供自動化與防火牆診斷。
 
-## 目前功能 — 1.02.10（build 90）
+## 目前功能 — 1.02.11（build 91）
 
 Windows host 已包含：
 
@@ -79,6 +79,7 @@ Windows 狀態視窗沿用 macOS MacKVM 面板的資訊順序，並提供兩種�
 SDK 安裝、架構 publish 與疑難排解請參閱[Windows 建置手冊](../WINDOWS_BUILD.zh-TW.md)。
 支援 Windows x64（`win-x64`，也稱 `x86_64`）與 Windows ARM64（`win-arm64`）；不支援
 32-bit x86。
+console log 收集與跨平台問題診斷請參閱[除錯與診斷手冊](../DEBUGGING.zh-TW.md)。
 
 ```powershell
 .\scripts\build-windows.ps1 -Architecture x64

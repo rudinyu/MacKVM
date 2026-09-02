@@ -2,6 +2,23 @@
 
 # Changelog
 
+## 1.02.11 (build 91) — 2026-09-02
+
+This maintenance release adds a cross-platform debugging guide for collecting
+macOS unified logs, Windows console traces, network/firewall state, and native
+DDC reports without exposing private credentials.
+
+### Added
+
+- Document the recommended console-only Windows log capture flow and the
+  expected pairing, Secure Connect, and control checkpoints.
+- Document macOS `log stream`/`log show`, support-information export, mDNS
+  checks, and architecture-aware DDC diagnostics.
+
+### Changed
+
+- Synchronize the MacKVM and WindowsKVM version metadata to 1.02.11/build 91.
+
 ## 1.02.10 (build 90) — 2026-08-31
 
 This maintenance release syncs the macOS core with the latest cross-Mac

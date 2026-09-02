@@ -2,6 +2,8 @@
 
 # Windows 建置手冊
 
+配對、Secure Connect、mDNS、防火牆與 console log 收集方式請參閱[跨平台除錯與診斷手冊](DEBUGGING.zh-TW.md)。
+
 本手冊說明如何建置 MacKVM 的 Windows 分支。目前內容是 C#/.NET 8 protocol library、簽章
 配對 state machine、原生 Win32 狀態視窗與系統匣常駐 host、DPAPI identity、配對與 secure
 Connect 的免外部套件 mDNS 廣播器、嚴格 control／input 驗證、Windows SendInput 注入、
@@ -87,7 +89,7 @@ Windows 建置檢查。
 .\WindowsKVM.exe --version
 ```
 
-目前 UI 測試 build 應顯示 `WindowsKVM 1.02.10 (build 90)`。
+目前 UI 測試 build 應顯示 `WindowsKVM 1.02.11 (build 91)`。
 
 在 Windows publish 後啟動常駐 UI：
 

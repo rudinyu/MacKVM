@@ -2,6 +2,19 @@
 
 # 變更記錄
 
+## 1.02.11（build 91）— 2026-09-02
+
+本維護版新增跨平台除錯手冊，說明如何收集 macOS unified log、Windows console trace、網路／防火牆狀態與原生 DDC 報告，同時避免暴露私密憑證。
+
+### 新增
+
+- 說明 Windows 使用 console-only 模式收集 log，以及配對、Secure Connect 與控制權的預期檢查點。
+- 說明 macOS `log stream`／`log show`、支援資訊匯出、mDNS 檢查與跨架構 DDC 診斷。
+
+### 變更
+
+- 將 MacKVM 與 WindowsKVM 版本 metadata 同步為 1.02.11／build 91。
+
 ## 1.02.10（build 90）— 2026-08-31
 
 本維護版同步最新的跨 Mac 控制生命週期修正，同時保留 Windows companion 的變更。

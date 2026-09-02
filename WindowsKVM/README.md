@@ -8,7 +8,7 @@ authenticate a secure Connect session, and receive keyboard/mouse control over
 that encrypted session. A console mode remains available for automation and
 firewall diagnostics.
 
-## Current feature set — 1.02.10 (build 90)
+## Current feature set — 1.02.11 (build 91)
 
 The Windows host includes:
 
@@ -108,6 +108,8 @@ Use the [Windows build guide](../WINDOWS_BUILD.md) for SDK installation,
 architecture-specific publishing, and troubleshooting. The supported native
 targets are Windows x64 (`win-x64`, also called `x86_64`) and Windows ARM64
 (`win-arm64`); 32-bit x86 is not supported.
+For console log capture and cross-platform diagnosis, see the
+[debugging guide](../DEBUGGING.md).
 
 ```powershell
 .\scripts\build-windows.ps1 -Architecture x64
