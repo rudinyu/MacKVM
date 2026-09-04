@@ -39,13 +39,16 @@ Mach-O architecture and the ad-hoc signature.
 For the complete procedure, see the standalone
 [Windows build guide](WINDOWS_BUILD.md).
 
-The Windows branch uses C#/.NET 8 rather than Swift. The current W3 console
-receiver contains the platform-neutral protocol library, signed pairing state
-machine, DPAPI-protected identity, dual-stack mDNS advertisement, authenticated
-encrypted control sessions, Windows `SendInput` injection, input release, and
-the emergency local-return shortcut. WinUI/tray UI, Raw Input capture, and a
-polished scoped Windows Firewall wizard remain future work; the current
-receiver already shares the Mac's keyboard and mouse after consent.
+The Windows branch uses C#/.NET 8 rather than Swift. The current Windows host
+contains the platform-neutral protocol library, signed pairing state machine,
+DPAPI-protected identity, dual-stack mDNS advertisement, authenticated
+encrypted control sessions, Windows `SendInput` injection, input release, a
+native Win32/tray UI, and the emergency local-return shortcut. After the first
+explicit control Allow, approval is remembered for the pinned Mac key; the UI
+setting or `--allow-control`/`--deny-control` can change that local decision.
+Raw Input capture and a polished scoped Windows Firewall wizard remain future
+work; the current receiver already shares the Mac's keyboard and mouse after
+consent.
 
 On a Windows build host, install the .NET 8 SDK. Visual Studio 2022 with the
 Windows App SDK workload is recommended once the WinUI layer is added. Build
@@ -63,7 +66,9 @@ After publishing, start the pairing-only receiver on Windows:
 ```
 
 Compare the six-digit code with the initiating Mac and type `y` at the Windows
-prompt. Use `--yes` only for a controlled test. The receiver advertises
+prompt. The first explicit control Allow is remembered for that pinned Mac;
+use the UI setting or `--deny-control <peer-id>` when every request should
+prompt again. Use `--yes` only for a controlled test; it is not persisted. The receiver advertises
 `_mackvm._tcp`; allow the normal Windows Defender Firewall Private-network
 prompt on the trusted LAN. Run the protocol self-test with
 `.\scripts\test-windows.ps1`.

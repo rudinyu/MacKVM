@@ -97,7 +97,7 @@ Confirm the executable before starting a test:
 .\WindowsKVM.exe --version
 ```
 
-The current UI test build reports `WindowsKVM 1.02.11 (build 91)`.
+The current UI test build reports `WindowsKVM 1.02.15 (build 95)`.
 
 After publishing on Windows, start the resident UI:
 
@@ -106,11 +106,14 @@ After publishing on Windows, start the resident UI:
 ```
 
 The UI adds a Windows notification-area icon, starts both listeners, and shows
-native Yes/No dialogs for pairing and control consent. Closing the status
-window hides it; choose **Quit WindowsKVM** in the window or tray menu to stop
-all listeners. For a scripted console run, use `--pairing-listen`; `--yes` is
-only for a controlled test because it automatically accepts pairing and
-control:
+native Yes/No dialogs for pairing and for control requests whose automatic
+approval is disabled. Pairing enables automatic control for the currently
+pinned public key by default; turn off **Automatically allow control from this
+paired Mac** in **Paired device information** when every request should prompt.
+Closing the status window hides it; choose **Quit WindowsKVM** in the window or
+tray menu to stop all listeners. For a scripted console run, use
+`--pairing-listen`; `--yes` is only for a controlled test because it
+automatically accepts pairing and control without persisting control approval:
 
 The status window follows the macOS panel order and has two views. **Simple
 mode** is selected automatically below 900×1120 screen pixels (or when the
@@ -144,12 +147,17 @@ peer ID printed by `--list-paired`:
 ```powershell
 .\dist\windows\x64\WindowsKVM.exe --list-paired
 .\dist\windows\x64\WindowsKVM.exe --forget <peer-id>
+.\dist\windows\x64\WindowsKVM.exe --allow-control <peer-id>
+.\dist\windows\x64\WindowsKVM.exe --deny-control <peer-id>
 ```
 
 `--forget` is a one-shot durable trust-store operation; pair again from MacKVM
 before pressing Connect. If another WindowsKVM receiver is already running,
 restart it after the CLI command so it reloads the trust store, or use the UI
 **Forget paired Mac** action to revoke that peer and close its active session.
+`--allow-control` and `--deny-control` update only the selected pinned Mac's
+local control-consent decision; the running receiver reloads this atomic file
+before the next control request. They do not replace the public-key pin.
 
 After a successful pairing, Windows records the Mac's public identity in
 `%LOCALAPPDATA%\MacKVM\trusted-peers.json`. The Mac can then select the paired
@@ -166,12 +174,31 @@ replace its old pin and updates it only after the verification code is
 explicitly accepted. A changed key is never replaced by Secure Connect or by
 an unapproved write.
 
-After Connect, choose **Request keyboard and mouse control** on MacKVM. The
-Windows console asks for a local `y`/`yes` decision (or accepts automatically
-when `--yes` is used). Once granted, Windows prints `Windows control granted`
+After Connect, choose **Request keyboard and mouse control** on MacKVM. A newly
+paired Mac is allowed automatically by default. Disable the checkbox or run
+`--deny-control <peer-id>` to require confirmation again; the Windows UI dialog
+or console `y`/`yes` prompt will then appear. Re-enable it with the checkbox or
+`--allow-control <peer-id>`. The `--yes` option is one-shot test convenience
+and is never persisted. Once granted, Windows prints `Windows control granted`
 and injects the authenticated Mac input with `SendInput`. Press
 `Ctrl+Alt+Shift+Esc` on Windows to release all held input and return control
 locally; ending control from MacKVM has the same release-all behavior.
+
+### Verify remembered control approval
+
+1. Pair a Mac and WindowsKVM; automatic control approval is enabled by default
+   for the newly pinned peer.
+2. Return control locally and request it again. The second request should be
+   admitted without another blocking dialog.
+3. Select the paired Mac in **Paired device information**, clear
+   **Automatically allow control from this paired Mac**, and request control
+   again. The native dialog should return.
+4. Re-enable the checkbox (or run `--allow-control <peer-id>`), then verify
+   that the next switch is quiet again. `--yes` must not change the remembered
+   setting.
+5. Use **Forget paired Mac** or replace the Mac identity key through the
+   explicit re-pair flow. The remembered approval must be cleared along with
+   the old public-key pin.
 
 If the Mac reports `peer-upgrade-required` or Windows reports that the peer
 does not support the authenticated disconnect signal, update both endpoints to

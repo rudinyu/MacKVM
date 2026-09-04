@@ -52,6 +52,37 @@ internal static class Program
             return ForgetPairedPeer(peerID);
         }
 
+        var allowControl = args.Contains(
+            "--allow-control",
+            StringComparer.OrdinalIgnoreCase
+        );
+        var denyControl = args.Contains(
+            "--deny-control",
+            StringComparer.OrdinalIgnoreCase
+        );
+        if (allowControl || denyControl)
+        {
+            if (allowControl && denyControl)
+            {
+                Console.Error.WriteLine(
+                    "Use only one of --allow-control or --deny-control."
+                );
+                return 2;
+            }
+
+            var option = allowControl ? "--allow-control" : "--deny-control";
+            var peerIDText = ReadOption(args, option);
+            if (!Guid.TryParse(peerIDText, out var peerID))
+            {
+                Console.Error.WriteLine(
+                    $"{option} requires a complete peer UUID. Run --list-paired first."
+                );
+                return 2;
+            }
+
+            return SetControlAuthorization(peerID, authorized: allowControl);
+        }
+
         if (args.Length == 0 || args.Contains("--ui", StringComparer.OrdinalIgnoreCase))
         {
             return WindowsTrayApplication.Run();
@@ -178,6 +209,36 @@ internal static class Program
         }
     }
 
+    private static int SetControlAuthorization(Guid peerID, bool authorized)
+    {
+        try
+        {
+            var store = WindowsTrustStore.Load();
+            var peer = store.Snapshot().FirstOrDefault(candidate => candidate.Id == peerID);
+            if (!store.SetControlAuthorization(peerID, authorized))
+            {
+                Console.Error.WriteLine(
+                    $"No paired Mac with ID {peerID:D} is stored on this Windows account."
+                );
+                return 1;
+            }
+
+            Console.WriteLine(
+                authorized
+                    ? $"Automatic control approval enabled for {peer?.Name ?? peerID.ToString("D")}."
+                    : $"Automatic control approval disabled for {peer?.Name ?? peerID.ToString("D")}; confirmation is required."
+            );
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(
+                $"Could not update automatic control approval: {ex.Message}"
+            );
+            return 1;
+        }
+    }
+
     private static string Fingerprint(byte[] publicKey)
         => string.Join(
             ":",
@@ -193,6 +254,8 @@ internal static class Program
         Console.WriteLine("  WindowsKVM.exe --pairing-listen [--name <name>] [--port <port>] [--yes]");
         Console.WriteLine("  WindowsKVM.exe --list-paired");
         Console.WriteLine("  WindowsKVM.exe --forget <peer-id>");
+        Console.WriteLine("  WindowsKVM.exe --allow-control <peer-id>");
+        Console.WriteLine("  WindowsKVM.exe --deny-control <peer-id>");
         Console.WriteLine("  WindowsKVM.exe --version");
         Console.WriteLine();
         Console.WriteLine(
@@ -208,6 +271,12 @@ internal static class Program
         );
         Console.WriteLine(
             "  --forget          Remove one trusted Mac ID; pair again before connecting."
+        );
+        Console.WriteLine(
+            "  --allow-control   Remember control approval for one trusted Mac."
+        );
+        Console.WriteLine(
+            "  --deny-control    Require confirmation for one trusted Mac again."
         );
         Console.WriteLine("  --version         Print the WindowsKVM application version and build.");
         Console.WriteLine();

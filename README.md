@@ -114,7 +114,10 @@ Win32 window: identity/setup status, physical input path, nearby/paired peers,
 keyboard/mouse control, monitor guidance, and support information. It starts
 the signed pairing and secure-session receivers, shows pairing/control consent
 with native Windows dialogs, keeps a resident system-tray icon, and provides
-live status plus public support-information copy.
+live status plus public support-information copy. The first explicit control
+Allow is remembered per pinned Mac public key; the paired-device UI setting and
+the console `--allow-control`/`--deny-control` commands can revoke or restore
+that local decision.
 The same host still supports the console `--pairing-listen` mode for scripted
 testing. It includes the platform-neutral protocol library, DPAPI-protected
 identity, dependency-free mDNS advertiser, authenticated encrypted secure

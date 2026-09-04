@@ -24,6 +24,7 @@ internal sealed class WindowsTrayApplication : IDisposable
     private const uint WindowMessageCommand = 0x0111;
     private const uint WindowMessagePaint = 0x000F;
     private const uint WindowMessageSize = 0x0005;
+    private const uint WindowMessageSetRedraw = 0x000B;
     private const uint WindowMessageVScroll = 0x0115;
     private const uint WindowMessageMouseWheel = 0x020A;
     private const uint WindowMessageControlColorStatic = 0x0138;
@@ -35,9 +36,12 @@ internal sealed class WindowsTrayApplication : IDisposable
     private const uint WindowStyleVisible = 0x10000000;
     private const uint WindowStyleVerticalScroll = 0x00200000;
     private const uint WindowStyleClipChildren = 0x02000000;
+    private const uint WindowStyleClipSiblings = 0x04000000;
     private const uint WindowStyleTabStop = 0x00010000;
+    private const uint WindowExtendedStyleComposited = 0x02000000;
     private const uint StaticStyleLeft = 0x00000000;
     private const uint ButtonStylePushButton = 0x00000000;
+    private const uint ButtonStyleAutoCheckBox = 0x00000003;
     private const int ShowWindowHide = 0;
     private const int ShowWindowShow = 5;
     private const int ShowWindowDefault = 10;
@@ -49,6 +53,7 @@ internal sealed class WindowsTrayApplication : IDisposable
     private const int QuitButtonID = 1005;
     private const int ViewModeButtonID = 1006;
     private const int ForgetButtonID = 1007;
+    private const int ControlAuthorizationButtonID = 1008;
     private const int TrayShowCommandID = 2001;
     private const int TrayQuitCommandID = 2002;
     private const uint MenuString = 0x00000000;
@@ -76,6 +81,9 @@ internal sealed class WindowsTrayApplication : IDisposable
     private const uint ComboBoxResetContent = 0x014B;
     private const uint ComboBoxSetCurrentSelection = 0x014E;
     private const uint ComboBoxSelectionChanged = 0x0001;
+    private const uint ButtonGetCheck = 0x00F0;
+    private const uint ButtonSetCheck = 0x00F1;
+    private const int ButtonStateChecked = 1;
     private const int ScrollBarVertical = 1;
     private const uint ScrollInfoRange = 0x0001;
     private const uint ScrollInfoPage = 0x0002;
@@ -90,8 +98,16 @@ internal sealed class WindowsTrayApplication : IDisposable
     private const int ScrollCodeTop = 6;
     private const int ScrollCodeBottom = 7;
     private const int ScrollCodeEndScroll = 8;
-    private const int AdvancedContentHeight = 1920;
-    private const int SimpleContentHeight = 700;
+    private const uint WindowPositionNoSize = 0x0001;
+    private const uint WindowPositionNoRedraw = 0x0008;
+    private const uint WindowPositionNoActivate = 0x0010;
+    private const uint WindowPositionNoZOrder = 0x0004;
+    private const uint RedrawInvalidate = 0x0001;
+    private const uint RedrawErase = 0x0004;
+    private const uint RedrawAllChildren = 0x0080;
+    private const uint RedrawUpdateNow = 0x0100;
+    private const int AdvancedContentHeight = 1960;
+    private const int SimpleContentHeight = 760;
     private const int DefaultWindowWidth = 860;
     private const int DefaultWindowHeight = 900;
     private const int ScreenMetricWidth = 0;
@@ -104,7 +120,7 @@ internal sealed class WindowsTrayApplication : IDisposable
     private readonly WindowsKvmRuntime runtime;
     private readonly WndProc windowProc;
     private readonly Mutex instanceMutex;
-    private readonly ConcurrentQueue<string> pendingStatuses = new();
+    private readonly ConcurrentQueue<WindowsKVM.Protocol.PeerIdentity> pendingPairedPeers = new();
     private readonly ConcurrentDictionary<long, ConsentRequest> pendingConsents = new();
     private readonly List<ChildLayout> childLayouts = new();
     private readonly HashSet<IntPtr> advancedControls = new();
@@ -128,6 +144,7 @@ internal sealed class WindowsTrayApplication : IDisposable
     private IntPtr pairedPeerSelector;
     private IntPtr pairedPeerDetailsLabel;
     private IntPtr forgetButton;
+    private IntPtr controlAuthorizationCheckBox;
     private IntPtr controlStateLabel;
     private IntPtr monitorStatusLabel;
     private IntPtr supportPeerLabel;
@@ -143,6 +160,7 @@ internal sealed class WindowsTrayApplication : IDisposable
     private IntPtr simplePairLabel;
     private IntPtr simplePairDetailsLabel;
     private IntPtr simpleForgetButton;
+    private IntPtr simpleControlAuthorizationCheckBox;
     private IntPtr simpleControlStateLabel;
     private string lastStatus = "Starting WindowsKVM…";
     private string? pairedPeerName;
@@ -155,6 +173,9 @@ internal sealed class WindowsTrayApplication : IDisposable
     private int controlActive;
     private int scrollPosition;
     private long nextConsentID;
+    private int statusMessagePosted;
+    private int statusDirty;
+    private int windowUpdateDepth;
     private bool simpleMode;
     private bool modeSelectedByUser;
     private bool viewModeInitialized;
@@ -267,13 +288,15 @@ internal sealed class WindowsTrayApplication : IDisposable
             WindowTitle,
             WindowStyleOverlappedWindow
                 | WindowStyleVerticalScroll
-                | WindowStyleClipChildren,
+                | WindowStyleClipChildren
+                | WindowStyleClipSiblings,
             DefaultWindowCoordinate,
             DefaultWindowCoordinate,
             DefaultWindowWidth,
             DefaultWindowHeight,
             IntPtr.Zero,
-            IntPtr.Zero
+            IntPtr.Zero,
+            WindowExtendedStyleComposited
         );
         if (window == IntPtr.Zero)
         {
@@ -556,8 +579,8 @@ internal sealed class WindowsTrayApplication : IDisposable
             LabelColor.Green
         );
         CreateLabel(
-            "Native Windows dialogs are shown whenever a paired Mac\r\n"
-                + "requests keyboard, mouse, or trackpad control.",
+            "Native Windows dialogs are shown when automatic control approval\r\n"
+                + "is disabled; new pairings are approved by default.",
             32,
             564,
             790,
@@ -634,7 +657,7 @@ internal sealed class WindowsTrayApplication : IDisposable
         );
         CreateLabel(
             "Pairing and Connect are initiated from MacKVM. Windows shows\r\n"
-                + "the consent dialog and keeps the pinned peer in its trust store.",
+                + "the consent dialog once, then keeps the decision with the pinned peer.",
             32,
             1054,
             790,
@@ -734,19 +757,37 @@ internal sealed class WindowsTrayApplication : IDisposable
             captionFont,
             LabelColor.Secondary
         );
+        controlAuthorizationCheckBox = CreateCheckBox(
+            "Automatically allow control from this paired Mac",
+            32,
+            1784,
+            620,
+            30,
+            ControlAuthorizationButtonID
+        );
+        CreateLabel(
+            "Enabled by default after pairing; this approval is remembered for the pinned key.\r\n"
+                + "Turn it off here when every control request should require confirmation.",
+            32,
+            1818,
+            790,
+            40,
+            captionFont,
+            LabelColor.Secondary
+        );
         CreateButton(
             "Copy support information",
             32,
-            1794,
+            1870,
             250,
             36,
             CopyButtonID
         );
-        CreateButton("Quit", 690, 1794, 130, 36, QuitButtonID);
+        CreateButton("Quit", 690, 1870, 130, 36, QuitButtonID);
         CreateLabel(
             "Ready on the local network. Closing this window hides MacKVM to the system tray.",
             32,
-            1850,
+            1926,
             790,
             28,
             captionFont,
@@ -851,11 +892,21 @@ internal sealed class WindowsTrayApplication : IDisposable
                 LabelColor.Secondary
             )
         );
-        RegisterSimpleControl(
-            CreateButton("Refresh", 32, 638, 140, 36, RefreshButtonID)
+        simpleControlAuthorizationCheckBox = RegisterSimpleControl(
+            CreateCheckBox(
+                "Automatically allow control from this paired Mac",
+                32,
+                632,
+                620,
+                30,
+                ControlAuthorizationButtonID
+            )
         );
         RegisterSimpleControl(
-            CreateButton("Quit", 690, 638, 130, 36, QuitButtonID)
+            CreateButton("Refresh", 32, 686, 140, 36, RefreshButtonID)
+        );
+        RegisterSimpleControl(
+            CreateButton("Quit", 690, 686, 130, 36, QuitButtonID)
         );
     }
 
@@ -946,6 +997,25 @@ internal sealed class WindowsTrayApplication : IDisposable
         "BUTTON",
         text,
         ButtonStylePushButton | WindowStyleTabStop,
+        x,
+        y,
+        width,
+        height,
+        (IntPtr)command,
+        bodyFont
+    );
+
+    private IntPtr CreateCheckBox(
+        string text,
+        int x,
+        int y,
+        int width,
+        int height,
+        int command
+    ) => CreateChild(
+        "BUTTON",
+        text,
+        ButtonStyleAutoCheckBox | WindowStyleTabStop,
         x,
         y,
         width,
@@ -1057,33 +1127,172 @@ internal sealed class WindowsTrayApplication : IDisposable
         }
 
         scrollPosition = 0;
+        BeginWindowUpdate();
+        try
+        {
+            foreach (var layout in childLayouts)
+            {
+                var isCommon = !advancedControls.Contains(layout.Handle)
+                    && !simpleControls.Contains(layout.Handle);
+                var visible = isCommon
+                    || (simpleMode
+                        ? simpleControls.Contains(layout.Handle)
+                        : advancedControls.Contains(layout.Handle));
+                _ = ShowWindow(
+                    layout.Handle,
+                    visible ? ShowWindowShow : ShowWindowHide
+                );
+            }
+
+            MoveChildWindows();
+            UpdateScrollBar();
+        }
+        finally
+        {
+            EndWindowUpdate();
+        }
+
+        UpdateForgetButtonState(pairedPeerName is not null);
+        UpdateControlAuthorizationControls();
+    }
+
+    /// <summary>
+    /// Suspends the parent redraw while a layout or state refresh changes many
+    /// child windows. The depth counter keeps nested calls (for example a
+    /// scroll-bar correction during a mode switch) from re-enabling redraw too
+    /// early.
+    /// </summary>
+    private void BeginWindowUpdate()
+    {
+        if (window == IntPtr.Zero)
+        {
+            return;
+        }
+
+        if (windowUpdateDepth++ == 0)
+        {
+            _ = SendMessage(
+                window,
+                WindowMessageSetRedraw,
+                IntPtr.Zero,
+                IntPtr.Zero
+            );
+            foreach (var layout in childLayouts)
+            {
+                _ = SendMessage(
+                    layout.Handle,
+                    WindowMessageSetRedraw,
+                    IntPtr.Zero,
+                    IntPtr.Zero
+                );
+            }
+        }
+    }
+
+    private void EndWindowUpdate()
+    {
+        if (window == IntPtr.Zero || windowUpdateDepth == 0)
+        {
+            return;
+        }
+
+        if (--windowUpdateDepth == 0)
+        {
+            foreach (var layout in childLayouts)
+            {
+                _ = SendMessage(
+                    layout.Handle,
+                    WindowMessageSetRedraw,
+                    (IntPtr)1,
+                    IntPtr.Zero
+                );
+            }
+            _ = SendMessage(
+                window,
+                WindowMessageSetRedraw,
+                (IntPtr)1,
+                IntPtr.Zero
+            );
+            RedrawWindowContent();
+        }
+    }
+
+    /// <summary>
+    /// Moves every child in one deferred-position transaction. This avoids a
+    /// visible sequence of partially moved rows while the user scrolls or
+    /// switches between Simple and Advanced mode.
+    /// </summary>
+    private void MoveChildWindows()
+    {
+        if (childLayouts.Count == 0)
+        {
+            return;
+        }
+
+        var deferred = BeginDeferWindowPos(childLayouts.Count);
+        if (deferred != IntPtr.Zero)
+        {
+            var current = deferred;
+            foreach (var layout in childLayouts)
+            {
+                current = DeferWindowPos(
+                    current,
+                    layout.Handle,
+                    IntPtr.Zero,
+                    layout.X,
+                    layout.Y - scrollPosition,
+                    0,
+                    0,
+                    WindowPositionNoSize
+                        | WindowPositionNoRedraw
+                        | WindowPositionNoActivate
+                        | WindowPositionNoZOrder
+                );
+                if (current == IntPtr.Zero)
+                {
+                    break;
+                }
+            }
+
+            if (current != IntPtr.Zero && EndDeferWindowPos(current))
+            {
+                return;
+            }
+        }
+
+        // The deferred API is available on supported Windows versions, but a
+        // conservative fallback keeps the UI functional if allocation fails.
         foreach (var layout in childLayouts)
         {
-            var isCommon = !advancedControls.Contains(layout.Handle)
-                && !simpleControls.Contains(layout.Handle);
-            var visible = isCommon
-                || (simpleMode
-                    ? simpleControls.Contains(layout.Handle)
-                    : advancedControls.Contains(layout.Handle));
-            _ = ShowWindow(layout.Handle, visible ? ShowWindowShow : ShowWindowHide);
             _ = SetWindowPos(
                 layout.Handle,
                 IntPtr.Zero,
                 layout.X,
-                layout.Y,
+                layout.Y - scrollPosition,
                 0,
                 0,
-                0x0001 | 0x0004 | 0x0010
+                WindowPositionNoSize
+                    | WindowPositionNoRedraw
+                    | WindowPositionNoActivate
+                    | WindowPositionNoZOrder
             );
         }
+    }
 
-        UpdateScrollBar();
-        if (window != IntPtr.Zero)
+    private void RedrawWindowContent()
+    {
+        if (window == IntPtr.Zero)
         {
-            _ = InvalidateRect(window, IntPtr.Zero, false);
+            return;
         }
 
-        UpdateForgetButtonState(pairedPeerName is not null);
+        _ = RedrawWindow(
+            window,
+            IntPtr.Zero,
+            IntPtr.Zero,
+            RedrawInvalidate | RedrawErase | RedrawAllChildren | RedrawUpdateNow
+        );
+        _ = UpdateWindow(window);
     }
 
     private void UpdateForgetButtonState(bool hasPeer)
@@ -1286,32 +1495,24 @@ internal sealed class WindowsTrayApplication : IDisposable
         }
 
         scrollPosition = position;
-        const uint noSize = 0x0001;
-        const uint noZOrder = 0x0004;
-        const uint noActivate = 0x0010;
-        foreach (var layout in childLayouts)
+        BeginWindowUpdate();
+        try
         {
-            _ = SetWindowPos(
-                layout.Handle,
-                IntPtr.Zero,
-                layout.X,
-                layout.Y - scrollPosition,
-                0,
-                0,
-                noSize | noZOrder | noActivate
-            );
-        }
-
-        if (window != IntPtr.Zero)
-        {
-            var info = new ScrollInfo
+            MoveChildWindows();
+            if (window != IntPtr.Zero)
             {
-                Size = (uint)Marshal.SizeOf<ScrollInfo>(),
-                Mask = ScrollInfoPosition,
-                Position = scrollPosition
-            };
-            _ = SetScrollInfo(window, ScrollBarVertical, ref info, true);
-            _ = InvalidateRect(window, IntPtr.Zero, false);
+                var info = new ScrollInfo
+                {
+                    Size = (uint)Marshal.SizeOf<ScrollInfo>(),
+                    Mask = ScrollInfoPosition,
+                    Position = scrollPosition
+                };
+                _ = SetScrollInfo(window, ScrollBarVertical, ref info, true);
+            }
+        }
+        finally
+        {
+            EndWindowUpdate();
         }
     }
 
@@ -1462,6 +1663,9 @@ internal sealed class WindowsTrayApplication : IDisposable
             case ForgetButtonID:
                 ForgetPairedMac();
                 break;
+            case ControlAuthorizationButtonID:
+                HandleControlAuthorizationSelection();
+                break;
             case QuitButtonID:
             case TrayQuitCommandID:
                 DestroyWindow(window);
@@ -1523,6 +1727,56 @@ internal sealed class WindowsTrayApplication : IDisposable
 
         SetPairedPeer(peer);
         OnRuntimeStatusChanged($"Selected paired Mac {peer.Name}.");
+    }
+
+    private void HandleControlAuthorizationSelection()
+    {
+        var peerIDText = Volatile.Read(ref pairedPeerFullID);
+        if (!Guid.TryParse(peerIDText, out var peerID))
+        {
+            UpdateControlAuthorizationControls();
+            OnRuntimeStatusChanged(
+                "Select a paired Mac before changing automatic control approval."
+            );
+            return;
+        }
+
+        var checkBox = simpleMode
+            ? simpleControlAuthorizationCheckBox
+            : controlAuthorizationCheckBox;
+        var authorized = checkBox != IntPtr.Zero
+            && SendMessage(
+                checkBox,
+                ButtonGetCheck,
+                IntPtr.Zero,
+                IntPtr.Zero
+            ).ToInt64() == ButtonStateChecked;
+        try
+        {
+            if (!runtime.SetControlAuthorization(peerID, authorized))
+            {
+                UpdateControlAuthorizationControls();
+                OnRuntimeStatusChanged(
+                    "The selected Mac is no longer trusted; pair it again before changing control approval."
+                );
+                return;
+            }
+
+            UpdateControlAuthorizationControls();
+            var peerName = Volatile.Read(ref pairedPeerName) ?? "the paired Mac";
+            OnRuntimeStatusChanged(
+                authorized
+                    ? $"Automatic control approval enabled for {peerName}."
+                    : $"Automatic control approval disabled for {peerName}; confirmation is required."
+            );
+        }
+        catch (Exception ex)
+        {
+            UpdateControlAuthorizationControls();
+            OnRuntimeStatusChanged(
+                $"Could not update automatic control approval: {ex.Message}"
+            );
+        }
     }
 
     private void OpenFirewallSettings()
@@ -1614,7 +1868,10 @@ internal sealed class WindowsTrayApplication : IDisposable
 
     private Task<bool> RequestControlConsentAsync(string prompt, CancellationToken token)
         => RequestConsentAsync(
-            $"{prompt}\n\nAllow this authenticated peer to control this Windows PC?",
+            $"{prompt}\n\nAllow this authenticated peer to control this Windows PC?\n\n"
+                + "Automatic approval is enabled by default after pairing. "
+                + "Uncheck automatic approval in Paired device information "
+                + "to require confirmation again.",
             "WindowsKVM control request",
             token
         );
@@ -1698,17 +1955,17 @@ internal sealed class WindowsTrayApplication : IDisposable
 
     private void OnRuntimeStatusChanged(string message)
     {
-        lastStatus = message;
-        pendingStatuses.Enqueue(message);
-        if (window != IntPtr.Zero)
-        {
-            _ = PostMessage(window, WindowMessageStatus, IntPtr.Zero, IntPtr.Zero);
-        }
+        Volatile.Write(ref lastStatus, message);
+        Volatile.Write(ref statusDirty, 1);
+        ScheduleStatusDrain();
     }
 
     private void OnPairingCompleted(WindowsKVM.Protocol.PeerIdentity peer)
     {
-        SetPairedPeer(peer);
+        // Pairing completes on the receiver's network task. Defer all Win32
+        // control mutations to the message-loop thread; doing this directly
+        // while a scroll or paint is in progress can tear the UI.
+        pendingPairedPeers.Enqueue(peer);
         OnRuntimeStatusChanged($"Paired with {peer.Name}.");
     }
 
@@ -1721,6 +1978,33 @@ internal sealed class WindowsTrayApplication : IDisposable
             ref pairedPeerFingerprint,
             peer is null ? null : Fingerprint(peer.SigningPublicKey)
         );
+        UpdateControlAuthorizationControls();
+    }
+
+    private void UpdateControlAuthorizationControls()
+    {
+        var peerIDText = Volatile.Read(ref pairedPeerFullID);
+        var hasPeer = Guid.TryParse(peerIDText, out var peerID);
+        var authorized = hasPeer && runtime.IsControlAuthorized(peerID);
+        foreach (var checkBox in new[]
+        {
+            controlAuthorizationCheckBox,
+            simpleControlAuthorizationCheckBox
+        })
+        {
+            if (checkBox == IntPtr.Zero)
+            {
+                continue;
+            }
+
+            _ = EnableWindow(checkBox, hasPeer);
+            _ = SendMessage(
+                checkBox,
+                ButtonSetCheck,
+                authorized ? (IntPtr)ButtonStateChecked : IntPtr.Zero,
+                IntPtr.Zero
+            );
+        }
     }
 
     private void RefreshPairedPeerSelector(IReadOnlyList<WindowsKVM.Protocol.PeerIdentity> peers)
@@ -1863,119 +2147,192 @@ internal sealed class WindowsTrayApplication : IDisposable
 
     private void DrainStatusQueue()
     {
-        while (pendingStatuses.TryDequeue(out var message))
+        // Claim the current batch before reading it. A callback that arrives
+        // while the UI is applying this snapshot leaves the dirty bit set and
+        // is posted as a follow-up instead of being overwritten at the end.
+        Volatile.Write(ref statusDirty, 0);
+        var latestStatus = Volatile.Read(ref lastStatus);
+
+        WindowsKVM.Protocol.PeerIdentity? latestPeer = null;
+        while (pendingPairedPeers.TryDequeue(out var peer))
         {
-            SetWindowText(statusLabel, message);
+            latestPeer = peer;
         }
 
-        var peers = runtime.TrustedPeers;
-        RefreshPairedPeerSelector(peers);
-        var peerName = Volatile.Read(ref pairedPeerName);
-        var peerID = Volatile.Read(ref pairedPeerID);
-        var peerFingerprint = Volatile.Read(ref pairedPeerFingerprint);
-        if (peerName is null)
+        BeginWindowUpdate();
+        try
         {
+            if (latestStatus is not null)
+            {
+                SetWindowText(statusLabel, latestStatus);
+            }
+
+            if (latestPeer is not null)
+            {
+                SetPairedPeer(latestPeer);
+            }
+
+            var peers = runtime.TrustedPeers;
+            RefreshPairedPeerSelector(peers);
+            UpdateControlAuthorizationControls();
+            var peerName = Volatile.Read(ref pairedPeerName);
+            var peerID = Volatile.Read(ref pairedPeerID);
+            var peerFingerprint = Volatile.Read(ref pairedPeerFingerprint);
+            if (peerName is null)
+            {
+                SetWindowText(
+                    nearbyStatusLabel,
+                    "Listening for MacKVM pairing requests on the local network…"
+                );
+                SetLabelColor(nearbyStatusLabel, LabelColor.Secondary);
+                SetWindowText(
+                    pairedPeerDetailsLabel,
+                    "Start Pair on the MacKVM peer; the verification dialog will appear here."
+                );
+            }
+            else
+            {
+                SetWindowText(nearbyStatusLabel, $"Paired with {peerName}; ready for Connect.");
+                SetLabelColor(nearbyStatusLabel, LabelColor.Green);
+                SetWindowText(
+                    pairedPeerDetailsLabel,
+                    $"Device ID: {peerID}\r\nKey fingerprint: {peerFingerprint}"
+                );
+            }
+            UpdateForgetButtonState(peerName is not null);
+
+            var isControlActive = Volatile.Read(ref controlActive) != 0;
+            var remoteInputIsEnabled = Volatile.Read(ref remoteInputEnabled) != 0;
             SetWindowText(
-                nearbyStatusLabel,
-                "Listening for MacKVM pairing requests on the local network…"
+                controlStateLabel,
+                !remoteInputIsEnabled
+                    ? "Local Windows input only; remote control requests are disabled."
+                    : isControlActive
+                    ? "This Windows PC is receiving keyboard and mouse control."
+                    : "Waiting for an authenticated Mac to request control."
             );
-            SetLabelColor(nearbyStatusLabel, LabelColor.Secondary);
+            SetLabelColor(
+                controlStateLabel,
+                !remoteInputIsEnabled
+                    ? LabelColor.Orange
+                    : isControlActive ? LabelColor.Green : LabelColor.Secondary
+            );
+
+            var secure = runtime.SecureConnectAvailable
+                ? "Secure Connect available"
+                : "Secure Connect unavailable on this Windows build";
             SetWindowText(
-                pairedPeerDetailsLabel,
-                "Start Pair on the MacKVM peer; the verification dialog will appear here."
+                detailLabel,
+                $"Version: {WindowsKvmRuntime.ApplicationVersion} "
+                    + $"(build {WindowsKvmRuntime.ApplicationBuild})\r\n"
+                    + $"Model: {runtime.Model}   Device ID: {runtime.Identity.Id.ToString()[..8]}\r\n"
+                    + $"Pairing TCP: {runtime.PairingPort}\r\n"
+                    + $"Secure TCP: {runtime.SecurePort} ({secure})\r\n"
+                    + $"Local key fingerprint: {Fingerprint(runtime.Identity.SigningPublicKey)}"
+            );
+            SetWindowText(
+                supportPeerLabel,
+                peerName is null
+                    ? "This PC: " + runtime.Model
+                    : $"Paired Mac: {peerName}   (This PC: {runtime.Model})"
+            );
+            SetWindowText(
+                supportFingerprintLabel,
+                "Local key fingerprint: " + Fingerprint(runtime.Identity.SigningPublicKey)
+            );
+            SetWindowText(
+                monitorStatusLabel,
+                secure
+                    + ". Display input switching is handled by MacKVM or the monitor OSD."
+            );
+
+            SetWindowText(simpleStatusLabel, latestStatus ?? string.Empty);
+            SetWindowText(
+                simpleDetailsLabel,
+                $"Version: {WindowsKvmRuntime.ApplicationVersion} (build {WindowsKvmRuntime.ApplicationBuild})\r\n"
+                    + $"Model: {runtime.Model}   Device ID: {runtime.Identity.Id.ToString()[..8]}\r\n"
+                    + $"Pairing TCP: {runtime.PairingPort}   Secure TCP: {runtime.SecurePort}"
+            );
+            SetWindowText(
+                simplePairLabel,
+                peerName is null ? "No paired Macs yet" : $"✓ Paired with {peerName}"
+            );
+            SetLabelColor(
+                simplePairLabel,
+                peerName is null ? LabelColor.Default : LabelColor.Green
+            );
+            SetWindowText(
+                simplePairDetailsLabel,
+                peerName is null
+                    ? "Start Pair on the MacKVM peer. A verification dialog will appear here."
+                    : $"Device ID: {peerID}\r\nKey fingerprint: {peerFingerprint}"
+            );
+            SetWindowText(
+                simpleControlStateLabel,
+                !remoteInputIsEnabled
+                    ? "Local Windows input only; remote control requests are disabled."
+                    : isControlActive
+                    ? "This Windows PC is receiving keyboard and mouse control."
+                    : "Waiting for an authenticated Mac to request control."
+            );
+            SetLabelColor(
+                simpleControlStateLabel,
+                !remoteInputIsEnabled
+                    ? LabelColor.Orange
+                    : isControlActive ? LabelColor.Green : LabelColor.Secondary
             );
         }
-        else
+        finally
         {
-            SetWindowText(nearbyStatusLabel, $"Paired with {peerName}; ready for Connect.");
-            SetLabelColor(nearbyStatusLabel, LabelColor.Green);
-            SetWindowText(
-                pairedPeerDetailsLabel,
-                $"Device ID: {peerID}\r\nKey fingerprint: {peerFingerprint}"
-            );
+            EndWindowUpdate();
         }
-        UpdateForgetButtonState(peerName is not null);
 
-        var isControlActive = Volatile.Read(ref controlActive) != 0;
-        var remoteInputIsEnabled = Volatile.Read(ref remoteInputEnabled) != 0;
-        SetWindowText(
-            controlStateLabel,
-            !remoteInputIsEnabled
-                ? "Local Windows input only; remote control requests are disabled."
-                : isControlActive
-                ? "This Windows PC is receiving keyboard and mouse control."
-                : "Waiting for an authenticated Mac to request control."
-        );
-        SetLabelColor(
-            controlStateLabel,
-            !remoteInputIsEnabled
-                ? LabelColor.Orange
-                : isControlActive ? LabelColor.Green : LabelColor.Secondary
-        );
+        // Keep the post latch while a follow-up is known to be needed. This
+        // drain owns the current queued message, so posting directly avoids a
+        // race with ScheduleStatusDrain observing the latch as already set.
+        if (Volatile.Read(ref statusDirty) != 0 || !pendingPairedPeers.IsEmpty)
+        {
+            if (!PostMessage(window, WindowMessageStatus, IntPtr.Zero, IntPtr.Zero))
+            {
+                Volatile.Write(ref statusMessagePosted, 0);
+            }
+            return;
+        }
 
-        var secure = runtime.SecureConnectAvailable
-            ? "Secure Connect available"
-            : "Secure Connect unavailable on this Windows build";
-        SetWindowText(
-            detailLabel,
-            $"Version: {WindowsKvmRuntime.ApplicationVersion} "
-                + $"(build {WindowsKvmRuntime.ApplicationBuild})\r\n"
-                + $"Model: {runtime.Model}   Device ID: {runtime.Identity.Id.ToString()[..8]}\r\n"
-                + $"Pairing TCP: {runtime.PairingPort}\r\n"
-                + $"Secure TCP: {runtime.SecurePort} ({secure})\r\n"
-                + $"Local key fingerprint: {Fingerprint(runtime.Identity.SigningPublicKey)}"
-        );
-        SetWindowText(
-            supportPeerLabel,
-            peerName is null
-                ? "This PC: " + runtime.Model
-                : $"Paired Mac: {peerName}   (This PC: {runtime.Model})"
-        );
-        SetWindowText(
-            supportFingerprintLabel,
-            "Local key fingerprint: " + Fingerprint(runtime.Identity.SigningPublicKey)
-        );
-        SetWindowText(
-            monitorStatusLabel,
-            secure
-                + ". Display input switching is handled by MacKVM or the monitor OSD."
-        );
+        // Release the latch only after the final clean check. If a callback
+        // raced that check while the latch was still held, reclaim it and post
+        // one more drain; if it arrived after the release, its own callback
+        // will have observed the zero latch and posted normally.
+        if (Interlocked.CompareExchange(ref statusMessagePosted, 0, 1) != 1)
+        {
+            return;
+        }
 
-        SetWindowText(simpleStatusLabel, lastStatus);
-        SetWindowText(
-            simpleDetailsLabel,
-            $"Version: {WindowsKvmRuntime.ApplicationVersion} (build {WindowsKvmRuntime.ApplicationBuild})\r\n"
-                + $"Model: {runtime.Model}   Device ID: {runtime.Identity.Id.ToString()[..8]}\r\n"
-                + $"Pairing TCP: {runtime.PairingPort}   Secure TCP: {runtime.SecurePort}"
-        );
-        SetWindowText(
-            simplePairLabel,
-            peerName is null ? "No paired Macs yet" : $"✓ Paired with {peerName}"
-        );
-        SetLabelColor(
-            simplePairLabel,
-            peerName is null ? LabelColor.Default : LabelColor.Green
-        );
-        SetWindowText(
-            simplePairDetailsLabel,
-            peerName is null
-                ? "Start Pair on the MacKVM peer. A verification dialog will appear here."
-                : $"Device ID: {peerID}\r\nKey fingerprint: {peerFingerprint}"
-        );
-        SetWindowText(
-            simpleControlStateLabel,
-            !remoteInputIsEnabled
-                ? "Local Windows input only; remote control requests are disabled."
-                : isControlActive
-                ? "This Windows PC is receiving keyboard and mouse control."
-                : "Waiting for an authenticated Mac to request control."
-        );
-        SetLabelColor(
-            simpleControlStateLabel,
-            !remoteInputIsEnabled
-                ? LabelColor.Orange
-                : isControlActive ? LabelColor.Green : LabelColor.Secondary
-        );
+        if (Volatile.Read(ref statusDirty) != 0 || !pendingPairedPeers.IsEmpty)
+        {
+            if (Interlocked.CompareExchange(ref statusMessagePosted, 1, 0) == 0
+                && !PostMessage(window, WindowMessageStatus, IntPtr.Zero, IntPtr.Zero))
+            {
+                Volatile.Write(ref statusMessagePosted, 0);
+            }
+        }
+    }
+
+    private void ScheduleStatusDrain()
+    {
+        if (window == IntPtr.Zero
+            || Interlocked.Exchange(ref statusMessagePosted, 1) != 0)
+        {
+            return;
+        }
+
+        if (!PostMessage(window, WindowMessageStatus, IntPtr.Zero, IntPtr.Zero))
+        {
+            // If the window is already being destroyed, allow a future
+            // status callback to make a best-effort post without leaving the
+            // coalescing latch permanently set.
+            Volatile.Write(ref statusMessagePosted, 0);
+        }
     }
 
     private void CopySupportInformation()
@@ -2164,9 +2521,10 @@ internal sealed class WindowsTrayApplication : IDisposable
         int width,
         int height,
         IntPtr parent,
-        IntPtr menu
+        IntPtr menu,
+        uint extendedStyle = 0
     ) => CreateWindowEx(
-        0,
+        extendedStyle,
         className,
         title,
         style,
@@ -2321,10 +2679,36 @@ internal sealed class WindowsTrayApplication : IDisposable
     );
 
     [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr BeginDeferWindowPos(int windowCount);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr DeferWindowPos(
+        IntPtr deferInfo,
+        IntPtr window,
+        IntPtr insertAfter,
+        int x,
+        int y,
+        int width,
+        int height,
+        uint flags
+    );
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool EndDeferWindowPos(IntPtr deferInfo);
+
+    [DllImport("user32.dll", SetLastError = true)]
     private static extern bool InvalidateRect(
         IntPtr window,
         IntPtr rectangle,
         bool erase
+    );
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool RedrawWindow(
+        IntPtr window,
+        IntPtr updateRectangle,
+        IntPtr updateRegion,
+        uint flags
     );
 
     [DllImport("user32.dll", SetLastError = true)]

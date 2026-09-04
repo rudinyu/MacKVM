@@ -96,6 +96,9 @@ final class ControlCoordinator: ObservableObject {
     private let localControlAllowed: () -> Bool
     private let keyboardLayoutIdentifier: () -> String?
     private let seamlessControlAuthorized: (UUID) -> Bool
+    private lazy var inputSendCoalescer = ControlInputSendCoalescer { [weak self] message in
+        self?.sendImmediately(message)
+    }
     private var machine = ControlSessionStateMachine()
     private var connectionObservation: AnyCancellable?
     private var requestTimeout: DispatchWorkItem?
@@ -321,6 +324,10 @@ final class ControlCoordinator: ObservableObject {
             endReceivingControl(reason: reason)
             return
         }
+        // Drop any delayed pointer snapshot before ending the outbound
+        // request. Lifecycle messages must never carry movement from a
+        // session that is being torn down.
+        inputSendCoalescer.reset()
         // Escape can be pressed while the receiver's Accessibility setup is
         // still completing. Clear that request before the asynchronous
         // beginRemoteControl callback returns, otherwise the callback could
@@ -474,6 +481,7 @@ final class ControlCoordinator: ObservableObject {
     func stopForQuit(completion: @escaping () -> Void) {
         guard !isStoppingForQuit else { return }
         isStoppingForQuit = true
+        inputSendCoalescer.reset()
         requestTimeout?.cancel()
         requestTimeout = nil
         incomingRequestTimeout?.cancel()
@@ -579,6 +587,7 @@ final class ControlCoordinator: ObservableObject {
                   message.requestID == activeOutboundRequestID else {
                 return
             }
+            inputSendCoalescer.reset()
             requestTimeout?.cancel()
             _ = try? machine.handle(.stopControl)
             state = machine.state
@@ -589,6 +598,7 @@ final class ControlCoordinator: ObservableObject {
         case .endControl:
             if message.requestID == activeOutboundRequestID,
                state == .controlling || state == .suspended {
+                inputSendCoalescer.reset()
                 let wasControlling = state == .controlling
                 let wasWaitingForControlGrant = state == .suspended
                 let sessionManagedDisplayRoute = activeControlManagesDisplayRoute
@@ -612,6 +622,7 @@ final class ControlCoordinator: ObservableObject {
             }
             if let request = pendingIncomingControlRequest,
                message.requestID == request.id {
+                inputSendCoalescer.reset()
                 cancelIncomingControlRequest(
                     request,
                     reason: "The other Mac cancelled its control request"
@@ -619,6 +630,7 @@ final class ControlCoordinator: ObservableObject {
             }
             if let request = preparingIncomingControlRequest,
                message.requestID == request.id {
+                inputSendCoalescer.reset()
                 cancelIncomingControlRequest(
                     request,
                     reason: "The other Mac cancelled its control request"
@@ -627,6 +639,7 @@ final class ControlCoordinator: ObservableObject {
             if let request = activeInboundControlRequest,
                message.requestID == request.id,
                isReceivingControl {
+                inputSendCoalescer.reset()
                 finishReceivingControl(
                     request,
                     reason: "The other Mac returned control",
@@ -784,6 +797,7 @@ final class ControlCoordinator: ObservableObject {
             inputCapture.startCapture(suppressingLocalEvents: true)
             guard inputCapture.isCapturing else {
                 let requestID = activeOutboundRequestID
+                inputSendCoalescer.reset()
                 _ = try? machine.handle(.stopControl)
                 state = machine.state
                 activeOutboundRequestID = nil
@@ -808,6 +822,7 @@ final class ControlCoordinator: ObservableObject {
             completeActiveControlRequest(true)
             status = "Controlling the other Mac — ⌃⌥⌘Esc returns locally"
         } catch {
+            inputSendCoalescer.reset()
             if let requestID = activeOutboundRequestID {
                 send(
                     ControlMessage(
@@ -842,6 +857,11 @@ final class ControlCoordinator: ObservableObject {
         }
         hasObservedConnectionState = true
         observedConnectedPeerID = peerID
+        // A peer identity or admission generation change ends the previous
+        // control session even when the new publication is still non-nil.
+        // Reset unconditionally so a delayed pointer cannot cross that
+        // lifecycle boundary.
+        inputSendCoalescer.reset()
         if peerID == nil {
             inboundAdmission.invalidate(
                 ifCurrentGeneration: observedAdmissionGeneration
@@ -931,6 +951,7 @@ final class ControlCoordinator: ObservableObject {
     }
 
     private func cancelPendingRequestForSimultaneousControl() {
+        inputSendCoalescer.reset()
         requestTimeout?.cancel()
         requestTimeout = nil
         inputCapture.stopCapture()
@@ -1010,6 +1031,7 @@ final class ControlCoordinator: ObservableObject {
         _ request: IncomingControlRequest,
         reason: String
     ) {
+        inputSendCoalescer.reset()
         incomingRequestTimeout?.cancel()
         incomingRequestTimeout = nil
         resolvePendingIncomingControlRequest(request)
@@ -1031,6 +1053,7 @@ final class ControlCoordinator: ObservableObject {
               activeInboundControlRequest?.id == request.id else {
             return
         }
+        inputSendCoalescer.reset()
         isReceivingControl = false
         activeInboundControlRequest = nil
         isRemoteInputTearingDown = true
@@ -1126,10 +1149,19 @@ final class ControlCoordinator: ObservableObject {
     }
 
     private func send(_ message: ControlMessage) {
+        inputSendCoalescer.send(message)
+    }
+
+    private func sendImmediately(_ message: ControlMessage) {
         do {
             secureSession.send(try ControlMessageCodec.encode(message))
         } catch {
-            status = "Could not encode the control message"
+            // Pointer coalescing flushes on its private queue. Keep the
+            // published status mutation on the main thread just like the
+            // normal coordinator state transitions.
+            DispatchQueue.main.async { [weak self] in
+                self?.status = "Could not encode the control message"
+            }
         }
     }
 }

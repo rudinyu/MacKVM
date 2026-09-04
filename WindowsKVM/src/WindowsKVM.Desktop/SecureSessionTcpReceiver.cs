@@ -149,6 +149,22 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
             return;
         }
 
+        Guid? activeRequestID = null;
+        lock (activeControlLock)
+        {
+            if (activeControlPeerID == peerID)
+            {
+                activeRequestID = activeControlRequestID;
+            }
+        }
+        if (activeRequestID is { } requestID)
+        {
+            // Release the Windows input sink immediately. Cancelling the
+            // socket below is asynchronous and could otherwise leave an
+            // old-key session holding local input until its read loop exits.
+            EndActiveControl(peerID, requestID);
+        }
+
         ConnectionContext[] revoked;
         lock (connectionContextLock)
         {
@@ -508,6 +524,7 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
         RegisterConnectionContext(connectionContext);
         SecureSessionChannel? channel = null;
         Guid? activePeerID = null;
+        PeerIdentity? activePeerIdentity = null;
         var authenticated = false;
         var unauthenticatedSlotHeld = true;
         long partialFrameDeadline = 0;
@@ -610,6 +627,7 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
                             }
 
                             activePeerID = initiator.Sender.Id;
+                            activePeerIdentity = initiator.Sender;
                             AssociateConnectionContext(
                                 connectionContext,
                                 initiator.Sender.Id
@@ -788,14 +806,19 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
                                 );
                                 continue;
                             }
-                            var accepted = await RequestControlConsentAsync(
+                            var peerIdentity = activePeerIdentity
+                                ?? throw new SecureSessionWireException(
+                                    SecureSessionWireErrorCode.InvalidHandshake,
+                                    "The authenticated peer identity is missing."
+                                );
+                            var consent = await RequestControlConsentAsync(
                                 controlMessage,
-                                peerID,
+                                peerIdentity,
                                 token
                             );
-                            if (!accepted
+                            if (!consent.Allowed
                                 || Volatile.Read(ref remoteInputEnabled) == 0
-                                || !TryActivateControl(peerID, requestID))
+                                || !TryActivateControl(peerIdentity, requestID))
                             {
                                 await SendControlMessageAsync(
                                     channel,
@@ -813,7 +836,7 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
                                 continue;
                             }
 
-                            controlRequestID.Set(requestID);
+                            controlRequestID.Set(requestID, consent.IsOneShot);
                             try
                             {
                                 releaseHotKey = new WindowsControlReleaseHotKey(() =>
@@ -923,6 +946,38 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
                                 throw new SecureSessionWireException(
                                     SecureSessionWireErrorCode.UnexpectedMessage,
                                     "Input arrived without an active Windows control grant."
+                                );
+                            }
+
+                            var inputPeer = activePeerIdentity
+                                ?? throw new SecureSessionWireException(
+                                    SecureSessionWireErrorCode.InvalidHandshake,
+                                    "The authenticated peer identity is missing."
+                                );
+                            var authorization = trustStore.GetControlAuthorization(
+                                inputPeer
+                            );
+                            if (authorization is
+                                WindowsTrustStore.ControlAuthorizationState.Untrusted)
+                            {
+                                Console.Error.WriteLine(
+                                    $"Secure control authorization changed for {Short(inputPeer.Id)}; ending session."
+                                );
+                                throw new SecureSessionWireException(
+                                    SecureSessionWireErrorCode.InvalidSignature,
+                                    "The paired peer is no longer authorized for control."
+                                );
+                            }
+                            if (authorization is
+                                    WindowsTrustStore.ControlAuthorizationState.Denied
+                                && !controlRequestID.IsOneShot(requestID))
+                            {
+                                Console.Error.WriteLine(
+                                    $"Secure control authorization was revoked for {Short(inputPeer.Id)}; ending session."
+                                );
+                                throw new SecureSessionWireException(
+                                    SecureSessionWireErrorCode.InvalidSignature,
+                                    "The paired peer's remembered control approval was revoked."
                                 );
                             }
 
@@ -1087,12 +1142,13 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
         }
     }
 
-    private async Task<bool> RequestControlConsentAsync(
+    private async Task<ControlConsentResult> RequestControlConsentAsync(
         ControlMessage request,
-        Guid peerID,
+        PeerIdentity peer,
         CancellationToken token
     )
     {
+        var peerID = peer.Id;
         var remoteVersion = request.ProtocolVersion
             ?? ControlProtocolCompatibility.MinimumCompatibleVersion;
         var remoteMinimum = request.MinimumProtocolVersion ?? remoteVersion;
@@ -1103,15 +1159,39 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
             Console.Error.WriteLine(
                 $"Control request from {Short(peerID)} uses an incompatible protocol."
             );
-            return false;
+            return ControlConsentResult.Denied;
         }
 
-        if (autoAcceptControl)
+        var authorization = trustStore.GetControlAuthorization(peer);
+        if (authorization is WindowsTrustStore.ControlAuthorizationState.Untrusted)
+        {
+            Console.Error.WriteLine(
+                $"Control request from {Short(peerID)} rejected: trust is no longer current."
+            );
+            return ControlConsentResult.Denied;
+        }
+
+        if (authorization is WindowsTrustStore.ControlAuthorizationState.Authorized)
+        {
+            Console.WriteLine(
+                $"Control request from {Short(peerID)} accepted (remembered approval)."
+            );
+            PublishStatus(
+                "Control request accepted using the remembered local approval."
+            );
+            return new ControlConsentResult(Allowed: true, IsOneShot: false);
+        }
+
+        // A durable explicit deny takes precedence over --yes. The latter is
+        // a one-shot convenience, while --deny-control is a local revocation
+        // that must also affect an already-running console receiver.
+        if (autoAcceptControl
+            && authorization is WindowsTrustStore.ControlAuthorizationState.Unconfigured)
         {
             Console.WriteLine(
                 $"Control request from {Short(peerID)} accepted (--yes)."
             );
-            return true;
+            return new ControlConsentResult(Allowed: true, IsOneShot: true);
         }
 
         if (promptConsent is null)
@@ -1119,27 +1199,29 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
             Console.Error.WriteLine(
                 "Control request denied because no console consent provider is available."
             );
-            return false;
+            return ControlConsentResult.Denied;
         }
 
         using var promptTimeout = CancellationTokenSource.CreateLinkedTokenSource(token);
         promptTimeout.CancelAfter(ControlPromptTimeout);
         try
         {
-            return await promptConsent(
+            var accepted = await promptConsent(
                 $"Allow keyboard/mouse control from {Short(peerID)}? y/N: ",
                 promptTimeout.Token
             ).ConfigureAwait(false);
+            return new ControlConsentResult(accepted, IsOneShot: accepted);
         }
         catch (OperationCanceledException) when (promptTimeout.IsCancellationRequested)
         {
             Console.Error.WriteLine("Control request timed out and was denied.");
-            return false;
+            return ControlConsentResult.Denied;
         }
     }
 
-    private bool TryActivateControl(Guid peerID, Guid requestID)
+    private bool TryActivateControl(PeerIdentity peer, Guid requestID)
     {
+        var peerID = peer.Id;
         var activated = false;
         lock (activeControlLock)
         {
@@ -1147,6 +1229,7 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
             // open. Re-check it under the same lock as activation so a stale
             // approval can never acquire the Windows input sink.
             if (Volatile.Read(ref remoteInputEnabled) == 0
+                || !trustStore.Matches(peer)
                 || activeControlRequestID is not null)
             {
                 return false;
@@ -1388,6 +1471,7 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
     {
         private readonly object gate = new();
         private Guid? value;
+        private bool oneShot;
 
         public Guid? Value
         {
@@ -1400,11 +1484,20 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
             }
         }
 
-        public void Set(Guid? requestID)
+        public void Set(Guid? requestID, bool isOneShot = false)
         {
             lock (gate)
             {
                 value = requestID;
+                oneShot = requestID is not null && isOneShot;
+            }
+        }
+
+        public bool IsOneShot(Guid requestID)
+        {
+            lock (gate)
+            {
+                return value == requestID && oneShot;
             }
         }
 
@@ -1418,8 +1511,14 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
                 }
 
                 value = null;
+                oneShot = false;
                 return true;
             }
         }
+    }
+
+    private readonly record struct ControlConsentResult(bool Allowed, bool IsOneShot)
+    {
+        public static ControlConsentResult Denied => new(false, false);
     }
 }

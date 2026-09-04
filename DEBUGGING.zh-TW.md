@@ -163,9 +163,11 @@ dns-sd -B _mackvm-secure._tcp local
 
 ```powershell
 & $exe --list-paired
+& $exe --allow-control <peer-id>
+& $exe --deny-control <peer-id>
 ```
 
-這會列出已信任 Mac 的名稱、完整 peer ID 與公開金鑰指紋。Windows identity private key 以 DPAPI 保護，位於 `%LOCALAPPDATA%\MacKVM`；不要複製或附加 `identity.json`。只有在確定要撤銷配對時才使用 `--forget <peer-id>`，之後必須重新 Pair 才能 Connect。
+這會列出已信任 Mac 的名稱、完整 peer ID 與公開金鑰指紋。Windows identity private key 以 DPAPI 保護，位於 `%LOCALAPPDATA%\MacKVM`；不要複製或附加 `identity.json`。只有在確定要撤銷配對時才使用 `--forget <peer-id>`，之後必須重新 Pair 才能 Connect。`--allow-control` 與 `--deny-control` 只會變更選定釘選 Mac 的本機控制同意決定；常駐 receiver 會在下一個控制請求前重新載入原子寫入的 trust 檔案，因此可由另一個 CLI process 撤銷或恢復，而不需暴露 private key。
 
 ## 判讀跨平台報告
 

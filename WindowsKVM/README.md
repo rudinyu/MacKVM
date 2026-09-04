@@ -8,7 +8,7 @@ authenticate a secure Connect session, and receive keyboard/mouse control over
 that encrypted session. A console mode remains available for automation and
 firewall diagnostics.
 
-## Current feature set — 1.02.11 (build 91)
+## Current feature set — 1.02.15 (build 95)
 
 The Windows host includes:
 
@@ -37,6 +37,10 @@ The Windows host includes:
 - native pairing/control consent dialogs in the UI, a resident system-tray
   icon, a macOS-aligned scrollable status window, and public **Copy support
   information** output;
+- automatic control approval enabled by default when a Mac pairing completes;
+  the **Automatically allow control from this paired Mac** checkbox and
+  `--allow-control`/`--deny-control` commands can revoke or restore that local
+  decision;
 - responsive **Simple mode** and **Advanced mode** views: the UI starts in
   Simple mode on compact displays, keeps essential identity/pairing/control
   actions visible, and lets the user switch modes from the header;
@@ -60,9 +64,12 @@ build must be updated before it can establish an encrypted control session.
 The UI host starts at launch and keeps the receiver resident in the Windows
 notification area. Closing the status window hides it; **Quit WindowsKVM** in
 the window or tray menu stops mDNS, TCP listeners, and input injection. The
-Windows side never accepts unauthenticated input: a paired, authenticated Mac
-session must request control and pass the local consent policy first. Windows
-Raw Input capture and a polished firewall setup wizard remain later work.
+ Windows side never accepts unauthenticated input: a paired, authenticated Mac
+ session must request control and pass the local consent policy first. Pairing
+ enables the local automatic-control decision for that pinned key by default;
+ turn it off in **Paired device information** when every request should prompt.
+Windows Raw Input capture and a polished firewall setup wizard remain later
+work.
 
 ### UI layout
 
@@ -96,11 +103,14 @@ The full Advanced view contains:
 6. **Monitor input** — explains that display switching is optional and remains
    controlled from MacKVM or the monitor OSD.
 7. **Paired device information** — the current Mac's public identity,
-   **Forget paired Mac**, local identity details, and the public **Copy support
+   **Forget paired Mac**, the **Automatically allow control from this paired
+   Mac** setting, local identity details, and the public **Copy support
    information** action.
 
-Native Windows Yes/No dialogs are used for pairing-code and control consent,
-while the system-tray menu provides **Open WindowsKVM** and **Quit WindowsKVM**.
+Native Windows Yes/No dialogs are used for pairing-code consent and for control
+requests whose automatic approval was disabled. Newly paired peers are admitted
+without a control dialog until that setting is turned off. The system-tray menu
+provides **Open WindowsKVM** and **Quit WindowsKVM**.
 
 ## Build and run
 
@@ -132,9 +142,11 @@ peer IDs and then pass the complete ID to `--forget`:
 ```
 
 The one-shot CLI command removes durable trust and requires a new Pair before
-Connect. It cannot close an active session held by another already-running
-receiver process; restart that receiver to reload the store, or use the UI
-**Forget paired Mac** action when active-session revocation is needed.
+Connect. An already-running receiver refreshes the durable trust decision at
+control admission and while input is flowing, so **Forget**, key replacement,
+and `--deny-control` take effect without restarting it. The UI **Forget paired
+Mac** action also asks the resident receiver to close matching sessions
+immediately.
 
 ## Pair and connect
 
@@ -150,10 +162,12 @@ receiver process; restart that receiver to reload the store, or use the UI
    Windows UI and confirm the warning. Forget disconnects any active secure
    session; start Pair again from MacKVM before connecting.
 6. Press **Connect** for the paired Windows peer on MacKVM.
-7. From MacKVM choose **Request keyboard and mouse control**. In UI mode,
-   approve the native Windows control dialog. In console mode, compare the
-   Windows prompt and type `y` (or start WindowsKVM with `--yes` for a
-   controlled test run).
+7. From MacKVM choose **Request keyboard and mouse control**. A newly paired
+   Mac is allowed automatically by default. Disable the checkbox or run
+   `--deny-control <peer-id>` to require confirmation again; the Windows UI
+   dialog or console `y`/`yes` prompt will then appear. Re-enable it with the
+   checkbox or `--allow-control <peer-id>`. The `--yes` option is one-shot
+   convenience for controlled test runs and is never persisted.
 8. To return control locally, press `Ctrl+Alt+Shift+Esc` on Windows, or end
    control from MacKVM. Any held key/button is released during either path.
 

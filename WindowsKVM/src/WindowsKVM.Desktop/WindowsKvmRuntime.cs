@@ -11,8 +11,8 @@ namespace WindowsKVM;
 /// </summary>
 internal sealed class WindowsKvmRuntime : IAsyncDisposable
 {
-    public const string ApplicationVersion = "1.02.11";
-    public const string ApplicationBuild = "91";
+    public const string ApplicationVersion = "1.02.15";
+    public const string ApplicationBuild = "95";
 
     private readonly DeviceCredentials credentials;
     private readonly WindowsTrustStore trustStore;
@@ -46,9 +46,14 @@ internal sealed class WindowsKvmRuntime : IAsyncDisposable
             // It may create a new pin, but it must never silently replace a
             // different public key for an existing peer. Interactive UI/CLI
             // consent is the explicit authorization required for replacement.
-            pairingCompleted: (peer, consentedToKeyReplacement) => RecordPairing(
+            pairingCompleted: (
                 peer,
-                allowKeyReplacement: consentedToKeyReplacement
+                consentedToKeyReplacement,
+                rememberControlApproval
+            ) => RecordPairing(
+                peer,
+                allowKeyReplacement: consentedToKeyReplacement,
+                rememberControlApproval: rememberControlApproval
             ),
             signingLock: signingLock,
             pairingConsent: pairingConsent,
@@ -85,6 +90,21 @@ internal sealed class WindowsKvmRuntime : IAsyncDisposable
     public bool IsStarted => Volatile.Read(ref started) != 0;
 
     public IReadOnlyList<PeerIdentity> TrustedPeers => trustStore.Snapshot();
+
+    /// <summary>
+    /// Returns the local remembered-control decision for a currently pinned
+    /// Mac. The decision is scoped to the public key stored in the trust
+    /// store, not merely to the display name or peer UUID.
+    /// </summary>
+    public bool IsControlAuthorized(Guid peerID)
+        => trustStore.IsControlAuthorized(peerID);
+
+    /// <summary>
+    /// Enables or disables remembered control for a currently pinned Mac.
+    /// Forget and key replacement always clear this decision.
+    /// </summary>
+    public bool SetControlAuthorization(Guid peerID, bool authorized)
+        => trustStore.SetControlAuthorization(peerID, authorized);
 
     /// <summary>
     /// Controls whether a paired Mac may request or deliver keyboard/mouse
@@ -213,7 +233,11 @@ internal sealed class WindowsKvmRuntime : IAsyncDisposable
         }
     }
 
-    private void RecordPairing(PeerIdentity peer, bool allowKeyReplacement)
+    private void RecordPairing(
+        PeerIdentity peer,
+        bool allowKeyReplacement,
+        bool rememberControlApproval
+    )
     {
         // Persist before PairingTcpReceiver sends its completion barrier. A
         // UI callback is emitted only after the durable trust record exists.
@@ -224,8 +248,17 @@ internal sealed class WindowsKvmRuntime : IAsyncDisposable
         // for all other callers.
         var replacedExistingKey = trustStore.Record(
             peer,
-            allowKeyReplacement: allowKeyReplacement
+            allowKeyReplacement: allowKeyReplacement,
+            enableDefaultControlApproval: rememberControlApproval
         );
+        if (replacedExistingKey)
+        {
+            // A UUID can be reused with a new public key. End every secure
+            // context for that UUID before the pairing completion barrier is
+            // released so an old authenticated session cannot inherit the
+            // replacement key's remembered control authorization.
+            secureReceiver?.RevokePeer(peer.Id);
+        }
         try
         {
             PairingCompleted?.Invoke(peer);

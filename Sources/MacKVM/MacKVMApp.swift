@@ -1393,7 +1393,7 @@ private struct MacKVMMenuView: View {
                         )
                         .font(.caption)
                         Text(
-                            "This is a one-time local authorization for this pinned Mac."
+                            "Enabled by default after pairing; turn it off to require confirmation for every request."
                         )
                         .font(.caption2)
                         .foregroundStyle(.secondary)

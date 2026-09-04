@@ -2,6 +2,74 @@
 
 # Changelog
 
+## 1.02.15 (build 95) — 2026-09-04
+
+This security maintenance release closes authorization and lifecycle races in
+the Windows companion and Mac input sender.
+
+### Security
+
+- Bind remembered Windows control approval to the authenticated Mac public key,
+  re-check that key before activation, and revoke active sessions when a key is
+  replaced so an old session cannot inherit a replacement key's approval. An
+  already-running receiver refreshes the durable trust decision while input is
+  flowing, so a cross-process Forget, replacement, or deny cannot keep the old
+  session active.
+- Keep interactive control consent one-shot; only the explicit paired-device
+  setting or `--allow-control` command persists automatic approval. Unattended
+  `--yes` pairing does not save that authorization, and legacy trust files are
+  treated as unconfigured until the user makes an explicit choice.
+- Release active Windows input immediately when a trusted peer is forgotten or
+  its key is replaced.
+
+### Fixed
+
+- Clear delayed Mac pointer snapshots on every control-session transition and
+  avoid coalescer queue self-deadlocks during teardown.
+- Preserve concurrent Windows tray status updates while coalescing UI refreshes.
+
+## 1.02.14 (build 94) — 2026-09-04
+
+This maintenance release improves pointer responsiveness and keeps the
+Windows companion stable while pairing and control state changes arrive.
+
+### Fixed
+
+- Coalesce consecutive absolute mouse-move snapshots on the Mac sender with a
+  bounded four-millisecond flush window. Keyboard, button, scroll, and
+  lifecycle messages keep their ordering, and pending movement is discarded
+  when a secure connection ends so stale pointer events cannot leak into a new
+  session.
+- Keep Windows pairing and runtime status callbacks off the Win32 control path:
+  network callbacks are queued to the UI message loop and bursts are reduced to
+  the newest state before controls are updated.
+- Batch Windows child-window positioning during scrolling and Simple/Advanced
+  mode changes, suspend redraw during the transaction, and use a composited
+  parent plus an immediate full-child redraw to avoid torn or partially
+  rendered rows.
+
+## 1.02.13 (build 93) — 2026-09-04
+
+This feature release makes trusted Windows control seamless by default after
+the user completes pairing.
+
+### Added
+
+- Enable automatic control approval for each newly pinned Mac public key, so
+  subsequent control switches do not block on a repeated confirmation dialog.
+- Keep the Windows UI **Automatically allow control from this paired Mac**
+  setting and console `--allow-control`/`--deny-control` commands available to
+  opt out or restore seamless control.
+
+### Security
+
+- Keep remembered control approval separate from pairing trust; **Forget** and
+  an explicitly approved public-key replacement clear the old approval before
+  the replacement receives the default grant.
+- Reload the atomic trust snapshot before each control request so a separate
+  CLI process can revoke or restore the local decision without exposing private
+  key material. The test-only `--yes` option remains one-shot and is not saved.
+
 ## 1.02.11 (build 91) — 2026-09-02
 
 This maintenance release adds a cross-platform debugging guide for collecting

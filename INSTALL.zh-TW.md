@@ -33,11 +33,11 @@ Intel Mac。建置腳本會驗證 Mach-O 架構與 ad-hoc 簽章。
 
 完整流程請參閱獨立的 [Windows 建置手冊](WINDOWS_BUILD.zh-TW.md)。
 
-Windows 分支改用 C#/.NET 8，不用 Swift。目前 W3 console receiver 已包含跨平台 protocol
-library、簽章配對 state machine、DPAPI 保護的 identity、雙堆疊 mDNS、驗證加密控制
-session、Windows `SendInput` 注入、輸入釋放與緊急交還快捷鍵。WinUI／tray UI、Raw Input
-擷取與完整的最小權限 Windows Firewall 精靈仍是後續工作；目前 receiver 在取得同意後已能
-共用 Mac 上的鍵盤與滑鼠。
+Windows 分支改用 C#/.NET 8，不用 Swift。目前 Windows host 已包含跨平台 protocol library、簽章配對
+state machine、DPAPI 保護的 identity、雙堆疊 mDNS、驗證加密控制 session、Windows `SendInput` 注入、
+輸入釋放、原生 Win32／tray UI 與緊急交還快捷鍵。第一次明確按下控制 Allow 後，會依目前釘選的 Mac
+公開金鑰記住決定；可用 UI 設定或 `--allow-control`／`--deny-control` 修改本機決定。Raw Input 擷取與
+完整的最小權限 Windows Firewall 精靈仍是後續工作；目前 receiver 在取得同意後已能共用 Mac 上的鍵盤與滑鼠。
 
 請在 Windows 建置主機安裝 .NET 8 SDK；加入 WinUI 後，建議使用含 Windows App SDK workload
 的 Visual Studio 2022。兩個支援的 native 目標如下：
@@ -53,7 +53,8 @@ session、Windows `SendInput` 注入、輸入釋放與緊急交還快捷鍵。Wi
 .\dist\windows\arm64\WindowsKVM.exe --pairing-listen --name "Windows ARM64"
 ```
 
-把六位數驗證碼與發起配對的 Mac 比對後，在 Windows 輸入 `y`；`--yes` 僅供受控測試。
+把六位數驗證碼與發起配對的 Mac 比對後，在 Windows 輸入 `y`。第一次明確按下控制 Allow 後會記住該
+釘選 Mac；若要每次重新確認，可用 UI 設定或 `--deny-control <peer-id>`。`--yes` 僅供受控測試且不會保存。
 receiver 會廣播 `_mackvm._tcp`，Windows Defender Firewall 只需在信任的 Private network
 允許標準提示。protocol self-test 可執行 `.\scripts\test-windows.ps1`。
 

@@ -89,7 +89,7 @@ Windows 建置檢查。
 .\WindowsKVM.exe --version
 ```
 
-目前 UI 測試 build 應顯示 `WindowsKVM 1.02.11 (build 91)`。
+目前 UI 測試 build 應顯示 `WindowsKVM 1.02.15 (build 95)`。
 
 在 Windows publish 後啟動常駐 UI：
 
@@ -97,10 +97,11 @@ Windows 建置檢查。
 .\dist\windows\arm64\WindowsKVM.exe
 ```
 
-UI 會加入 Windows 系統匣圖示、啟動兩個 listener，並以原生 Yes／No 對話框處理配對與
-控制同意。關閉狀態視窗只會隱藏；從視窗或系統匣選單選 **Quit WindowsKVM** 才會停止
-所有 listener。要做腳本測試時，使用 `--pairing-listen`；`--yes` 只適合受控測試，會自動
-接受配對與控制：
+UI 會加入 Windows 系統匣圖示、啟動兩個 listener，並以原生 Yes／No 對話框處理配對，以及關閉自動
+同意後的控制請求。配對完成後會預設啟用目前釘選公開金鑰的自動控制；若要每次控制都重新確認，請在
+**Paired device information** 關閉 **Automatically allow control from this paired Mac**。
+關閉狀態視窗只會隱藏；從視窗或系統匣選單選 **Quit WindowsKVM** 才會停止所有 listener。要做腳本
+測試時，使用 `--pairing-listen`；`--yes` 只適合受控測試，會自動接受配對與控制但不會保存控制同意：
 
 狀態視窗沿用 macOS 面板順序，並提供兩種模式。螢幕小於 900×1120 像素，或視窗可用區域較窄／較矮時，
 會自動使用 **Simple mode**，保留 identity、就緒狀態、配對、控制權、防火牆、Refresh 與 Quit。
@@ -126,11 +127,15 @@ Private network 提示；只在信任的區域網路允許此程式。程式不�
 ```powershell
 .\dist\windows\x64\WindowsKVM.exe --list-paired
 .\dist\windows\x64\WindowsKVM.exe --forget <peer-id>
+.\dist\windows\x64\WindowsKVM.exe --allow-control <peer-id>
+.\dist\windows\x64\WindowsKVM.exe --deny-control <peer-id>
 ```
 
 `--forget` 是一次性的持久化 trust-store 操作；按 Connect 前必須從 MacKVM 重新 Pair。
 如果另一個 WindowsKVM receiver 已經在執行，CLI 操作後請重新啟動它以重新載入 trust store，或改用
 UI 的 **Forget paired Mac** 關閉該 peer 的 active session。
+`--allow-control` 與 `--deny-control` 只更新選定釘選 Mac 的本機控制同意，不會替換公開金鑰；執行中的
+receiver 會在下一個控制請求前重新載入這份原子寫入的檔案。
 
 配對完成後，Windows 會把 Mac 的公開 identity 寫入
 `%LOCALAPPDATA%\MacKVM\trusted-peers.json`。接著在 MacKVM 選取已配對的 Windows 裝置並
@@ -142,11 +147,22 @@ key 改變，程式會拒絕而不會默默覆寫信任。若要在 Windows 端�
 才能 Connect。若 Mac identity key 也被重設，Windows 會在驗證碼對話框明確警告即將取代舊 pin，
 只有使用者確認後才會寫入；Secure Connect 或未同意的寫入永遠不會自動取代 key。
 
-Connect 後，在 MacKVM 選 **Request keyboard and mouse control**。UI 模式會顯示原生控制
-同意對話框；console 模式則要求本機輸入 `y`／`yes`（測試時可用 `--yes` 自動接受）。取得控制後會顯示
-`Windows control granted`，並用 `SendInput` 注入已驗證的 Mac 輸入。在 Windows 按
+Connect 後，在 MacKVM 選 **Request keyboard and mouse control**。新配對的 Mac 預設會自動取得控制。
+若要每次確認，取消勾選上述設定或執行 `--deny-control <peer-id>`；之後 UI 會顯示原生控制對話框，
+console 模式則要求本機輸入 `y`／`yes`。可重新勾選或執行 `--allow-control <peer-id>` 恢復自動控制；
+`--yes` 只適合一次性的受控測試，不會保存自動同意。取得控制後會顯示 `Windows control granted`，
+並用 `SendInput` 注入已驗證的 Mac 輸入。在 Windows 按
 `Ctrl+Alt+Shift+Esc` 會釋放所有按住的輸入並把控制權交回本機；從 MacKVM 結束 control
 也有相同的 release-all 行為。
+
+### 驗證記住的控制同意
+
+1. 讓 Mac 與 WindowsKVM 完成配對；新配對的控制授權預設會自動開啟。
+2. 將控制權還回本機後再次請求；第二次請求應直接通過，不再出現阻塞式對話框。
+3. 在 **Paired device information** 選取該 Mac，取消 **Automatically allow control from this paired Mac**，
+   再次請求控制；這時應重新顯示原生同意對話框。
+4. 重新勾選設定（或執行 `--allow-control <peer-id>`），確認下一次切換不再提示。`--yes` 不得改變已保存的決定。
+5. 使用 **Forget paired Mac**，或透過明確的重新配對流程替換 Mac identity key；確認舊公開金鑰 pin 與記住的控制授權會一併清除。
 
 如果 Mac 顯示 `peer-upgrade-required`，或 Windows 顯示 peer 不支援 authenticated
 disconnect signal，請先把兩端更新到目前 branch／build 再測試 Connect。只有配對相容

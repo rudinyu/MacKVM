@@ -2,6 +2,52 @@
 
 # 變更記錄
 
+## 1.02.15（build 95）— 2026-09-04
+
+本安全性維護版修補 Windows companion 的授權與生命週期競態，以及 Mac
+輸入發送端的 session 清理問題。
+
+### 安全性
+
+- Windows 記住的控制授權會綁定已驗證的 Mac 公開金鑰，啟用前再次檢查金鑰；替換金鑰時撤銷既有
+  session，避免舊 session 繼承新金鑰的授權。執行中的 receiver 會在輸入傳送期間重新整理持久化
+  trust，因此跨 process 的 Forget、金鑰替換或 deny 不會讓舊 session 繼續有效。
+- 互動式控制同意維持一次性；只有明確的配對裝置設定或 `--allow-control` 才會保存自動同意。
+  無人值守的 `--yes` 配對不會保存這項授權；舊 trust 檔案在使用者明確選擇前會保持未設定。
+- 忘記受信任 peer 或替換其金鑰時，立即釋放目前的 Windows 輸入控制權。
+
+### 修正
+
+- Mac 每次控制 session 狀態轉換都會清除延遲中的指標快照，並避免 coalescer 在結束時發生佇列自我死結。
+- Windows 系統匣狀態合併更新時保留並行到達的最新狀態，不會遺失 UI 刷新通知。
+
+## 1.02.14（build 94）— 2026-09-04
+
+本維護版改善滑鼠指標回應，並讓 Windows companion 在配對與控制狀態快速變更時保持穩定。
+
+### 修正
+
+- Mac 發送端在有界的四毫秒 flush 視窗內合併連續的絕對滑鼠移動快照。鍵盤、按鍵、滾輪與生命週期訊息仍維持順序；secure connection 結束時會丟棄待送移動，避免舊指標事件漏到新 session。
+- Windows 配對與 runtime 狀態 callback 不再直接碰 Win32 control；網路 callback 先排入 UI message loop，快速連續更新只套用最新狀態。
+- Windows 捲動與 Simple／Advanced mode 切換改用批次 child-window 定位，交易期間暫停重繪，最後以 composited parent 搭配立即的完整 child redraw，避免列內容撕裂或只繪出一部分。
+
+## 1.02.13（build 93）— 2026-09-04
+
+本功能版讓使用者完成配對後，Windows 端的受信任控制預設可以無縫使用。
+
+### 新增
+
+- 每個新釘選的 Mac 公開金鑰預設啟用自動控制同意，後續控制切換不再被重複的確認對話框阻塞。
+- Windows UI 保留 **Automatically allow control from this paired Mac** 設定，console 也保留
+  `--allow-control`／`--deny-control` 指令，可關閉或恢復無縫控制。
+
+### 安全性
+
+- 將控制同意與配對 trust 分開保存；**Forget** 或明確同意替換公開金鑰時會先清除舊授權，
+  新金鑰再依預設策略取得授權。
+- 每次控制請求前重新載入原子寫入的 trust snapshot，因此可由另一個 CLI process 撤銷或恢復本機決定，
+  且不會暴露 private key。測試專用的 `--yes` 仍是一次性選項，不會保存。
+
 ## 1.02.11（build 91）— 2026-09-02
 
 本維護版新增跨平台除錯手冊，說明如何收集 macOS unified log、Windows console trace、網路／防火牆狀態與原生 DDC 報告，同時避免暴露私密憑證。

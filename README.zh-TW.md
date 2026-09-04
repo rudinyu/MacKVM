@@ -76,7 +76,8 @@ Developer ID Application、hardened runtime，並在公開發佈前完成 Apple 
 Windows 端改用 C#/.NET 8，不用 Swift 處理 Windows UI、常駐列、輸入 API 或防火牆設定。
 目前 Windows UI 以可捲動的原生 Win32 視窗沿用 macOS MacKVM 面板順序，包含 identity／設定狀態、
 實體輸入路徑、附近／已配對 peer、鍵盤滑鼠控制、螢幕說明與支援資訊。它會啟動簽章配對與
-secure-session receiver，以原生 Windows 對話框顯示配對／控制同意，提供常駐系統匣圖示、狀態資訊與公開支援資訊複製；仍保留
+secure-session receiver，以原生 Windows 對話框顯示配對／控制同意，提供常駐系統匣圖示、狀態資訊與公開支援資訊複製；第一次明確按下控制 Allow 後，會依目前釘選的 Mac 公開金鑰記住決定；已配對裝置 UI 設定與 console 的
+`--allow-control`／`--deny-control` 指令可撤銷或恢復這個本機決定。仍保留
 `--pairing-listen` console 模式供腳本測試。功能包含跨平台 protocol library、DPAPI 保護的
 identity、免外部套件的 mDNS 廣播器、驗證加密 Connect、嚴格的 control message／input 驗證、
 Windows SendInput 注入、釋放所有輸入狀態，以及 Ctrl+Alt+Shift+Esc 緊急交還快捷鍵，同時維持

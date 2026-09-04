@@ -201,13 +201,19 @@ before changing pairing code.
 
 ```powershell
 & $exe --list-paired
+& $exe --allow-control <peer-id>
+& $exe --deny-control <peer-id>
 ```
 
 This prints trusted Mac names, full peer IDs, and public-key fingerprints. The
 Windows identity private key is DPAPI-protected under
 `%LOCALAPPDATA%\MacKVM`; do not copy or attach `identity.json`. Use
 `--forget <peer-id>` only when deliberately revoking a pairing, then Pair
-again before Connect.
+again before Connect. `--allow-control` and `--deny-control` change only the
+local remembered control decision for the selected pinned Mac. The resident
+receiver reloads the atomic trust file before the next control request, so a
+separate CLI process can revoke or restore the decision without exposing
+private key material.
 
 ## Interpreting a cross-platform report
 
