@@ -124,6 +124,10 @@ if [[ "$require_developer_id" == true ]]; then
     echo "Hardened runtime was not enabled for the Developer ID signature." >&2
     exit 1
   }
+  grep -q "Timestamp=" <<<"$signature_details" || {
+    echo "Secure timestamp was not included in the Developer ID signature." >&2
+    exit 1
+  }
 fi
 
 echo "Verified $app_path ($archs; ${bundle_identifier})"

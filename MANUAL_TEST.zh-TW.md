@@ -31,11 +31,18 @@ Intel Mac 的 `/Applications`，再開啟各自架構的 app。
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.100.03-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.100.04-universal.dmg.sha256)
 ```
 
 本機 ad-hoc 簽章只能用於測試；正式散布必須使用 Developer ID、hardened runtime
-與 Apple notarization。
+、secure timestamp 與 Apple notarization。正式 release 應使用獨立流程：
+
+```sh
+./scripts/package-notarized-dmg.sh \
+  --arch universal \
+  --sign "Developer ID Application: Your Name (TEAMID)" \
+  --keychain-profile "mackvm-notary"
+```
 
 ### 1.1 建置與執行 DDC 診斷工具
 

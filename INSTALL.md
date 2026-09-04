@@ -85,21 +85,30 @@ Create and verify a universal DMG for local testing:
 ./scripts/verify-release.sh \
   --app dist/universal/MacKVM.app \
   --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.100.03-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.100.04-universal.dmg.sha256)
 ```
 
-Ad-hoc signing is suitable only for local testing. For distribution to
-another Mac, use a Developer ID Application identity, require the hardened
-runtime, and complete Apple notarization:
+Ad-hoc signing is suitable only for local testing. For direct distribution
+outside the Mac App Store, use the separate notarized release script. Create a
+notarytool Keychain profile once; the command prompts for an app-specific
+password:
 
 ```sh
-./scripts/package-dmg.sh \
+xcrun notarytool store-credentials "mackvm-notary" \
+  --apple-id "YOUR_APPLE_ID" \
+  --team-id "YOUR_TEAM_ID"
+
+./scripts/package-notarized-dmg.sh \
   --arch universal \
   --sign "Developer ID Application: Your Name (TEAMID)" \
-  --require-developer-id
+  --keychain-profile "mackvm-notary"
 ```
 
-No signing, notarization, or Keychain credentials belong in this repository.
+The script requires Developer ID Application signing, enables the hardened
+runtime, adds a secure timestamp, signs the DMG, submits it to Apple, staples
+the accepted ticket, validates the result, and regenerates the final SHA-256
+sidecar. No signing, notarization, or Keychain credentials belong in this
+repository.
 
 ## Install and grant permissions
 

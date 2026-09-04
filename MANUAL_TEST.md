@@ -33,14 +33,22 @@ Release check (from the M5 Pro) is also available:
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.100.03-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.100.04-universal.dmg.sha256)
 ```
 
 Expected: the app reports both `arm64` and `x86_64`, and an ad-hoc signature
 is explicitly labelled as local-testing-only. The checksum command reports
 `OK`, and `dist/.staging` is absent after packaging. A release build must
-provide a Developer ID Application identity, pass `--require-developer-id`,
-and report the hardened runtime before notarization is attempted.
+provide a Developer ID Application identity, report the hardened runtime and a
+secure timestamp, and complete Apple notarization. The separate release path
+is:
+
+```sh
+./scripts/package-notarized-dmg.sh \
+  --arch universal \
+  --sign "Developer ID Application: Your Name (TEAMID)" \
+  --keychain-profile "mackvm-notary"
+```
 
 ### 1.1 Build and exercise the DDC diagnostic tool
 

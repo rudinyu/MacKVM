@@ -91,8 +91,27 @@ MA270U 的 USB-C 輸入使用 VCP 0x60 值 `19 (0x13)`；MacKVM 會依 EDID 套�
 ./scripts/package-dmg.sh --arch universal
 ```
 
-產物位於 `dist/`。本機測試使用 ad-hoc 簽章；要提供給其他 Mac 正式安裝，請用
-Developer ID Application、hardened runtime，並在公開發佈前完成 Apple notarization。
+產物位於 `dist/`。本機測試使用 ad-hoc 簽章；要透過 GitHub 或其他方式提供給其他
+Mac 正式安裝，請使用獨立的 notarized release script，不需要上架 Mac App Store。
+
+第一次使用時，在 Keychain 建立 notarytool profile（指令會安全提示輸入
+app-specific password）：
+
+```sh
+xcrun notarytool store-credentials "mackvm-notary" \
+  --apple-id "YOUR_APPLE_ID" \
+  --team-id "YOUR_TEAM_ID"
+
+./scripts/package-notarized-dmg.sh \
+  --arch universal \
+  --sign "Developer ID Application: Your Name (TEAMID)" \
+  --keychain-profile "mackvm-notary"
+```
+
+此 script 會要求 Developer ID Application、啟用 hardened runtime、加入 secure
+timestamp、簽署 DMG、上傳 Apple、staple 通過的 ticket、驗證結果，並在最後重新產生
+SHA-256。既有的 `scripts/package-dmg.sh` 維持為本機 ad-hoc 測試流程；repository
+不應保存 signing 或 notarization 憑證。
 
 ### 原生 DDC 診斷工具
 

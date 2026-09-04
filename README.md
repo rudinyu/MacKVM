@@ -157,23 +157,31 @@ The package is built from a fresh staging directory and writes a portable
 SHA-256 sidecar next to the DMG. Verify the pair from the `dist` directory:
 
 ```sh
-(cd dist && shasum -a 256 -c MacKVM-1.100.03-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.100.04-universal.dmg.sha256)
 ```
 
-For distribution to another Mac, sign with a Developer ID Application
-identity and require the release check to reject ad-hoc signing:
+For direct distribution outside the Mac App Store, use the separate notarized
+release script. Set up a notarytool Keychain profile once; the command prompts
+for an app-specific password and does not put it in this repository:
 
 ```sh
-./scripts/package-dmg.sh \
+xcrun notarytool store-credentials "mackvm-notary" \
+  --apple-id "YOUR_APPLE_ID" \
+  --team-id "YOUR_TEAM_ID"
+
+./scripts/package-notarized-dmg.sh \
   --arch universal \
   --sign "Developer ID Application: Your Name (TEAMID)" \
-  --require-developer-id
+  --keychain-profile "mackvm-notary"
 ```
 
-When a Developer ID identity is supplied, the app is signed with Apple's
-hardened runtime and `--require-developer-id` verifies both the authority and
-runtime flag. Submit the verified DMG to Apple's notarization service before
-using it as a public release; no notarization credentials belong in this
+The script requires a Developer ID Application identity, enables the hardened
+runtime, adds a secure timestamp, signs the DMG, submits it to Apple, staples
+the accepted ticket, validates the result, and writes the final SHA-256
+sidecar. Use `--timeout` to bound how long the script waits for Apple.
+
+The existing `scripts/package-dmg.sh` command remains the ad-hoc local-testing
+path. No signing, notarization, or Keychain credentials belong in this
 repository.
 
 `scripts/verify-release.sh` verifies an existing app bundle without creating a

@@ -2,6 +2,19 @@
 
 # 變更記錄
 
+## 1.100.04（build 79）— 2026-09-04
+
+### 新增
+
+- 新增獨立的 Developer ID release script，會簽署 app 與 DMG、上傳 Apple
+  notarization、staple 通過的 ticket、驗證結果，並在最後重新產生 checksum；
+  repository 不會保存任何憑證。
+
+### 變更
+
+- 使用 Developer ID identity 時一律要求 secure timestamp；本機預設打包流程仍維持
+  ad-hoc 簽章。
+
 ## 1.100.03（build 78）— 2026-09-04
 
 ### 修正

@@ -76,20 +76,28 @@ transport 與 VCP `0x60` 輸入狀態。唯讀報告可保存為：
 ./scripts/verify-release.sh \
   --app dist/universal/MacKVM.app \
   --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.100.03-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.100.04-universal.dmg.sha256)
 ```
 
-ad-hoc 簽章只適合本機測試。要提供給其他 Mac，請使用 Developer ID Application、
-hardened runtime，並完成 Apple notarization：
+ad-hoc 簽章只適合本機測試。要在 Mac App Store 以外正式散布，請使用獨立的 notarized
+release script。第一次使用時先建立 notarytool Keychain profile；指令會安全提示輸入
+app-specific password：
 
 ```sh
-./scripts/package-dmg.sh \
+xcrun notarytool store-credentials "mackvm-notary" \
+  --apple-id "YOUR_APPLE_ID" \
+  --team-id "YOUR_TEAM_ID"
+
+./scripts/package-notarized-dmg.sh \
   --arch universal \
   --sign "Developer ID Application: Your Name (TEAMID)" \
-  --require-developer-id
+  --keychain-profile "mackvm-notary"
 ```
 
-本 repository 不應存放簽章、notarization 或 Keychain 憑證。
+此 script 會要求 Developer ID Application、啟用 hardened runtime、加入 secure
+timestamp、簽署 DMG、上傳 Apple、staple 通過的 ticket、驗證結果，並在最後重新產生
+SHA-256。既有的 `scripts/package-dmg.sh` 維持本機 ad-hoc 測試流程；本 repository
+不應存放 signing、notarization 或 Keychain 憑證。
 
 ## 安裝並授予權限
 

@@ -106,7 +106,8 @@ else
 fi
 
 if [[ -n "$signing_identity" ]]; then
-  codesign --force --deep --options runtime --sign "$signing_identity" "$app_dir"
+  codesign --force --deep --options runtime --timestamp \
+    --sign "$signing_identity" "$app_dir"
 else
   codesign --force --deep --sign - "$app_dir"
 fi

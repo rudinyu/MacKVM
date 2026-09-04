@@ -2,6 +2,19 @@
 
 # Changelog
 
+## 1.100.04 (build 79) — 2026-09-04
+
+### Added
+
+- Add a separate Developer ID release script that signs the app and DMG,
+  submits the DMG to Apple's notary service, staples the accepted ticket, and
+  regenerates the final checksum without storing credentials in the repository.
+
+### Changed
+
+- Require a secure timestamp whenever a Developer ID signing identity is used,
+  while keeping the default local packaging path ad-hoc signed.
+
 ## 1.100.03 (build 78) — 2026-09-04
 
 ### Fixed
