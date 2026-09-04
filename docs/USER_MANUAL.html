@@ -43,7 +43,7 @@
 <body>
   <main>
     <header>
-      <div class="badge">MacKVM 1.100.02</div>
+      <div class="badge">MacKVM 1.100.03</div>
       <h1>MacKVM User Manual</h1>
       <p class="lede">A macOS app with a KVM menu-bar entry and full control window for sharing one keyboard, mouse, and trackpad, plus an optional BenQ MA270U display, between two MacBook Pro computers.</p>
       <p><a href="USER_MANUAL.zh-TW.html" lang="zh-Hant">繁體中文版</a> · <a href="USER_MANUAL.md">Markdown version</a></p>
@@ -95,7 +95,7 @@
       <p>Create and verify a DMG:</p>
       <pre><code>./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist &amp;&amp; shasum -a 256 -c MacKVM-1.100.02-universal.dmg.sha256)</code></pre>
+(cd dist &amp;&amp; shasum -a 256 -c MacKVM-1.100.03-universal.dmg.sha256)</code></pre>
       <p>The DMG is built from a clean staging directory and produces a portable SHA-256 sidecar. Ad-hoc signing is for local testing; distribution requires Developer ID, hardened runtime, and Apple notarization.</p>
     </section>
 
@@ -221,7 +221,7 @@
     </section>
 
     <footer>
-      <p>MacKVM User Manual · Version 1.100.02 · Updated 2026-08-31</p>
+      <p>MacKVM User Manual · Version 1.100.03 · Updated 2026-09-04</p>
     </footer>
   </main>
 </body>

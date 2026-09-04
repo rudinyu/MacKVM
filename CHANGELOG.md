@@ -2,6 +2,15 @@
 
 # Changelog
 
+## 1.100.03 (build 78) — 2026-09-04
+
+### Fixed
+
+- Detect authenticated secure-session loss even when the peer has no local
+  keyboard or mouse, using bounded TCP keepalive and transport-viability
+  handling. Stale sessions are cleared so the selected peer can reconnect
+  without a manual **Disconnect** action.
+
 ## 1.100.02 (build 77) — 2026-08-31
 
 ### Fixed

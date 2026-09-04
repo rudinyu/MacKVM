@@ -33,7 +33,7 @@ Release check (from the M5 Pro) is also available:
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.100.02-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.100.03-universal.dmg.sha256)
 ```
 
 Expected: the app reports both `arm64` and `x86_64`, and an ad-hoc signature
@@ -197,11 +197,16 @@ Expected:
    runs. In both directions, verify the peer also stops the session and the
    local Mac does not immediately reconnect until **Connect** is selected.
 3. Quit one app, reopen it, and reconnect.
-4. Turn Wi-Fi off during a connection, then restore it.
-5. While the M5 Pro is actively controlling the Intel Mac, put the M5 Pro to
+4. Use a run where the Mac with the physical keyboard and mouse is the
+   controller and the peer has no keyboard or mouse attached. During an active
+   connection, turn the controller's Wi-Fi off or force-quit MacKVM, then
+   restore Wi-Fi or relaunch MacKVM. Confirm the no-input peer detects the
+   transport loss and clears the session without clicking **Disconnect**.
+5. Turn Wi-Fi off during a connection, then restore it.
+6. While the M5 Pro is actively controlling the Intel Mac, put the M5 Pro to
    sleep. Confirm the Intel Mac releases remote input and reports a disconnected
    session without requiring a manual **Disconnect** click.
-6. Wake the M5 Pro and wait for the secure session to reconnect. Confirm the
+7. Wake the M5 Pro and wait for the secure session to reconnect. Confirm the
   keyboard, mouse, and trackpad Hotkeys work without first disconnecting from the Intel Mac.
 
 Expected:
@@ -209,6 +214,9 @@ Expected:
 - The status reports an encrypted session with only the paired UUID.
 - A transport loss immediately restores local input and releases remote keys
   and mouse buttons.
+- A peer without a local keyboard or mouse still detects an unexpected
+  controller disconnect, clears the stale session, and accepts reconnection
+  without a manual **Disconnect** click.
 - Reconnect succeeds without repeating pairing; seamless-authorized peers can
   resume control without another Allow prompt.
 - A system sleep closes the old transport before networking suspends; wake

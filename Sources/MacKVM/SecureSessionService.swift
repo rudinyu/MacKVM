@@ -115,6 +115,17 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
     // user-disconnect signal before the local socket is torn down.
     private static let disconnectTransportFlushTimeout: DispatchTimeInterval =
         .milliseconds(750)
+    // An idle secure TCP stream otherwise has no application traffic that can
+    // reveal a sleeping, force-quit, or suddenly unreachable peer. Keepalive
+    // probes make that transport loss observable even when the receiver has
+    // no local keyboard or mouse to generate input payloads.
+    static let secureTCPKeepaliveIdle = 5
+    static let secureTCPKeepaliveInterval = 2
+    static let secureTCPKeepaliveCount = 3
+    // Network.framework can report a transient path/viability interruption;
+    // give it a short recovery window before tearing down an authenticated
+    // session and allowing the normal reconnect path to run.
+    static let transportUnavailabilityGracePeriod: TimeInterval = 5
     private static let partialFrameTimeout: TimeInterval = 5
     private static let partialFrameTimeoutNanoseconds =
         UInt64(partialFrameTimeout * 1_000_000_000)
@@ -163,6 +174,20 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
     private let powerNotificationCenterOverride: NotificationCenter?
     private let networkServicesEnabled: Bool
     private let systemSleepLatchTimeout: TimeInterval
+
+    /// Builds the parameters used by the secure listener and outbound
+    /// secure-session attempts. Discovery does not need keepalives, but every
+    /// accepted or initiated control connection does.
+    static func makeSecureTCPParameters() -> NWParameters {
+        let tcp = NWProtocolTCP.Options()
+        tcp.enableKeepalive = true
+        tcp.keepaliveIdle = secureTCPKeepaliveIdle
+        tcp.keepaliveInterval = secureTCPKeepaliveInterval
+        tcp.keepaliveCount = secureTCPKeepaliveCount
+        let parameters = NWParameters(tls: nil, tcp: tcp)
+        parameters.includePeerToPeer = true
+        return parameters
+    }
 
     init(
         credentials: DeviceCredentials,
@@ -833,8 +858,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         // Keep the connect path aligned with the peer-to-peer Bonjour browser.
         // Without this, a service discovered over AWDL can be visible in the
         // menu while the subsequent authenticated TCP connection is canceled.
-        let parameters = NWParameters.tcp
-        parameters.includePeerToPeer = true
+        let parameters = Self.makeSecureTCPParameters()
         let connection = NWConnection(to: peer.endpoint, using: parameters)
         let ephemeralKey = P256.KeyAgreement.PrivateKey()
         let hello = SecureSessionHandshake.make(
@@ -856,10 +880,12 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         context.epoch = connectionEpoch.current()
         context.peerEpoch = peerEpochs.current(for: peerID)
         install(context)
+        installTransportLivenessHandler(on: connection, for: context)
         connection.stateUpdateHandler = { [weak self, weak context] state in
             guard let self, let context, self.isCurrent(context) else { return }
             switch state {
             case .ready:
+                self.cancelTransportLivenessTimeout(for: context)
                 self.logSecurePhase("transport.ready", peerID: peerID, context: context)
                 scheduleTimeout(
                     for: context,
@@ -893,6 +919,17 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                     )
                     fail(context, message: "Could not start secure handshake")
                 }
+            case .waiting(let error):
+                self.logSecurePhase(
+                    "transport.waiting",
+                    peerID: peerID,
+                    context: context,
+                    detail: error.localizedDescription
+                )
+                self.scheduleTransportLivenessTimeout(
+                    for: context,
+                    reason: "transport.waiting"
+                )
             case .failed(let error):
                 self.logSecurePhase(
                     "transport.failed",
@@ -1068,8 +1105,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             // Keep the secure listener aligned with the peer-to-peer Bonjour
             // browser and outbound connector so AWDL endpoints can accept
             // authenticated sessions on either Mac.
-            let parameters = NWParameters.tcp
-            parameters.includePeerToPeer = true
+            let parameters = Self.makeSecureTCPParameters()
             let listener = try NWListener(using: parameters)
             listener.service = NWListener.Service(
                 name: "\(credentials.identity.serviceName)-secure",
@@ -1224,10 +1260,12 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         )
         context.epoch = connectionEpoch.current()
         install(context)
+        installTransportLivenessHandler(on: connection, for: context)
         connection.stateUpdateHandler = { [weak self, weak context] state in
             guard let self, let context, self.isCurrent(context) else { return }
             switch state {
             case .ready:
+                self.cancelTransportLivenessTimeout(for: context)
                 self.logSecurePhase("transport.ready", context: context)
                 scheduleTimeout(
                     for: context,
@@ -1235,6 +1273,16 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                     message: "Secure handshake timed out"
                 )
                 receive(on: context)
+            case .waiting(let error):
+                self.logSecurePhase(
+                    "transport.waiting",
+                    context: context,
+                    detail: error.localizedDescription
+                )
+                self.scheduleTransportLivenessTimeout(
+                    for: context,
+                    reason: "transport.waiting"
+                )
             case .failed(let error):
                 self.logSecurePhase(
                     "transport.failed",
@@ -1755,6 +1803,25 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         )
     }
 
+    private func installTransportLivenessHandler(
+        on connection: NWConnection,
+        for context: SessionConnectionContext
+    ) {
+        connection.viabilityUpdateHandler = { [weak self, weak context] isViable in
+            guard let self, let context, self.isCurrent(context) else {
+                return
+            }
+            if isViable {
+                self.cancelTransportLivenessTimeout(for: context)
+            } else {
+                self.scheduleTransportLivenessTimeout(
+                    for: context,
+                    reason: "connection-not-viable"
+                )
+            }
+        }
+    }
+
     private func isCurrent(_ context: SessionConnectionContext) -> Bool {
         let contextID = ObjectIdentifier(context)
         guard contexts[contextID] === context,
@@ -1814,6 +1881,52 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         }
         context.handshakeTimeout = timeout
         queue.asyncAfter(deadline: .now() + seconds, execute: timeout)
+    }
+
+    private func scheduleTransportLivenessTimeout(
+        for context: SessionConnectionContext,
+        reason: String
+    ) {
+        guard context.isAuthenticated,
+              !context.isClosing,
+              context.transportLivenessTimeout == nil else {
+            return
+        }
+        context.transportLivenessGeneration &+= 1
+        let generation = context.transportLivenessGeneration
+        let timeout = DispatchWorkItem { [weak self, weak context] in
+            guard let self,
+                  let context,
+                  self.isCurrent(context),
+                  context.isAuthenticated,
+                  !context.isClosing,
+                  context.transportLivenessGeneration == generation else {
+                return
+            }
+            context.transportLivenessTimeout = nil
+            self.logSecurePhase(
+                "transport.liveness-timeout",
+                context: context,
+                detail: reason
+            )
+            self.fail(
+                context,
+                message: "Secure session became unavailable"
+            )
+        }
+        context.transportLivenessTimeout = timeout
+        queue.asyncAfter(
+            deadline: .now() + Self.transportUnavailabilityGracePeriod,
+            execute: timeout
+        )
+    }
+
+    private func cancelTransportLivenessTimeout(
+        for context: SessionConnectionContext
+    ) {
+        context.transportLivenessGeneration &+= 1
+        context.transportLivenessTimeout?.cancel()
+        context.transportLivenessTimeout = nil
     }
 
     private func arbitrateSimultaneousConnection(
@@ -1893,6 +2006,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         }
         context.handshakeTimeout?.cancel()
         context.partialFrameTimeout?.cancel()
+        cancelTransportLivenessTimeout(for: context)
         context.disconnectTimeout?.cancel()
         context.disconnectTimeout = nil
         context.partialFrameDeadline = nil
@@ -1954,6 +2068,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             remove(context)
             return
         }
+        cancelTransportLivenessTimeout(for: context)
         context.isClosing = true
         context.pendingPayloads.removeAll()
         context.isSendingPayload = false
@@ -2024,6 +2139,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
               let channel = context.channel else {
             return
         }
+        cancelTransportLivenessTimeout(for: context)
         context.disconnectAcknowledgementSendStarted = true
         context.isClosing = true
         do {
@@ -2228,6 +2344,8 @@ private final class SessionConnectionContext {
     var isSendingPayload = false
     var pendingPayloads: [Data] = []
     var isClosing = false
+    var transportLivenessTimeout: DispatchWorkItem?
+    var transportLivenessGeneration: UInt64 = 0
     var disconnectAcknowledgementSendStarted = false
     var suppressesReconnect = false
     var wasActiveBeforeDisconnect = false

@@ -31,7 +31,7 @@ Intel Mac 的 `/Applications`，再開啟各自架構的 app。
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.100.02-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.100.03-universal.dmg.sha256)
 ```
 
 本機 ad-hoc 簽章只能用於測試；正式散布必須使用 Developer ID、hardened runtime
@@ -120,12 +120,17 @@ HDMI 1 使用 VCP 17（`0x11`）。其他型號使用自己的 mapping；螢幕�
 2. 重新連接網路，觀察 0／1／2／4…30 秒退避重連。
 3. 分別在 M5 Pro 與 Intel Mac 上測試 **Disconnect**。兩個方向都要確認對端也停止
    工作階段，而且在再次按 **Connect** 前不會立刻自動重連；再測試 **Forget** 與退出 app。
-4. M5 Pro 正在控制 Intel Mac 時讓 M5 Pro 進入休眠，確認 Intel Mac 會釋放遠端輸入並
+4. 使用「有實體鍵盤／滑鼠的 Mac 作為控制端、另一台沒有鍵盤／滑鼠」的情境。連線中
+   關閉控制端 Wi‑Fi 或強制結束 MacKVM，再恢復 Wi‑Fi 或重新開啟 MacKVM；確認沒有
+   鍵盤／滑鼠的 Mac 會偵測傳輸中斷、清除舊工作階段，不需要按 **Disconnect**。
+5. M5 Pro 正在控制 Intel Mac 時讓 M5 Pro 進入休眠，確認 Intel Mac 會釋放遠端輸入並
    自動顯示斷線，不需要手動按 **Disconnect**。
-5. 喚醒 M5 Pro，等待安全工作階段重新連線；不先在 Intel Mac 按 **Disconnect**，直接測試
+6. 喚醒 M5 Pro，等待安全工作階段重新連線；不先在 Intel Mac 按 **Disconnect**，直接測試
    鍵盤／滑鼠／觸控板 Hotkey。
 
 預期結果：網路中斷立即停止遠端輸入並釋放按鍵／滑鼠按鈕；重連不需要重新配對，
+即使沒有本機鍵盤／滑鼠的 peer 也會偵測非預期的控制端斷線、清除 stale session，
+不需要手動按 **Disconnect** 就能接受重連；
 已啟用無縫控制的 peer 也不需要再次按 **Allow**。手動 Disconnect、Forget 或 Quit
 不會再次自動連線。系統休眠會先關閉舊傳輸，喚醒後從本機輸入狀態重新連回先前選取的
 peer。
