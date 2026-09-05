@@ -35,8 +35,9 @@ Intel Mac。建置腳本會驗證 Mach-O 架構與 ad-hoc 簽章。
 
 Windows 分支改用 C#/.NET 8，不用 Swift。目前 Windows host 已包含跨平台 protocol library、簽章配對
 state machine、DPAPI 保護的 identity、雙堆疊 mDNS、驗證加密控制 session、Windows `SendInput` 注入、
-輸入釋放、原生 Win32／tray UI 與緊急交還快捷鍵。第一次明確按下控制 Allow 後，會依目前釘選的 Mac
-公開金鑰記住決定；可用 UI 設定或 `--allow-control`／`--deny-control` 修改本機決定。Raw Input 擷取與
+輸入釋放、原生 Win32／tray UI 與緊急交還快捷鍵。互動式配對完成後，會依目前釘選的 Mac 公開金鑰預設保存持久的
+自動控制授權；測試專用的 `--yes` 配對不會保存這項授權。若關閉這項授權，控制對話框中的單次 **Allow** 只適用於當次請求；可用 UI 設定或
+`--allow-control`／`--deny-control` 修改持久決定。Raw Input 擷取與
 完整的最小權限 Windows Firewall 精靈仍是後續工作；目前 receiver 在取得同意後已能共用 Mac 上的鍵盤與滑鼠。
 
 請在 Windows 建置主機安裝 .NET 8 SDK；加入 WinUI 後，建議使用含 Windows App SDK workload
@@ -53,8 +54,10 @@ state machine、DPAPI 保護的 identity、雙堆疊 mDNS、驗證加密控制 s
 .\dist\windows\arm64\WindowsKVM.exe --pairing-listen --name "Windows ARM64"
 ```
 
-把六位數驗證碼與發起配對的 Mac 比對後，在 Windows 輸入 `y`。第一次明確按下控制 Allow 後會記住該
-釘選 Mac；若要每次重新確認，可用 UI 設定或 `--deny-control <peer-id>`。`--yes` 僅供受控測試且不會保存。
+把六位數驗證碼與發起配對的 Mac 比對後，在 Windows 輸入 `y`。互動式接受的新配對 peer 預設會保存持久的
+自動控制授權；`--yes` 配對則保持未設定。若關閉這項授權，控制對話框中的單次 **Allow** 只適用於當次請求，不會重新啟用持久設定；可用 UI 設定或
+`--allow-control <peer-id>` 恢復，或用 `--deny-control <peer-id>` 要求確認。`--yes` 僅供受控測試，
+其一次性同意不會保存。
 receiver 會廣播 `_mackvm._tcp`，Windows Defender Firewall 只需在信任的 Private network
 允許標準提示。protocol self-test 可執行 `.\scripts\test-windows.ps1`。
 

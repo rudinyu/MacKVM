@@ -34,6 +34,11 @@ internal sealed class WindowsTrustStore
     private readonly HashSet<Guid> controlAuthorized;
     private readonly HashSet<Guid> controlAuthorizationConfigured;
     private TrustFileStamp fileStamp;
+    // A failed mutation can roll the dictionaries back after ReloadLocked has
+    // already observed a newer durable snapshot. Mark the stamp invalid in
+    // that case so the next admission check cannot mistake the rolled-back
+    // in-memory state for the snapshot that is currently on disk.
+    private bool fileStampValid;
 
     private WindowsTrustStore(
         string path,
@@ -48,6 +53,7 @@ internal sealed class WindowsTrustStore
         this.controlAuthorized = controlAuthorized;
         this.controlAuthorizationConfigured = controlAuthorizationConfigured;
         this.fileStamp = fileStamp;
+        fileStampValid = true;
     }
 
     public static WindowsTrustStore Load()
@@ -149,6 +155,7 @@ internal sealed class WindowsTrustStore
                         previousAuthorizations,
                         previousConfigured
                     );
+                    InvalidateFileStampLocked();
 
                     throw;
                 }
@@ -339,6 +346,7 @@ internal sealed class WindowsTrustStore
                         previousAuthorizations,
                         previousConfigured
                     );
+                    InvalidateFileStampLocked();
                     throw;
                 }
             }
@@ -447,6 +455,7 @@ internal sealed class WindowsTrustStore
                         previousAuthorizations,
                         previousConfigured
                     );
+                    InvalidateFileStampLocked();
 
                     throw;
                 }
@@ -463,6 +472,7 @@ internal sealed class WindowsTrustStore
 
     private void ReloadLocked()
     {
+        fileStampValid = false;
         var loaded = LoadPeers(path);
         RestoreLocked(
             loaded.Peers,
@@ -470,16 +480,18 @@ internal sealed class WindowsTrustStore
             loaded.ControlAuthorizationConfigured
         );
         fileStamp = ReadFileStamp(path);
+        fileStampValid = true;
     }
 
     private void RefreshIfChangedLocked()
     {
         var currentStamp = ReadFileStamp(path);
-        if (currentStamp == fileStamp)
+        if (fileStampValid && currentStamp == fileStamp)
         {
             return;
         }
 
+        fileStampValid = false;
         var loaded = LoadPeers(path);
         RestoreLocked(
             loaded.Peers,
@@ -490,6 +502,12 @@ internal sealed class WindowsTrustStore
         // while it was being loaded. The next admission check will retry if
         // the durable snapshot changed during this refresh.
         fileStamp = ReadFileStamp(path);
+        fileStampValid = true;
+    }
+
+    private void InvalidateFileStampLocked()
+    {
+        fileStampValid = false;
     }
 
     private void RestoreLocked(
@@ -566,6 +584,7 @@ internal sealed class WindowsTrustStore
 
     private void SaveLocked()
     {
+        fileStampValid = false;
         var directory = Path.GetDirectoryName(path)!;
         Directory.CreateDirectory(directory);
         var stored = peers.Values
@@ -585,6 +604,7 @@ internal sealed class WindowsTrustStore
         );
         File.Move(temporary, path, overwrite: true);
         fileStamp = ReadFileStamp(path);
+        fileStampValid = true;
     }
 
     private static PeerIdentity ToIdentity(StoredPeer stored)

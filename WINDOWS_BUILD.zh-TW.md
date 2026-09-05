@@ -89,7 +89,7 @@ Windows 建置檢查。
 .\WindowsKVM.exe --version
 ```
 
-目前 UI 測試 build 應顯示 `WindowsKVM 1.02.15 (build 95)`。
+目前 UI 測試 build 應顯示 `WindowsKVM 1.02.16 (build 96)`。
 
 在 Windows publish 後啟動常駐 UI：
 

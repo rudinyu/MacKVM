@@ -8,7 +8,7 @@ authenticate a secure Connect session, and receive keyboard/mouse control over
 that encrypted session. A console mode remains available for automation and
 firewall diagnostics.
 
-## Current feature set — 1.02.15 (build 95)
+## Current feature set — 1.02.16 (build 96)
 
 The Windows host includes:
 
@@ -37,10 +37,13 @@ The Windows host includes:
 - native pairing/control consent dialogs in the UI, a resident system-tray
   icon, a macOS-aligned scrollable status window, and public **Copy support
   information** output;
-- automatic control approval enabled by default when a Mac pairing completes;
+- automatic control approval enabled by default when an interactive Mac
+  pairing completes (the test-only `--yes` control approval remains one-shot);
   the **Automatically allow control from this paired Mac** checkbox and
   `--allow-control`/`--deny-control` commands can revoke or restore that local
-  decision;
+  durable decision. If automatic approval is disabled, an individual control
+  dialog's **Allow** applies to that request only; use the checkbox or
+  `--allow-control` to enable approval durably again;
 - responsive **Simple mode** and **Advanced mode** views: the UI starts in
   Simple mode on compact displays, keeps essential identity/pairing/control
   actions visible, and lets the user switch modes from the header;
@@ -65,9 +68,10 @@ The UI host starts at launch and keeps the receiver resident in the Windows
 notification area. Closing the status window hides it; **Quit WindowsKVM** in
 the window or tray menu stops mDNS, TCP listeners, and input injection. The
  Windows side never accepts unauthenticated input: a paired, authenticated Mac
- session must request control and pass the local consent policy first. Pairing
- enables the local automatic-control decision for that pinned key by default;
- turn it off in **Paired device information** when every request should prompt.
+ session must request control and pass the local consent policy first. An
+ interactive pairing enables the local automatic-control decision for that
+ pinned key by default; the test-only `--yes` pairing does not persist it. Turn
+ it off in **Paired device information** when every request should prompt.
 Windows Raw Input capture and a polished firewall setup wizard remain later
 work.
 
@@ -108,9 +112,12 @@ The full Advanced view contains:
    information** action.
 
 Native Windows Yes/No dialogs are used for pairing-code consent and for control
-requests whose automatic approval was disabled. Newly paired peers are admitted
-without a control dialog until that setting is turned off. The system-tray menu
-provides **Open WindowsKVM** and **Quit WindowsKVM**.
+requests whose automatic approval was disabled. Peers from an interactive
+pairing are admitted without a control dialog until that setting is turned off;
+the test-only `--yes` pairing instead leaves approval unconfigured. After that, an
+individual control-dialog **Allow** is one-shot and does not change the durable
+setting; use the checkbox or `--allow-control` to restore automatic approval.
+The system-tray menu provides **Open WindowsKVM** and **Quit WindowsKVM**.
 
 ## Build and run
 
@@ -165,9 +172,12 @@ immediately.
 7. From MacKVM choose **Request keyboard and mouse control**. A newly paired
    Mac is allowed automatically by default. Disable the checkbox or run
    `--deny-control <peer-id>` to require confirmation again; the Windows UI
-   dialog or console `y`/`yes` prompt will then appear. Re-enable it with the
-   checkbox or `--allow-control <peer-id>`. The `--yes` option is one-shot
-   convenience for controlled test runs and is never persisted.
+   dialog or console `y`/`yes` prompt will then appear. An individual **Allow**
+   in that dialog is one-shot and does not re-enable the durable approval. Use
+   the checkbox or `--allow-control <peer-id>` to restore automatic approval.
+   The `--yes` option grants control only for the current request during a
+   controlled test run; that automatic-control approval is never persisted
+   (the pairing trust pin is still stored).
 8. To return control locally, press `Ctrl+Alt+Shift+Esc` on Windows, or end
    control from MacKVM. Any held key/button is released during either path.
 

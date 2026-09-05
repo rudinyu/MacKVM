@@ -128,6 +128,7 @@ internal sealed class WindowsTrayApplication : IDisposable
     private readonly HashSet<IntPtr> greenLabels = new();
     private readonly HashSet<IntPtr> orangeLabels = new();
     private readonly HashSet<IntPtr> secondaryLabels = new();
+    private readonly HashSet<IntPtr> redrawEnabledChildren = new();
     private IntPtr window;
     private IntPtr modeButton;
     private IntPtr statusLabel;
@@ -176,6 +177,7 @@ internal sealed class WindowsTrayApplication : IDisposable
     private int statusMessagePosted;
     private int statusDirty;
     private int windowUpdateDepth;
+    private bool windowWasVisibleBeforeUpdate;
     private bool simpleMode;
     private bool modeSelectedByUser;
     private bool viewModeInitialized;
@@ -1132,12 +1134,7 @@ internal sealed class WindowsTrayApplication : IDisposable
         {
             foreach (var layout in childLayouts)
             {
-                var isCommon = !advancedControls.Contains(layout.Handle)
-                    && !simpleControls.Contains(layout.Handle);
-                var visible = isCommon
-                    || (simpleMode
-                        ? simpleControls.Contains(layout.Handle)
-                        : advancedControls.Contains(layout.Handle));
+                var visible = ShouldShowChild(layout.Handle);
                 _ = ShowWindow(
                     layout.Handle,
                     visible ? ShowWindowShow : ShowWindowHide
@@ -1171,16 +1168,34 @@ internal sealed class WindowsTrayApplication : IDisposable
 
         if (windowUpdateDepth++ == 0)
         {
+            // WM_SETREDRAW(FALSE) removes WS_VISIBLE from the target. Capture
+            // the visible children before disabling the parent because
+            // IsWindowVisible(child) also depends on the parent's visibility.
+            // Do not send WM_SETREDRAW to hidden mode-specific controls: the
+            // corresponding TRUE message would make them visible again.
+            windowWasVisibleBeforeUpdate = IsWindowVisible(window);
+            redrawEnabledChildren.Clear();
+            if (windowWasVisibleBeforeUpdate)
+            {
+                foreach (var layout in childLayouts)
+                {
+                    if (IsWindowVisible(layout.Handle))
+                    {
+                        redrawEnabledChildren.Add(layout.Handle);
+                    }
+                }
+            }
+
             _ = SendMessage(
                 window,
                 WindowMessageSetRedraw,
                 IntPtr.Zero,
                 IntPtr.Zero
             );
-            foreach (var layout in childLayouts)
+            foreach (var child in redrawEnabledChildren)
             {
                 _ = SendMessage(
-                    layout.Handle,
+                    child,
                     WindowMessageSetRedraw,
                     IntPtr.Zero,
                     IntPtr.Zero
@@ -1198,23 +1213,65 @@ internal sealed class WindowsTrayApplication : IDisposable
 
         if (--windowUpdateDepth == 0)
         {
-            foreach (var layout in childLayouts)
+            foreach (var child in redrawEnabledChildren)
             {
+                // A control can have been hidden by the update itself (for
+                // example when a peer is forgotten or the view mode changes).
+                // Re-enabling WM_SETREDRAW on that control would otherwise
+                // make it visible again, so restore the current logical
+                // visibility while the parent is still redraw-disabled.
+                var shouldBeVisible = ShouldShowChild(child);
                 _ = SendMessage(
-                    layout.Handle,
+                    child,
                     WindowMessageSetRedraw,
                     (IntPtr)1,
                     IntPtr.Zero
                 );
+                if (!shouldBeVisible)
+                {
+                    _ = ShowWindow(child, ShowWindowHide);
+                }
             }
+            redrawEnabledChildren.Clear();
             _ = SendMessage(
                 window,
                 WindowMessageSetRedraw,
                 (IntPtr)1,
                 IntPtr.Zero
             );
+
+            // DefWindowProc makes a hidden window visible when WM_SETREDRAW
+            // is re-enabled. Restore the parent/tray state that existed when
+            // this update transaction began before asking it to repaint.
+            if (!windowWasVisibleBeforeUpdate)
+            {
+                _ = ShowWindow(window, ShowWindowHide);
+            }
             RedrawWindowContent();
         }
+    }
+
+    private bool ShouldShowChild(IntPtr child)
+    {
+        var isCommon = !advancedControls.Contains(child)
+            && !simpleControls.Contains(child);
+        if (!isCommon)
+        {
+            var isModeVisible = simpleMode
+                ? simpleControls.Contains(child)
+                : advancedControls.Contains(child);
+            if (!isModeVisible)
+            {
+                return false;
+            }
+        }
+
+        if (child == forgetButton || child == simpleForgetButton)
+        {
+            return Volatile.Read(ref pairedPeerName) is not null;
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -1281,7 +1338,7 @@ internal sealed class WindowsTrayApplication : IDisposable
 
     private void RedrawWindowContent()
     {
-        if (window == IntPtr.Zero)
+        if (window == IntPtr.Zero || !IsWindowVisible(window))
         {
             return;
         }
@@ -2654,6 +2711,9 @@ internal sealed class WindowsTrayApplication : IDisposable
 
     [DllImport("user32.dll")]
     private static extern bool ShowWindow(IntPtr window, int command);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindowVisible(IntPtr window);
 
     [DllImport("user32.dll")]
     private static extern bool EnableWindow(IntPtr window, bool enable);

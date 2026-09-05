@@ -11,8 +11,8 @@ namespace WindowsKVM;
 /// </summary>
 internal sealed class WindowsKvmRuntime : IAsyncDisposable
 {
-    public const string ApplicationVersion = "1.02.15";
-    public const string ApplicationBuild = "95";
+    public const string ApplicationVersion = "1.02.16";
+    public const string ApplicationBuild = "96";
 
     private readonly DeviceCredentials credentials;
     private readonly WindowsTrustStore trustStore;

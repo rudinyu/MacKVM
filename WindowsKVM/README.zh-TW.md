@@ -6,7 +6,7 @@ WindowsKVM 是 MacKVM 的 Windows companion。目前 Windows 版包含原生 Win
 host，可在區域網路上與 MacKVM 配對、完成 secure Connect 驗證，並接收加密鍵盤／滑鼠控制；
 另外保留 console 模式供自動化與防火牆診斷。
 
-## 目前功能 — 1.02.15（build 95）
+## 目前功能 — 1.02.16（build 96）
 
 Windows host 已包含：
 
@@ -28,8 +28,11 @@ Windows host 已包含：
 - 在控制結束、輸入錯誤、斷線或程式結束時釋放所有按住的按鍵／滑鼠按鈕；
 - UI 原生配對／控制同意對話框、常駐系統匣圖示、與 macOS 對齊且可捲動的狀態視窗，以及公開的
   **複製支援資訊**；
-- Mac 完成配對後，已釘選的控制授權預設自動開啟；**Automatically allow control from this
-  paired Mac** 勾選框，以及 `--allow-control`／`--deny-control` 指令可關閉或恢復這個本機決定；
+- 互動式完成 Mac 配對後，已釘選的控制授權預設自動開啟（測試專用的 `--yes` 流程維持一次性）；
+  **Automatically allow control from this paired Mac** 勾選框，以及 `--allow-control`／`--deny-control`
+  指令可關閉或恢復這個持久決定。
+  關閉自動同意後，控制對話框中的單次 **Allow** 只適用於當次請求，不會重新啟用持久授權；請用
+  勾選框或 `--allow-control` 恢復；
 - responsive **Simple mode／Advanced mode**：小螢幕自動使用 Simple mode，只保留必要的
   identity／配對／控制操作，標題列可以手動切換完整 Advanced mode；
 - Simple mode 與 Advanced mode 都提供 **Forget paired Mac**，會移除 Windows trust pin，
@@ -48,8 +51,8 @@ fail closed。配對仍可使用，但必須先更新舊版 Mac，才能建立�
 UI 會在啟動時開始 receiver 並常駐在 Windows 系統匣；關閉狀態視窗只會隱藏，從視窗或
 系統匣選單的 **Quit WindowsKVM** 才會停止 mDNS、TCP listener 與輸入注入。Windows 端不會
 接受未驗證的輸入；只有已配對且完成加密驗證的 Mac session，通過本機同意政策後才能取得
-控制。配對完成後，這個本機自動控制決定會預設綁定目前釘選的公開金鑰並保存；若要每次控制
-都重新確認，可在 **Paired device information** 關閉它。Windows Raw Input 擷取與完整的防火牆
+控制。互動式配對完成後，這個本機自動控制決定會預設綁定目前釘選的公開金鑰並保存；測試專用的
+`--yes` 配對不會保存。若要每次控制都重新確認，可在 **Paired device information** 關閉它。Windows Raw Input 擷取與完整的防火牆
 設定精靈留待後續工作。
 
 ### UI 版面
@@ -75,8 +78,9 @@ Windows 狀態視窗沿用 macOS MacKVM 面板的資訊順序，並提供兩種�
 7. **已配對裝置資訊**：目前 Mac 的公開 identity、**Forget paired Mac**、**Automatically allow
    control from this paired Mac**、本機 identity 詳細資料與公開的 **複製支援資訊**功能。
 
-配對驗證碼，以及關閉自動同意後的控制請求，使用原生 Windows Yes／No 對話框；新配對 peer
-預設直接依照自動同意處理。系統匣選單提供 **Open WindowsKVM** 與 **Quit WindowsKVM**。
+配對驗證碼，以及關閉自動同意後的控制請求，使用原生 Windows Yes／No 對話框；互動式配對的新 peer
+預設直接依照自動同意處理，測試專用的 `--yes` 配對則保持未設定。關閉後，控制對話框中的單次 **Allow** 不會改變持久設定；請用
+勾選框或 `--allow-control` 恢復自動同意。系統匣選單提供 **Open WindowsKVM** 與 **Quit WindowsKVM**。
 
 ## 建置與啟動
 
@@ -126,8 +130,9 @@ UI 的 **Forget paired Mac** 也會要求常駐 receiver 立即關閉相符的 s
 6. 在 MacKVM 的 Windows peer 上按 **Connect**。
 7. 在 MacKVM 選 **Request keyboard and mouse control**。新配對的 Mac 預設會自動取得控制；若要每次確認，
    取消勾選 **Automatically allow control from this paired Mac**，或執行 `--deny-control <peer-id>`，
-   之後 UI 會顯示原生對話框，console 則要求輸入 `y`。可重新勾選或執行 `--allow-control <peer-id>`
-   恢復自動控制；`--yes` 只適合受控測試，且不會保存自動同意。
+   之後 UI 會顯示原生對話框，console 則要求輸入 `y`。對話框中的單次 **Allow** 只允許當次請求，
+   不會重新啟用持久授權；請重新勾選或執行 `--allow-control <peer-id>` 恢復自動控制。`--yes` 只適合
+   受控測試，且不會保存自動同意。
 8. 要把控制權交還 Windows，請在 Windows 按 `Ctrl+Alt+Shift+Esc`，或從 MacKVM 結束
    control。兩種路徑都會釋放按住的按鍵／滑鼠按鈕。
 

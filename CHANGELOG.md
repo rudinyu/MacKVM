@@ -2,6 +2,26 @@
 
 # Changelog
 
+## 1.02.16 (build 96) — 2026-09-05
+
+This maintenance release fixes Windows trust-store rollback and tray-window
+visibility races, and clarifies control-consent persistence in the user
+documentation.
+
+### Security
+
+- Invalidate the cached trust-file stamp whenever a trust-store mutation or
+  rollback fails, so a rejected key replacement cannot keep stale control
+  authorization after another process changes the durable trust decision.
+
+### Fixed
+
+- Preserve the parent and child visibility state while batching Win32 redraws;
+  hidden tray windows and inactive Simple/Advanced controls no longer become
+  visible when `WM_SETREDRAW` is re-enabled.
+- Clarify that interactive pairing enables durable automatic control approval,
+  while a control-dialog **Allow** and test-only `--yes` pairing are one-shot.
+
 ## 1.02.15 (build 95) — 2026-09-04
 
 This security maintenance release closes authorization and lifecycle races in

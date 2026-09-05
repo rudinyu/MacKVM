@@ -43,9 +43,11 @@ The Windows branch uses C#/.NET 8 rather than Swift. The current Windows host
 contains the platform-neutral protocol library, signed pairing state machine,
 DPAPI-protected identity, dual-stack mDNS advertisement, authenticated
 encrypted control sessions, Windows `SendInput` injection, input release, a
-native Win32/tray UI, and the emergency local-return shortcut. After the first
-explicit control Allow, approval is remembered for the pinned Mac key; the UI
-setting or `--allow-control`/`--deny-control` can change that local decision.
+native Win32/tray UI, and the emergency local-return shortcut. An interactive
+pairing enables durable automatic control approval for the pinned Mac key by
+default; the test-only `--yes` pairing leaves that approval unconfigured. If
+approval is disabled, an individual control-dialog **Allow** is one-shot; the
+UI setting or `--allow-control`/`--deny-control` changes the durable decision.
 Raw Input capture and a polished scoped Windows Firewall wizard remain future
 work; the current receiver already shares the Mac's keyboard and mouse after
 consent.
@@ -66,9 +68,14 @@ After publishing, start the pairing-only receiver on Windows:
 ```
 
 Compare the six-digit code with the initiating Mac and type `y` at the Windows
-prompt. The first explicit control Allow is remembered for that pinned Mac;
-use the UI setting or `--deny-control <peer-id>` when every request should
-prompt again. Use `--yes` only for a controlled test; it is not persisted. The receiver advertises
+prompt. A peer accepted through interactive pairing gets durable automatic
+control approval by default; `--yes` leaves it unconfigured. If approval is
+disabled, an individual control-dialog **Allow** applies only to that
+request and does not re-enable the durable setting; use the UI setting or
+`--allow-control <peer-id>` to restore it, or `--deny-control <peer-id>` to
+require confirmation. Use `--yes` only for a controlled test; its one-shot
+automatic-control approval is not persisted (the pairing trust pin is still
+stored). The receiver advertises
 `_mackvm._tcp`; allow the normal Windows Defender Firewall Private-network
 prompt on the trusted LAN. Run the protocol self-test with
 `.\scripts\test-windows.ps1`.
