@@ -2,6 +2,18 @@
 
 # Changelog
 
+## 1.02.17 (build 97) — 2026-09-05
+
+This maintenance release expands the manual acceptance coverage for the
+combined O shortcut and the manual K monitor route.
+
+### Tests and documentation
+
+- Add controller-side and receiver-side second-press O checks, including the
+  expected return of display and keyboard/mouse ownership.
+- Document that ending a manual K session with K, Escape, or the peer return
+  action must not trigger a DDC switch or change the manually selected input.
+
 ## 1.02.16 (build 96) — 2026-09-05
 
 This maintenance release fixes Windows trust-store rollback and tray-window
