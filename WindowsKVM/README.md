@@ -8,7 +8,7 @@ authenticate a secure Connect session, and receive keyboard/mouse control over
 that encrypted session. A console mode remains available for automation and
 firewall diagnostics.
 
-## Current feature set — 1.02.17 (build 97)
+## Current feature set — 1.02.18 (build 98)
 
 The Windows host includes:
 

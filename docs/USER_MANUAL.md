@@ -6,7 +6,7 @@ MacKVM is a macOS app with a menu-bar entry and a full control window for
 sharing one keyboard, mouse, and optionally a BenQ MA270U display between a
 14-inch M5 Pro MacBook Pro and a 2019 Intel MacBook Pro.
 
-Current release: **1.02.02 (build 82)**.
+Current release: **1.02.18 (build 98)**.
 
 ## Hardware and wiring
 

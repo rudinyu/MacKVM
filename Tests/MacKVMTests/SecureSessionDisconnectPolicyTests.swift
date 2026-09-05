@@ -1,8 +1,31 @@
+import Network
 import XCTest
 @testable import MacKVM
 @testable import MacKVMCore
 
 final class SecureSessionDisconnectPolicyTests: XCTestCase {
+    func testSecureTCPParametersEnableIdleConnectionKeepalive() throws {
+        let parameters = SecureSessionService.makeSecureTCPParameters()
+        let tcpOptions = try XCTUnwrap(
+            parameters.defaultProtocolStack.transportProtocol
+                as? NWProtocolTCP.Options
+        )
+
+        XCTAssertTrue(tcpOptions.enableKeepalive)
+        XCTAssertEqual(
+            tcpOptions.keepaliveIdle,
+            SecureSessionService.secureTCPKeepaliveIdle
+        )
+        XCTAssertEqual(
+            tcpOptions.keepaliveInterval,
+            SecureSessionService.secureTCPKeepaliveInterval
+        )
+        XCTAssertEqual(
+            tcpOptions.keepaliveCount,
+            SecureSessionService.secureTCPKeepaliveCount
+        )
+    }
+
     func testCurrentDisconnectCapabilityIsCompatible() {
         XCTAssertEqual(
             SecureSessionCompatibilityPolicy.decision(

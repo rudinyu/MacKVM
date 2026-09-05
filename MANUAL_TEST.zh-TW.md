@@ -31,7 +31,7 @@ Intel Mac 的 `/Applications`，再開啟各自架構的 app。
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.02.02-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.02.18-universal.dmg.sha256)
 ```
 
 本機 ad-hoc 簽章只能用於測試；正式散布必須使用 Developer ID、hardened runtime
@@ -118,10 +118,15 @@ HDMI 1 使用 VCP 17（`0x11`）。其他型號使用自己的 mapping；螢幕�
 1. 連線後拔除網路或讓 peer 暫時離線。
 2. 重新連接網路，觀察 1／2／4／8／16 秒退避重連（每次延遲上限 30 秒）。
 3. 測試 **Disconnect**、**Forget** 與退出 app。
-4. 讓 peer 持續無法使用直到所有重試都結束，確認最多只排程五次；等網路服務回報 ready
+4. 使用「有實體鍵盤／滑鼠的 Mac 作為控制端、另一台沒有鍵盤／滑鼠」的情境。連線中
+   關閉控制端 Wi‑Fi 或強制結束 MacKVM，再恢復 Wi‑Fi 或重新開啟 MacKVM；確認沒有
+   鍵盤／滑鼠的 Mac 會偵測傳輸中斷、清除舊工作階段，不需要按 **Disconnect**。
+5. 讓 peer 持續無法使用直到所有重試都結束，確認最多只排程五次；等網路服務回報 ready
    或明確重新啟動後，才允許新的重試額度。
 
 預期結果：網路中斷立即停止遠端輸入並釋放按鍵／滑鼠按鈕；重連不需要重新配對，
+即使沒有本機鍵盤／滑鼠的 peer 也會偵測非預期的控制端斷線、清除 stale session，
+不需要手動按 **Disconnect** 就能接受重連；
 已啟用無縫控制的 peer 也不需要再次按 **Allow**。手動 Disconnect、Forget 或 Quit
 不會再次自動連線。
 

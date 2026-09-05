@@ -2,6 +2,16 @@
 
 # 變更記錄
 
+## 1.02.18（build 98）— 2026-09-05
+
+本維護版讓 peer 在沒有應用層流量時消失，仍能清除已認證的 stale secure session。
+
+### 修正
+
+- 為 secure session 啟用有界 TCP keepalive 與 Network.framework 傳輸可用性處理。peer 被強制結束、
+  進入休眠或網路路徑遺失時，現在會清除舊 session，不需手動按 **Disconnect** 即可重新連線。
+- 新增「控制端沒有本機鍵盤／滑鼠」的實機驗收覆蓋，確認 stale session 清理與重連流程。
+
 ## 1.02.17（build 97）— 2026-09-05
 
 本維護版擴充合併 O 快捷鍵與手動 K 螢幕路由的驗收覆蓋範圍。

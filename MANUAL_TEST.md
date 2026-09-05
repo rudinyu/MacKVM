@@ -33,7 +33,7 @@ Release check (from the M5 Pro) is also available:
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.02.02-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.02.18-universal.dmg.sha256)
 ```
 
 Expected: the app reports both `arm64` and `x86_64`, and an ad-hoc signature
@@ -196,8 +196,13 @@ Expected:
 1. Press **Connect**.
 2. Disconnect and reconnect from each Mac.
 3. Quit one app, reopen it, and reconnect.
-4. Turn Wi-Fi off during a connection, then restore it.
-5. Keep the peer unavailable through all retry attempts, then restore the
+4. Use a run where the Mac with the physical keyboard and mouse is the
+   controller and the peer has no keyboard or mouse attached. During an active
+   connection, turn the controller's Wi-Fi off or force-quit MacKVM, then
+   restore Wi-Fi or relaunch MacKVM. Confirm the no-input peer detects the
+   transport loss and clears the session without clicking **Disconnect**.
+5. Turn Wi-Fi off during a connection, then restore it.
+6. Keep the peer unavailable through all retry attempts, then restore the
    network and confirm that no more than five attempts are scheduled; a later
    network-service readiness event or explicit restart permits a fresh budget.
 
@@ -206,6 +211,9 @@ Expected:
 - The status reports an encrypted session with only the paired UUID.
 - A transport loss immediately restores local input and releases remote keys
   and mouse buttons.
+- A peer without a local keyboard or mouse still detects an unexpected
+  controller disconnect, clears the stale session, and accepts reconnection
+  without a manual **Disconnect** click.
 - Reconnect succeeds without repeating pairing; seamless-authorized peers can
   resume control without another Allow prompt.
 

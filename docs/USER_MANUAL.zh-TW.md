@@ -5,7 +5,7 @@
 MacKVM 是 macOS app，提供選單列入口與一般控制視窗，讓 14 吋 M5 Pro MacBook Pro
 與 2019 Intel MacBook Pro 共用一組鍵盤、滑鼠，並可選擇切換 BenQ MA270U 螢幕。
 
-目前版本：**1.02.02（build 82）**。
+目前版本：**1.02.18（build 98）**。
 
 ## 硬體與接線
 

@@ -97,7 +97,7 @@ Confirm the executable before starting a test:
 .\WindowsKVM.exe --version
 ```
 
-The current UI test build reports `WindowsKVM 1.02.17 (build 97)`.
+The current UI test build reports `WindowsKVM 1.02.18 (build 98)`.
 
 After publishing on Windows, start the resident UI:
 

@@ -2,6 +2,20 @@
 
 # Changelog
 
+## 1.02.18 (build 98) — 2026-09-05
+
+This maintenance release recovers authenticated secure sessions when a peer
+disappears without sending application traffic.
+
+### Fixed
+
+- Enable bounded TCP keepalive and Network.framework viability handling for
+  secure sessions. A headless peer that is force-quit, put to sleep, or loses
+  its network path now clears the stale session and permits reconnect without
+  a manual **Disconnect** action.
+- Add manual acceptance coverage for a controller with no local keyboard or
+  mouse, including the expected stale-session cleanup and reconnect path.
+
 ## 1.02.17 (build 97) — 2026-09-05
 
 This maintenance release expands the manual acceptance coverage for the
