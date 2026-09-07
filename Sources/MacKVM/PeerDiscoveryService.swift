@@ -114,6 +114,37 @@ enum PairingConnectionEOFPolicy {
     }
 }
 
+enum PairingTimeoutPhase: Equatable {
+    case outboundTransport
+    case inboundTransport
+    case protocolNegotiation
+    case userDecision
+    case completion
+}
+
+enum PairingTimeoutPolicy {
+    static let outboundTransport: TimeInterval = 15
+    static let inboundTransport: TimeInterval = 10
+    static let protocolNegotiation: TimeInterval = 60
+    static let userDecision: TimeInterval = 120
+    static let completion: TimeInterval = 30
+
+    static func duration(for phase: PairingTimeoutPhase) -> TimeInterval {
+        switch phase {
+        case .outboundTransport:
+            outboundTransport
+        case .inboundTransport:
+            inboundTransport
+        case .protocolNegotiation:
+            protocolNegotiation
+        case .userDecision:
+            userDecision
+        case .completion:
+            completion
+        }
+    }
+}
+
 final class PeerDiscoveryService: ObservableObject {
     @Published private(set) var peers: [DiscoveredPeer] = []
     @Published private(set) var pendingRequests: [PendingPairingRequest] = []
@@ -633,7 +664,10 @@ final class PeerDiscoveryService: ObservableObject {
                     peerID: peer.identity.id,
                     detail: "role=initiator"
                 )
-                self.scheduleTimeout(for: connection, after: 60)
+                self.scheduleTimeout(
+                    for: connection,
+                    phase: .protocolNegotiation
+                )
                 self.send(request, over: connection)
                 self.receive(on: connection)
                 self.publishStatus("Negotiating a security code with \(peer.name)…")
@@ -690,7 +724,7 @@ final class PeerDiscoveryService: ObservableObject {
                 break
             }
         }
-        scheduleTimeout(for: connection, after: 15)
+        scheduleTimeout(for: connection, phase: .outboundTransport)
         connection.start(queue: queue)
     }
 
@@ -1105,7 +1139,7 @@ final class PeerDiscoveryService: ObservableObject {
                     "transport.ready",
                     detail: "role=responder"
                 )
-                self.scheduleTimeout(for: connection, after: 10)
+                self.scheduleTimeout(for: connection, phase: .inboundTransport)
                 self.receive(on: connection)
             case .failed, .cancelled:
                 self.logPairingPhase(
@@ -1280,7 +1314,10 @@ final class PeerDiscoveryService: ObservableObject {
             unauthenticatedConnections.removeValue(
                 forKey: ObjectIdentifier(connection)
             )
-            scheduleTimeout(for: connection, after: 60)
+            scheduleTimeout(
+                for: connection,
+                phase: .protocolNegotiation
+            )
             requestConnections[message.requestID] = connection
             requestMessages[message.requestID] = message
             if message.supportsCompletionClose == true {
@@ -1366,6 +1403,17 @@ final class PeerDiscoveryService: ObservableObject {
                 rejectUnexpected(message, on: connection)
                 return
             }
+            guard peerContributions[message.requestID] == nil else {
+                // A duplicate reveal must not restart the user-decision
+                // deadline or keep an unpaired request occupying its slot.
+                logPairingPhase(
+                    "reveal.duplicate",
+                    requestID: message.requestID,
+                    peerID: message.sender.id,
+                    detail: "role=responder"
+                )
+                return
+            }
             recordCompletionCloseCapability(
                 from: message,
                 for: request.sender,
@@ -1383,6 +1431,11 @@ final class PeerDiscoveryService: ObservableObject {
                 initiatorContribution: peerContribution,
                 responderContribution: localContribution
             )
+            // The request is now validated as a complete protocol message
+            // and the responder's Accept action is visible to the user.
+            // Give that action its own bounded window instead of consuming
+            // the remainder of the transport handshake deadline.
+            scheduleTimeout(for: connection, phase: .userDecision)
             publishMain { service in
                 if !service.pendingRequests.contains(where: { $0.id == message.requestID }) {
                     service.pendingRequests.append(
@@ -1423,6 +1476,18 @@ final class PeerDiscoveryService: ObservableObject {
                 rejectUnexpected(message, on: connection)
                 return
             }
+            guard peerContributions[message.requestID] == nil else {
+                // A duplicate confirmation must not restart the user-decision
+                // deadline after the initiator has already entered this
+                // phase.
+                logPairingPhase(
+                    "confirmation.duplicate",
+                    requestID: message.requestID,
+                    peerID: expectedPeer.id,
+                    detail: "role=initiator"
+                )
+                return
+            }
             recordCompletionCloseCapability(
                 from: message,
                 for: expectedPeer,
@@ -1440,6 +1505,11 @@ final class PeerDiscoveryService: ObservableObject {
                 initiatorContribution: localContribution,
                 responderContribution: peerContribution
             )
+            // The initiator's Confirm code action is a separate user-visible
+            // phase. Start a fresh bounded decision window when the prompt is
+            // published, rather than inheriting time already spent on the
+            // network exchange and the responder's prompt.
+            scheduleTimeout(for: connection, phase: .userDecision)
             pendingPairingConfirmationRequestID = message.requestID
             logPairingPhase(
                 "confirmation.received.awaiting-user",
@@ -2112,10 +2182,11 @@ final class PeerDiscoveryService: ObservableObject {
 
     private func scheduleTimeout(
         for connection: NWConnection,
-        after seconds: TimeInterval = 60
+        phase: PairingTimeoutPhase
     ) {
         let connectionID = ObjectIdentifier(connection)
         connectionTimeouts.removeValue(forKey: connectionID)?.cancel()
+        let seconds = PairingTimeoutPolicy.duration(for: phase)
 
         let timeout = DispatchWorkItem { [weak self, weak connection] in
             guard let self, let connection else { return }
@@ -2134,7 +2205,7 @@ final class PeerDiscoveryService: ObservableObject {
                 }
             if !wasPersisted {
                 MacKVMLogger.pairing.error(
-                    "phase=pairing.timeout connection=\(MacKVMLogger.short(connectionID), privacy: .public)"
+                    "phase=pairing.timeout timeoutPhase=\(String(describing: phase), privacy: .public) connection=\(MacKVMLogger.short(connectionID), privacy: .public)"
                 )
                 self.publishStatus("Pairing request timed out")
             }
@@ -2284,6 +2355,11 @@ final class PeerDiscoveryService: ObservableObject {
             )
             return
         }
+        // Both signed user decisions are now present. The remaining
+        // completion/acknowledgement/close exchange is transport work, so it
+        // receives its own short deadline instead of using the user-decision
+        // timer that may already be nearly exhausted.
+        scheduleTimeout(for: connection, phase: .completion)
         completionSendStartedRequestIDs.insert(requestID)
         logPairingPhase(
             "completion.send.begin",

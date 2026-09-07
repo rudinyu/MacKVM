@@ -40,6 +40,37 @@ final class PeerDiscoveryServiceTests: XCTestCase {
         XCTAssertNil(PairingActivity.idle.peerName)
     }
 
+    func testPairingTimeoutPolicySeparatesUserDecisionFromTransport() {
+        XCTAssertEqual(
+            PairingTimeoutPolicy.duration(for: .outboundTransport),
+            15
+        )
+        XCTAssertEqual(
+            PairingTimeoutPolicy.duration(for: .inboundTransport),
+            10
+        )
+        XCTAssertEqual(
+            PairingTimeoutPolicy.duration(for: .protocolNegotiation),
+            60
+        )
+        XCTAssertEqual(
+            PairingTimeoutPolicy.duration(for: .userDecision),
+            120
+        )
+        XCTAssertEqual(
+            PairingTimeoutPolicy.duration(for: .completion),
+            30
+        )
+        XCTAssertGreaterThan(
+            PairingTimeoutPolicy.duration(for: .userDecision),
+            PairingTimeoutPolicy.duration(for: .protocolNegotiation)
+        )
+        XCTAssertLessThan(
+            PairingTimeoutPolicy.duration(for: .completion),
+            PairingTimeoutPolicy.duration(for: .userDecision)
+        )
+    }
+
     func testNetworkRecoveryRequiresBothServicesToBeReady() {
         XCTAssertFalse(
             PeerDiscoveryService.areNetworkServicesReady(

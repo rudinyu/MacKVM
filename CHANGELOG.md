@@ -2,6 +2,17 @@
 
 # Changelog
 
+## 1.100.05 (build 80) — 2026-09-07
+
+### Fixed
+
+- Give pairing's Accept and Confirm steps a separate bounded user-decision
+  timeout, while retaining shorter deadlines for the pre-authentication
+  transport phases.
+- Ignore duplicate reveal and confirmation frames after a contribution has
+  already been recorded, preventing an unpaired request from extending its
+  slot indefinitely.
+
 ## 1.100.04 (build 79) — 2026-09-04
 
 ### Added
