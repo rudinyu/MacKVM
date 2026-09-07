@@ -157,6 +157,18 @@ Secure session authenticated with ...
 Windows control granted for ...
 ```
 
+When a secure session is accepted, the Windows receiver also reports its
+transport liveness policy:
+
+```text
+Secure session TCP keepalive configured (idle=5s, interval=2s, probes=3).
+```
+
+If the peer disappears without sending input, preserve the later
+`Secure session peer ... remained unavailable` or
+`Secure session transport liveness timed out` lines. The existing teardown
+then releases any held Windows keys/buttons and allows a fresh Connect.
+
 Useful failures include `mDNS ... network error`, `Pairing connection timed
 out`, `peer is not paired`, `does not support the authenticated disconnect
 signal`, and `Secure session connection closed`. Preserve the surrounding

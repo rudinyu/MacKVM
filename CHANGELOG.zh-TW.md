@@ -2,6 +2,19 @@
 
 # 變更記錄
 
+## 1.02.19（build 99）— 2026-09-05
+
+本跨平台維護版讓 Windows secure-session receiver 具備與 MacKVM 相同的有界 peer
+存活偵測行為。
+
+### 修正
+
+- Windows secure session 啟用 TCP keepalive（閒置五秒、probe 間隔兩秒、最多三次），並加入
+  短暫的 socket liveness grace period。peer 進入休眠、被強制結束或網路路徑遺失時，現在會
+  釋放 Windows 鍵盤／滑鼠控制權，不需手動重啟即可重新連線。
+- 新增可重現的 Windows protocol 測試驗證 Winsock keepalive 設定，同時保留既有簽名 disconnect
+  capability 與 wire 相容性。
+
 ## 1.02.18（build 98）— 2026-09-05
 
 本維護版讓 peer 在沒有應用層流量時消失，仍能清除已認證的 stale secure session。

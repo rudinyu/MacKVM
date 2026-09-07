@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Buffers.Binary;
 using WindowsKVM.Protocol;
 
 namespace WindowsKVM.Protocol.SelfTest;
@@ -24,6 +25,7 @@ internal static class Program
             TestCompletePairingStateMachine();
             TestRejectedDecisionIsTerminal();
             TestSecureSessionHandshakeRoundTrip();
+            TestSecureSessionLivenessPolicy();
             TestSecureSessionDisconnectCapabilityRoundTrip();
             TestSecureSessionDisconnectSignalsRequireExactPayload();
             TestSecureSessionChannelEncryptsBothDirections();
@@ -311,6 +313,31 @@ internal static class Program
         Assert(
             decoded[0].Handshake!.DisconnectSignalVersion is null,
             "legacy handshake must not gain a disconnect capability"
+        );
+    }
+
+    private static void TestSecureSessionLivenessPolicy()
+    {
+        var values = SecureSessionLivenessPolicy.CreateWindowsKeepAliveValues();
+        Assert(values.Length == 12, "Windows keepalive payload must be SIO_KEEPALIVE_VALS-sized");
+        Assert(
+            BinaryPrimitives.ReadUInt32LittleEndian(values.AsSpan(0, 4)) == 1,
+            "Windows keepalive must be enabled"
+        );
+        Assert(
+            BinaryPrimitives.ReadUInt32LittleEndian(values.AsSpan(4, 4))
+                == SecureSessionLivenessPolicy.KeepAliveIdleSeconds * 1_000,
+            "Windows keepalive idle interval changed"
+        );
+        Assert(
+            BinaryPrimitives.ReadUInt32LittleEndian(values.AsSpan(8, 4))
+                == SecureSessionLivenessPolicy.KeepAliveIntervalSeconds * 1_000,
+            "Windows keepalive probe interval changed"
+        );
+        Assert(
+            SecureSessionLivenessPolicy.KeepAliveProbeCount == 3
+                && SecureSessionLivenessPolicy.TransportUnavailabilityGraceSeconds == 5,
+            "secure-session liveness policy changed"
         );
     }
 

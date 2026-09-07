@@ -124,8 +124,9 @@ The same host still supports the console `--pairing-listen` mode for scripted
 testing. It includes the platform-neutral protocol library, DPAPI-protected
 identity, dependency-free mDNS advertiser, authenticated encrypted secure
 Connect responder, strict control-message and input validation, Windows
-SendInput injection, release-all cleanup, and the Ctrl+Alt+Shift+Esc emergency
-return shortcut. This Windows beta is not compatible with the MacKVM 1.00.00
+SendInput injection, release-all cleanup, bounded TCP keepalive/liveness
+monitoring for stale peer recovery, and the Ctrl+Alt+Shift+Esc emergency return
+shortcut. This Windows beta is not compatible with the MacKVM 1.00.00
 release. Use a MacKVM build with the signed `disconnectSignalVersion`
 capability (introduced in MacKVM 1.100.00/build 75) on the Mac peer; an older
 peer is rejected with an explicit upgrade-required result instead of being
@@ -197,7 +198,7 @@ The package is built from a fresh staging directory and writes a portable
 SHA-256 sidecar next to the DMG. Verify the pair from the `dist` directory:
 
 ```sh
-(cd dist && shasum -a 256 -c MacKVM-1.02.18-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.02.19-universal.dmg.sha256)
 ```
 
 For distribution to another Mac, sign with a Developer ID Application

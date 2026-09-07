@@ -26,6 +26,10 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
     private static readonly TimeSpan HandshakeTimeout = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan PartialFrameTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan ControlPromptTimeout = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan TransportUnavailabilityGracePeriod =
+        TimeSpan.FromSeconds(SecureSessionLivenessPolicy.TransportUnavailabilityGraceSeconds);
+    private static readonly TimeSpan SocketLivenessPollInterval =
+        TimeSpan.FromMilliseconds(SecureSessionLivenessPolicy.SocketPollIntervalMilliseconds);
     private static readonly string SecureServiceType = "_mackvm-secure._tcp.local";
     private readonly DeviceCredentials credentials;
     private readonly WindowsTrustStore trustStore;
@@ -440,6 +444,7 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
             {
                 var client = await listener.AcceptTcpClientAsync(token);
                 client.NoDelay = true;
+                ConfigureSecureSessionKeepAlive(client);
                 PublishStatus(
                     $"Incoming Secure Connect connection from "
                         + $"{client.Client.RemoteEndPoint?.ToString() ?? "unknown endpoint"}."
@@ -534,6 +539,8 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
         );
         var controlRequestID = new SessionControlRequestState();
         WindowsControlReleaseHotKey? releaseHotKey = null;
+        Task? livenessTask = null;
+        var livenessTimedOut = 0;
         using var outputLock = new SemaphoreSlim(1, 1);
         var buffer = new List<byte>();
         var readBuffer = new byte[16 * 1024];
@@ -697,6 +704,13 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
                                 unauthenticatedSlotHeld = false;
                             }
                             handshakeCancellation.CancelAfter(Timeout.InfiniteTimeSpan);
+                            livenessTask = MonitorSocketLivenessAsync(
+                                client.Client,
+                                handshakeCancellation,
+                                token,
+                                remote,
+                                () => Interlocked.Exchange(ref livenessTimedOut, 1)
+                            );
                             Console.WriteLine(
                                 $"Secure session authenticated with {Short(activePeerID)}."
                             );
@@ -1089,7 +1103,9 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
         catch (OperationCanceledException)
         {
             Console.Error.WriteLine(
-                authenticated
+                Volatile.Read(ref livenessTimedOut) != 0
+                    ? "Secure session transport liveness timed out."
+                    : authenticated
                     ? "Secure session partial frame timed out."
                     : "Secure session handshake timed out."
             );
@@ -1118,6 +1134,18 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
         }
         finally
         {
+            handshakeCancellation.Cancel();
+            if (livenessTask is not null)
+            {
+                try
+                {
+                    await livenessTask.ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is OperationCanceledException
+                    or ObjectDisposedException or SocketException)
+                {
+                }
+            }
             releaseHotKey?.Dispose();
             if (activePeerID is { } endingPeer
                 && controlRequestID.Value is { } endingRequest)
@@ -1347,6 +1375,121 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
         finally
         {
             outputLock.Release();
+        }
+    }
+
+    private static void ConfigureSecureSessionKeepAlive(TcpClient client)
+    {
+        var socket = client.Client;
+        try
+        {
+            socket.SetSocketOption(
+                SocketOptionLevel.Socket,
+                SocketOptionName.KeepAlive,
+                true
+            );
+            socket.SetSocketOption(
+                SocketOptionLevel.Tcp,
+                SocketOptionName.TcpKeepAliveTime,
+                SecureSessionLivenessPolicy.KeepAliveIdleSeconds
+            );
+            socket.SetSocketOption(
+                SocketOptionLevel.Tcp,
+                SocketOptionName.TcpKeepAliveInterval,
+                SecureSessionLivenessPolicy.KeepAliveIntervalSeconds
+            );
+            socket.SetSocketOption(
+                SocketOptionLevel.Tcp,
+                SocketOptionName.TcpKeepAliveRetryCount,
+                SecureSessionLivenessPolicy.KeepAliveProbeCount
+            );
+            Console.WriteLine(
+                "Secure session TCP keepalive configured "
+                    + $"(idle={SecureSessionLivenessPolicy.KeepAliveIdleSeconds}s, "
+                    + $"interval={SecureSessionLivenessPolicy.KeepAliveIntervalSeconds}s, "
+                    + $"probes={SecureSessionLivenessPolicy.KeepAliveProbeCount})."
+            );
+        }
+        catch (Exception ex) when (ex is SocketException
+            or PlatformNotSupportedException or ArgumentException)
+        {
+            // Windows 10 builds that do not expose the explicit TCP options
+            // still support the Winsock SIO_KEEPALIVE_VALS compatibility path.
+            try
+            {
+                socket.IOControl(
+                    IOControlCode.KeepAliveValues,
+                    SecureSessionLivenessPolicy.CreateWindowsKeepAliveValues(),
+                    null
+                );
+                Console.WriteLine(
+                    "Secure session TCP keepalive configured using the Winsock compatibility path."
+                );
+            }
+            catch (Exception fallback) when (fallback is SocketException
+                or PlatformNotSupportedException or ArgumentException)
+            {
+                Console.Error.WriteLine(
+                    "Secure session TCP keepalive could not be configured; "
+                        + $"the OS will use its default liveness policy ({fallback.Message})."
+                );
+            }
+        }
+    }
+
+    private static async Task MonitorSocketLivenessAsync(
+        Socket socket,
+        CancellationTokenSource connectionCancellation,
+        CancellationToken token,
+        string remote,
+        Action markTimedOut
+    )
+    {
+        long? unavailableSince = null;
+        try
+        {
+            while (!token.IsCancellationRequested)
+            {
+                await Task.Delay(SocketLivenessPollInterval, token).ConfigureAwait(false);
+                var hasSocketError = socket.Poll(0, SelectMode.SelectError);
+                var hasOrderlyClose = socket.Poll(0, SelectMode.SelectRead)
+                    && socket.Available == 0;
+                if (!hasSocketError && !hasOrderlyClose)
+                {
+                    unavailableSince = null;
+                    continue;
+                }
+
+                var now = Environment.TickCount64;
+                unavailableSince ??= now;
+                if (now - unavailableSince.Value
+                    < (long)TransportUnavailabilityGracePeriod.TotalMilliseconds)
+                {
+                    continue;
+                }
+
+                markTimedOut();
+                Console.Error.WriteLine(
+                    $"Secure session peer {remote} remained unavailable for "
+                        + $"{TransportUnavailabilityGracePeriod.TotalSeconds:0}s; closing."
+                );
+                connectionCancellation.Cancel();
+                return;
+            }
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+        catch (SocketException ex)
+        {
+            markTimedOut();
+            Console.Error.WriteLine(
+                $"Secure session liveness probe failed for {remote}: {ex.Message}"
+            );
+            connectionCancellation.Cancel();
         }
     }
 

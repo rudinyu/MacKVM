@@ -10,8 +10,10 @@ C#/.NET 8 protocol library, signed pairing state machine, native Win32 status
 window and resident tray host, DPAPI-backed identity, dependency-free mDNS
 advertisers, authenticated encrypted Connect, strict control/input validation,
 Windows SendInput injection, release-all teardown, and an emergency
-local-return hotkey. Raw Input capture and the final firewall UX remain later
-Windows work.
+local-return hotkey. Authenticated secure sessions use bounded Windows TCP
+keepalive and socket liveness monitoring so a peer that disappears without
+application traffic releases control and can reconnect. Raw Input capture and
+the final firewall UX remain later Windows work.
 
 ## Requirements
 
@@ -97,7 +99,7 @@ Confirm the executable before starting a test:
 .\WindowsKVM.exe --version
 ```
 
-The current UI test build reports `WindowsKVM 1.02.18 (build 98)`.
+The current UI test build reports `WindowsKVM 1.02.19 (build 99)`.
 
 After publishing on Windows, start the resident UI:
 

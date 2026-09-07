@@ -2,6 +2,22 @@
 
 # Changelog
 
+## 1.02.19 (build 99) — 2026-09-05
+
+This cross-platform maintenance release gives the Windows secure-session
+receiver the same bounded peer-liveness behavior as MacKVM.
+
+### Fixed
+
+- Configure Windows secure sessions with TCP keepalive (five-second idle,
+  two-second probe interval, and three probes) and a short socket liveness
+  grace period. A peer that sleeps, is force-quit, or loses its network path
+  now releases Windows keyboard/mouse control and permits reconnect without a
+  manual restart.
+- Add deterministic Windows protocol coverage for the Winsock keepalive
+  settings while preserving the existing signed disconnect capability and
+  wire compatibility.
+
 ## 1.02.18 (build 98) — 2026-09-05
 
 This maintenance release recovers authenticated secure sessions when a peer

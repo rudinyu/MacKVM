@@ -7,8 +7,9 @@
 本手冊說明如何建置 MacKVM 的 Windows 分支。目前內容是 C#/.NET 8 protocol library、簽章
 配對 state machine、原生 Win32 狀態視窗與系統匣常駐 host、DPAPI identity、配對與 secure
 Connect 的免外部套件 mDNS 廣播器、嚴格 control／input 驗證、Windows SendInput 注入、
-釋放所有輸入狀態，以及緊急交還快捷鍵。Windows Raw Input 擷取與最後的防火牆 UX 會在
-後續 Windows 階段實作。
+釋放所有輸入狀態，以及緊急交還快捷鍵。Authenticated secure session 使用有界 Windows TCP
+keepalive 與 socket liveness 監測；peer 沒有應用層流量卻消失時會釋放控制權，並可重新連線。
+Windows Raw Input 擷取與最後的防火牆 UX 會在後續 Windows 階段實作。
 
 ## 建置需求
 
@@ -89,7 +90,7 @@ Windows 建置檢查。
 .\WindowsKVM.exe --version
 ```
 
-目前 UI 測試 build 應顯示 `WindowsKVM 1.02.18 (build 98)`。
+目前 UI 測試 build 應顯示 `WindowsKVM 1.02.19 (build 99)`。
 
 在 Windows publish 後啟動常駐 UI：
 

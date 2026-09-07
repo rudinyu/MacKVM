@@ -128,6 +128,17 @@ Secure session authenticated with ...
 Windows control granted for ...
 ```
 
+Secure session 接受後，Windows receiver 也會輸出 transport liveness 設定：
+
+```text
+Secure session TCP keepalive configured (idle=5s, interval=2s, probes=3).
+```
+
+如果 peer 沒有傳送輸入就消失，請保留後續的
+`Secure session peer ... remained unavailable` 或
+`Secure session transport liveness timed out` 行。既有 teardown 會釋放按住的
+Windows 按鍵／滑鼠按鈕，並允許重新 Connect。
+
 常見失敗訊息包括 `mDNS ... network error`、`Pairing connection timed out`、`peer is not paired`、`does not support the authenticated disconnect signal` 與 `Secure session connection closed`。請保留錯誤前後的行，完整順序通常比單一錯誤字串更有用。
 
 ### 檢查 Windows 網路與防火牆

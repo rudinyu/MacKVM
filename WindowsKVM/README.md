@@ -8,7 +8,7 @@ authenticate a secure Connect session, and receive keyboard/mouse control over
 that encrypted session. A console mode remains available for automation and
 firewall diagnostics.
 
-## Current feature set — 1.02.18 (build 98)
+## Current feature set — 1.02.19 (build 99)
 
 The Windows host includes:
 
@@ -27,6 +27,10 @@ The Windows host includes:
   ChaCha20-Poly1305 key confirmation;
 - bounded framing, replay protection, handshake timeouts, and connection
   admission limits; and
+- authenticated secure sessions configure Windows TCP keepalive (five-second
+  idle, two-second probe interval, three probes) and poll socket liveness with
+  a five-second grace period, releasing control and allowing reconnect when a
+  peer disappears without application traffic; and
 - strict lower-camel control-message and remote-input validation compatible
   with MacKVM protocol v2;
 - Windows `SendInput` keyboard, modifier, Unicode fallback, mouse, button,

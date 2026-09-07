@@ -6,7 +6,7 @@ WindowsKVM 是 MacKVM 的 Windows companion。目前 Windows 版包含原生 Win
 host，可在區域網路上與 MacKVM 配對、完成 secure Connect 驗證，並接收加密鍵盤／滑鼠控制；
 另外保留 console 模式供自動化與防火牆診斷。
 
-## 目前功能 — 1.02.18（build 98）
+## 目前功能 — 1.02.19（build 99）
 
 Windows host 已包含：
 
@@ -22,6 +22,9 @@ Windows host 已包含：
 - 簽章 P-256 ephemeral key exchange、HKDF-SHA256 金鑰導出與
   ChaCha20-Poly1305 key confirmation；
 - 有上限的 frame、重播防護、handshake timeout 與連線 admission limit；
+- authenticated secure session 啟用 Windows TCP keepalive（閒置五秒、probe 間隔兩秒、三次
+  probe），並以五秒 grace period 監測 socket 存活；peer 沒有應用層流量卻消失時會釋放控制權，
+  並允許重新連線；
 - 與 MacKVM protocol v2 相容且嚴格驗證 lower-camel control message 與 remote input；
 - Windows `SendInput` 鍵盤、修飾鍵、Unicode fallback、滑鼠、按鍵、多媒體鍵與具 unit 區分的
   pixel／line 滾輪注入（包含 pointer pressure 與 trackpad phase metadata）；
