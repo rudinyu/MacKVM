@@ -113,6 +113,14 @@ timestamp、簽署 DMG、上傳 Apple、staple 通過的 ticket、驗證結果�
 SHA-256。既有的 `scripts/package-dmg.sh` 維持為本機 ad-hoc 測試流程；repository
 不應保存 signing 或 notarization 憑證。
 
+產生的 DMG 也會包含 `Install MacKVM.command`、`Uninstall MacKVM.command` 與安裝指南。
+在 Finder 雙擊安裝 command 後，script 會驗證 app 並以原子方式將 MacKVM.app 安裝到
+`/Applications`；升級前請先結束正在執行的 MacKVM。解除安裝 command 只會移除 app bundle，
+不會刪除配對資料、私密金鑰、偏好設定或 macOS 隱私權限。若曾啟用 **Launch MacKVM at Login**，
+請在解除安裝前或後到 **系統設定 > 一般 > 登入項目** 移除 MacKVM。合法簽署的 installer
+package 需要另外的 Developer ID Installer 憑證，因此目前發行流程使用 notarized DMG 與這兩個
+script，不產生未簽署的 PKG。
+
 ### 原生 DDC 診斷工具
 
 當螢幕的 input mapping 不明，或 I2C 回報寫入成功但畫面沒有切換時，可建置跨架構

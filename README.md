@@ -184,6 +184,17 @@ The existing `scripts/package-dmg.sh` command remains the ad-hoc local-testing
 path. No signing, notarization, or Keychain credentials belong in this
 repository.
 
+The generated DMG also contains `Install MacKVM.command` and
+`Uninstall MacKVM.command`, plus the installation guides. Double-click the
+install command to validate and copy MacKVM.app atomically into `/Applications`;
+quit MacKVM first when upgrading. The uninstall command removes only the app
+bundle and leaves pairing data, private keys, preferences, and macOS privacy
+permissions untouched. If **Launch MacKVM at Login** was enabled, remove the
+login item from **System Settings > General > Login Items** before or after
+uninstalling. A signed installer package would require a separate Developer ID
+Installer certificate, so the current release path intentionally uses the
+notarized DMG and its scripts.
+
 `scripts/verify-release.sh` verifies an existing app bundle without creating a
 DMG. Ad-hoc signatures pass local verification but are not Apple Developer ID
 signatures and may require Finder's **Open** confirmation on another Mac.

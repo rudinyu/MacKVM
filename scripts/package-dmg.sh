@@ -134,6 +134,14 @@ staging_dir="$(mktemp -d "$staging_root/MacKVM.XXXXXX")"
 # Build the image from a fresh staging directory so an old resource or a
 # Finder sidecar can never leak into a subsequent release image.
 ditto --norsrc "$app_dir" "$staging_dir/MacKVM.app"
+install -m 755 "$project_root/scripts/install-app.sh" \
+  "$staging_dir/Install MacKVM.command"
+install -m 755 "$project_root/scripts/uninstall-app.sh" \
+  "$staging_dir/Uninstall MacKVM.command"
+install -m 644 "$project_root/INSTALL.md" "$staging_dir/INSTALL.md"
+install -m 644 "$project_root/INSTALL.zh-TW.md" \
+  "$staging_dir/INSTALL.zh-TW.md"
+ln -s /Applications "$staging_dir/Applications"
 hdiutil create \
   -volname "MacKVM $version" \
   -srcfolder "$staging_dir" \

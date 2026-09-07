@@ -2,6 +2,14 @@
 
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Include double-click install and uninstall commands plus the installation
+  guides in the DMG. The scripts validate the MacKVM bundle and preserve
+  pairing data, private keys, preferences, and macOS privacy permissions.
+
 ## 1.100.05 (build 80) — 2026-09-07
 
 ### Fixed

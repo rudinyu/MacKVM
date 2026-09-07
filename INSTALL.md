@@ -112,15 +112,33 @@ repository.
 
 ## Install and grant permissions
 
-1. Copy the matching app bundle to `/Applications` on each Mac and open it.
-2. Select **Enable Local Network**, respond to the macOS prompt, then select
+The release DMG includes `Install MacKVM.command`, `Uninstall MacKVM.command`,
+and both installation guides. To install from Finder, open the DMG and
+double-click `Install MacKVM.command`. The script validates the app signature
+and bundle identifier, then installs it to `/Applications`; it does not change
+pairing data, private keys, preferences, or macOS privacy permissions. Quit an
+existing MacKVM process before upgrading. You can also drag `MacKVM.app` onto
+the `/Applications` shortcut in the DMG.
+
+To uninstall, quit MacKVM and double-click `Uninstall MacKVM.command`. It
+removes only `/Applications/MacKVM.app`. If **Launch MacKVM at Login** was
+enabled, remove MacKVM from **System Settings > General > Login Items**. The
+script intentionally leaves user data and permissions intact; use MacKVM's
+identity reset or the relevant System Settings pages when those need to be
+reset separately. A signed PKG is not part of this release path because it
+requires a Developer ID Installer certificate in addition to the app signing
+certificate.
+
+After installation, open MacKVM from `/Applications`.
+
+1. Select **Enable Local Network**, respond to the macOS prompt, then select
    **I handled the macOS prompt**.
-3. Select **Request Input Monitoring** and grant the permission.
-4. Select **Request Accessibility** and grant the permission.
-5. If a permission was previously denied, use the matching **Settings** button.
-6. Optionally select **Enable** beside **Control request notifications** before
+2. Select **Request Input Monitoring** and grant the permission.
+3. Select **Request Accessibility** and grant the permission.
+4. If a permission was previously denied, use the matching **Settings** button.
+5. Optionally select **Enable** beside **Control request notifications** before
    the first control request.
-7. Optionally enable **Launch MacKVM at Login**.
+6. Optionally enable **Launch MacKVM at Login**.
 
 MacKVM appears with a KVM/display-sharing icon in the menu bar and as a regular
 Dock app with a full control window. The app bundle, rather than `swift run`,

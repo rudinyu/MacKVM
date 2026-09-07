@@ -101,13 +101,26 @@ SHA-256。既有的 `scripts/package-dmg.sh` 維持本機 ad-hoc 測試流程；
 
 ## 安裝並授予權限
 
-1. 將相符架構的 app 複製到兩台 Mac 的 `/Applications`，再開啟 app。
-2. 按 **Enable Local Network**，回應 macOS 提示後按 **I handled the macOS prompt**。
-3. 按 **Request Input Monitoring** 並授予權限。
-4. 按 **Request Accessibility** 並授予權限。
-5. 若之前拒絕過權限，按相應的 **Settings** 按鈕到系統設定中開啟。
-6. 第一次控制前，可按 **Enable** 開啟控制請求通知。
-7. 可選擇開啟 **Launch MacKVM at Login**。
+發行用 DMG 內含 `Install MacKVM.command`、`Uninstall MacKVM.command` 與中英文安裝指南。
+在 Finder 開啟 DMG 後，雙擊 `Install MacKVM.command`；script 會驗證 app 的簽章與 bundle
+identifier，再將 app 原子方式安裝到 `/Applications`。升級前請先結束正在執行的 MacKVM；
+安裝不會修改配對資料、私密金鑰、偏好設定或 macOS 隱私權限。也可以把 `MacKVM.app` 拖到
+DMG 內的 `/Applications` 捷徑。
+
+要解除安裝，先結束 MacKVM，再雙擊 `Uninstall MacKVM.command`；它只會移除
+`/Applications/MacKVM.app`。若曾啟用 **Launch MacKVM at Login**，請到
+**系統設定 > 一般 > 登入項目** 移除 MacKVM。script 刻意保留使用者資料與權限；若需要重設，
+請使用 MacKVM 的 identity reset 或對應的系統設定頁面。合法簽署的 PKG 需要除了 app signing
+certificate 之外的 Developer ID Installer 憑證，因此目前發行流程不產生 PKG。
+
+安裝後，從 `/Applications` 開啟 MacKVM。
+
+1. 按 **Enable Local Network**，回應 macOS 提示後按 **I handled the macOS prompt**。
+2. 按 **Request Input Monitoring** 並授予權限。
+3. 按 **Request Accessibility** 並授予權限。
+4. 若之前拒絕過權限，按相應的 **Settings** 按鈕到系統設定中開啟。
+5. 第一次控制前，可按 **Enable** 開啟控制請求通知。
+6. 可選擇開啟 **Launch MacKVM at Login**。
 
 MacKVM 會以 KVM／雙螢幕圖示常駐在選單列，也會顯示在 Dock 並提供一般控制視窗。
 正常使用時必須開啟 app bundle，不要使用 `swift run`，因為 app bundle 包含 Bonjour
