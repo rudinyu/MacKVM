@@ -114,6 +114,19 @@ enum PairingConnectionEOFPolicy {
     }
 }
 
+enum PairingContributionPolicy {
+    /// Whether an incoming reveal/confirmation should be recorded and should
+    /// (re)start the user-decision timeout. A request that already has a
+    /// recorded contribution has already entered this phase once; a resent
+    /// or duplicated message for the same request must not restart the
+    /// decision window or duplicate the pending-request/prompt UI.
+    static func shouldRecordContribution(
+        existingContribution: Data?
+    ) -> Bool {
+        existingContribution == nil
+    }
+}
+
 enum PairingTimeoutPhase: Equatable {
     case outboundTransport
     case inboundTransport
@@ -1403,7 +1416,9 @@ final class PeerDiscoveryService: ObservableObject {
                 rejectUnexpected(message, on: connection)
                 return
             }
-            guard peerContributions[message.requestID] == nil else {
+            guard PairingContributionPolicy.shouldRecordContribution(
+                existingContribution: peerContributions[message.requestID]
+            ) else {
                 // A duplicate reveal must not restart the user-decision
                 // deadline or keep an unpaired request occupying its slot.
                 logPairingPhase(
@@ -1476,7 +1491,9 @@ final class PeerDiscoveryService: ObservableObject {
                 rejectUnexpected(message, on: connection)
                 return
             }
-            guard peerContributions[message.requestID] == nil else {
+            guard PairingContributionPolicy.shouldRecordContribution(
+                existingContribution: peerContributions[message.requestID]
+            ) else {
                 // A duplicate confirmation must not restart the user-decision
                 // deadline after the initiator has already entered this
                 // phase.

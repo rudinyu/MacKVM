@@ -117,4 +117,112 @@ final class SecureSessionDisconnectPolicyTests: XCTestCase {
             )
         )
     }
+
+    // MARK: - TransportLivenessPolicy
+
+    func testAuthenticatedIdleContextSchedulesTheGracePeriod() {
+        // The base case this watchdog exists for: an authenticated,
+        // otherwise-idle context that just went `.waiting` or non-viable.
+        XCTAssertTrue(
+            TransportLivenessPolicy.shouldScheduleGracePeriod(
+                isAuthenticated: true,
+                isClosing: false,
+                hasScheduledTimeout: false
+            )
+        )
+    }
+
+    func testHandshakingContextIsExemptFromTheGracePeriod() {
+        // A still-handshaking context is covered by its own handshake
+        // timeout; the liveness watchdog must not also race it.
+        XCTAssertFalse(
+            TransportLivenessPolicy.shouldScheduleGracePeriod(
+                isAuthenticated: false,
+                isClosing: false,
+                hasScheduledTimeout: false
+            )
+        )
+    }
+
+    func testClosingContextIsExemptFromTheGracePeriod() {
+        // A deliberate close already owns its own bounded flush window
+        // (disconnectTransportFlushTimeout); the liveness watchdog must not
+        // race it and cancel the socket before the close marker is flushed.
+        XCTAssertFalse(
+            TransportLivenessPolicy.shouldScheduleGracePeriod(
+                isAuthenticated: true,
+                isClosing: true,
+                hasScheduledTimeout: false
+            )
+        )
+    }
+
+    func testARunningTimerIsNotRestartedByARepeatedSignal() {
+        // NWConnection can flap between waiting/non-viable more than once
+        // before the first grace period elapses. The clock must anchor to
+        // the first loss-of-viability event, not the most recent one.
+        XCTAssertFalse(
+            TransportLivenessPolicy.shouldScheduleGracePeriod(
+                isAuthenticated: true,
+                isClosing: false,
+                hasScheduledTimeout: true
+            )
+        )
+    }
+
+    func testExpiredGracePeriodFailsAMatchingCurrentAuthenticatedContext() {
+        XCTAssertTrue(
+            TransportLivenessPolicy.shouldFailAfterGracePeriodExpiry(
+                isCurrentContext: true,
+                isAuthenticated: true,
+                isClosing: false,
+                scheduledGeneration: 1,
+                expiredGeneration: 1
+            )
+        )
+    }
+
+    func testStaleContextIsNotFailedByAnExpiredTimer() {
+        // The context was removed, or a newer epoch superseded it, between
+        // scheduling and firing.
+        XCTAssertFalse(
+            TransportLivenessPolicy.shouldFailAfterGracePeriodExpiry(
+                isCurrentContext: false,
+                isAuthenticated: true,
+                isClosing: false,
+                scheduledGeneration: 1,
+                expiredGeneration: 1
+            )
+        )
+    }
+
+    func testContextThatStartedClosingIsNotFailedByAnExpiredTimer() {
+        // A deliberate disconnect/close began after the timer was scheduled
+        // but before it fired; the graceful close path owns teardown now.
+        XCTAssertFalse(
+            TransportLivenessPolicy.shouldFailAfterGracePeriodExpiry(
+                isCurrentContext: true,
+                isAuthenticated: true,
+                isClosing: true,
+                scheduledGeneration: 1,
+                expiredGeneration: 1
+            )
+        )
+    }
+
+    func testSupersededGenerationIsNotFailedByAnOlderTimer() {
+        // The connection recovered (cancel bumped the generation) and then
+        // lost viability again (a new timer, and a new generation, was
+        // scheduled) before the original timer's deadline arrived. The
+        // original, now-stale timer must be a no-op.
+        XCTAssertFalse(
+            TransportLivenessPolicy.shouldFailAfterGracePeriodExpiry(
+                isCurrentContext: true,
+                isAuthenticated: true,
+                isClosing: false,
+                scheduledGeneration: 2,
+                expiredGeneration: 1
+            )
+        )
+    }
 }

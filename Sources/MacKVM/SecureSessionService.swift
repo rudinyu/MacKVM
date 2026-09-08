@@ -50,6 +50,46 @@ enum SecureSessionCompatibilityPolicy {
     }
 }
 
+/// Governs the grace-period watchdog that detects an authenticated secure
+/// session gone stale (peer slept, force-quit, or became unreachable) with no
+/// application traffic to reveal the loss. Extracted as pure decisions so the
+/// schedule/fire logic in `SecureSessionService` can be covered without
+/// waiting on real `DispatchWorkItem` timing or `NWConnection` state.
+enum TransportLivenessPolicy {
+    /// Whether a new grace-period timer should be started. Only an
+    /// authenticated context that is not already closing needs the watchdog
+    /// — a still-handshaking context is covered by its own handshake
+    /// timeout, and a deliberate close already owns its own bounded flush
+    /// window. At most one timer runs per context: a timer already in
+    /// flight covers the outstanding unavailability, so a repeated
+    /// `.waiting`/non-viable signal before it fires must not restart the
+    /// clock.
+    static func shouldScheduleGracePeriod(
+        isAuthenticated: Bool,
+        isClosing: Bool,
+        hasScheduledTimeout: Bool
+    ) -> Bool {
+        isAuthenticated && !isClosing && !hasScheduledTimeout
+    }
+
+    /// Whether an expired grace-period timer should actually fail the
+    /// session. A context that recovered, started closing, or was superseded
+    /// by a newer schedule/cancel cycle in the meantime must not be failed by
+    /// a stale timer that already lost its purpose.
+    static func shouldFailAfterGracePeriodExpiry(
+        isCurrentContext: Bool,
+        isAuthenticated: Bool,
+        isClosing: Bool,
+        scheduledGeneration: UInt64,
+        expiredGeneration: UInt64
+    ) -> Bool {
+        isCurrentContext
+            && isAuthenticated
+            && !isClosing
+            && scheduledGeneration == expiredGeneration
+    }
+}
+
 enum SecureSessionDisconnectPolicy {
     static func shouldRetryAfterRemoval(
         removedActiveContext: Bool,
@@ -1887,20 +1927,24 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         for context: SessionConnectionContext,
         reason: String
     ) {
-        guard context.isAuthenticated,
-              !context.isClosing,
-              context.transportLivenessTimeout == nil else {
+        guard TransportLivenessPolicy.shouldScheduleGracePeriod(
+            isAuthenticated: context.isAuthenticated,
+            isClosing: context.isClosing,
+            hasScheduledTimeout: context.transportLivenessTimeout != nil
+        ) else {
             return
         }
         context.transportLivenessGeneration &+= 1
         let generation = context.transportLivenessGeneration
         let timeout = DispatchWorkItem { [weak self, weak context] in
-            guard let self,
-                  let context,
-                  self.isCurrent(context),
-                  context.isAuthenticated,
-                  !context.isClosing,
-                  context.transportLivenessGeneration == generation else {
+            guard let self, let context else { return }
+            guard TransportLivenessPolicy.shouldFailAfterGracePeriodExpiry(
+                isCurrentContext: self.isCurrent(context),
+                isAuthenticated: context.isAuthenticated,
+                isClosing: context.isClosing,
+                scheduledGeneration: context.transportLivenessGeneration,
+                expiredGeneration: generation
+            ) else {
                 return
             }
             context.transportLivenessTimeout = nil

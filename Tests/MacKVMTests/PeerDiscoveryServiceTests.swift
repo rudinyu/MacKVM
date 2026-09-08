@@ -71,6 +71,26 @@ final class PeerDiscoveryServiceTests: XCTestCase {
         )
     }
 
+    func testFirstRevealOrConfirmationIsRecorded() {
+        XCTAssertTrue(
+            PairingContributionPolicy.shouldRecordContribution(
+                existingContribution: nil
+            )
+        )
+    }
+
+    func testDuplicateRevealOrConfirmationIsIgnored() {
+        // A resent reveal/confirmation for a request that already has a
+        // recorded contribution must not restart the 120s user-decision
+        // timeout or let a peer keep re-arming its own request slot by
+        // repeating a message.
+        XCTAssertFalse(
+            PairingContributionPolicy.shouldRecordContribution(
+                existingContribution: Data([0x01, 0x02, 0x03])
+            )
+        )
+    }
+
     func testNetworkRecoveryRequiresBothServicesToBeReady() {
         XCTAssertFalse(
             PeerDiscoveryService.areNetworkServicesReady(
