@@ -1,3 +1,3 @@
 "CFBundleDisplayName" = "MacKVM";
-"NSInputMonitoringUsageDescription" = "只有在你控制已配對的 Mac 時，MacKVM 才會擷取鍵盤與滑鼠事件。";
+"NSInputMonitoringUsageDescription" = "只有在你控制已配對的 Mac 時，MacKVM 才會擷取鍵盤、滑鼠與觸控板事件。";
 "NSLocalNetworkUsageDescription" = "MacKVM 需要在本機網路上探索並連線到已配對的 Mac。";

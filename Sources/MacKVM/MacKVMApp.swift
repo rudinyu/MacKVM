@@ -393,13 +393,16 @@ private final class AppBootstrap: ObservableObject {
                 self?.switchToOtherMac()
             }
             inputCapture.startHotKeyMonitoring()
-            discovery.onPairingCompleted = { [weak secureSession] peerID in
+            discovery.onPairingCompleted = { [weak secureSession] peerID, pairingGeneration in
                 // Pairing pins trust; immediately establish the encrypted
                 // session so the user can request keyboard/mouse control
                 // without a second manual Connect action. New pairings also
                 // enable the receiver's local seamless-control authorization;
                 // the per-peer setting can restore explicit Allow prompts.
-                secureSession?.connect(to: peerID)
+                secureSession?.connectAutomaticallyAfterPairing(
+                    to: peerID,
+                    pairingGeneration: pairingGeneration
+                )
             }
             // A notification action can arrive before the menu is opened.
             // Start native DDC/CI discovery here so the saved selector is
@@ -531,22 +534,22 @@ private final class AppBootstrap: ObservableObject {
     func startCombinedControlRequest() -> Bool {
         guard let monitor, let control else {
             combinedControlStatus =
-                "Keyboard and mouse sharing is unavailable while MacKVM is starting."
+                "Keyboard, mouse, and trackpad sharing is unavailable while MacKVM is starting."
             return false
         }
         guard control.canRequestControl() else {
             combinedControlStatus =
-                "Connect to the other Mac and complete the control setup before sharing keyboard and mouse."
+                "Connect to the other Mac and complete the control setup before sharing keyboard, mouse, and trackpad."
             return false
         }
         guard monitor.canStartAutomaticRemoteSwitching() else {
             combinedControlStatus =
-                "Detect and select a DDC-capable display before sharing keyboard and mouse."
+                "Detect and select a DDC-capable display before sharing keyboard, mouse, and trackpad."
             return false
         }
         guard let requestGeneration = beginCombinedControlRequest() else {
             combinedControlStatus =
-                "Keyboard and mouse sharing is already in progress."
+                "Keyboard, mouse, and trackpad sharing is already in progress."
             return false
         }
         combinedControlStatus = nil
@@ -558,7 +561,7 @@ private final class AppBootstrap: ObservableObject {
             guard switched else {
                 self.endCombinedControlRequest(requestGeneration)
                 self.combinedControlStatus =
-                    "The display could not be switched; keyboard and mouse remain local."
+                    "The display could not be switched; keyboard, mouse, and trackpad remain local."
                 return
             }
 
@@ -574,7 +577,7 @@ private final class AppBootstrap: ObservableObject {
                 self.endCombinedControlRequest(requestGeneration)
                 if !granted && ownsRoute {
                     self.combinedControlStatus =
-                        "The other Mac did not accept keyboard and mouse control."
+                        "The other Mac did not accept keyboard, mouse, and trackpad control."
                     monitor?.switchToLocal()
                 }
             }
@@ -583,7 +586,7 @@ private final class AppBootstrap: ObservableObject {
                 // invoking the request completion.
                 self.endCombinedControlRequest(requestGeneration)
                 self.combinedControlStatus =
-                    "The control request could not be started; keyboard and mouse remain local."
+                    "The control request could not be started; keyboard, mouse, and trackpad remain local."
                 monitor.switchToLocal()
             }
         }
@@ -764,7 +767,7 @@ private final class AppBootstrap: ObservableObject {
         )
         let alert = NSAlert()
         alert.messageText = "MacKVM control request"
-        alert.informativeText = "\(peerName) wants to control this Mac. Allow only if you expect to use that Mac's keyboard and mouse."
+        alert.informativeText = "\(peerName) wants to control this Mac. Allow only if you expect to use that Mac's keyboard, mouse, and trackpad."
         alert.addButton(withTitle: "Review later")
         alert.addButton(withTitle: "Allow")
         alert.addButton(withTitle: "Deny")
@@ -1548,7 +1551,7 @@ private struct MacKVMMenuView: View {
 
     private var inputSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Keyboard and mouse")
+            Text("Keyboard, mouse, and trackpad")
                 .font(.subheadline.weight(.semibold))
 
             permissionStatusRow(
@@ -1584,11 +1587,11 @@ private struct MacKVMMenuView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else if control.state == .controlling || control.state == .suspended {
-                Button("Return keyboard and mouse to this Mac") {
+                Button("Return keyboard, mouse, and trackpad to this Mac") {
                     control.stopControl()
                 }
             } else {
-                Button("Request keyboard and mouse control") {
+                Button("Request keyboard, mouse, and trackpad control") {
                     control.requestControl()
                 }
                 .disabled(
@@ -1604,14 +1607,14 @@ private struct MacKVMMenuView: View {
 
             if control.state == .controlling {
                 Label(
-                    "Press Control-Option-Command-Escape to interrupt sharing and return the keyboard and mouse to this Mac.",
+                    "Press Control-Option-Command-Escape to interrupt sharing and return the keyboard, mouse, and trackpad to this Mac.",
                     systemImage: "escape"
                 )
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
 
-            Text("After manually selecting the monitor input, Control-Option-Command-K switches keyboard/mouse control. Control-Option-Command-O automatically switches the display first and then transfers keyboard/mouse ownership. Escape is the emergency local-return shortcut.")
+            Text("After manually selecting the monitor input, Control-Option-Command-K switches keyboard, mouse, and trackpad control. Control-Option-Command-O automatically switches the display first and then transfers input ownership. Escape is the emergency local-return shortcut.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
@@ -1632,7 +1635,7 @@ private struct MacKVMMenuView: View {
             Text("Physical input path")
                 .font(.subheadline.weight(.semibold))
 
-            Picker("Keyboard and mouse", selection: $inputTopology.mode) {
+            Picker("Keyboard, mouse, and trackpad", selection: $inputTopology.mode) {
                 ForEach(InputTopologyMode.allCases, id: \.self) { mode in
                     Text(mode.displayName).tag(mode)
                 }
@@ -1668,7 +1671,7 @@ private struct MacKVMMenuView: View {
                 "\(peerDisplayName(for: request.peerID, from: discovery)) requests control of this Mac."
             )
                 .font(.caption)
-            Text("Allow only if you expect to use the other Mac's keyboard and mouse.")
+            Text("Allow only if you expect to use the other Mac's keyboard, mouse, and trackpad.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
             HStack {
@@ -1801,7 +1804,7 @@ private struct MacKVMMenuView: View {
                         || bootstrap.combinedControlRequestInFlight
                 )
                 Text(
-                    "This switches the display, then shares the keyboard and mouse. Control-Option-Command-O performs the same automatic toggle; press it again from the other Mac to return the display and input. If you switched the monitor input manually, use Control-Option-Command-K to change keyboard/mouse control. Control-Option-Command-Escape interrupts and returns them to this Mac."
+                    "This switches the display, then shares the keyboard, mouse, and trackpad. Control-Option-Command-O performs the same automatic toggle; press it again from the other Mac to return the display and input. If you switched the monitor input manually, use Control-Option-Command-K to change keyboard, mouse, and trackpad control. Control-Option-Command-Escape interrupts and returns them to this Mac."
                 )
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -1855,14 +1858,14 @@ private struct MacKVMMenuView: View {
 
     private var shareKeyboardAndMouseTitle: String {
         String(
-            format: String(localized: "Share keyboard and mouse with %@"),
+            format: String(localized: "Share keyboard, mouse, and trackpad with %@"),
             connectedPeerName
         )
     }
 
     private var returnKeyboardAndMouseTitle: String {
         String(
-            format: String(localized: "Return keyboard and mouse to %@"),
+            format: String(localized: "Return keyboard, mouse, and trackpad to %@"),
             connectedPeerName
         )
     }

@@ -2,14 +2,14 @@ import XCTest
 @testable import MacKVMCore
 
 final class InputTopologyTests: XCTestCase {
-    func testRecommendedTopologyOnlyAllowsAppleSiliconToInitiate() {
+    func testEveryMacCanInitiateFromItsLocalInputDevices() {
         XCTAssertTrue(
             InputTopologyPolicy.allowsLocalControl(
                 mode: .singleHostOnM5Pro,
                 isAppleSilicon: true
             )
         )
-        XCTAssertFalse(
+        XCTAssertTrue(
             InputTopologyPolicy.allowsLocalControl(
                 mode: .singleHostOnM5Pro,
                 isAppleSilicon: false

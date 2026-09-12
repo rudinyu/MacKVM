@@ -1,3 +1,3 @@
 "CFBundleDisplayName" = "MacKVM";
-"NSInputMonitoringUsageDescription" = "MacKVM captures keyboard and mouse events only while you control your paired Mac.";
+"NSInputMonitoringUsageDescription" = "MacKVM captures keyboard, mouse, and trackpad events only while you control your paired Mac.";
 "NSLocalNetworkUsageDescription" = "MacKVM discovers and connects to your paired Mac on the local network.";

@@ -85,33 +85,60 @@ Create and verify a universal DMG for local testing:
 ./scripts/verify-release.sh \
   --app dist/universal/MacKVM.app \
   --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.00.00-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.100.05-universal.dmg.sha256)
 ```
 
-Ad-hoc signing is suitable only for local testing. For distribution to
-another Mac, use a Developer ID Application identity, require the hardened
-runtime, and complete Apple notarization:
+Ad-hoc signing is suitable only for local testing. For direct distribution
+outside the Mac App Store, use the separate notarized release script. Create a
+notarytool Keychain profile once; the command prompts for an app-specific
+password:
 
 ```sh
-./scripts/package-dmg.sh \
+xcrun notarytool store-credentials "mackvm-notary" \
+  --apple-id "YOUR_APPLE_ID" \
+  --team-id "YOUR_TEAM_ID"
+
+./scripts/package-notarized-dmg.sh \
   --arch universal \
   --sign "Developer ID Application: Your Name (TEAMID)" \
-  --require-developer-id
+  --keychain-profile "mackvm-notary"
 ```
 
-No signing, notarization, or Keychain credentials belong in this repository.
+The script requires Developer ID Application signing, enables the hardened
+runtime, adds a secure timestamp, signs the DMG, submits it to Apple, staples
+the accepted ticket, validates the result, and regenerates the final SHA-256
+sidecar. No signing, notarization, or Keychain credentials belong in this
+repository.
 
 ## Install and grant permissions
 
-1. Copy the matching app bundle to `/Applications` on each Mac and open it.
-2. Select **Enable Local Network**, respond to the macOS prompt, then select
+The release DMG includes `Install MacKVM.command`, `Uninstall MacKVM.command`,
+and both installation guides. To install from Finder, open the DMG and
+double-click `Install MacKVM.command`. The script validates the app signature
+and bundle identifier, then installs it to `/Applications`; it does not change
+pairing data, private keys, preferences, or macOS privacy permissions. Quit an
+existing MacKVM process before upgrading. You can also drag `MacKVM.app` onto
+the `/Applications` shortcut in the DMG.
+
+To uninstall, quit MacKVM and double-click `Uninstall MacKVM.command`. It
+removes only `/Applications/MacKVM.app`. If **Launch MacKVM at Login** was
+enabled, remove MacKVM from **System Settings > General > Login Items**. The
+script intentionally leaves user data and permissions intact; use MacKVM's
+identity reset or the relevant System Settings pages when those need to be
+reset separately. A signed PKG is not part of this release path because it
+requires a Developer ID Installer certificate in addition to the app signing
+certificate.
+
+After installation, open MacKVM from `/Applications`.
+
+1. Select **Enable Local Network**, respond to the macOS prompt, then select
    **I handled the macOS prompt**.
-3. Select **Request Input Monitoring** and grant the permission.
-4. Select **Request Accessibility** and grant the permission.
-5. If a permission was previously denied, use the matching **Settings** button.
-6. Optionally select **Enable** beside **Control request notifications** before
+2. Select **Request Input Monitoring** and grant the permission.
+3. Select **Request Accessibility** and grant the permission.
+4. If a permission was previously denied, use the matching **Settings** button.
+5. Optionally select **Enable** beside **Control request notifications** before
    the first control request.
-7. Optionally enable **Launch MacKVM at Login**.
+6. Optionally enable **Launch MacKVM at Login**.
 
 MacKVM appears with a KVM/display-sharing icon in the menu bar and as a regular
 Dock app with a full control window. The app bundle, rather than `swift run`,
@@ -137,21 +164,26 @@ Dock when needed.
    A fresh Intel install uses HDMI 1 as its local default; use the preset to
    migrate an older saved USB-C preference. Input values are monitor-firmware
    specific.
-6. Select **One keyboard on M5 Pro (USB-C)** when the keyboard and mouse are
-   connected to the M5 Pro or the MA270U USB hub. HDMI does not carry USB data.
+6. Select **One keyboard on M5 Pro (USB-C)** when the external keyboard and
+   mouse are connected to the M5 Pro or the MA270U USB hub. HDMI does not carry
+   USB data to the Intel Mac, but either Mac can still request control from its
+   own keyboard, mouse, and trackpad.
 7. Use **Show other Mac** to verify switching. Some MA270U firmware has no
    DDC/CI OSD toggle; if native detection fails, use the diagnostic text,
    check the direct cable path, and switch inputs through the MA270U OSD.
    For a display-only route, use **Return display to this Mac**. Returning
    control with the emergency shortcut or the receiver's
-   **Return keyboard and mouse to [M5 Mac]** action restores the local route.
-   On the M5 Pro, **Show other Mac** also starts the guarded keyboard/mouse
-   hand-off when the control prerequisites are ready. **Share keyboard and
-   mouse with [Intel Mac]** remains the explicit equivalent; the Intel Mac
-   selects **Allow** unless seamless control was enabled for the paired M5 Pro.
+   **Return keyboard, mouse, and trackpad to [other Mac]** action restores the
+   local route. On either Mac, **Show other Mac** also starts the guarded
+   keyboard, mouse, and trackpad hand-off when the control prerequisites are
+   ready. **Share keyboard, mouse, and trackpad with [other Mac]** remains the
+   explicit equivalent; the receiver selects **Allow** unless seamless control
+   was enabled for the paired peer.
 
 Select **External USB switch (bidirectional)** only after both Macs visibly see
-the keyboard and mouse through a real physical USB switch.
+the external keyboard and mouse through a real physical USB switch. This setting
+describes external USB wiring; it does not disable local keyboard, mouse, or
+trackpad control on either Mac.
 
 ## Pair and control the Macs
 
@@ -168,25 +200,35 @@ the keyboard and mouse through a real physical USB switch.
 5. After both signed decisions complete, MacKVM automatically attempts to
    connect the encrypted session. If it remains idle, select **Connect** on
    either paired row.
-6. On the M5 Pro, select **Share keyboard and mouse with [Intel Mac]**. This
-   switches the MA270U to the Intel Mac and then starts the keyboard/mouse
-   control request.
+6. On either Mac, select **Share keyboard, mouse, and trackpad with [other Mac]**.
+   This switches the MA270U to the other Mac when DDC is configured and then
+   starts the keyboard, mouse, and trackpad control request.
 7. A newly paired receiver automatically enables seamless control for that
    pinned peer. To keep per-request consent, turn off **Automatically allow
    control from this Mac** under **Paired device information**. When it is off,
    select **Allow** on the receiving Mac; a closed menu can use the native
    Allow/Deny/Review notification, and Review opens the MacKVM approval dialog.
-8. The M5 Pro can interrupt at any time with
+8. Either Mac can interrupt at any time with
    `Control-Option-Command-Escape`. To switch back from Intel, select
-   **Return keyboard and mouse to [M5 Mac]** on the Intel Mac. The controller
-   can also select **Return keyboard and mouse to this Mac**. The global
-   `Control-Option-Command-K` shortcut toggles keyboard/mouse ownership after
+   **Return keyboard, mouse, and trackpad to [other Mac]** on the receiving
+   Mac. The controller can also select **Return keyboard, mouse, and trackpad
+   to this Mac**. The global `Control-Option-Command-K` shortcut toggles
+   keyboard, mouse, and trackpad ownership after
    you manually select the monitor input; it starts a request when idle and
    returns input when controlling or receiving, without running automatic DDC
    switching. `Control-Option-Command-O` follows the guarded **Show other Mac**
-   route: it automatically switches the display and then requests keyboard/
-   mouse control, or ends receiving and restores the controller's display and
-   input.
+   route: it automatically switches the display and then requests keyboard,
+   mouse, and trackpad control, or ends receiving and restores the controller's
+   display and input.
+
+The public Quartz event path forwards trackpad movement, clicks, drags,
+secondary clicks, precise two-axis scrolling, and momentum phases. A shared
+trackpad acts as a pointing device, not a gesture surface: `CGEvent` publishes
+constructors for keyboard, mouse, and scroll wheel only, so pinch, rotate,
+smart zoom, three- and four-finger swipes, Mission Control, App Exposé, and
+Launchpad stay local to the controlling Mac. The pressure value on a click is
+carried, but the force-click stage transition is not, so force click does not
+activate on the receiver.
 
 After a transport loss, MacKVM reconnects with bounded backoff. A peer with
 seamless control authorization can resume control without another prompt;

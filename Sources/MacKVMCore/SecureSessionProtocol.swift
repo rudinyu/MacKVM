@@ -21,13 +21,22 @@ public enum SecureSessionCollisionPolicy {
 }
 
 public struct SecureSessionHandshake: Codable, Equatable, Sendable {
+    public static let currentDisconnectSignalVersion = 1
+
     public let sessionID: UUID
     public let role: SecureSessionRole
     public let sender: PeerIdentity
     /// An optional signed hardware model. It is optional on the wire so a
-    /// newer release can still authenticate a handshake from an older peer;
-    /// callers must treat nil as unknown rather than consulting Bonjour TXT.
+    /// newer release can still decode a handshake from an older peer;
+    /// `SecureSessionService` deliberately turns that result into an explicit
+    /// coordinated-upgrade requirement instead of selecting a weaker close
+    /// protocol.
     public let senderModel: String?
+    /// Signed capability extension for the current secure-session contract.
+    /// The optional representation is retained so the wire decoder can identify
+    /// pre-capability peers; `SecureSessionService` rejects nil with an explicit
+    /// upgrade message instead of allowing a downgrade to EOF teardown.
+    public let disconnectSignalVersion: Int?
     public let ephemeralPublicKey: Data
     public let nonce: Data
 
@@ -36,6 +45,7 @@ public struct SecureSessionHandshake: Codable, Equatable, Sendable {
         role: SecureSessionRole,
         sender: PeerIdentity,
         senderModel: String? = nil,
+        disconnectSignalVersion: Int? = currentDisconnectSignalVersion,
         ephemeralPublicKey: Data,
         nonce: Data
     ) {
@@ -45,6 +55,7 @@ public struct SecureSessionHandshake: Codable, Equatable, Sendable {
         self.senderModel = senderModel.map {
             PeerMetadataValidation.validatedModel($0)
         }
+        self.disconnectSignalVersion = disconnectSignalVersion
         self.ephemeralPublicKey = ephemeralPublicKey
         self.nonce = nonce
     }
@@ -54,6 +65,7 @@ public struct SecureSessionHandshake: Codable, Equatable, Sendable {
         case role
         case sender
         case senderModel
+        case disconnectSignalVersion
         case ephemeralPublicKey
         case nonce
     }
@@ -68,6 +80,10 @@ public struct SecureSessionHandshake: Codable, Equatable, Sendable {
                 String.self,
                 forKey: .senderModel
             ),
+            disconnectSignalVersion: try container.decodeIfPresent(
+                Int.self,
+                forKey: .disconnectSignalVersion
+            ),
             ephemeralPublicKey: try container.decode(
                 Data.self,
                 forKey: .ephemeralPublicKey
@@ -81,6 +97,7 @@ public struct SecureSessionHandshake: Codable, Equatable, Sendable {
         role: SecureSessionRole,
         sender: PeerIdentity,
         senderModel: String? = nil,
+        disconnectSignalVersion: Int? = currentDisconnectSignalVersion,
         ephemeralKey: P256.KeyAgreement.PrivateKey
     ) -> SecureSessionHandshake {
         SecureSessionHandshake(
@@ -88,6 +105,7 @@ public struct SecureSessionHandshake: Codable, Equatable, Sendable {
             role: role,
             sender: sender,
             senderModel: senderModel,
+            disconnectSignalVersion: disconnectSignalVersion,
             ephemeralPublicKey: ephemeralKey.publicKey.x963Representation,
             nonce: PairingVerificationCode.makeContribution()
         )
@@ -103,6 +121,27 @@ public struct SecurePacket: Codable, Equatable, Sendable {
         self.sessionID = sessionID
         self.sequence = sequence
         self.sealedData = sealedData
+    }
+}
+
+/// Encrypted control payloads used by the secure transport itself rather than
+/// by the keyboard/mouse control protocol. The marker is sent inside a
+/// `SecurePacket`, so only an already-authenticated peer can request the
+/// corresponding session teardown.
+public enum SecureSessionControlSignal {
+    public static let disconnect = Data(
+        "MacKVM secure session disconnect v1".utf8
+    )
+    public static let disconnectAcknowledgement = Data(
+        "MacKVM secure session disconnect acknowledgement v1".utf8
+    )
+
+    public static func isDisconnect(_ payload: Data) -> Bool {
+        payload == disconnect
+    }
+
+    public static func isDisconnectAcknowledgement(_ payload: Data) -> Bool {
+        payload == disconnectAcknowledgement
     }
 }
 
@@ -128,13 +167,14 @@ public enum SecureSessionWireCodec {
         signingWith privateKey: P256.Signing.PrivateKey
     ) throws -> Data {
         // Keep the base handshake byte-for-byte compatible with older
-        // releases. The model is an optional, separately signed extension;
-        // older peers ignore the additional envelope fields and still verify
-        // the original handshake signature.
+        // releases. The capability is a separately signed extension; older
+        // peers can still parse the base envelope, while the current service
+        // requires both sides to support the authenticated close contract.
         let baseHandshake = SecureSessionHandshake(
             sessionID: handshake.sessionID,
             role: handshake.role,
             sender: handshake.sender,
+            disconnectSignalVersion: nil,
             ephemeralPublicKey: handshake.ephemeralPublicKey,
             nonce: handshake.nonce
         )
@@ -156,6 +196,22 @@ public enum SecureSessionWireCodec {
         } else {
             modelSignature = nil
         }
+        let disconnectCapabilitySignature: Data?
+        if let version = handshake.disconnectSignalVersion {
+            let extensionData = try CanonicalJSON.encoder().encode(
+                HandshakeDisconnectExtension(
+                    sessionID: handshake.sessionID,
+                    role: handshake.role,
+                    senderID: handshake.sender.id,
+                    version: version
+                )
+            )
+            disconnectCapabilitySignature = try privateKey.signature(
+                for: extensionData
+            ).derRepresentation
+        } else {
+            disconnectCapabilitySignature = nil
+        }
         return try frame(
             WireEnvelope(
                 kind: .handshake,
@@ -163,6 +219,8 @@ public enum SecureSessionWireCodec {
                 signature: signature.derRepresentation,
                 senderModel: handshake.senderModel,
                 senderModelSignature: modelSignature,
+                disconnectSignalVersion: handshake.disconnectSignalVersion,
+                disconnectSignalVersionSignature: disconnectCapabilitySignature,
                 packet: nil
             )
         )
@@ -176,6 +234,8 @@ public enum SecureSessionWireCodec {
                 signature: nil,
                 senderModel: nil,
                 senderModelSignature: nil,
+                disconnectSignalVersion: nil,
+                disconnectSignalVersionSignature: nil,
                 packet: packet
             )
         )
@@ -264,11 +324,43 @@ public enum SecureSessionWireCodec {
             default:
                 throw SecureSessionError.invalidHandshake
             }
+            let disconnectSignalVersion: Int?
+            switch (
+                envelope.disconnectSignalVersion,
+                envelope.disconnectSignalVersionSignature
+            ) {
+            case (nil, nil):
+                disconnectSignalVersion = nil
+            case let (.some(version), .some(signatureData)):
+                guard let capabilitySignature = try? P256.Signing.ECDSASignature(
+                          derRepresentation: signatureData
+                      ) else {
+                    throw SecureSessionError.invalidHandshake
+                }
+                let extensionData = try CanonicalJSON.encoder().encode(
+                    HandshakeDisconnectExtension(
+                        sessionID: handshake.sessionID,
+                        role: handshake.role,
+                        senderID: handshake.sender.id,
+                        version: version
+                    )
+                )
+                guard publicKey.isValidSignature(
+                    capabilitySignature,
+                    for: extensionData
+                ) else {
+                    throw SecureSessionError.invalidSignature
+                }
+                disconnectSignalVersion = version
+            default:
+                throw SecureSessionError.invalidHandshake
+            }
             let authenticatedHandshake = SecureSessionHandshake(
                 sessionID: handshake.sessionID,
                 role: handshake.role,
                 sender: handshake.sender,
                 senderModel: model,
+                disconnectSignalVersion: disconnectSignalVersion,
                 ephemeralPublicKey: handshake.ephemeralPublicKey,
                 nonce: handshake.nonce
             )
@@ -428,6 +520,7 @@ public enum SecureSessionError: Error, Equatable {
     case invalidFrame
     case invalidSignature
     case invalidHandshake
+    case peerRequiresUpgrade
     case invalidIdentityName
     case unexpectedSequence
     case oversizedPacket
@@ -445,6 +538,8 @@ private struct WireEnvelope: Codable {
     let signature: Data?
     let senderModel: String?
     let senderModelSignature: Data?
+    let disconnectSignalVersion: Int?
+    let disconnectSignalVersionSignature: Data?
     let packet: SecurePacket?
 }
 
@@ -455,4 +550,14 @@ private struct HandshakeModelExtension: Codable {
     let role: SecureSessionRole
     let senderID: UUID
     let model: String
+}
+
+/// Signed separately from the legacy handshake so older releases can ignore
+/// the capability fields while newer releases can safely decide whether an
+/// encrypted user-disconnect signal is understood by the peer.
+private struct HandshakeDisconnectExtension: Codable {
+    let sessionID: UUID
+    let role: SecureSessionRole
+    let senderID: UUID
+    let version: Int
 }

@@ -76,30 +76,51 @@ transport 與 VCP `0x60` 輸入狀態。唯讀報告可保存為：
 ./scripts/verify-release.sh \
   --app dist/universal/MacKVM.app \
   --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.00.00-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.100.04-universal.dmg.sha256)
 ```
 
-ad-hoc 簽章只適合本機測試。要提供給其他 Mac，請使用 Developer ID Application、
-hardened runtime，並完成 Apple notarization：
+ad-hoc 簽章只適合本機測試。要在 Mac App Store 以外正式散布，請使用獨立的 notarized
+release script。第一次使用時先建立 notarytool Keychain profile；指令會安全提示輸入
+app-specific password：
 
 ```sh
-./scripts/package-dmg.sh \
+xcrun notarytool store-credentials "mackvm-notary" \
+  --apple-id "YOUR_APPLE_ID" \
+  --team-id "YOUR_TEAM_ID"
+
+./scripts/package-notarized-dmg.sh \
   --arch universal \
   --sign "Developer ID Application: Your Name (TEAMID)" \
-  --require-developer-id
+  --keychain-profile "mackvm-notary"
 ```
 
-本 repository 不應存放簽章、notarization 或 Keychain 憑證。
+此 script 會要求 Developer ID Application、啟用 hardened runtime、加入 secure
+timestamp、簽署 DMG、上傳 Apple、staple 通過的 ticket、驗證結果，並在最後重新產生
+SHA-256。既有的 `scripts/package-dmg.sh` 維持本機 ad-hoc 測試流程；本 repository
+不應存放 signing、notarization 或 Keychain 憑證。
 
 ## 安裝並授予權限
 
-1. 將相符架構的 app 複製到兩台 Mac 的 `/Applications`，再開啟 app。
-2. 按 **Enable Local Network**，回應 macOS 提示後按 **I handled the macOS prompt**。
-3. 按 **Request Input Monitoring** 並授予權限。
-4. 按 **Request Accessibility** 並授予權限。
-5. 若之前拒絕過權限，按相應的 **Settings** 按鈕到系統設定中開啟。
-6. 第一次控制前，可按 **Enable** 開啟控制請求通知。
-7. 可選擇開啟 **Launch MacKVM at Login**。
+發行用 DMG 內含 `Install MacKVM.command`、`Uninstall MacKVM.command` 與中英文安裝指南。
+在 Finder 開啟 DMG 後，雙擊 `Install MacKVM.command`；script 會驗證 app 的簽章與 bundle
+identifier，再將 app 原子方式安裝到 `/Applications`。升級前請先結束正在執行的 MacKVM；
+安裝不會修改配對資料、私密金鑰、偏好設定或 macOS 隱私權限。也可以把 `MacKVM.app` 拖到
+DMG 內的 `/Applications` 捷徑。
+
+要解除安裝，先結束 MacKVM，再雙擊 `Uninstall MacKVM.command`；它只會移除
+`/Applications/MacKVM.app`。若曾啟用 **Launch MacKVM at Login**，請到
+**系統設定 > 一般 > 登入項目** 移除 MacKVM。script 刻意保留使用者資料與權限；若需要重設，
+請使用 MacKVM 的 identity reset 或對應的系統設定頁面。合法簽署的 PKG 需要除了 app signing
+certificate 之外的 Developer ID Installer 憑證，因此目前發行流程不產生 PKG。
+
+安裝後，從 `/Applications` 開啟 MacKVM。
+
+1. 按 **Enable Local Network**，回應 macOS 提示後按 **I handled the macOS prompt**。
+2. 按 **Request Input Monitoring** 並授予權限。
+3. 按 **Request Accessibility** 並授予權限。
+4. 若之前拒絕過權限，按相應的 **Settings** 按鈕到系統設定中開啟。
+5. 第一次控制前，可按 **Enable** 開啟控制請求通知。
+6. 可選擇開啟 **Launch MacKVM at Login**。
 
 MacKVM 會以 KVM／雙螢幕圖示常駐在選單列，也會顯示在 Dock 並提供一般控制視窗。
 正常使用時必須開啟 app bundle，不要使用 `swift run`，因為 app bundle 包含 Bonjour
@@ -120,18 +141,20 @@ KVM 圖示或 Dock 重新開啟。
    Intel Mac 的 **Intel / HDMI preset** 會選取本機 HDMI 1，且同樣啟用原生 DDC/CI。
    Intel 新安裝會以 HDMI 1 作為本機預設；從舊版升級且曾保存 USB-C 設定時，請再次套用
    Intel 預設。輸入值會依螢幕型號與韌體而不同。
-6. 鍵盤與滑鼠接在 M5 Pro 或 MA270U USB hub 時，選 **One keyboard on M5 Pro
-   (USB-C)**；HDMI 不會傳送 USB 資料。
+6. 外接鍵盤與滑鼠接在 M5 Pro 或 MA270U USB hub 時，選 **One keyboard on M5 Pro
+   (USB-C)**；HDMI 不會把 USB 資料傳給 Intel Mac，但兩台 Mac 仍可使用各自的本機
+   鍵盤、滑鼠與觸控板請求控制。
 7. 用 **Show other Mac** 測試切換。部分 MA270U 韌體沒有 DDC/CI OSD 開關；若原生
    探索失敗，查看診斷文字、確認線材直接連接，再使用 MA270U OSD 手動選擇輸入。
    若只是切換了螢幕，可按 **Return display to this Mac**；控制中的緊急快速鍵或接收端的
-   **Return keyboard and mouse to [M5 Mac]** 操作可恢復本機路由。
-   在 M5 Pro 按 **Show other Mac** 時，若控制前置條件已完成，也會開始受保護的鍵盤／滑鼠
-   分享；**Share keyboard and mouse with [Intel Mac]** 仍可作為明確的等效操作。Intel Mac
-   只有在未啟用該配對裝置的無縫控制時才需按 **Allow**。
+   **Return keyboard, mouse, and trackpad to [other Mac]** 操作可恢復本機路由。
+   在任一台 Mac 按 **Show other Mac** 時，若控制前置條件已完成，也會開始受保護的鍵盤、滑鼠
+   與觸控板分享；**Share keyboard, mouse, and trackpad with [other Mac]** 是明確的等效操作。
+   接收端只有在未啟用該配對裝置的無縫控制時才需按 **Allow**。
 
-只有在兩台 Mac 都透過實體 USB switch 看見鍵盤與滑鼠後，才選
-**External USB switch (bidirectional)**。
+只有在兩台 Mac 都透過實體 USB switch 看見外接鍵盤與滑鼠後，才選
+**External USB switch (bidirectional)**。這個設定只描述外接 USB 接線，不會停用任一台
+Mac 的本機鍵盤、滑鼠或觸控板控制。
 
 ## 配對與控制兩台 Mac
 
@@ -149,18 +172,24 @@ KVM 圖示或 Dock 重新開啟。
 6. 新配對的接收端會自動啟用該已釘選 Mac 的無縫控制。若要每次控制都重新按
    **Allow**，請在 **Paired device information** 關閉
    **Automatically allow control from this Mac**。
-7. 在 M5 Pro 按 **Share keyboard and mouse with [Intel Mac]**。這會先把 MA270U
-   切到 Intel Mac，再開始鍵盤與滑鼠控制請求。
+7. 在任一台 Mac 按 **Share keyboard, mouse, and trackpad with [other Mac]**。若已設定
+   DDC，這會先把 MA270U 切到另一台 Mac，再開始鍵盤、滑鼠與觸控板控制請求。
 8. 若接收端已啟用無縫控制，請求會自動核准；否則在接收端按 **Allow**。選單關閉時，
    可用 macOS 原生通知的 Allow／Deny／Review；Review 會開啟 MacKVM 的明確核准對話框。
-9. M5 Pro 可隨時按 `Control-Option-Command-Escape` 中斷共享。要從 Intel Mac
-   切回 M5 Pro，請在 Intel Mac 按 **Return keyboard and mouse to [M5 Mac]**；
-   控制端也可按 **Return keyboard and mouse to this Mac**。全域
+9. 任一台 Mac 都可隨時按 `Control-Option-Command-Escape` 中斷共享。要從接收端
+   切回控制端，請在接收端按 **Return keyboard, mouse, and trackpad to [other Mac]**；
+   控制端也可按 **Return keyboard, mouse, and trackpad to this Mac**。全域
    `Control-Option-Command-K` 適用於已手動選好螢幕輸入的情況，不必開啟選單即可切換鍵盤／
-   滑鼠控制：閒置時開始請求，控制中或接收中會把輸入返回本機／控制端；它不會啟動自動
-   DDC 螢幕切換。`Control-Option-Command-O` 沿用受保護的 **Show other Mac** 流程：會先
-   自動切換螢幕，再請求鍵盤／滑鼠控制；如果本機正在接收控制，則結束接收並把螢幕與輸入
-   還給控制端。
+   滑鼠／觸控板控制：閒置時開始請求，控制中或接收中會把輸入返回本機／控制端；它不會啟動
+   自動 DDC 螢幕切換。`Control-Option-Command-O` 沿用受保護的 **Show other Mac** 流程：
+   會先自動切換螢幕，再請求鍵盤／滑鼠／觸控板控制；如果本機正在接收控制，則結束接收並
+   把螢幕與輸入還給控制端。
+
+公開 Quartz 事件路徑會轉送觸控板移動、點按、拖曳、次要點按、精準雙軸捲動與慣性相位。
+共用的觸控板等同指標裝置而非手勢介面：`CGEvent` 只公開鍵盤、滑鼠與滾輪的建構子，所以
+兩指縮放、旋轉、智慧型縮放、三指與四指滑動、Mission Control、App Exposé 與 Launchpad
+都只作用在控制端本機。點按事件上的 pressure 數值會轉送，但 force click 的 stage 轉換
+不會，所以接收端不會觸發 force click。
 
 連線中斷後 MacKVM 會以有上限的退避時間重連；已啟用無縫控制的配對裝置不需再次按
 Allow，關閉該選項的裝置才需要重新取得控制同意。**Disconnect**、**Forget** 與

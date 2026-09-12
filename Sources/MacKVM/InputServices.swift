@@ -135,6 +135,130 @@ private enum SystemDefinedEvent {
     }
 }
 
+/// Keeps the precision and device semantics that CoreGraphics exposes for a
+/// scroll stream. `PointDelta` is an integer compatibility field; a modern
+/// trackpad's fractional movement lives in its 16.16 fixed-point field.
+/// Older or synthetic events can omit that field, so capture falls back to the
+/// point delta and then the legacy line delta.
+enum ScrollEventEncoding {
+    struct CapturedScroll {
+        let delta: Double
+        let unit: ScrollEventUnit
+    }
+
+    static func capturedScroll(
+        isContinuous: Bool,
+        fixedPoint: Double,
+        point: Double,
+        legacy: Double
+    ) -> CapturedScroll {
+        let defaultUnit: ScrollEventUnit = isContinuous ? .pixel : .line
+        if fixedPoint != 0 || (point == 0 && legacy == 0) {
+            return CapturedScroll(delta: fixedPoint, unit: defaultUnit)
+        }
+        if isContinuous {
+            // PointDelta is pixel-based. Keep that meaning when a synthetic
+            // or older continuous event omitted its fixed-point field.
+            return CapturedScroll(
+                delta: point != 0 ? point : legacy,
+                unit: .pixel
+            )
+        }
+        if legacy != 0 {
+            // DeltaAxis is the line-based field. Prefer it over PointDelta so
+            // a mouse wheel step is not accidentally sent as many lines.
+            return CapturedScroll(delta: legacy, unit: .line)
+        }
+        // An inconsistent line event with no line delta can still carry a
+        // pixel delta. Preserve that field's unit rather than relabeling it
+        // as lines.
+        return CapturedScroll(delta: point, unit: .pixel)
+    }
+
+    struct CapturedScrollEvent {
+        let horizontal: Double
+        let vertical: Double
+        let unit: ScrollEventUnit
+    }
+
+    /// Resolves both axes together, because the wire format carries a single
+    /// `scrollEventUnit` for the event. Taking the unit from one axis while
+    /// sending the other axis' delta alongside it makes the receiver
+    /// reinterpret that delta in the wrong unit, so the axes must agree here.
+    static func capturedScrollEvent(
+        isContinuous: Bool,
+        horizontal: (fixedPoint: Double, point: Double, legacy: Double),
+        vertical: (fixedPoint: Double, point: Double, legacy: Double)
+    ) -> CapturedScrollEvent {
+        let capturedHorizontal = capturedScroll(
+            isContinuous: isContinuous,
+            fixedPoint: horizontal.fixedPoint,
+            point: horizontal.point,
+            legacy: horizontal.legacy
+        )
+        let capturedVertical = capturedScroll(
+            isContinuous: isContinuous,
+            fixedPoint: vertical.fixedPoint,
+            point: vertical.point,
+            legacy: vertical.legacy
+        )
+        guard capturedHorizontal.unit != capturedVertical.unit else {
+            return CapturedScrollEvent(
+                horizontal: capturedHorizontal.delta,
+                vertical: capturedVertical.delta,
+                unit: capturedVertical.unit
+            )
+        }
+        // The axes disagree only when one of them fell back to a field whose
+        // unit differs from the event's device unit. Adopt the unit of the
+        // axis carrying the larger movement, then re-read the other axis from
+        // the field that actually matches that unit. Rescaling between pixels
+        // and lines would need a device line height that CoreGraphics does
+        // not expose here, so an axis with no matching field contributes 0
+        // rather than a delta that is wrong by an order of magnitude.
+        let unit = abs(capturedHorizontal.delta) > abs(capturedVertical.delta)
+            ? capturedHorizontal.unit
+            : capturedVertical.unit
+        return CapturedScrollEvent(
+            horizontal: delta(
+                for: unit,
+                in: horizontal,
+                resolved: capturedHorizontal
+            ),
+            vertical: delta(
+                for: unit,
+                in: vertical,
+                resolved: capturedVertical
+            ),
+            unit: unit
+        )
+    }
+
+    private static func delta(
+        for unit: ScrollEventUnit,
+        in axis: (fixedPoint: Double, point: Double, legacy: Double),
+        resolved: CapturedScroll
+    ) -> Double {
+        guard resolved.unit != unit else { return resolved.delta }
+        switch unit {
+        case .pixel:
+            return axis.point
+        case .line:
+            return axis.legacy
+        }
+    }
+
+    /// Converts a validated scroll delta to CoreGraphics' signed 16.16
+    /// integer representation without allowing an overflowing conversion.
+    static func fixedPointValue(_ value: Double) -> Int64 {
+        let scaled = (value * 65_536).rounded()
+        guard scaled.isFinite else { return 0 }
+        if scaled >= Double(Int64.max) { return Int64.max }
+        if scaled <= Double(Int64.min) { return Int64.min }
+        return Int64(scaled)
+    }
+}
+
 private enum VirtualKeyCode {
     static let commandLeft: UInt16 = 54
     static let commandRight: UInt16 = 55
@@ -399,7 +523,7 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
         // shortcut must not remove Escape emergency recovery or the monitor
         // route shortcut, and vice versa.
         if switchStatus != noErr {
-            status = "Could not create the global keyboard/mouse shortcut"
+            status = "Could not create the global input-sharing shortcut"
         } else if emergencyStatus != noErr {
             status = "Could not create the global emergency shortcut"
         } else if monitorStatus != noErr {
@@ -498,7 +622,7 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
         isCapturing = true
-        status = "Forwarding keyboard and mouse events"
+        status = "Forwarding keyboard, mouse, and trackpad events"
     }
 
     func stopCapture() {
@@ -750,16 +874,42 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
         case .scrollWheel:
             // A phase value of 0 means "no phase" on this platform, and the
             // failable initializers map it to nil. A mouse wheel therefore
-            // keeps producing exactly the payload it produced before.
+            // keeps producing exactly the payload it produced before. Use the
+            // fixed-point fields first: the integer point fields lose the
+            // fractional deltas emitted by a high-resolution trackpad.
+            let isContinuous = event.getIntegerValueField(
+                .scrollWheelEventIsContinuous
+            ) != 0
+            let captured = ScrollEventEncoding.capturedScrollEvent(
+                isContinuous: isContinuous,
+                horizontal: (
+                    fixedPoint: event.getDoubleValueField(
+                        .scrollWheelEventFixedPtDeltaAxis2
+                    ),
+                    point: event.getDoubleValueField(
+                        .scrollWheelEventPointDeltaAxis2
+                    ),
+                    legacy: event.getDoubleValueField(
+                        .scrollWheelEventDeltaAxis2
+                    )
+                ),
+                vertical: (
+                    fixedPoint: event.getDoubleValueField(
+                        .scrollWheelEventFixedPtDeltaAxis1
+                    ),
+                    point: event.getDoubleValueField(
+                        .scrollWheelEventPointDeltaAxis1
+                    ),
+                    legacy: event.getDoubleValueField(
+                        .scrollWheelEventDeltaAxis1
+                    )
+                )
+            )
             return RemoteInputEvent(
                 kind: .scroll,
                 modifierFlags: flags,
-                scrollDeltaX: event.getDoubleValueField(
-                    .scrollWheelEventPointDeltaAxis2
-                ),
-                scrollDeltaY: event.getDoubleValueField(
-                    .scrollWheelEventPointDeltaAxis1
-                ),
+                scrollDeltaX: captured.horizontal,
+                scrollDeltaY: captured.vertical,
                 scrollPhase: ScrollPhase(
                     rawValue: Int(
                         event.getIntegerValueField(.scrollWheelEventScrollPhase)
@@ -771,7 +921,8 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
                             .scrollWheelEventMomentumPhase
                         )
                     )
-                )
+                ),
+                scrollEventUnit: captured.unit
             )
         case .tapDisabledByTimeout:
             if let eventTap {
@@ -864,6 +1015,14 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
                 location: location
             )
         }
+        // Clamp rather than reject. Dropping the whole event on an unexpected
+        // pressure reading can break a down/up pair, and an unmatched down
+        // leaves the receiver holding that button for the rest of the control
+        // session. This matches how clickCount is bounded below.
+        let reportedPressure = event.getDoubleValueField(.mouseEventPressure)
+        let pressure = reportedPressure.isFinite
+            ? min(1, max(0, reportedPressure))
+            : 0
         return RemoteInputEvent(
             kind: kind,
             modifierFlags: flags,
@@ -877,7 +1036,8 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
                     0,
                     Int(event.getIntegerValueField(.mouseEventClickState))
                 )
-            )
+            ),
+            pressure: pressure > 0 ? pressure : nil
         )
     }
 
@@ -1262,19 +1422,44 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
                     value: Int64(clickCount)
                 )
             }
+            if let pressure = input.pressure {
+                event?.setDoubleValueField(
+                    .mouseEventPressure,
+                    value: pressure
+                )
+            }
 
         case .scroll:
             guard let deltaX = input.scrollDeltaX,
                   let deltaY = input.scrollDeltaY else {
                 throw RemoteInputError.invalidFields
             }
+            let units: CGScrollEventUnit = input.scrollEventUnit == .line
+                ? .line
+                : .pixel
             event = CGEvent(
                 scrollWheelEvent2Source: eventSource,
-                units: .pixel,
+                units: units,
                 wheelCount: 2,
                 wheel1: clampedWheelValue(deltaY),
                 wheel2: clampedWheelValue(deltaX),
                 wheel3: 0
+            )
+            // Preserve both the device unit and the 16.16 fixed-point delta.
+            // The constructor's Int32 wheels are still populated for older
+            // consumers, while modern Trackpad-aware consumers receive the
+            // original fractional movement.
+            event?.setIntegerValueField(
+                .scrollWheelEventIsContinuous,
+                value: units == .pixel ? 1 : 0
+            )
+            event?.setIntegerValueField(
+                .scrollWheelEventFixedPtDeltaAxis1,
+                value: ScrollEventEncoding.fixedPointValue(deltaY)
+            )
+            event?.setIntegerValueField(
+                .scrollWheelEventFixedPtDeltaAxis2,
+                value: ScrollEventEncoding.fixedPointValue(deltaX)
             )
             // Restore the trackpad phases so the receiver reproduces macOS
             // inertia. Omitted phases leave the platform default of 0, which
@@ -1442,8 +1627,12 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
             location: input.location,
             buttonNumber: input.buttonNumber,
             clickCount: input.clickCount,
+            pressure: input.pressure,
             scrollDeltaX: input.scrollDeltaX,
             scrollDeltaY: input.scrollDeltaY,
+            scrollPhase: input.scrollPhase,
+            scrollMomentumPhase: input.scrollMomentumPhase,
+            scrollEventUnit: input.scrollEventUnit,
             keyboardLayoutIdentifier: input.keyboardLayoutIdentifier
         )
     }

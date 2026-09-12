@@ -74,6 +74,15 @@ public enum ScrollMomentumPhase: Int, Codable, CaseIterable, Sendable {
     case end = 3
 }
 
+/// The unit used by a scroll event on the sending Mac. Trackpads and other
+/// precise pointing devices report pixel deltas; traditional wheel events
+/// report line deltas. Keeping this distinction lets the receiver recreate
+/// both devices without changing the legacy payload shape.
+public enum ScrollEventUnit: Int, Codable, CaseIterable, Sendable {
+    case pixel = 0
+    case line = 1
+}
+
 public struct RemoteInputEvent: Codable, Equatable, Sendable {
     public let kind: RemoteInputKind
     public let keyCode: UInt16?
@@ -84,6 +93,11 @@ public struct RemoteInputEvent: Codable, Equatable, Sendable {
     public let location: NormalizedPoint?
     public let buttonNumber: Int?
     public let clickCount: Int?
+    /// Force-click/tablet pressure when macOS exposes it on a mouse
+    /// down/up/drag event. Ordinary mouse and trackpad clicks commonly omit
+    /// this field; the event kind and click count still carry their complete
+    /// button semantics.
+    public let pressure: Double?
     public let scrollDeltaX: Double?
     public let scrollDeltaY: Double?
     /// Trackpad scroll and momentum phases. Both stay optional: a legacy peer
@@ -91,6 +105,9 @@ public struct RemoteInputEvent: Codable, Equatable, Sendable {
     /// lets the receiver reproduce macOS inertia instead of discrete steps.
     public let scrollPhase: ScrollPhase?
     public let scrollMomentumPhase: ScrollMomentumPhase?
+    /// Pixel versus line scrolling. It is optional so a legacy peer that does
+    /// not know this field keeps the receiver's historical pixel behavior.
+    public let scrollEventUnit: ScrollEventUnit?
     /// Media, brightness, and keyboard-illumination key for `systemDefined`
     /// events. It uses its own field rather than `keyCode` because NX key
     /// codes and virtual key codes are different namespaces that overlap: NX
@@ -117,10 +134,12 @@ public struct RemoteInputEvent: Codable, Equatable, Sendable {
         location: NormalizedPoint? = nil,
         buttonNumber: Int? = nil,
         clickCount: Int? = nil,
+        pressure: Double? = nil,
         scrollDeltaX: Double? = nil,
         scrollDeltaY: Double? = nil,
         scrollPhase: ScrollPhase? = nil,
         scrollMomentumPhase: ScrollMomentumPhase? = nil,
+        scrollEventUnit: ScrollEventUnit? = nil,
         mediaKey: MediaKey? = nil,
         character: String? = nil,
         keyboardLayoutIdentifier: String? = nil
@@ -132,10 +151,12 @@ public struct RemoteInputEvent: Codable, Equatable, Sendable {
         self.location = location
         self.buttonNumber = buttonNumber
         self.clickCount = clickCount
+        self.pressure = pressure
         self.scrollDeltaX = scrollDeltaX
         self.scrollDeltaY = scrollDeltaY
         self.scrollPhase = scrollPhase
         self.scrollMomentumPhase = scrollMomentumPhase
+        self.scrollEventUnit = scrollEventUnit
         self.mediaKey = mediaKey
         self.character = character
         self.keyboardLayoutIdentifier = keyboardLayoutIdentifier
@@ -152,9 +173,10 @@ public struct RemoteInputEvent: Codable, Equatable, Sendable {
                   location == nil,
                   buttonNumber == nil,
                   clickCount == nil,
+                  pressure == nil,
                   scrollDeltaX == nil,
                   scrollDeltaY == nil,
-                  hasNoScrollPhase,
+                  hasNoScrollMetadata,
                   mediaKey == nil,
                   validCharacter,
                   validKeyboardLayoutIdentifier else {
@@ -172,9 +194,10 @@ public struct RemoteInputEvent: Codable, Equatable, Sendable {
                   location == nil,
                   buttonNumber == nil,
                   clickCount == nil,
+                  pressure == nil,
                   scrollDeltaX == nil,
                   scrollDeltaY == nil,
-                  hasNoScrollPhase,
+                  hasNoScrollMetadata,
                   mediaKey == nil,
                   character == nil,
                   validKeyboardLayoutIdentifier else {
@@ -186,9 +209,10 @@ public struct RemoteInputEvent: Codable, Equatable, Sendable {
                   location == nil,
                   buttonNumber == nil,
                   clickCount == nil,
+                  pressure == nil,
                   scrollDeltaX == nil,
                   scrollDeltaY == nil,
-                  hasNoScrollPhase,
+                  hasNoScrollMetadata,
                   mediaKey == nil,
                   character == nil,
                   validKeyboardLayoutIdentifier else {
@@ -205,9 +229,10 @@ public struct RemoteInputEvent: Codable, Equatable, Sendable {
                   location == nil,
                   buttonNumber == nil,
                   clickCount == nil,
+                  pressure == nil,
                   scrollDeltaX == nil,
                   scrollDeltaY == nil,
-                  hasNoScrollPhase,
+                  hasNoScrollMetadata,
                   character == nil,
                   // Media keys are layout independent, so they must not carry
                   // a layout identifier that would strand them behind the
@@ -222,9 +247,10 @@ public struct RemoteInputEvent: Codable, Equatable, Sendable {
                   isPressed == nil,
                   buttonNumber == nil,
                   clickCount == nil,
+                  pressure == nil,
                   scrollDeltaX == nil,
                   scrollDeltaY == nil,
-                  hasNoScrollPhase,
+                  hasNoScrollMetadata,
                   mediaKey == nil,
                   character == nil,
                   keyboardLayoutIdentifier == nil else {
@@ -252,6 +278,7 @@ public struct RemoteInputEvent: Codable, Equatable, Sendable {
                   isPressed == nil,
                   buttonNumber == nil,
                   clickCount == nil,
+                  pressure == nil,
                   mediaKey == nil,
                   character == nil,
                   keyboardLayoutIdentifier == nil,
@@ -267,11 +294,13 @@ public struct RemoteInputEvent: Codable, Equatable, Sendable {
         return self
     }
 
-    /// Scroll phases describe a scroll stream and must never ride along with a
-    /// key or pointer event, where the receiver would set them on an injected
-    /// CGEvent that has no scroll semantics.
-    private var hasNoScrollPhase: Bool {
-        scrollPhase == nil && scrollMomentumPhase == nil
+    /// Scroll metadata describes a scroll stream and must never ride along
+    /// with a key or pointer event, where the receiver would set it on an
+    /// injected CGEvent that has no scroll semantics.
+    private var hasNoScrollMetadata: Bool {
+        scrollPhase == nil
+            && scrollMomentumPhase == nil
+            && scrollEventUnit == nil
     }
 
     /// The public CGEvent modifier bits MacKVM can safely reproduce. Keep the
@@ -345,15 +374,21 @@ public struct RemoteInputEvent: Codable, Equatable, Sendable {
               buttonNumbers.contains(buttonNumber),
               let clickCount,
               (0...255).contains(clickCount),
+              validPressure,
               keyboardLayoutIdentifier == nil,
               scrollDeltaX == nil,
               scrollDeltaY == nil,
-              hasNoScrollPhase,
+              hasNoScrollMetadata,
               mediaKey == nil,
               character == nil else {
             throw RemoteInputError.invalidFields
         }
         return true
+    }
+
+    private var validPressure: Bool {
+        guard let pressure else { return true }
+        return pressure.isFinite && (0...1).contains(pressure)
     }
 }
 

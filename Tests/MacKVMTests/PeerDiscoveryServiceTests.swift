@@ -40,6 +40,57 @@ final class PeerDiscoveryServiceTests: XCTestCase {
         XCTAssertNil(PairingActivity.idle.peerName)
     }
 
+    func testPairingTimeoutPolicySeparatesUserDecisionFromTransport() {
+        XCTAssertEqual(
+            PairingTimeoutPolicy.duration(for: .outboundTransport),
+            15
+        )
+        XCTAssertEqual(
+            PairingTimeoutPolicy.duration(for: .inboundTransport),
+            10
+        )
+        XCTAssertEqual(
+            PairingTimeoutPolicy.duration(for: .protocolNegotiation),
+            60
+        )
+        XCTAssertEqual(
+            PairingTimeoutPolicy.duration(for: .userDecision),
+            120
+        )
+        XCTAssertEqual(
+            PairingTimeoutPolicy.duration(for: .completion),
+            30
+        )
+        XCTAssertGreaterThan(
+            PairingTimeoutPolicy.duration(for: .userDecision),
+            PairingTimeoutPolicy.duration(for: .protocolNegotiation)
+        )
+        XCTAssertLessThan(
+            PairingTimeoutPolicy.duration(for: .completion),
+            PairingTimeoutPolicy.duration(for: .userDecision)
+        )
+    }
+
+    func testFirstRevealOrConfirmationIsRecorded() {
+        XCTAssertTrue(
+            PairingContributionPolicy.shouldRecordContribution(
+                existingContribution: nil
+            )
+        )
+    }
+
+    func testDuplicateRevealOrConfirmationIsIgnored() {
+        // A resent reveal/confirmation for a request that already has a
+        // recorded contribution must not restart the 120s user-decision
+        // timeout or let a peer keep re-arming its own request slot by
+        // repeating a message.
+        XCTAssertFalse(
+            PairingContributionPolicy.shouldRecordContribution(
+                existingContribution: Data([0x01, 0x02, 0x03])
+            )
+        )
+    }
+
     func testNetworkRecoveryRequiresBothServicesToBeReady() {
         XCTAssertFalse(
             PeerDiscoveryService.areNetworkServicesReady(

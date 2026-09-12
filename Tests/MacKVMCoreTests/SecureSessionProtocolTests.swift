@@ -20,6 +20,66 @@ final class SecureSessionProtocolTests: XCTestCase {
             fixture.initiatorHandshake.senderModel,
             "MacBookPro18,3"
         )
+        XCTAssertEqual(
+            fixture.initiatorHandshake.disconnectSignalVersion,
+            SecureSessionHandshake.currentDisconnectSignalVersion
+        )
+        let directRoundTrip = try JSONDecoder().decode(
+            SecureSessionHandshake.self,
+            from: JSONEncoder().encode(fixture.initiatorHandshake)
+        )
+        XCTAssertEqual(
+            directRoundTrip.disconnectSignalVersion,
+            SecureSessionHandshake.currentDisconnectSignalVersion
+        )
+    }
+
+    func testLegacyHandshakeRoundTripOmitsDisconnectCapability() throws {
+        let fixture = makeFixture()
+        let legacyHandshake = SecureSessionHandshake(
+            sessionID: fixture.initiatorHandshake.sessionID,
+            role: fixture.initiatorHandshake.role,
+            sender: fixture.initiatorHandshake.sender,
+            senderModel: fixture.initiatorHandshake.senderModel,
+            disconnectSignalVersion: nil,
+            ephemeralPublicKey: fixture.initiatorHandshake.ephemeralPublicKey,
+            nonce: fixture.initiatorHandshake.nonce
+        )
+        var buffer = try SecureSessionWireCodec.encode(
+            handshake: legacyHandshake,
+            signingWith: fixture.initiatorSigningKey
+        )
+
+        guard case let .handshake(decoded)? = try SecureSessionWireCodec
+            .decodeAvailableFrames(from: &buffer)
+            .first else {
+            return XCTFail("Expected a decoded legacy handshake")
+        }
+        XCTAssertNil(decoded.disconnectSignalVersion)
+    }
+
+    func testSignedUnsupportedDisconnectCapabilityReachesCompatibilityGate() throws {
+        let fixture = makeFixture()
+        let futureHandshake = SecureSessionHandshake(
+            sessionID: fixture.initiatorHandshake.sessionID,
+            role: fixture.initiatorHandshake.role,
+            sender: fixture.initiatorHandshake.sender,
+            senderModel: fixture.initiatorHandshake.senderModel,
+            disconnectSignalVersion: 2,
+            ephemeralPublicKey: fixture.initiatorHandshake.ephemeralPublicKey,
+            nonce: fixture.initiatorHandshake.nonce
+        )
+        var buffer = try SecureSessionWireCodec.encode(
+            handshake: futureHandshake,
+            signingWith: fixture.initiatorSigningKey
+        )
+
+        guard case let .handshake(decoded)? = try SecureSessionWireCodec
+            .decodeAvailableFrames(from: &buffer)
+            .first else {
+            return XCTFail("Expected a decoded future-capability handshake")
+        }
+        XCTAssertEqual(decoded.disconnectSignalVersion, 2)
     }
 
     func testHandshakeRejectsWrongSigningKey() throws {

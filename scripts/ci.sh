@@ -14,12 +14,35 @@ export SWIFTPM_MODULECACHE_OVERRIDE="$CLANG_MODULE_CACHE_PATH"
 swift build --disable-sandbox
 swift test --disable-sandbox
 
+bash -n scripts/install-app.sh scripts/uninstall-app.sh
+./scripts/install-app.sh --help >/dev/null
+./scripts/uninstall-app.sh --help >/dev/null
+
 # Exercise both the documented native output and the two supported release
 # architectures. Cross-build validation is intentionally part of CI because
 # releases are distributed to both Apple Silicon and Intel Macs.
 ./scripts/build-app.sh
 ./scripts/build-app.sh --arch arm64
 ./scripts/build-app.sh --arch x86_64
+
+installer_test_dir="$(mktemp -d "${TMPDIR:-/tmp}/mackvm-installer.XXXXXX")"
+cleanup_installer_test() {
+  rm -rf -- "$installer_test_dir"
+}
+trap cleanup_installer_test EXIT
+./scripts/install-app.sh \
+  --source "$project_root/dist/arm64/MacKVM.app" \
+  --target-dir "$installer_test_dir" >/dev/null
+[[ -d "$installer_test_dir/MacKVM.app" ]] || {
+  echo "Installer did not create the app bundle." >&2
+  exit 1
+}
+./scripts/uninstall-app.sh --target-dir "$installer_test_dir" >/dev/null
+[[ ! -e "$installer_test_dir/MacKVM.app" ]] || {
+  echo "Uninstaller did not remove the app bundle." >&2
+  exit 1
+}
+
 ./scripts/build-ddc-diagnostic.sh --arch arm64
 ./scripts/build-ddc-diagnostic.sh --arch x86_64
 ./scripts/build-ddc-diagnostic.sh --arch universal
@@ -45,3 +68,18 @@ assert_build_app_rejected() {
 assert_build_app_rejected "Invalid architecture" --arch invalid
 assert_build_app_rejected "Invalid equals-form architecture" --arch=invalid
 assert_build_app_rejected "Missing architecture value" --arch
+
+# The notarized release path requires credentials and is intentionally not
+# submitted during CI. Keep its command-line contract covered without
+# contacting Apple's notary service.
+./scripts/package-notarized-dmg.sh --help >/dev/null
+if ./scripts/package-notarized-dmg.sh --arch universal >/dev/null 2>&1; then
+  echo "Notarized packaging without signing credentials was unexpectedly accepted." >&2
+  exit 1
+else
+  notarized_status=$?
+fi
+if [[ "$notarized_status" -ne 2 ]]; then
+  echo "Notarized packaging missing credentials returned $notarized_status instead of 2." >&2
+  exit 1
+fi
