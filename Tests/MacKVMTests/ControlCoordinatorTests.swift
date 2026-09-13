@@ -72,6 +72,97 @@ final class ControlCoordinatorTests: XCTestCase {
         )
     }
 
+    func testHeartbeatAcknowledgementWaitsForInputPathProgress() {
+        let fixture = makeFixture(seamlessControlAuthorized: true)
+        let requestID = UUID()
+        fixture.transport.deliver(controlMessage(.requestControl, requestID))
+        drainMainQueue()
+        XCTAssertTrue(fixture.coordinator.isReceivingControl)
+
+        var acknowledged = false
+        let heartbeatAcknowledgement = SecureSessionHeartbeatAcknowledgement {
+            acknowledged = true
+        }
+        fixture.transport.onHeartbeat?(heartbeatAcknowledgement)
+        drainMainQueue()
+
+        XCTAssertEqual(fixture.sink.awaitInputProcessingCount, 1)
+        XCTAssertFalse(acknowledged)
+
+        fixture.sink.completeNextInputProgress()
+        drainMainQueue()
+
+        XCTAssertTrue(acknowledged)
+    }
+
+    func testHeartbeatAcknowledgementDoesNotNeedAnInputQueueWhenNotReceiving() {
+        let fixture = makeFixture()
+        var acknowledged = false
+        let heartbeatAcknowledgement = SecureSessionHeartbeatAcknowledgement {
+            acknowledged = true
+        }
+
+        fixture.transport.onHeartbeat?(heartbeatAcknowledgement)
+        drainMainQueue()
+
+        XCTAssertTrue(acknowledged)
+        XCTAssertEqual(fixture.sink.awaitInputProcessingCount, 0)
+    }
+
+    func testHeartbeatAcknowledgementStaysPendingDuringReceiverTeardown() {
+        let fixture = makeFixture(seamlessControlAuthorized: true)
+        let requestID = UUID()
+        fixture.transport.deliver(controlMessage(.requestControl, requestID))
+        drainMainQueue()
+        XCTAssertTrue(fixture.coordinator.isReceivingControl)
+
+        fixture.sink.completesEndImmediately = false
+        fixture.coordinator.endReceivingControl()
+        XCTAssertTrue(fixture.coordinator.isRemoteInputTearingDown)
+
+        var acknowledged = false
+        let heartbeatAcknowledgement = SecureSessionHeartbeatAcknowledgement {
+            acknowledged = true
+        }
+        fixture.transport.onHeartbeat?(heartbeatAcknowledgement)
+        drainMainQueue()
+
+        XCTAssertFalse(acknowledged)
+        XCTAssertEqual(fixture.sink.awaitInputProcessingCount, 0)
+
+        fixture.sink.completeNextEnd()
+        XCTAssertFalse(fixture.coordinator.isRemoteInputTearingDown)
+        XCTAssertTrue(acknowledged)
+    }
+
+    func testHeartbeatAcknowledgementQueuedBeforeReceiverTeardownCompletesAfterTeardown() {
+        let fixture = makeFixture(seamlessControlAuthorized: true)
+        let requestID = UUID()
+        fixture.transport.deliver(controlMessage(.requestControl, requestID))
+        drainMainQueue()
+        XCTAssertTrue(fixture.coordinator.isReceivingControl)
+
+        var acknowledged = false
+        let heartbeatAcknowledgement = SecureSessionHeartbeatAcknowledgement {
+            acknowledged = true
+        }
+        fixture.transport.onHeartbeat?(heartbeatAcknowledgement)
+        drainMainQueue()
+        XCTAssertEqual(fixture.sink.awaitInputProcessingCount, 1)
+
+        fixture.sink.completesEndImmediately = false
+        fixture.coordinator.endReceivingControl()
+        XCTAssertTrue(fixture.coordinator.isRemoteInputTearingDown)
+
+        fixture.sink.completeNextInputProgress(didProgress: false)
+        drainMainQueue()
+        XCTAssertFalse(acknowledged)
+
+        fixture.sink.completeNextEnd()
+        XCTAssertFalse(fixture.coordinator.isRemoteInputTearingDown)
+        XCTAssertTrue(acknowledged)
+    }
+
     func testStoppingAWaitingControlRequestRestoresTheLocalRoute() {
         let fixture = makeFixture()
         var routeRestoreCount = 0
@@ -172,6 +263,30 @@ final class ControlCoordinatorTests: XCTestCase {
         drainMainQueue()
 
         XCTAssertEqual(fixture.coordinator.state, .connected)
+        XCTAssertEqual(routeRestoreCount, 0)
+    }
+
+    func testTransportDisconnectOfManualMonitorSessionKeepsTheMonitorRoute() {
+        let fixture = makeFixture()
+        var routeRestoreCount = 0
+        fixture.coordinator.onControllingStopped = {
+            routeRestoreCount += 1
+        }
+
+        fixture.capture.onSwitchControl?()
+        guard let requestID = fixture.transport.sentMessages.first?.requestID
+        else {
+            XCTFail("manual monitor hotkey did not send a control request")
+            return
+        }
+        fixture.transport.deliver(controlMessage(.controlGranted, requestID))
+        drainMainQueue()
+        XCTAssertEqual(fixture.coordinator.state, .controlling)
+
+        fixture.transport.connectedPeerID = nil
+        drainMainQueue()
+
+        XCTAssertEqual(fixture.coordinator.state, .disconnected)
         XCTAssertEqual(routeRestoreCount, 0)
     }
 
@@ -1000,6 +1115,7 @@ private final class FakeControlTransport: ControlSessionTransport {
     }
     var onPayload: ((Data) -> Void)?
     var onAuthenticated: (() -> UInt64)?
+    var onHeartbeat: ((SecureSessionHeartbeatAcknowledgement) -> Void)?
     var sentMessages: [ControlMessage] = []
     private(set) var disconnectCount = 0
 
@@ -1073,8 +1189,10 @@ private final class FakeInputSink: ControlInputSink {
     private(set) var beginCount = 0
     private(set) var endCount = 0
     private(set) var receiveCount = 0
+    private(set) var awaitInputProcessingCount = 0
     private var pendingBeginCompletion: ((Bool) -> Void)?
     private var pendingEndCompletions: [() -> Void] = []
+    private var pendingInputProgressCompletions: [(Bool) -> Void] = []
 
     func refreshPermission() {}
 
@@ -1101,6 +1219,11 @@ private final class FakeInputSink: ControlInputSink {
         receiveCount += 1
     }
 
+    func awaitInputProcessing(completion: @escaping (Bool) -> Void) {
+        awaitInputProcessingCount += 1
+        pendingInputProgressCompletions.append(completion)
+    }
+
     func completeBegin(didStart: Bool) {
         let completion = pendingBeginCompletion
         pendingBeginCompletion = nil
@@ -1112,12 +1235,19 @@ private final class FakeInputSink: ControlInputSink {
         completion()
     }
 
+    func completeNextInputProgress(didProgress: Bool = true) {
+        let completion = pendingInputProgressCompletions.removeFirst()
+        completion(didProgress)
+    }
+
     func resetActivity() {
         beginCount = 0
         endCount = 0
         receiveCount = 0
+        awaitInputProcessingCount = 0
         pendingBeginCompletion = nil
         pendingEndCompletions.removeAll()
+        pendingInputProgressCompletions.removeAll()
         onEndRequested = nil
     }
 }

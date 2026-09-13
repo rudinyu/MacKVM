@@ -4,10 +4,22 @@
 
 ## 尚未發布
 
+## 1.100.06（build 81）— 2026-09-13
+
 ### 新增
 
 - 在 DMG 內加入可雙擊執行的安裝與解除安裝 command，以及安裝指南。Script 會驗證
   MacKVM bundle，並保留配對資料、私密金鑰、偏好設定與 macOS 隱私權限。
+
+### 修正
+
+- 保留觸控板的 fractional 滾動精度，並在拆除時終止仍作用中的滾動／慣性相位；釋放
+  按住的媒體鍵，並保留鍵盤 auto-repeat 狀態。
+- 使用正確的 Carbon no-dead-key 選項；手動 `Control-Option-Command-K` 工作階段在
+  傳輸中斷後不再還原螢幕路由。
+- 加入經驗證的應用層 heartbeat lease；即使 peer 的 TCP socket 仍開啟，只要 peer
+  休眠或停止處理 MacKVM，stale 工作階段也會被清除。兩台 Mac 都必須使用目前的
+  secure-session capability。
 
 ## 1.100.05（build 80）— 2026-09-07
 

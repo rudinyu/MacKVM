@@ -4,11 +4,25 @@
 
 ## Unreleased
 
+## 1.100.06 (build 81) — 2026-09-13
+
 ### Added
 
 - Include double-click install and uninstall commands plus the installation
   guides in the DMG. The scripts validate the MacKVM bundle and preserve
   pairing data, private keys, preferences, and macOS privacy permissions.
+
+### Fixed
+
+- Preserve fractional trackpad scrolling and terminate active scroll and
+  momentum phases during teardown; release held media keys and preserve
+  keyboard auto-repeat state.
+- Use the correct Carbon no-dead-key option and keep manual
+  `Control-Option-Command-K` sessions from restoring the display route after
+  transport loss.
+- Add an authenticated application heartbeat lease so a peer that sleeps or
+  stops servicing MacKVM is cleared even when its TCP socket remains open;
+  both Macs must use the current secure-session capability.
 
 ## 1.100.05 (build 80) — 2026-09-07
 

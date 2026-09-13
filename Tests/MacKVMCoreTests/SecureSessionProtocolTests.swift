@@ -65,7 +65,7 @@ final class SecureSessionProtocolTests: XCTestCase {
             role: fixture.initiatorHandshake.role,
             sender: fixture.initiatorHandshake.sender,
             senderModel: fixture.initiatorHandshake.senderModel,
-            disconnectSignalVersion: 2,
+            disconnectSignalVersion: 3,
             ephemeralPublicKey: fixture.initiatorHandshake.ephemeralPublicKey,
             nonce: fixture.initiatorHandshake.nonce
         )
@@ -79,7 +79,7 @@ final class SecureSessionProtocolTests: XCTestCase {
             .first else {
             return XCTFail("Expected a decoded future-capability handshake")
         }
-        XCTAssertEqual(decoded.disconnectSignalVersion, 2)
+        XCTAssertEqual(decoded.disconnectSignalVersion, 3)
     }
 
     func testHandshakeRejectsWrongSigningKey() throws {

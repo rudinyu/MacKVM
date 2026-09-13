@@ -50,6 +50,31 @@ enum SecureSessionCompatibilityPolicy {
     }
 }
 
+/// A heartbeat acknowledgement is released only after the receiver's control
+/// path has reached a known progress point. It is intentionally one-shot so a
+/// delayed main/injection-queue callback cannot emit duplicate acknowledgements
+/// for the same encrypted heartbeat.
+final class SecureSessionHeartbeatAcknowledgement: @unchecked Sendable {
+    private let lock = NSLock()
+    private let action: () -> Void
+    private var isCompleted = false
+
+    init(action: @escaping () -> Void) {
+        self.action = action
+    }
+
+    func complete() {
+        lock.lock()
+        guard !isCompleted else {
+            lock.unlock()
+            return
+        }
+        isCompleted = true
+        lock.unlock()
+        action()
+    }
+}
+
 /// Governs the grace-period watchdog that detects an authenticated secure
 /// session gone stale (peer slept, force-quit, or became unreachable) with no
 /// application traffic to reveal the loss. Extracted as pure decisions so the
@@ -90,6 +115,40 @@ enum TransportLivenessPolicy {
     }
 }
 
+/// Governs the authenticated application-level lease. TCP keepalive and
+/// `NWConnection` viability describe the socket and network path, but neither
+/// proves that the peer's MacKVM service is still running its session loop.
+/// One outstanding encrypted heartbeat at a time keeps that lease bounded and
+/// prevents repeated timers or packets from extending a dead session forever.
+enum SecureSessionHeartbeatPolicy {
+    static func shouldSchedule(
+        isAuthenticated: Bool,
+        isClosing: Bool,
+        hasScheduledHeartbeat: Bool,
+        awaitingAcknowledgement: Bool
+    ) -> Bool {
+        isAuthenticated
+            && !isClosing
+            && !hasScheduledHeartbeat
+            && !awaitingAcknowledgement
+    }
+
+    static func shouldFailAfterTimeout(
+        isCurrentContext: Bool,
+        isAuthenticated: Bool,
+        isClosing: Bool,
+        awaitingAcknowledgement: Bool,
+        scheduledGeneration: UInt64,
+        expiredGeneration: UInt64
+    ) -> Bool {
+        isCurrentContext
+            && isAuthenticated
+            && !isClosing
+            && awaitingAcknowledgement
+            && scheduledGeneration == expiredGeneration
+    }
+}
+
 enum SecureSessionDisconnectPolicy {
     static func shouldRetryAfterRemoval(
         removedActiveContext: Bool,
@@ -120,6 +179,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
 
     var onPayload: ((Data) -> Void)?
     var onAuthenticated: (() -> UInt64)?
+    var onHeartbeat: ((SecureSessionHeartbeatAcknowledgement) -> Void)?
 
     private let connectionPublicationSubject =
         PassthroughSubject<ControlConnectionPublication, Never>()
@@ -162,6 +222,11 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
     static let secureTCPKeepaliveIdle = 5
     static let secureTCPKeepaliveInterval = 2
     static let secureTCPKeepaliveCount = 3
+    // TCP keepalive only proves that the kernel can still exchange probes.
+    // The encrypted application lease below detects a peer whose MacKVM
+    // service is asleep or stalled even when the socket remains established.
+    static let secureSessionHeartbeatInterval: TimeInterval = 5
+    static let secureSessionHeartbeatTimeout: TimeInterval = 15
     // Network.framework can report a transient path/viability interruption;
     // give it a short recovery window before tearing down an authenticated
     // session and allowing the normal reconnect path to run.
@@ -1499,6 +1564,56 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                 remove(context)
                 return
             }
+            let isHeartbeat = SecureSessionControlSignal.isHeartbeat(payload)
+            let isHeartbeatAcknowledgement =
+                SecureSessionControlSignal.isHeartbeatAcknowledgement(payload)
+            if context.isAuthenticated,
+               isHeartbeat || isHeartbeatAcknowledgement {
+                // Heartbeats are authenticated control frames, but they still
+                // consume inbound work and can cause an outbound ACK. Count
+                // them against the same bounded session budget as input so a
+                // paired but compromised peer cannot flood the serial queue
+                // or send buffer with control traffic.
+                guard context.inboundPayloadBudget.allows(
+                    bytes: payload.count,
+                    at: DispatchTime.now().uptimeNanoseconds
+                ) else {
+                    throw SecureSessionError.invalidFrame
+                }
+                if isHeartbeat {
+                    // There is only one legitimate heartbeat outstanding at a
+                    // time. Do not enqueue more main/injection-queue work if a
+                    // peer floods duplicate requests while the first control
+                    // path acknowledgement is still pending.
+                    guard !context.heartbeatProgressPending else { return }
+                    context.heartbeatProgressPending = true
+                    let acknowledgement =
+                        SecureSessionHeartbeatAcknowledgement {
+                            [weak self, weak context] in
+                            guard let self, let context else { return }
+                            self.queue.async { [weak self, weak context] in
+                                guard let self, let context,
+                                      self.isCurrent(context),
+                                      context.isAuthenticated,
+                                      !context.isClosing else {
+                                    return
+                                }
+                                context.heartbeatProgressPending = false
+                                self.sendHeartbeatAcknowledgement(for: context)
+                            }
+                        }
+                    if let onHeartbeat {
+                        onHeartbeat(acknowledgement)
+                    } else {
+                        // Keep the transport usable in isolation tests and for
+                        // any future embedding that does not own remote input.
+                        acknowledgement.complete()
+                    }
+                } else {
+                    acknowledgeHeartbeat(for: context)
+                }
+                return
+            }
             // A close marker can be coalesced with ordinary input in the same
             // TCP read. Do not deliver data that followed a user disconnect.
             guard !context.isClosing else { return }
@@ -1537,6 +1652,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                     peerID: peer.id,
                     context: context
                 )
+                startHeartbeat(for: context)
                 return
             }
             guard context.inboundPayloadBudget.allows(
@@ -1707,6 +1823,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                     peerID: expectedPeer.id,
                     context: context
                 )
+                self.startHeartbeat(for: context)
             }
 
         case .responder:
@@ -1973,6 +2090,151 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         context.transportLivenessTimeout = nil
     }
 
+    private func startHeartbeat(for context: SessionConnectionContext) {
+        guard isCurrent(context),
+              SecureSessionHeartbeatPolicy.shouldSchedule(
+                  isAuthenticated: context.isAuthenticated,
+                  isClosing: context.isClosing,
+                  hasScheduledHeartbeat: context.heartbeatTimer != nil,
+                  awaitingAcknowledgement:
+                      context.awaitingHeartbeatAcknowledgement
+              ) else {
+            return
+        }
+        let timer = DispatchWorkItem { [weak self, weak context] in
+            guard let self, let context, self.isCurrent(context) else {
+                return
+            }
+            context.heartbeatTimer = nil
+            guard context.isAuthenticated,
+                  !context.isClosing,
+                  !context.awaitingHeartbeatAcknowledgement else {
+                return
+            }
+            context.awaitingHeartbeatAcknowledgement = true
+            context.heartbeatGeneration &+= 1
+            let generation = context.heartbeatGeneration
+            self.scheduleHeartbeatAcknowledgementTimeout(
+                for: context,
+                generation: generation
+            )
+            self.sendEncryptedControlSignal(
+                SecureSessionControlSignal.heartbeat,
+                for: context
+            )
+        }
+        context.heartbeatTimer = timer
+        queue.asyncAfter(
+            deadline: .now() + Self.secureSessionHeartbeatInterval,
+            execute: timer
+        )
+    }
+
+    private func scheduleHeartbeatAcknowledgementTimeout(
+        for context: SessionConnectionContext,
+        generation: UInt64
+    ) {
+        context.heartbeatTimeout?.cancel()
+        let timeout = DispatchWorkItem { [weak self, weak context] in
+            guard let self, let context else { return }
+            guard SecureSessionHeartbeatPolicy.shouldFailAfterTimeout(
+                isCurrentContext: self.isCurrent(context),
+                isAuthenticated: context.isAuthenticated,
+                isClosing: context.isClosing,
+                awaitingAcknowledgement:
+                    context.awaitingHeartbeatAcknowledgement,
+                scheduledGeneration: context.heartbeatGeneration,
+                expiredGeneration: generation
+            ) else {
+                return
+            }
+            context.heartbeatTimeout = nil
+            self.logSecurePhase(
+                "session.heartbeat-timeout",
+                context: context
+            )
+            self.fail(
+                context,
+                message: "Secure session heartbeat timed out"
+            )
+        }
+        context.heartbeatTimeout = timeout
+        queue.asyncAfter(
+            deadline: .now() + Self.secureSessionHeartbeatTimeout,
+            execute: timeout
+        )
+    }
+
+    private func acknowledgeHeartbeat(for context: SessionConnectionContext) {
+        guard isCurrent(context),
+              context.isAuthenticated,
+              !context.isClosing,
+              context.awaitingHeartbeatAcknowledgement else {
+            return
+        }
+        context.awaitingHeartbeatAcknowledgement = false
+        context.heartbeatGeneration &+= 1
+        context.heartbeatTimeout?.cancel()
+        context.heartbeatTimeout = nil
+        startHeartbeat(for: context)
+    }
+
+    private func sendHeartbeatAcknowledgement(
+        for context: SessionConnectionContext
+    ) {
+        sendEncryptedControlSignal(
+            SecureSessionControlSignal.heartbeatAcknowledgement,
+            for: context
+        )
+    }
+
+    private func cancelHeartbeat(for context: SessionConnectionContext) {
+        context.heartbeatGeneration &+= 1
+        context.heartbeatTimer?.cancel()
+        context.heartbeatTimer = nil
+        context.heartbeatTimeout?.cancel()
+        context.heartbeatTimeout = nil
+        context.awaitingHeartbeatAcknowledgement = false
+        context.heartbeatProgressPending = false
+    }
+
+    private func sendEncryptedControlSignal(
+        _ signal: Data,
+        for context: SessionConnectionContext
+    ) {
+        guard isCurrent(context),
+              context.isAuthenticated,
+              !context.isClosing,
+              let channel = context.channel else {
+            return
+        }
+        do {
+            let packet = try channel.seal(signal)
+            let data = try SecureSessionWireCodec.encode(packet: packet)
+            send(data, on: context.connection) {
+                [weak self, weak context] sent in
+                guard let self,
+                      let context,
+                      self.isCurrent(context),
+                      !context.isClosing else {
+                    return
+                }
+                guard sent else {
+                    self.fail(
+                        context,
+                        message: "Secure session heartbeat send failed"
+                    )
+                    return
+                }
+            }
+        } catch {
+            fail(
+                context,
+                message: "Could not send secure session heartbeat"
+            )
+        }
+    }
+
     private func arbitrateSimultaneousConnection(
         incoming: SessionConnectionContext,
         peer: PeerIdentity
@@ -2051,6 +2313,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         context.handshakeTimeout?.cancel()
         context.partialFrameTimeout?.cancel()
         cancelTransportLivenessTimeout(for: context)
+        cancelHeartbeat(for: context)
         context.disconnectTimeout?.cancel()
         context.disconnectTimeout = nil
         context.partialFrameDeadline = nil
@@ -2113,6 +2376,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             return
         }
         cancelTransportLivenessTimeout(for: context)
+        cancelHeartbeat(for: context)
         context.isClosing = true
         context.pendingPayloads.removeAll()
         context.isSendingPayload = false
@@ -2184,6 +2448,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             return
         }
         cancelTransportLivenessTimeout(for: context)
+        cancelHeartbeat(for: context)
         context.disconnectAcknowledgementSendStarted = true
         context.isClosing = true
         do {
@@ -2390,6 +2655,11 @@ private final class SessionConnectionContext {
     var isClosing = false
     var transportLivenessTimeout: DispatchWorkItem?
     var transportLivenessGeneration: UInt64 = 0
+    var heartbeatTimer: DispatchWorkItem?
+    var heartbeatTimeout: DispatchWorkItem?
+    var heartbeatGeneration: UInt64 = 0
+    var awaitingHeartbeatAcknowledgement = false
+    var heartbeatProgressPending = false
     var disconnectAcknowledgementSendStarted = false
     var suppressesReconnect = false
     var wasActiveBeforeDisconnect = false

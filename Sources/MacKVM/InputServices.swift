@@ -175,6 +175,14 @@ enum ScrollEventEncoding {
         return CapturedScroll(delta: point, unit: .pixel)
     }
 
+    /// CoreGraphics stores the fixed-point scroll fields as signed 16.16
+    /// integers. `getDoubleValueField` exposes that raw integer, not the
+    /// decoded pixel delta, so callers must convert it before putting the
+    /// value on the wire.
+    static func decodedFixedPointDelta(_ rawValue: Int64) -> Double {
+        Double(rawValue) / 65_536
+    }
+
     struct CapturedScrollEvent {
         let horizontal: Double
         let vertical: Double
@@ -256,6 +264,60 @@ enum ScrollEventEncoding {
         if scaled >= Double(Int64.max) { return Int64.max }
         if scaled <= Double(Int64.min) { return Int64.min }
         return Int64(scaled)
+    }
+}
+
+/// Tracks the two independent phases a modern trackpad can leave active. A
+/// session may end after the finger phase has ended but while momentum is
+/// still running, so teardown must terminate whichever stream remains open.
+struct ScrollStreamState: Equatable {
+    private(set) var unit: ScrollEventUnit = .pixel
+    private(set) var modifierFlags: UInt64 = 0
+    private(set) var hasActiveScrollPhase = false
+    private(set) var hasActiveMomentumPhase = false
+
+    var needsTermination: Bool {
+        hasActiveScrollPhase || hasActiveMomentumPhase
+    }
+
+    mutating func observe(_ input: RemoteInputEvent) {
+        guard input.kind == .scroll,
+              input.scrollPhase != nil || input.scrollMomentumPhase != nil
+        else {
+            return
+        }
+        if let unit = input.scrollEventUnit {
+            self.unit = unit
+        }
+        modifierFlags = RemoteInputEvent.normalizedModifierFlags(
+            input.modifierFlags
+        )
+        if let phase = input.scrollPhase {
+            switch phase {
+            case .began, .changed, .mayBegin:
+                hasActiveScrollPhase = true
+            case .ended, .cancelled:
+                hasActiveScrollPhase = false
+            }
+        }
+        if let momentumPhase = input.scrollMomentumPhase {
+            switch momentumPhase {
+            case .begin, .continue:
+                hasActiveMomentumPhase = true
+            case .end:
+                hasActiveMomentumPhase = false
+            }
+        }
+        if !needsTermination {
+            reset()
+        }
+    }
+
+    mutating func reset() {
+        unit = .pixel
+        modifierFlags = 0
+        hasActiveScrollPhase = false
+        hasActiveMomentumPhase = false
     }
 }
 
@@ -883,8 +945,10 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
             let captured = ScrollEventEncoding.capturedScrollEvent(
                 isContinuous: isContinuous,
                 horizontal: (
-                    fixedPoint: event.getDoubleValueField(
-                        .scrollWheelEventFixedPtDeltaAxis2
+                    fixedPoint: ScrollEventEncoding.decodedFixedPointDelta(
+                        event.getIntegerValueField(
+                            .scrollWheelEventFixedPtDeltaAxis2
+                        )
                     ),
                     point: event.getDoubleValueField(
                         .scrollWheelEventPointDeltaAxis2
@@ -894,8 +958,10 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
                     )
                 ),
                 vertical: (
-                    fixedPoint: event.getDoubleValueField(
-                        .scrollWheelEventFixedPtDeltaAxis1
+                    fixedPoint: ScrollEventEncoding.decodedFixedPointDelta(
+                        event.getIntegerValueField(
+                            .scrollWheelEventFixedPtDeltaAxis1
+                        )
                     ),
                     point: event.getDoubleValueField(
                         .scrollWheelEventPointDeltaAxis1
@@ -992,6 +1058,9 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
             kind: kind,
             keyCode: keyCode,
             isPressed: isPressed,
+            isAutorepeat: kind == .keyDown
+                ? event.getIntegerValueField(.keyboardEventAutorepeat) != 0
+                : nil,
             modifierFlags: flags,
             character: character,
             keyboardLayoutIdentifier: keyboardLayoutIdentifier
@@ -1141,6 +1210,8 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
     private var isAcceptingRemoteInput = false
     private var pressedKeyCodes: Set<UInt16> = []
     private var pressedMouseButtons: Set<Int> = []
+    private var pressedMediaKeys: [MediaKey: UInt64] = [:]
+    private var activeScrollStream = ScrollStreamState()
     private var capsLockRemoteInputPolicy = CapsLockRemoteInputPolicy()
     // Rebuilt only when the local layout identifier changes; building it
     // enumerates every remappable key, so it must not happen per keystroke.
@@ -1331,6 +1402,18 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
         }
     }
 
+    /// Provides a queue barrier for the secure-session heartbeat. A successful
+    /// barrier means the injection queue reached this point while the sink was
+    /// still accepting remote input; a stalled or torn-down sink never
+    /// acknowledges the heartbeat.
+    func awaitInputProcessing(
+        completion: @escaping (Bool) -> Void
+    ) {
+        queue.async { [weak self] in
+            completion(self?.isAcceptingRemoteInput == true)
+        }
+    }
+
     private func beginInputAdmission() {
         inputAdmission.begin()
     }
@@ -1481,6 +1564,13 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
         guard let event else {
             throw RemoteInputSinkError.eventCreationFailed
         }
+        if input.kind == .keyDown,
+           let isAutorepeat = input.isAutorepeat {
+            event.setIntegerValueField(
+                .keyboardEventAutorepeat,
+                value: isAutorepeat ? 1 : 0
+            )
+        }
         event.flags = eventFlags(for: input, remap: keyInjectionTarget)
         event.setIntegerValueField(
             .eventSourceUserData,
@@ -1623,6 +1713,7 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
             kind: input.kind,
             keyCode: input.keyCode,
             isPressed: capsLockKeyDown,
+            isAutorepeat: input.isAutorepeat,
             modifierFlags: input.modifierFlags,
             location: input.location,
             buttonNumber: input.buttonNumber,
@@ -1673,6 +1764,21 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
             if let buttonNumber = input.buttonNumber {
                 pressedMouseButtons.remove(buttonNumber)
             }
+        case .systemDefined:
+            guard let mediaKey = input.mediaKey,
+                  let isPressed = input.isPressed else {
+                break
+            }
+            if isPressed {
+                pressedMediaKeys[mediaKey] =
+                    RemoteInputEvent.normalizedModifierFlags(
+                        input.modifierFlags
+                    )
+            } else {
+                pressedMediaKeys.removeValue(forKey: mediaKey)
+            }
+        case .scroll:
+            activeScrollStream.observe(input)
         default:
             break
         }
@@ -1745,12 +1851,71 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
             markAndPost(event)
             pressedMouseButtons.remove(buttonNumber)
         }
+        let mediaKeysToRelease = pressedMediaKeys
+        for (mediaKey, modifierFlags) in mediaKeysToRelease {
+            guard let event = SystemDefinedEvent.makeEvent(
+                key: mediaKey,
+                isPressed: false,
+                flags: CGEventFlags(rawValue: modifierFlags)
+            ) else {
+                allReleased = false
+                continue
+            }
+            markAndPost(event, flags: CGEventFlags(rawValue: modifierFlags))
+            pressedMediaKeys.removeValue(forKey: mediaKey)
+        }
+        if !releaseActiveScrollStreamOnQueue() {
+            allReleased = false
+        }
         capsLockRemoteInputPolicy.reset()
         droppedKeyUps.removeAll()
         activeKeyRemap.removeAll()
         return allReleased
             && pressedKeyCodes.isEmpty
             && pressedMouseButtons.isEmpty
+            && pressedMediaKeys.isEmpty
+            && !activeScrollStream.needsTermination
+    }
+
+    private func releaseActiveScrollStreamOnQueue() -> Bool {
+        guard activeScrollStream.needsTermination else {
+            activeScrollStream.reset()
+            return true
+        }
+        let stream = activeScrollStream
+        let units: CGScrollEventUnit = stream.unit == .line ? .line : .pixel
+        guard let event = CGEvent(
+            scrollWheelEvent2Source: eventSource,
+            units: units,
+            wheelCount: 2,
+            wheel1: 0,
+            wheel2: 0,
+            wheel3: 0
+        ) else {
+            return false
+        }
+        event.setIntegerValueField(
+            .scrollWheelEventIsContinuous,
+            value: units == .pixel ? 1 : 0
+        )
+        if stream.hasActiveScrollPhase {
+            event.setIntegerValueField(
+                .scrollWheelEventScrollPhase,
+                value: Int64(ScrollPhase.cancelled.rawValue)
+            )
+        }
+        if stream.hasActiveMomentumPhase {
+            event.setIntegerValueField(
+                .scrollWheelEventMomentumPhase,
+                value: Int64(ScrollMomentumPhase.end.rawValue)
+            )
+        }
+        markAndPost(
+            event,
+            flags: CGEventFlags(rawValue: stream.modifierFlags)
+        )
+        activeScrollStream.reset()
+        return true
     }
 
     private func markAndPost(

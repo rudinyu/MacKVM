@@ -21,7 +21,12 @@ public enum SecureSessionCollisionPolicy {
 }
 
 public struct SecureSessionHandshake: Codable, Equatable, Sendable {
-    public static let currentDisconnectSignalVersion = 1
+    /// Version 2 includes the authenticated heartbeat used to expire a
+    /// session whose TCP socket remains open while the peer's app is asleep or
+    /// stalled. Peers advertising the older close-only contract are rejected
+    /// before a session can be established, so they cannot silently fall back
+    /// to an unbounded stale connection.
+    public static let currentDisconnectSignalVersion = 2
 
     public let sessionID: UUID
     public let role: SecureSessionRole
@@ -135,6 +140,12 @@ public enum SecureSessionControlSignal {
     public static let disconnectAcknowledgement = Data(
         "MacKVM secure session disconnect acknowledgement v1".utf8
     )
+    public static let heartbeat = Data(
+        "MacKVM secure session heartbeat v1".utf8
+    )
+    public static let heartbeatAcknowledgement = Data(
+        "MacKVM secure session heartbeat acknowledgement v1".utf8
+    )
 
     public static func isDisconnect(_ payload: Data) -> Bool {
         payload == disconnect
@@ -142,6 +153,14 @@ public enum SecureSessionControlSignal {
 
     public static func isDisconnectAcknowledgement(_ payload: Data) -> Bool {
         payload == disconnectAcknowledgement
+    }
+
+    public static func isHeartbeat(_ payload: Data) -> Bool {
+        payload == heartbeat
+    }
+
+    public static func isHeartbeatAcknowledgement(_ payload: Data) -> Bool {
+        payload == heartbeatAcknowledgement
     }
 }
 

@@ -28,6 +28,9 @@ protocol ControlSessionTransport: AnyObject {
         AnyPublisher<ControlConnectionPublication, Never> { get }
     var onPayload: ((Data) -> Void)? { get set }
     var onAuthenticated: (() -> UInt64)? { get set }
+    var onHeartbeat: ((SecureSessionHeartbeatAcknowledgement) -> Void)? {
+        get set
+    }
 
     func send(_ payload: Data)
     func disconnect()
@@ -54,6 +57,9 @@ protocol ControlInputSink: AnyObject {
     func beginRemoteControl(completion: @escaping (Bool) -> Void)
     func endRemoteControl(completion: @escaping () -> Void)
     func receive(_ input: RemoteInputEvent)
+    /// Calls the completion after all input already queued for injection has
+    /// run. The result is false when the sink is no longer accepting input.
+    func awaitInputProcessing(completion: @escaping (Bool) -> Void)
 }
 
 final class ControlCoordinator: ObservableObject {
@@ -121,6 +127,8 @@ final class ControlCoordinator: ObservableObject {
     }
     private var receiverTeardown: ReceiverTeardown?
     private var transientRemoteInputTeardownCompletions: [() -> Void] = []
+    private var pendingHeartbeatAcknowledgements:
+        [SecureSessionHeartbeatAcknowledgement] = []
     private var isStoppingForQuit = false
     private var hasObservedConnectionState = false
     private var observedConnectedPeerID: UUID?
@@ -173,6 +181,13 @@ final class ControlCoordinator: ObservableObject {
         }
         secureSession.onPayload = { [weak self] data in
             self?.receive(data)
+        }
+        secureSession.onHeartbeat = { [weak self] acknowledgement in
+            guard let self else {
+                acknowledgement.complete()
+                return
+            }
+            self.acknowledgeHeartbeatAfterControlPathProgress(acknowledgement)
         }
         secureSession.onAuthenticated = { [weak self] in
             guard let self else { return 0 }
@@ -487,6 +502,7 @@ final class ControlCoordinator: ObservableObject {
             state = machine.state
             activeOutboundRequestID = nil
             activeControlDisplayAlreadyRemote = false
+            activeControlManagesDisplayRoute = true
             if let requestID {
                 send(
                     ControlMessage(
@@ -565,6 +581,65 @@ final class ControlCoordinator: ObservableObject {
         }
     }
 
+    /// A secure-session heartbeat must also pass through the same queues that
+    /// deliver remote input. Otherwise the transport queue can continue to
+    /// acknowledge heartbeats while the main or injection queue is stalled,
+    /// leaving the controller with a live lease and no usable control path.
+    private func acknowledgeHeartbeatAfterControlPathProgress(
+        _ acknowledgement: SecureSessionHeartbeatAcknowledgement
+    ) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else {
+                acknowledgement.complete()
+                return
+            }
+            guard !self.isStoppingForQuit else { return }
+            guard !self.isRemoteInputTearingDown else {
+                // During receiver teardown, deliberately retain this
+                // acknowledgement. A stalled release/monitor-restoration path
+                // must still let the peer's heartbeat lease expire, but a
+                // teardown that completes normally should release the same
+                // token below instead of making a healthy session wait for its
+                // 15-second timeout.
+                self.pendingHeartbeatAcknowledgements.append(acknowledgement)
+                return
+            }
+            guard self.isReceivingControl else {
+                // With no active receiver there is no remote-input queue to
+                // prove. The secure session itself is still a valid lease.
+                acknowledgement.complete()
+                return
+            }
+            self.inputSink.awaitInputProcessing { [weak self] didProgress in
+                DispatchQueue.main.async {
+                    guard let self else {
+                        acknowledgement.complete()
+                        return
+                    }
+                    guard !self.isStoppingForQuit else { return }
+                    if self.isRemoteInputTearingDown {
+                        // Teardown may begin after the input barrier was
+                        // queued but before its callback reaches the main
+                        // queue. Re-evaluate this token when teardown finishes.
+                        self.pendingHeartbeatAcknowledgements.append(acknowledgement)
+                        return
+                    }
+                    if didProgress || !self.isReceivingControl {
+                        acknowledgement.complete()
+                    }
+                }
+            }
+        }
+    }
+
+    private func completeDeferredHeartbeatAcknowledgements() {
+        guard !isRemoteInputTearingDown else { return }
+        let acknowledgements = pendingHeartbeatAcknowledgements
+        pendingHeartbeatAcknowledgements.removeAll()
+        guard !isStoppingForQuit else { return }
+        acknowledgements.forEach { $0.complete() }
+    }
+
     private func handle(_ message: ControlMessage) {
         guard !isStoppingForQuit else { return }
         switch message.kind {
@@ -584,6 +659,7 @@ final class ControlCoordinator: ObservableObject {
             state = machine.state
             activeOutboundRequestID = nil
             activeControlDisplayAlreadyRemote = false
+            activeControlManagesDisplayRoute = true
             completeActiveControlRequest(false)
             status = "The other Mac denied control"
         case .endControl:
@@ -788,6 +864,7 @@ final class ControlCoordinator: ObservableObject {
                 state = machine.state
                 activeOutboundRequestID = nil
                 activeControlDisplayAlreadyRemote = false
+                activeControlManagesDisplayRoute = true
                 if let requestID {
                     send(
                         ControlMessage(
@@ -818,6 +895,7 @@ final class ControlCoordinator: ObservableObject {
             }
             activeOutboundRequestID = nil
             activeControlDisplayAlreadyRemote = false
+            activeControlManagesDisplayRoute = true
             completeActiveControlRequest(false)
             status = "Ignored an unexpected control grant"
         }
@@ -858,12 +936,14 @@ final class ControlCoordinator: ObservableObject {
         }
         let wasControlling = state == .controlling
         let wasWaitingForControlGrant = state == .suspended
+        let sessionManagedDisplayRoute = activeControlManagesDisplayRoute
         requestTimeout?.cancel()
         requestTimeout = nil
         incomingRequestTimeout?.cancel()
         incomingRequestTimeout = nil
         activeOutboundRequestID = nil
         activeControlDisplayAlreadyRemote = false
+        activeControlManagesDisplayRoute = true
         if wasWaitingForControlGrant {
             completeActiveControlRequest(false)
         }
@@ -871,7 +951,7 @@ final class ControlCoordinator: ObservableObject {
             resolvePendingIncomingControlRequest(request)
         }
         preparingIncomingControlRequest = nil
-        if wasControlling {
+        if wasControlling && sessionManagedDisplayRoute {
             onControllingStopped?()
         }
         if var teardown = receiverTeardown {
@@ -938,6 +1018,7 @@ final class ControlCoordinator: ObservableObject {
         state = machine.state
         activeOutboundRequestID = nil
         activeControlDisplayAlreadyRemote = false
+        activeControlManagesDisplayRoute = true
         completeActiveControlRequest(false)
         status = "Yielded a simultaneous request to the other Mac"
     }
@@ -1089,6 +1170,7 @@ final class ControlCoordinator: ObservableObject {
             sendResponse(kind: .endControl, for: teardown.request)
         }
         teardown.completions.forEach { $0() }
+        completeDeferredHeartbeatAcknowledgements()
     }
 
     /// Cleans up a cancelled incoming acceptance or a connection transition.
@@ -1107,6 +1189,7 @@ final class ControlCoordinator: ObservableObject {
             transientRemoteInputTeardownCompletions.removeAll()
             isRemoteInputTearingDown = false
             completions.forEach { $0() }
+            completeDeferredHeartbeatAcknowledgements()
         }
     }
 
