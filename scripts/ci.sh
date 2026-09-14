@@ -25,8 +25,9 @@ swift test --disable-sandbox
 ./scripts/build-ddc-diagnostic.sh --arch universal
 ./dist/ddc-diagnostic-universal --help >/dev/null
 
-# The Windows protocol project is target-framework neutral, so its self-test
-# can run on this macOS build host without a Windows VM. Run it automatically
+# The Windows protocol and desktop production-path self-tests are framework
+# neutral and inject native desktop boundaries, so they can run on this macOS
+# build host without a Windows VM. Run them automatically
 # when a .NET SDK is available, but keep the macOS validation useful on a clean
 # Mac that only has the Swift/Xcode prerequisites. Set RUN_WINDOWS_CI=1 in
 # required environments (such as GitHub Actions) to turn a missing SDK into a
@@ -66,7 +67,7 @@ if [[ "$run_windows_ci" != "0" && "$run_windows_ci" != "false" ]] \
       windows_test_runtime=osx-x64
       ;;
     *)
-      echo "Unsupported host architecture for the Windows protocol self-test." >&2
+      echo "Unsupported host architecture for the Windows self-tests." >&2
       exit 1
       ;;
   esac
@@ -74,18 +75,22 @@ if [[ "$run_windows_ci" != "0" && "$run_windows_ci" != "false" ]] \
     WindowsKVM/src/WindowsKVM.Desktop/WindowsKVM.Desktop.csproj \
     --configuration Release \
     -p:EnableWindowsTargeting=true
-  dotnet publish \
-    WindowsKVM/tests/WindowsKVM.Protocol.SelfTest/WindowsKVM.Protocol.SelfTest.csproj \
-    --configuration Release \
-    --runtime "$windows_test_runtime" \
-    --self-contained true \
-    --output "$windows_build_dir"
-  "$windows_build_dir/WindowsKVM.Protocol.SelfTest"
+  for windows_test_suite in Protocol Desktop; do
+    windows_test_name="WindowsKVM.$windows_test_suite.SelfTest"
+    windows_test_output="$windows_build_dir/$windows_test_suite"
+    dotnet publish \
+      "WindowsKVM/tests/$windows_test_name/$windows_test_name.csproj" \
+      --configuration Release \
+      --runtime "$windows_test_runtime" \
+      --self-contained true \
+      --output "$windows_test_output"
+    "$windows_test_output/$windows_test_name"
+  done
 elif "$windows_ci_required"; then
   echo "A .NET 8 SDK (or newer) is required when RUN_WINDOWS_CI=1." >&2
   exit 1
 else
-  echo "Skipping Windows protocol checks: a .NET 8 SDK was not found (set RUN_WINDOWS_CI=1 to require it)."
+  echo "Skipping Windows checks: a .NET 8 SDK was not found (set RUN_WINDOWS_CI=1 to require it)."
 fi
 
 assert_build_app_rejected() {

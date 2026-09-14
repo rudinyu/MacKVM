@@ -6,7 +6,7 @@ WindowsKVM 是 MacKVM 的 Windows companion。目前 Windows 版包含原生 Win
 host，可在區域網路上與 MacKVM 配對、完成 secure Connect 驗證，並接收加密鍵盤／滑鼠控制；
 另外保留 console 模式供自動化與防火牆診斷。
 
-## 目前功能 — 1.02.19（build 99）
+## 目前功能 — 1.02.22（build 102）
 
 Windows host 已包含：
 
@@ -28,17 +28,20 @@ Windows host 已包含：
 - 與 MacKVM protocol v2 相容且嚴格驗證 lower-camel control message 與 remote input；
 - Windows `SendInput` 鍵盤、修飾鍵、Unicode fallback、滑鼠、按鍵、多媒體鍵與具 unit 區分的
   pixel／line 滾輪注入（包含 pointer pressure 與 trackpad phase metadata）；
+- 轉送長按重複事件，並正確映射中鍵與 XBUTTON1／XBUTTON2；未支援的亮度、鍵盤背光鍵與額外滑鼠按鈕
+  會安全忽略，不會觸發無關的 Windows 動作；
 - 在控制結束、輸入錯誤、斷線或程式結束時釋放所有按住的按鍵／滑鼠按鈕；
 - UI 原生配對／控制同意對話框、常駐系統匣圖示、與 macOS 對齊且可捲動的狀態視窗，以及公開的
   **複製支援資訊**；
+- Advanced mode 會將完整本機金鑰指紋以固定短行顯示，窄視窗或高 DPI 時不會被下一列 DPAPI 說明覆蓋；
 - 互動式完成 Mac 配對後，已釘選的控制授權預設自動開啟（測試專用的 `--yes` 流程維持一次性）；
   **Automatically allow control from this paired Mac** 勾選框，以及 `--allow-control`／`--deny-control`
   指令可關閉或恢復這個持久決定。
   關閉自動同意後，控制對話框中的單次 **Allow** 只適用於當次請求，不會重新啟用持久授權；請用
   勾選框或 `--allow-control` 恢復；
-- responsive **Simple mode／Advanced mode**：小螢幕自動使用 Simple mode，只保留必要的
+- responsive **Simple mode／Advanced mode**：預設使用精簡 Simple mode，只保留必要的
   identity／配對／控制操作，標題列可以手動切換完整 Advanced mode；
-- Simple mode 與 Advanced mode 都提供 **Forget paired Mac**，會移除 Windows trust pin，
+- 裝置管理提供 **Forget paired Mac**，會移除 Windows trust pin，
   並中止該 peer 的既有 secure session；
 - `--pairing-listen` 模式的共用 console 同意提示（測試時可用 `--yes`）；
 - `Ctrl+Alt+Shift+Esc` 緊急快捷鍵，直接把控制權交還 Windows。
@@ -62,18 +65,28 @@ UI 會在啟動時開始 receiver 並常駐在 Windows 系統匣；關閉狀態�
 
 Windows 狀態視窗沿用 macOS MacKVM 面板的資訊順序，並提供兩種模式：
 
-- **Simple mode**：當螢幕小於 900×1120 像素，或視窗可用區域較窄／較矮時自動啟用。
-  它保留版本、網路／輸入就緒、配對狀態、控制權、防火牆設定、Refresh 與 Quit，不需要長距離捲動。
-- **Advanced mode**：保留完整診斷與支援資訊。可用標題列按鈕切換；小螢幕下仍可捲動查看完整內容。
+- **Simple mode**：預設的精簡面板，只顯示 PC 名稱、簡短的就緒／配對／控制狀態、必要操作與小型版本／build 標示。
+  型號、TCP port、UUID、完整金鑰指紋與冗長的設定說明不會出現在日常畫面。
+- **Advanced mode**：保留完整身分、防火牆設定、裝置管理、自動控制同意、診斷與支援資訊。
+  可用標題列按鈕切換，回到 Simple 時視窗會再縮小；Advanced 可垂直捲動，視窗較窄時也會提供
+  橫向捲動，確保完整大小的控制項仍可操作。
+
+拖曳縮小時會依螢幕工作區設定最小可操作尺寸，並保留 Windows 系統本身的尺寸下限，避免 Simple 控制項在極窄視窗中重疊。
+視窗標題與主標題統一為 **WindowsKVM**；窄版 Simple 會將模式按鈕移到主標題下方。
+捲動採用整批搬動與完整重繪，不保留舊列的像素。
+
+同意請求不會因為模式不同而隱藏。精簡狀態顯示錯誤時，可切至 Advanced 查看完整診斷。
+系統匣選單仍可重新開啟隱藏的狀態視窗；已顯示的主視窗不再重複放置 **Open window** 按鈕。
 
 完整 Advanced mode 的區段順序為：
 
-1. **標題區**：MacKVM 品牌、本機友善名稱、裝置 ID、型號、版本／build 與公開金鑰指紋。
+1. **標題區**：WindowsKVM 品牌、本機友善名稱、裝置 ID、型號、版本／build 與公開金鑰指紋。
 2. **設定這台 PC**：Local Network、Input Monitoring、Accessibility、防火牆設定、輸入就緒、
    控制請求通知與重新整理。
 3. **實體輸入路徑**：鍵盤／滑鼠／觸控板擁有者摘要與 Windows `SendInput` 路徑。
    選擇 **Local Windows input only** 會停用遠端控制請求（並釋放目前控制權）；切回第一個選項
    才允許已配對的 Mac 再次請求控制。
+   下拉清單展開時可同時容納兩個選項，捲動或縮放後仍保留此高度。此設定不代表支援 Windows 向 Mac 傳送輸入。
 4. **附近的 Mac**：配對 listener 狀態與所有已信任 Mac 的選擇器（包含短裝置 ID）；先選取
    peer 再使用 **Forget paired Mac**。Pair 與 Connect 仍由 MacKVM peer 發起。
 5. **鍵盤、滑鼠與觸控板**：權限狀態、目前控制狀態與本機交還快捷鍵。
@@ -81,9 +94,15 @@ Windows 狀態視窗沿用 macOS MacKVM 面板的資訊順序，並提供兩種�
 7. **已配對裝置資訊**：目前 Mac 的公開 identity、**Forget paired Mac**、**Automatically allow
    control from this paired Mac**、本機 identity 詳細資料與公開的 **複製支援資訊**功能。
 
-配對驗證碼，以及關閉自動同意後的控制請求，使用原生 Windows Yes／No 對話框；互動式配對的新 peer
+配對驗證碼，以及關閉自動同意後的控制請求，使用原生 Windows Allow／Deny 對話框；互動式配對的新 peer
 預設直接依照自動同意處理，測試專用的 `--yes` 配對則保持未設定。關閉後，控制對話框中的單次 **Allow** 不會改變持久設定；請用
 勾選框或 `--allow-control` 恢復自動同意。系統匣選單提供 **Open WindowsKVM** 與 **Quit WindowsKVM**。
+
+同一時間只允許一個 UI 或 console receiver。啟動 `--pairing-listen` 前，先使用 **Quit WindowsKVM**
+結束原本的 receiver；隱藏視窗不會停止它。查詢版本與管理配對的指令仍可使用，且不會另外啟動 receiver。
+
+同意對話框會綁定目前請求，同一時間只顯示一個。取消或逾時後會關閉該請求的對話框，不能事後同意。
+遇到此情況，請從 MacKVM 發起新的請求，並重新核對驗證碼。
 
 ## 建置與啟動
 
@@ -124,7 +143,7 @@ UI 的 **Forget paired Mac** 也會要求常駐 receiver 立即關閉相符的 s
 1. 在 Windows 啟動 `WindowsKVM.exe`（或 `WindowsKVM.exe --ui`）；UI 會啟動 pairing／secure
    listener 並加入系統匣。要做腳本測試時，改用 `WindowsKVM.exe --pairing-listen`。
 2. 在已配對的 Mac 按 **Pair**，比較兩邊的六位數驗證碼。
-3. UI 模式在原生配對對話框比較六位數驗證碼後按 **Yes**；console 模式則在
+3. UI 模式在原生配對對話框比較六位數驗證碼後按 **Allow**；console 模式則在
    `Accept pairing?` 提示輸入 `y`。
 4. 如果 Windows peer 是用舊 W1 build 配對，請重新配對一次，讓 W2/W3 建立
    `%LOCALAPPDATA%\MacKVM\trusted-peers.json`。
@@ -139,6 +158,10 @@ UI 的 **Forget paired Mac** 也會要求常駐 receiver 立即關閉相符的 s
 8. 要把控制權交還 Windows，請在 Windows 按 `Ctrl+Alt+Shift+Esc`，或從 MacKVM 結束
    control。兩種路徑都會釋放按住的按鍵／滑鼠按鈕。
 
+交還控制不會中斷已認證的 secure session；已結束請求的在途輸入會被忽略，後續控制請求必須取得新的
+grant。選擇 **Local Windows input only** 也會通知 Mac 控制已結束。重新開啟遠端輸入只允許新請求，
+不會默默恢復先前的控制權。
+
 console 模式驗證並取得控制時，Windows 應顯示（UI 狀態視窗也會同步顯示）：
 
 ```text
@@ -152,16 +175,45 @@ Windows control granted for ...
 重設後刻意重新配對，Windows 會顯示明確的取代警告，只有驗證碼確認後才會更新 pin。若 identity
 檔案無法解密或驗證失敗，receiver 會 fail closed；重設方式請依照[Windows 建置手冊](../WINDOWS_BUILD.zh-TW.md)。
 
+## Windows 回歸驗收
+
+請在 Windows x64 與 ARM64，搭配相容的 MacKVM 各執行一次。輸入測試請使用可丟棄的文字文件；
+模擬 native API 的自動測試不能取代這些桌面操作檢查。
+
+1. 分別長按字母、Backspace 與方向鍵，確認持續重複、放開即停止。按住 Ctrl 或滑鼠按鈕時結束控制，
+   確認之後可正常使用本機輸入，不會留下按住的修飾鍵。
+2. 用五鍵滑鼠測試中鍵與兩個側鍵；中鍵不能變成上一頁，側鍵不得造成控制中斷。測試亮度／鍵盤背光鍵，
+   確認不會開啟 Mail、停止播放或斷線；目前 receiver 不實作 Windows 亮度調整。
+3. 持續移動滑鼠時按 Windows 交還控制熱鍵。secure connection 應保持連線，重新請求控制時不需再配對
+   或重新 Connect。
+4. 控制中選 **Local Windows input only**，隨即重新開啟遠端輸入；舊 grant 必須維持結束，從 MacKVM
+   發起的新請求則可正常取得控制。也在同意請求仍待回應時重複此操作。
+5. 關閉測試 peer 的自動控制同意，讓控制對話框超過 15 秒不回應；另一次測試則從 Mac 取消配對請求。
+   過期對話框應關閉，重試只顯示新請求。也測試多個排隊請求，以及同意視窗開啟時退出 app，確認不會
+   接受已失效的請求。
+6. UI 常駐時在 console 啟動 `--pairing-listen`，第二個 receiver 應退出，原本 UI 仍正常；`--version`
+   與 `--list-paired` 應可使用。退出 UI、改用 console receiver，再開 UI 重複驗證不能啟動第二個 receiver。
+7. 在 1366×768 桌面與 150%／200% 縮放下檢查 Simple mode，必要操作必須可使用，視窗不能蓋住工作列。
+   開啟 Advanced 檢查隱藏的身分與 port 資訊；在窄視窗使用橫向捲動確認右側操作仍可使用。
+   再切回 Simple，確認視窗縮小且橫向捲軸消失；拖曳至最小尺寸，確認模式與配對按鈕不重疊。連線時調整大小或移動到
+   不同螢幕，切換版面不得重設配對或控制權，同意對話框也必須保持可操作。
+8. 確認 `--version` 為 **1.02.22（build 102）**；先前 UI 問題的測試版本為
+   **1.02.09（build 89）Beta 3**，不是本版。啟動替換版前先退出舊的系統匣 receiver。
+   確認視窗標題與主標題為 **WindowsKVM**，在 Advanced 快速上下捲動並拖動兩個捲軸，
+   不應殘留舊文字。捲動／縮放前後展開 **Physical input path**，分別選取兩個選項；
+   在 Simple 重複操作，確認兩種模式的選擇一致。恢復遠端輸入後，從 Mac 發起新的控制請求驗證功能。
+
 ## 相容性
 
 簽章配對支援 Windows 10 build 19041 以上。Secure Connect 需要 Windows build 10.0.20142
 以上，因為 W3 使用的 .NET ChaCha20-Poly1305 primitive 從此版本開始可用。較舊 Windows
 仍可配對，但執行檔會明確顯示 secure Connect 已停用。
 
-在 Windows 開發主機執行 protocol self-test：
+在開發主機執行 protocol 與 desktop regression self-test：
 
 ```powershell
 .\scripts\test-windows.ps1
 ```
 
-macOS repository CI 在有 .NET 8 SDK 時也會自動執行這項 self-test。
+macOS repository CI 在有 .NET 8 SDK 或更新版本時也會自動執行這些 self-test。
+Desktop 測試透過可替換的平台介面驗證程式邏輯；原生 Windows 對話框與輸入操作仍須另外驗收。

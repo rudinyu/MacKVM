@@ -6,10 +6,10 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$project = Join-Path $repoRoot "WindowsKVM/tests/WindowsKVM.Protocol.SelfTest/WindowsKVM.Protocol.SelfTest.csproj"
+$testSuites = @("Protocol", "Desktop")
 
-$isWindows = $env:OS -eq "Windows_NT"
-$platform = if ($isWindows) {
+$runningOnWindows = $env:OS -eq "Windows_NT"
+$platform = if ($runningOnWindows) {
     "Windows"
 } elseif (Get-Command uname -ErrorAction SilentlyContinue) {
     (& uname -s).Trim()
@@ -18,7 +18,7 @@ $platform = if ($isWindows) {
 }
 
 function Get-HostArchitecture {
-    if ($isWindows) {
+    if ($runningOnWindows) {
         $architectureText = $env:PROCESSOR_ARCHITEW6432
         if ([string]::IsNullOrWhiteSpace($architectureText)) {
             $architectureText = $env:PROCESSOR_ARCHITECTURE
@@ -54,22 +54,22 @@ $runtime = if ($platform -eq "Windows") {
 } elseif ($platform -eq "Linux") {
     if ($hostArchitecture -eq "arm64") { "linux-arm64" } else { "linux-x64" }
 } else {
-    throw "The current operating system is not supported by the protocol self-test."
-}
-
-$binaryName = if ($isWindows) {
-    "WindowsKVM.Protocol.SelfTest.exe"
-} else {
-    "WindowsKVM.Protocol.SelfTest"
+    throw "The current operating system is not supported by the Windows self-tests."
 }
 
 $publishDirectory = Join-Path ([System.IO.Path]::GetTempPath()) (
     "MacKVM-WindowsKVM-SelfTest-" + [Guid]::NewGuid().ToString("N")
 )
-$run = "dotnet publish `"$project`" --configuration $Configuration --runtime $runtime --self-contained true --output `"$publishDirectory`""
 if ($Plan) {
-    Write-Output $run
-    Write-Output "Run `"$publishDirectory\$binaryName`""
+    foreach ($testSuite in $testSuites) {
+        $testName = "WindowsKVM.$testSuite.SelfTest"
+        $project = Join-Path $repoRoot "WindowsKVM/tests/$testName/$testName.csproj"
+        $testOutput = Join-Path $publishDirectory $testSuite
+        $binaryName = if ($runningOnWindows) { "$testName.exe" } else { $testName }
+        $executable = Join-Path $testOutput $binaryName
+        Write-Output "dotnet publish `"$project`" --configuration $Configuration --runtime $runtime --self-contained true --output `"$testOutput`""
+        Write-Output "Run `"$executable`""
+    }
     exit 0
 }
 
@@ -79,23 +79,29 @@ if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
 
 New-Item -ItemType Directory -Force -Path $publishDirectory | Out-Null
 try {
-    & dotnet publish $project `
-        --configuration $Configuration `
-        --runtime $runtime `
-        --self-contained true `
-        --output $publishDirectory
-    if ($LASTEXITCODE -ne 0) {
-        throw "WindowsKVM protocol self-test publish failed with exit code $LASTEXITCODE."
-    }
+    foreach ($testSuite in $testSuites) {
+        $testName = "WindowsKVM.$testSuite.SelfTest"
+        $project = Join-Path $repoRoot "WindowsKVM/tests/$testName/$testName.csproj"
+        $testOutput = Join-Path $publishDirectory $testSuite
+        $binaryName = if ($runningOnWindows) { "$testName.exe" } else { $testName }
+        & dotnet publish $project `
+            --configuration $Configuration `
+            --runtime $runtime `
+            --self-contained true `
+            --output $testOutput
+        if ($LASTEXITCODE -ne 0) {
+            throw "$testName publish failed with exit code $LASTEXITCODE."
+        }
 
-    $executable = Join-Path $publishDirectory $binaryName
-    if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
-        throw "The self-contained protocol self-test was not published at $executable."
-    }
+        $executable = Join-Path $testOutput $binaryName
+        if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
+            throw "The self-contained $testName was not published at $executable."
+        }
 
-    & $executable
-    if ($LASTEXITCODE -ne 0) {
-        throw "WindowsKVM protocol self-test failed with exit code $LASTEXITCODE."
+        & $executable
+        if ($LASTEXITCODE -ne 0) {
+            throw "$testName failed with exit code $LASTEXITCODE."
+        }
     }
 } finally {
     if (Test-Path -LiteralPath $publishDirectory) {

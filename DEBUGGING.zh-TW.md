@@ -84,6 +84,14 @@ ifconfig
 
 Windows UI 會顯示即時狀態與原生同意對話框，但啟動時會脫離 console。目前 Windows app 沒有持久化檔案 logger，也沒有 Event Viewer provider。除錯時請以 console 模式啟動同一個 receiver，以保留 pairing、mDNS、TCP、handshake 與 input 訊息。
 
+切換到 console 模式前，先從系統匣選單選 **Quit WindowsKVM**；只關閉狀態視窗會讓 receiver
+繼續執行。UI 與 `--pairing-listen` 共用單一接收器保護，第二個 receiver 會顯示已在執行的訊息並退出，
+不會用另一個 port 廣播相同 identity。receiver 執行期間仍可使用 `--version`、`--list-paired`、
+`--forget`、`--allow-control` 與 `--deny-control`。
+
+收集完 console log 後，先停止該 receiver，再重新開啟 UI。重新導向 `WindowsKVM.exe --ui`
+的輸出不會啟用持久化 UI log。
+
 ### 確認執行檔並保存完整 log
 
 請在 repository 根目錄執行，或把 `$exe` 改成實際複製的執行檔路徑：

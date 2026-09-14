@@ -88,8 +88,9 @@ with the `net8.0-windows` app restore state.
 
 The script stops on the first failed publish. A successful run prints the
 detected PE architecture (`x64` or `arm64`) for each executable.
-The repository CI repeats this publish on a Windows runner, so a successful
-local cross-build is not the only Windows build check.
+Run the Windows desktop acceptance checks on both architectures before a
+release; a successful cross-build does not validate native dialogs, hotkeys,
+or input injection on a real Windows desktop.
 
 ## Run the pairing receiver
 
@@ -99,7 +100,10 @@ Confirm the executable before starting a test:
 .\WindowsKVM.exe --version
 ```
 
-The current UI test build reports `WindowsKVM 1.02.19 (build 99)`.
+The current UI test build reports `WindowsKVM 1.02.22 (build 102)`.
+This is newer than **1.02.09 (build 89) Beta 3** used in the reported scrolling
+and dropdown tests. Quit the previous tray receiver before replacing it;
+check this version label and the **WindowsKVM** window title after startup.
 
 After publishing on Windows, start the resident UI:
 
@@ -108,7 +112,7 @@ After publishing on Windows, start the resident UI:
 ```
 
 The UI adds a Windows notification-area icon, starts both listeners, and shows
-native Yes/No dialogs for pairing and for control requests whose automatic
+native Allow/Deny dialogs for pairing and for control requests whose automatic
 approval is disabled. Pairing enables automatic control for the currently
 pinned public key by default; turn off **Automatically allow control from this
 paired Mac** in **Paired device information** when every request should prompt.
@@ -117,14 +121,16 @@ tray menu to stop all listeners. For a scripted console run, use
 `--pairing-listen`; `--yes` is only for a controlled test because it
 automatically accepts pairing and control without persisting control approval:
 
-The status window follows the macOS panel order and has two views. **Simple
-mode** is selected automatically below 900×1120 screen pixels (or when the
-window client area is compact); it keeps identity, readiness, pairing,
-control-state, firewall, Refresh, and Quit actions visible. **Advanced mode**
+The status window has two views. The compact default **Simple mode** keeps
+the PC name, concise readiness, pairing/control status, essential actions,
+and a small version/build label. Model, TCP ports, UUIDs, full key fingerprints,
+and lengthy setup explanations are hidden until needed. **Advanced mode**
 shows the complete header, **Set up this PC**, **Physical input path**,
 **Nearby Macs**, **Keyboard, mouse, and trackpad**, **Monitor input**, and
 **Paired device information** sections. The header button switches between the
-two modes, and Advanced remains scrollable on short displays. Pair and Connect
+two modes; switching back to Simple shrinks the window, while Advanced remains
+vertically scrollable on short displays, with horizontal scrolling available
+in narrow Advanced windows. Pair and Connect
 still start on the MacKVM peer, while Windows shows the corresponding consent
 dialog and live status.
 
@@ -137,11 +143,21 @@ The receiver advertises `_mackvm._tcp` for pairing and
 listeners use random TCP ports by default. When the Mac connects for pairing,
 the console mode prints the incoming peer, the verification code, and an
 explicit `Accept pairing?` prompt. In UI mode the same decision appears in a
-native Yes/No dialog. Compare the code with the initiating Mac, then type
-`y` or `yes` in console mode, or choose **Yes** in the UI. Windows Defender Firewall may show its standard Private-network
+native Allow/Deny dialog. Compare the code with the initiating Mac, then type
+`y` or `yes` in console mode, or choose **Allow** in the UI. Windows Defender Firewall may show its standard Private-network
 prompt; allow the executable on the trusted local network only. The
 application does not add a broad or silent firewall rule. The CLI also prints
 each received pairing frame and detailed transport/protocol errors.
+
+UI and console modes share a single receiver-instance guard. To switch modes,
+choose **Quit WindowsKVM** in the tray or stop the console receiver first;
+merely hiding the UI window is not enough. A second receiver exits with an
+already-running message. One-shot version and paired-device management
+commands remain available while the receiver is running.
+
+UI consent requests are displayed one at a time and cancelled dialogs close
+automatically. An expired request cannot be approved using an old dialog;
+retry from MacKVM and compare the current verification code.
 
 To inspect or remove the Windows-side trust pins from a console, use the full
 peer ID printed by `--list-paired`:
@@ -155,8 +171,9 @@ peer ID printed by `--list-paired`:
 
 `--forget` is a one-shot durable trust-store operation; pair again from MacKVM
 before pressing Connect. If another WindowsKVM receiver is already running,
-restart it after the CLI command so it reloads the trust store, or use the UI
-**Forget paired Mac** action to revoke that peer and close its active session.
+it refreshes durable trust at control admission and while input is flowing.
+Use the UI **Forget paired Mac** action when the active session should be
+closed immediately, including when it is idle.
 `--allow-control` and `--deny-control` update only the selected pinned Mac's
 local control-consent decision; the running receiver reloads this atomic file
 before the next control request. They do not replace the public-key pin.
@@ -226,7 +243,8 @@ old Windows peer on every Mac that trusted it, then remove the corrupt file
 again to create a new identity. This prevents an implicit key/UUID rotation
 from silently stranding existing pairings.
 
-The protocol self-test can be run on a Windows development host with:
+The protocol and desktop regression self-tests can be run on a development
+host with:
 
 ```powershell
 .\scripts\test-windows.ps1

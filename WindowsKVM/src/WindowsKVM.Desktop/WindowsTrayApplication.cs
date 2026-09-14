@@ -15,29 +15,37 @@ namespace WindowsKVM;
 internal sealed class WindowsTrayApplication : IDisposable
 {
     private const string WindowClassName = "MacKVM.WindowsKVM.TrayHost";
-    private const string WindowTitle = "MacKVM — Windows";
+    private const string WindowTitle = "WindowsKVM";
     private const uint WindowMessageTray = 0x8001;
     private const uint WindowMessageStatus = 0x8002;
     private const uint WindowMessageConsent = 0x8003;
+    private const uint WindowMessageConsentCancel = 0x8004;
     private const uint WindowMessageClose = 0x0010;
     private const uint WindowMessageDestroy = 0x0002;
     private const uint WindowMessageCommand = 0x0111;
     private const uint WindowMessagePaint = 0x000F;
     private const uint WindowMessageSize = 0x0005;
+    private const uint WindowMessageGetMinMaxInfo = 0x0024;
     private const uint WindowMessageSetRedraw = 0x000B;
+    private const uint WindowMessageHScroll = 0x0114;
     private const uint WindowMessageVScroll = 0x0115;
     private const uint WindowMessageMouseWheel = 0x020A;
     private const uint WindowMessageControlColorStatic = 0x0138;
     private const uint WindowMessageSetFont = 0x0030;
+    private const uint WindowMessageKeyDown = 0x0100;
     private const uint WindowMessageLeftButtonDoubleClick = 0x0203;
     private const uint WindowMessageRightButtonUp = 0x0205;
     private const uint WindowStyleOverlappedWindow = 0x00CF0000;
     private const uint WindowStyleChild = 0x40000000;
     private const uint WindowStyleVisible = 0x10000000;
     private const uint WindowStyleVerticalScroll = 0x00200000;
+    private const uint WindowStyleHorizontalScroll = 0x00100000;
     private const uint WindowStyleClipChildren = 0x02000000;
     private const uint WindowStyleClipSiblings = 0x04000000;
     private const uint WindowStyleTabStop = 0x00010000;
+    private const uint WindowStyleThickFrame = 0x00040000;
+    private const uint WindowStyleMinimizeBox = 0x00020000;
+    private const uint WindowStyleMaximizeBox = 0x00010000;
     private const uint WindowExtendedStyleComposited = 0x02000000;
     private const uint StaticStyleLeft = 0x00000000;
     private const uint ButtonStylePushButton = 0x00000000;
@@ -54,6 +62,8 @@ internal sealed class WindowsTrayApplication : IDisposable
     private const int ViewModeButtonID = 1006;
     private const int ForgetButtonID = 1007;
     private const int ControlAuthorizationButtonID = 1008;
+    private const int ConsentYesButtonID = 1101;
+    private const int ConsentNoButtonID = 1102;
     private const int TrayShowCommandID = 2001;
     private const int TrayQuitCommandID = 2002;
     private const uint MenuString = 0x00000000;
@@ -78,12 +88,19 @@ internal sealed class WindowsTrayApplication : IDisposable
     private const uint ComboBoxHasStrings = 0x0200;
     private const uint ComboBoxAddString = 0x0143;
     private const uint ComboBoxGetCurrentSelection = 0x0147;
+    private const uint ComboBoxGetCount = 0x0146;
+    private const uint ComboBoxGetItemHeight = 0x0154;
     private const uint ComboBoxResetContent = 0x014B;
     private const uint ComboBoxSetCurrentSelection = 0x014E;
     private const uint ComboBoxSelectionChanged = 0x0001;
+    private const uint EditStyleMultiline = 0x0004;
+    private const uint EditStyleAutoVScroll = 0x0040;
+    private const uint EditStyleReadOnly = 0x0800;
+    private const uint EditStyleWantReturn = 0x1000;
     private const uint ButtonGetCheck = 0x00F0;
     private const uint ButtonSetCheck = 0x00F1;
     private const int ButtonStateChecked = 1;
+    private const int ScrollBarHorizontal = 0;
     private const int ScrollBarVertical = 1;
     private const uint ScrollInfoRange = 0x0001;
     private const uint ScrollInfoPage = 0x0002;
@@ -98,30 +115,36 @@ internal sealed class WindowsTrayApplication : IDisposable
     private const int ScrollCodeTop = 6;
     private const int ScrollCodeBottom = 7;
     private const int ScrollCodeEndScroll = 8;
-    private const uint WindowPositionNoSize = 0x0001;
     private const uint WindowPositionNoRedraw = 0x0008;
     private const uint WindowPositionNoActivate = 0x0010;
     private const uint WindowPositionNoZOrder = 0x0004;
+    private const uint WindowPositionNoCopyBits = 0x0100;
     private const uint RedrawInvalidate = 0x0001;
     private const uint RedrawErase = 0x0004;
     private const uint RedrawAllChildren = 0x0080;
     private const uint RedrawUpdateNow = 0x0100;
-    private const int AdvancedContentHeight = 1960;
-    private const int SimpleContentHeight = 760;
-    private const int DefaultWindowWidth = 860;
-    private const int DefaultWindowHeight = 900;
+    private const uint RedrawFrame = 0x0400;
+    // The full SHA-256 fingerprint is intentionally rendered over two short
+    // lines in Advanced mode.  A single long STATIC line wraps at an
+    // implementation-dependent word boundary and used to be clipped by the
+    // following support-information row.
+    private const int AdvancedContentHeight = 2000;
+    private const int SimpleContentHeight = 500;
     private const int ScreenMetricWidth = 0;
     private const int ScreenMetricHeight = 1;
-    private const int CompactScreenWidth = 900;
-    private const int CompactScreenHeight = 1120;
-    private const int CompactClientWidth = 760;
-    private const int CompactClientHeight = 760;
+    private const uint SystemParametersInfoGetWorkArea = 0x0030;
+    private const uint MonitorDefaultToNearest = 0x00000002;
+    private const int ConsentWindowWidth = 620;
+    private const int ConsentWindowHeight = 330;
+    private const uint ConsentWindowStyle = WindowStyleOverlappedWindow
+        & ~(WindowStyleThickFrame | WindowStyleMinimizeBox | WindowStyleMaximizeBox);
+    private const int VirtualKeyEscape = 0x1B;
+    private const int VirtualKeyReturn = 0x0D;
 
     private readonly WindowsKvmRuntime runtime;
     private readonly WndProc windowProc;
-    private readonly Mutex instanceMutex;
     private readonly ConcurrentQueue<WindowsKVM.Protocol.PeerIdentity> pendingPairedPeers = new();
-    private readonly ConcurrentDictionary<long, ConsentRequest> pendingConsents = new();
+    private readonly ConsentRequestCoordinator consentRequests;
     private readonly List<ChildLayout> childLayouts = new();
     private readonly HashSet<IntPtr> advancedControls = new();
     private readonly HashSet<IntPtr> simpleControls = new();
@@ -130,6 +153,7 @@ internal sealed class WindowsTrayApplication : IDisposable
     private readonly HashSet<IntPtr> secondaryLabels = new();
     private readonly HashSet<IntPtr> redrawEnabledChildren = new();
     private IntPtr window;
+    private IntPtr titleLabel;
     private IntPtr modeButton;
     private IntPtr statusLabel;
     private IntPtr detailLabel;
@@ -156,13 +180,24 @@ internal sealed class WindowsTrayApplication : IDisposable
     private IntPtr bodyFont;
     private IntPtr captionFont;
     private IntPtr monoFont;
+    private IntPtr simpleInputPathCombo;
+    private IntPtr consentWindow;
+    private IntPtr consentTextLabel;
+    private IntPtr consentYesButton;
+    private IntPtr consentNoButton;
     private IntPtr simpleStatusLabel;
     private IntPtr simpleDetailsLabel;
+    private IntPtr simpleQuickSetupLabel;
+    private IntPtr simpleReadinessLabel;
+    private IntPtr simplePairingHeaderLabel;
     private IntPtr simplePairLabel;
     private IntPtr simplePairDetailsLabel;
     private IntPtr simpleForgetButton;
-    private IntPtr simpleControlAuthorizationCheckBox;
+    private IntPtr simpleControlHeaderLabel;
     private IntPtr simpleControlStateLabel;
+    private IntPtr simpleInputPathLabel;
+    private IntPtr simpleRefreshButton;
+    private IntPtr simpleQuitButton;
     private string lastStatus = "Starting WindowsKVM…";
     private string? pairedPeerName;
     private string? pairedPeerID;
@@ -173,12 +208,14 @@ internal sealed class WindowsTrayApplication : IDisposable
     private bool updatingPeerSelector;
     private int controlActive;
     private int scrollPosition;
-    private long nextConsentID;
+    private int horizontalScrollPosition;
+    private long consentWindowRequestID;
     private int statusMessagePosted;
     private int statusDirty;
     private int windowUpdateDepth;
+    private int clientLayoutUpdate;
     private bool windowWasVisibleBeforeUpdate;
-    private bool simpleMode;
+    private bool simpleMode = true;
     private bool modeSelectedByUser;
     private bool viewModeInitialized;
     private int disposed;
@@ -194,17 +231,11 @@ internal sealed class WindowsTrayApplication : IDisposable
     private sealed class ChildLayout
     {
         public required IntPtr Handle { get; init; }
-        public required int X { get; init; }
-        public required int Y { get; init; }
-        public required int Width { get; init; }
-        public required int Height { get; init; }
-    }
-
-    private sealed class ConsentRequest
-    {
-        public required TaskCompletionSource<bool> Completion { get; init; }
-        public required string Text { get; init; }
-        public required string Title { get; init; }
+        public required int X { get; set; }
+        public required int Y { get; set; }
+        public required int Width { get; set; }
+        public required int Height { get; set; }
+        public int ComboBoxItemHeight { get; set; }
     }
 
     [UnmanagedFunctionPointer(CallingConvention.Winapi)]
@@ -218,34 +249,17 @@ internal sealed class WindowsTrayApplication : IDisposable
     private WindowsTrayApplication()
     {
         windowProc = HandleWindowMessage;
-        instanceMutex = new Mutex(false, @"Local\MacKVM.WindowsKVM.UI");
-        try
-        {
-            var acquired = false;
-            try
-            {
-                acquired = instanceMutex.WaitOne(0);
-            }
-            catch (AbandonedMutexException)
-            {
-                // WaitOne transfers ownership even when it reports that the
-                // previous UI process exited without releasing the mutex.
-                // Treat that stale instance as cleared and continue startup.
-                acquired = true;
-            }
-
-            if (!acquired)
-            {
-                throw new InvalidOperationException(
-                    "WindowsKVM is already running. Open it from the system tray."
-                );
-            }
-        }
-        catch
-        {
-            instanceMutex.Dispose();
-            throw;
-        }
+        consentRequests = new ConsentRequestCoordinator(
+            id => window != IntPtr.Zero
+                && PostMessage(window, WindowMessageConsent, (IntPtr)id, IntPtr.Zero),
+            id => window != IntPtr.Zero
+                && PostMessage(
+                    window,
+                    WindowMessageConsentCancel,
+                    (IntPtr)id,
+                    IntPtr.Zero
+                )
+        );
 
         runtime = new WindowsKvmRuntime(
             Environment.MachineName,
@@ -285,17 +299,22 @@ internal sealed class WindowsTrayApplication : IDisposable
         _ = FreeConsole();
         CreateFonts();
         RegisterWindowClass();
+        var initialWindowSize = WindowsTrayLayoutPolicy.ForSimple(
+            GetWorkAreaWidth(),
+            GetWorkAreaHeight()
+        );
         window = CreateWindow(
             WindowClassName,
             WindowTitle,
             WindowStyleOverlappedWindow
                 | WindowStyleVerticalScroll
+                | WindowStyleHorizontalScroll
                 | WindowStyleClipChildren
                 | WindowStyleClipSiblings,
             DefaultWindowCoordinate,
             DefaultWindowCoordinate,
-            DefaultWindowWidth,
-            DefaultWindowHeight,
+            initialWindowSize.Width,
+            initialWindowSize.Height,
             IntPtr.Zero,
             IntPtr.Zero,
             WindowExtendedStyleComposited
@@ -331,6 +350,40 @@ internal sealed class WindowsTrayApplication : IDisposable
             if (result <= 0)
             {
                 return result < 0 ? 1 : 0;
+            }
+
+            if (consentWindow != IntPtr.Zero
+                && message.Message == WindowMessageKeyDown
+                && message.WParam.ToUInt64() == (ulong)VirtualKeyEscape)
+            {
+                // Escape is an explicit denial even when focus is inside one
+                // of the child buttons; do not leave the request waiting for
+                // its network timeout.
+                _ = consentRequests.TryComplete(
+                    consentWindowRequestID,
+                    accepted: false
+                );
+                continue;
+            }
+
+            if (consentWindow != IntPtr.Zero
+                && IsDialogMessage(consentWindow, ref message))
+            {
+                // IsDialogMessage provides Tab traversal and routes Enter to
+                // the currently focused button. The No button is focused by
+                // default below, so Enter cannot accidentally accept.
+                continue;
+            }
+
+            if (consentWindow != IntPtr.Zero
+                && message.Message == WindowMessageKeyDown
+                && message.WParam.ToUInt64() == (ulong)VirtualKeyReturn)
+            {
+                _ = consentRequests.TryComplete(
+                    consentWindowRequestID,
+                    accepted: false
+                );
+                continue;
             }
 
             TranslateMessage(ref message);
@@ -457,15 +510,7 @@ internal sealed class WindowsTrayApplication : IDisposable
         // nearby/paired devices, control state, monitor guidance, and a
         // support section. The content is taller than the window so shorter
         // Windows displays can reach every section with the vertical scroll bar.
-        CreateLabel("MacKVM", 32, 28, 430, 40, titleFont);
-        CreateButton(
-            "Open window",
-            690,
-            24,
-            130,
-            36,
-            OpenWindowButtonID
-        );
+        titleLabel = CreateLabel(WindowTitle, 32, 28, 430, 40, titleFont);
         modeButton = CreateButton(
             "Simple mode",
             520,
@@ -486,7 +531,10 @@ internal sealed class WindowsTrayApplication : IDisposable
         detailLabel = CreateLabel(
             $"Version: {WindowsKvmRuntime.ApplicationVersion} (build {WindowsKvmRuntime.ApplicationBuild})\r\n"
                 + $"Model: {runtime.Model}   Device ID: {runtime.Identity.Id.ToString()[..8]}\r\n"
-                + $"Key fingerprint: {Fingerprint(runtime.Identity.SigningPublicKey)}",
+                + WindowsTrayLayoutPolicy.FormatFingerprint(
+                    "Key fingerprint",
+                    Fingerprint(runtime.Identity.SigningPublicKey)
+                ),
             32,
             116,
             790,
@@ -741,11 +789,14 @@ internal sealed class WindowsTrayApplication : IDisposable
             bodyFont
         );
         supportFingerprintLabel = CreateLabel(
-            "Local key fingerprint: " + Fingerprint(runtime.Identity.SigningPublicKey),
+            WindowsTrayLayoutPolicy.FormatFingerprint(
+                "Local key fingerprint",
+                Fingerprint(runtime.Identity.SigningPublicKey)
+            ),
             32,
             1700,
             790,
-            28,
+            60,
             monoFont,
             LabelColor.Secondary
         );
@@ -753,7 +804,7 @@ internal sealed class WindowsTrayApplication : IDisposable
             "Private keys are protected by Windows DPAPI and are never included\r\n"
                 + "in support information.",
             32,
-            1736,
+            1770,
             790,
             44,
             captionFont,
@@ -762,7 +813,7 @@ internal sealed class WindowsTrayApplication : IDisposable
         controlAuthorizationCheckBox = CreateCheckBox(
             "Automatically allow control from this paired Mac",
             32,
-            1784,
+            1818,
             620,
             30,
             ControlAuthorizationButtonID
@@ -771,7 +822,7 @@ internal sealed class WindowsTrayApplication : IDisposable
             "Enabled by default after pairing; this approval is remembered for the pinned key.\r\n"
                 + "Turn it off here when every control request should require confirmation.",
             32,
-            1818,
+            1852,
             790,
             40,
             captionFont,
@@ -780,16 +831,16 @@ internal sealed class WindowsTrayApplication : IDisposable
         CreateButton(
             "Copy support information",
             32,
-            1870,
+            1904,
             250,
             36,
             CopyButtonID
         );
-        CreateButton("Quit", 690, 1870, 130, 36, QuitButtonID);
+        CreateButton("Quit", 690, 1904, 130, 36, QuitButtonID);
         CreateLabel(
-            "Ready on the local network. Closing this window hides MacKVM to the system tray.",
+            "Ready on the local network. Closing this window hides WindowsKVM to the system tray.",
             32,
-            1926,
+            1960,
             790,
             28,
             captionFont,
@@ -806,109 +857,102 @@ internal sealed class WindowsTrayApplication : IDisposable
 
     private void CreateSimpleControls()
     {
-        RegisterSimpleControl(
-            CreateLabel("Quick setup", 32, 92, 790, 32, sectionFont)
+        simpleQuickSetupLabel = RegisterSimpleControl(
+            CreateLabel(
+                $"This PC: {runtime.Identity.Name}",
+                24,
+                82,
+                472,
+                28,
+                sectionFont
+            )
         );
         simpleDetailsLabel = RegisterSimpleControl(
             CreateLabel(
-                $"Version: {WindowsKvmRuntime.ApplicationVersion} (build {WindowsKvmRuntime.ApplicationBuild})\r\n"
-                    + $"Model: {runtime.Model}   Device ID: {runtime.Identity.Id.ToString()[..8]}",
-                32,
-                132,
-                790,
-                52,
-                monoFont,
+                $"Version {WindowsKvmRuntime.ApplicationVersion} (build {WindowsKvmRuntime.ApplicationBuild})",
+                24,
+                114,
+                472,
+                22,
+                captionFont,
                 LabelColor.Secondary
             )
         );
         simpleStatusLabel = RegisterSimpleControl(
             CreateLabel(
                 lastStatus,
+                24,
+                140,
+                472,
                 32,
-                198,
-                790,
-                28,
                 captionFont,
                 LabelColor.Secondary
             )
         );
-        RegisterSimpleControl(
+        simpleReadinessLabel = RegisterSimpleControl(
             CreateLabel(
-                "✓ Network ready    ✓ Input permissions ready\r\n"
-                    + "✓ Control request notifications enabled",
-                32,
-                250,
-                790,
-                52,
+                "✓ Network ready • input ready • notifications on",
+                24,
+                176,
+                472,
+                40,
                 bodyFont,
                 LabelColor.Green
             )
         );
-        RegisterSimpleControl(
-            CreateButton("Firewall settings", 32, 316, 220, 36, FirewallButtonID)
-        );
 
-        RegisterSimpleControl(
-            CreateLabel("Pairing", 32, 382, 790, 32, sectionFont)
+        simplePairingHeaderLabel = RegisterSimpleControl(
+            CreateLabel("Pairing", 24, 226, 472, 28, sectionFont)
         );
         simplePairLabel = RegisterSimpleControl(
-            CreateLabel("No paired Macs yet", 32, 424, 570, 30, bodyFont)
+            CreateLabel("No paired Macs yet", 24, 258, 285, 28, bodyFont)
         );
         simplePairDetailsLabel = RegisterSimpleControl(
             CreateLabel(
-                "Start Pair on the MacKVM peer. A verification dialog will appear here.",
-                32,
-                460,
-                790,
-                42,
+                "Start Pair on the MacKVM peer; consent appears here.",
+                24,
+                290,
+                472,
+                36,
                 captionFont,
                 LabelColor.Secondary
             )
         );
         simpleForgetButton = RegisterSimpleControl(
-            CreateButton("Forget paired Mac", 630, 420, 170, 36, ForgetButtonID)
+            CreateButton("Forget paired Mac", 326, 254, 170, 32, ForgetButtonID)
         );
 
-        RegisterSimpleControl(
-            CreateLabel("Keyboard and mouse", 32, 520, 790, 32, sectionFont)
+        simpleControlHeaderLabel = RegisterSimpleControl(
+            CreateLabel("Keyboard and mouse", 24, 334, 472, 28, sectionFont)
         );
         simpleControlStateLabel = RegisterSimpleControl(
             CreateLabel(
-                "Waiting for an authenticated Mac to request control.",
+                "Waiting for a Mac control request.",
+                24,
+                366,
+                472,
                 32,
-                562,
-                790,
-                30,
                 bodyFont,
                 LabelColor.Secondary
             )
         );
-        RegisterSimpleControl(
-            CreateLabel(
-                "Ctrl+Alt+Shift+Esc returns keyboard and mouse control locally.",
+        simpleInputPathLabel = RegisterSimpleControl(
+            CreateLabel("Input path", 24, 404, 180, 28, captionFont, LabelColor.Secondary)
+        );
+        simpleInputPathCombo = RegisterSimpleControl(
+            CreateComboBox(
+                204,
+                400,
+                292,
                 32,
-                598,
-                790,
-                28,
-                captionFont,
-                LabelColor.Secondary
+                ["Remote input enabled", "Local Windows input only"]
             )
         );
-        simpleControlAuthorizationCheckBox = RegisterSimpleControl(
-            CreateCheckBox(
-                "Automatically allow control from this paired Mac",
-                32,
-                632,
-                620,
-                30,
-                ControlAuthorizationButtonID
-            )
+        simpleRefreshButton = RegisterSimpleControl(
+            CreateButton("Refresh", 24, 448, 110, 32, RefreshButtonID)
         );
-        RegisterSimpleControl(
-            CreateButton("Refresh", 32, 686, 140, 36, RefreshButtonID)
-        );
-        RegisterSimpleControl(
-            CreateButton("Quit", 690, 686, 130, 36, QuitButtonID)
+        simpleQuitButton = RegisterSimpleControl(
+            CreateButton("Quit", 386, 448, 110, 32, QuitButtonID)
         );
     }
 
@@ -1037,13 +1081,22 @@ internal sealed class WindowsTrayApplication : IDisposable
         var combo = CreateChild(
             "COMBOBOX",
             "",
-            ComboBoxDropDownList | ComboBoxHasStrings | WindowStyleTabStop,
+            ComboBoxDropDownList | ComboBoxHasStrings | WindowStyleTabStop | WindowStyleVerticalScroll,
             x,
             y,
             width,
-            height,
+            WindowsTrayLayoutPolicy.ComboBoxWindowHeight(height, height, values.Count),
             font: bodyFont
         );
+        // Keep the logical row separate from the native expanded-list size.
+        // Every later scroll/resize must retain the latter as well; fixing
+        // only CreateWindowEx would shrink the list back to one row.
+        var layout = childLayouts[^1];
+        layout.Height = height;
+        var itemHeight = (int)SendMessage(
+            combo, ComboBoxGetItemHeight, IntPtr.Zero, IntPtr.Zero
+        );
+        layout.ComboBoxItemHeight = itemHeight > 0 ? itemHeight : height;
         foreach (var value in values)
         {
             _ = SendMessage(
@@ -1076,38 +1129,165 @@ internal sealed class WindowsTrayApplication : IDisposable
         }
     }
 
-    private int CurrentContentHeight => simpleMode
-        ? SimpleContentHeight
-        : AdvancedContentHeight;
+    private int CurrentContentHeight
+    {
+        get
+        {
+            if (!simpleMode)
+            {
+                return AdvancedContentHeight;
+            }
+
+            var clientWidth = 487;
+            if (window != IntPtr.Zero
+                && GetClientRect(window, out var client))
+            {
+                clientWidth = Math.Max(1, client.Right - client.Left);
+            }
+
+            return Math.Max(
+                SimpleContentHeight,
+                WindowsTrayLayoutPolicy.ForSimpleContent(clientWidth).ContentHeight
+            );
+        }
+    }
+
+    private void ResizeMainWindow()
+    {
+        if (window == IntPtr.Zero)
+        {
+            return;
+        }
+
+        var workArea = GetWorkArea();
+        var workWidth = Math.Max(1, workArea.Right - workArea.Left);
+        var workHeight = Math.Max(1, workArea.Bottom - workArea.Top);
+        var size = simpleMode
+            ? WindowsTrayLayoutPolicy.ForSimple(workWidth, workHeight)
+            : WindowsTrayLayoutPolicy.ForAdvanced(workWidth, workHeight);
+        var x = workArea.Left + Math.Max(0, (workWidth - size.Width) / 2);
+        var y = workArea.Top + Math.Max(0, (workHeight - size.Height) / 2);
+        _ = SetWindowPos(
+            window,
+            IntPtr.Zero,
+            x,
+            y,
+            size.Width,
+            size.Height,
+            WindowPositionNoActivate | WindowPositionNoZOrder
+        );
+    }
+
+    private void SyncInputPathSelectors()
+    {
+        var selection = Volatile.Read(ref remoteInputEnabled) != 0
+            ? IntPtr.Zero
+            : (IntPtr)1;
+        foreach (var selector in new[] { inputPathCombo, simpleInputPathCombo })
+        {
+            if (selector != IntPtr.Zero)
+            {
+                _ = SendMessage(
+                    selector,
+                    ComboBoxSetCurrentSelection,
+                    selection,
+                    IntPtr.Zero
+                );
+            }
+        }
+    }
+
+    private NativeRect GetWorkArea(IntPtr referenceWindow = default)
+    {
+        var monitorWindow = referenceWindow != IntPtr.Zero
+            ? referenceWindow
+            : window;
+        if (monitorWindow != IntPtr.Zero)
+        {
+            var monitor = MonitorFromWindow(monitorWindow, MonitorDefaultToNearest);
+            if (monitor != IntPtr.Zero)
+            {
+                var monitorInfo = new MonitorInfo
+                {
+                    Size = (uint)Marshal.SizeOf<MonitorInfo>()
+                };
+                if (GetMonitorInfo(monitor, ref monitorInfo))
+                {
+                    return monitorInfo.WorkArea;
+                }
+            }
+        }
+
+        var workArea = new NativeRect();
+        if (SystemParametersInfo(
+                SystemParametersInfoGetWorkArea,
+                0,
+                ref workArea,
+                0
+            ))
+        {
+            return workArea;
+        }
+
+        var width = Math.Max(1, GetSystemMetrics(ScreenMetricWidth));
+        var height = Math.Max(1, GetSystemMetrics(ScreenMetricHeight));
+        return new NativeRect { Right = width, Bottom = height };
+    }
+
+    private int GetWorkAreaWidth() => Math.Max(1, GetWorkArea().Right - GetWorkArea().Left);
+
+    private int GetWorkAreaHeight() => Math.Max(1, GetWorkArea().Bottom - GetWorkArea().Top);
 
     private void ApplyResponsiveMode()
     {
         if (modeSelectedByUser)
         {
-            UpdateScrollBar();
+            ReflowClientLayout();
             return;
         }
 
         SetViewMode(ShouldUseSimpleMode(), userInitiated: false);
     }
 
+    /// <summary>
+    /// Reapplies client-relative child bounds after every real WM_SIZE. A
+    /// resize can also change the vertical scrollbar's client width, so do a
+    /// second pass after updating the scrollbar. The guard prevents a nested
+    /// WM_SIZE from recursively moving the same controls while Win32 is still
+    /// processing the parent resize.
+    /// </summary>
+    private void ReflowClientLayout()
+    {
+        if (window == IntPtr.Zero
+            || childLayouts.Count == 0
+            || Interlocked.Exchange(ref clientLayoutUpdate, 1) != 0)
+        {
+            return;
+        }
+
+        BeginWindowUpdate();
+        try
+        {
+            MoveChildWindows();
+            UpdateScrollBar();
+            MoveChildWindows();
+            // Showing/hiding the scrollbar can cross a stacking breakpoint.
+            // Refresh its range from the resulting content height as well.
+            UpdateScrollBar();
+        }
+        finally
+        {
+            EndWindowUpdate();
+            Volatile.Write(ref clientLayoutUpdate, 0);
+        }
+    }
+
     private bool ShouldUseSimpleMode()
     {
-        var screenWidth = GetSystemMetrics(ScreenMetricWidth);
-        var screenHeight = GetSystemMetrics(ScreenMetricHeight);
-        if ((screenWidth > 0 && screenWidth < CompactScreenWidth)
-            || (screenHeight > 0 && screenHeight < CompactScreenHeight))
-        {
-            return true;
-        }
-
-        if (window != IntPtr.Zero && GetClientRect(window, out var client))
-        {
-            return client.Right - client.Left < CompactClientWidth
-                || client.Bottom - client.Top < CompactClientHeight;
-        }
-
-        return false;
+        // Simple mode is the safe default even on a large display. Advanced
+        // mode remains an explicit user choice and is retained across resize
+        // notifications through modeSelectedByUser.
+        return true;
     }
 
     private void SetViewMode(bool useSimpleMode, bool userInitiated)
@@ -1124,11 +1304,14 @@ internal sealed class WindowsTrayApplication : IDisposable
 
         if (!changed)
         {
-            UpdateScrollBar();
+            ReflowClientLayout();
             return;
         }
 
         scrollPosition = 0;
+        horizontalScrollPosition = 0;
+        ResizeMainWindow();
+        SyncInputPathSelectors();
         BeginWindowUpdate();
         try
         {
@@ -1286,22 +1469,30 @@ internal sealed class WindowsTrayApplication : IDisposable
             return;
         }
 
+        var hasClient = GetClientRect(window, out var client);
+        var simpleLayout = simpleMode
+            ? WindowsTrayLayoutPolicy.ForSimpleContent(
+                hasClient ? Math.Max(1, client.Right - client.Left) : 487
+            )
+            : default;
+
         var deferred = BeginDeferWindowPos(childLayouts.Count);
         if (deferred != IntPtr.Zero)
         {
             var current = deferred;
             foreach (var layout in childLayouts)
             {
+                var bounds = ResolveNativeChildBounds(layout, simpleLayout);
                 current = DeferWindowPos(
                     current,
                     layout.Handle,
                     IntPtr.Zero,
-                    layout.X,
-                    layout.Y - scrollPosition,
-                    0,
-                    0,
-                    WindowPositionNoSize
-                        | WindowPositionNoRedraw
+                    bounds.X,
+                    bounds.Y,
+                    bounds.Width,
+                    bounds.Height,
+                    WindowPositionNoRedraw
+                        | WindowPositionNoCopyBits
                         | WindowPositionNoActivate
                         | WindowPositionNoZOrder
                 );
@@ -1321,19 +1512,79 @@ internal sealed class WindowsTrayApplication : IDisposable
         // conservative fallback keeps the UI functional if allocation fails.
         foreach (var layout in childLayouts)
         {
+            var bounds = ResolveNativeChildBounds(layout, simpleLayout);
             _ = SetWindowPos(
                 layout.Handle,
                 IntPtr.Zero,
-                layout.X,
-                layout.Y - scrollPosition,
-                0,
-                0,
-                WindowPositionNoSize
-                    | WindowPositionNoRedraw
+                bounds.X,
+                bounds.Y,
+                bounds.Width,
+                bounds.Height,
+                WindowPositionNoRedraw
+                    | WindowPositionNoCopyBits
                     | WindowPositionNoActivate
                     | WindowPositionNoZOrder
             );
         }
+    }
+
+    private WindowsTrayChildBounds ResolveNativeChildBounds(
+        ChildLayout layout,
+        WindowsTraySimpleLayout simpleLayout
+    ) => WindowsTrayLayoutPolicy.ForNativeChild(
+        ResolveChildBounds(layout, simpleLayout),
+        simpleMode ? 0 : horizontalScrollPosition,
+        scrollPosition,
+        layout.ComboBoxItemHeight,
+        layout.ComboBoxItemHeight > 0
+            ? (int)SendMessage(layout.Handle, ComboBoxGetCount, IntPtr.Zero, IntPtr.Zero)
+            : 0
+    );
+
+    private WindowsTrayChildBounds ResolveChildBounds(
+        ChildLayout layout,
+        WindowsTraySimpleLayout simpleLayout
+    )
+    {
+        if (!simpleMode)
+        {
+            return new WindowsTrayChildBounds(
+                layout.X,
+                layout.Y,
+                layout.Width,
+                layout.Height
+            );
+        }
+
+        var control = layout.Handle switch
+        {
+            var handle when handle == titleLabel => WindowsTraySimpleControl.Title,
+            var handle when handle == modeButton => WindowsTraySimpleControl.ModeButton,
+            var handle when handle == simpleQuickSetupLabel => WindowsTraySimpleControl.QuickSetup,
+            var handle when handle == simpleDetailsLabel => WindowsTraySimpleControl.Details,
+            var handle when handle == simpleStatusLabel => WindowsTraySimpleControl.Status,
+            var handle when handle == simpleReadinessLabel => WindowsTraySimpleControl.Readiness,
+            var handle when handle == simplePairingHeaderLabel => WindowsTraySimpleControl.PairingHeader,
+            var handle when handle == simplePairLabel => WindowsTraySimpleControl.PairName,
+            var handle when handle == simplePairDetailsLabel => WindowsTraySimpleControl.PairDetails,
+            var handle when handle == simpleForgetButton => WindowsTraySimpleControl.Forget,
+            var handle when handle == simpleControlHeaderLabel => WindowsTraySimpleControl.ControlHeader,
+            var handle when handle == simpleControlStateLabel => WindowsTraySimpleControl.ControlState,
+            var handle when handle == simpleInputPathLabel => WindowsTraySimpleControl.InputPathLabel,
+            var handle when handle == simpleInputPathCombo => WindowsTraySimpleControl.InputPathCombo,
+            var handle when handle == simpleRefreshButton => WindowsTraySimpleControl.Refresh,
+            var handle when handle == simpleQuitButton => WindowsTraySimpleControl.Quit,
+            _ => (WindowsTraySimpleControl?)null
+        };
+
+        return control is { } value
+            ? simpleLayout[value]
+            : new WindowsTrayChildBounds(
+                layout.X,
+                layout.Y,
+                layout.Width,
+                layout.Height
+            );
     }
 
     private void RedrawWindowContent()
@@ -1347,7 +1598,10 @@ internal sealed class WindowsTrayApplication : IDisposable
             window,
             IntPtr.Zero,
             IntPtr.Zero,
-            RedrawInvalidate | RedrawErase | RedrawAllChildren | RedrawUpdateNow
+            // Moving rows must discard cached pixels (SWP_NOCOPYBITS above)
+            // and repaint parent, descendants, and control borders together.
+            // Parent-only invalidation in Beta 3 left stale child text behind.
+            RedrawInvalidate | RedrawErase | RedrawAllChildren | RedrawFrame | RedrawUpdateNow
         );
         _ = UpdateWindow(window);
     }
@@ -1399,7 +1653,7 @@ internal sealed class WindowsTrayApplication : IDisposable
             {
                 var separators = simpleMode
                     ? new[] { 230, 360, 506 }
-                    : new[] { 204, 674, 848, 1098, 1408, 1606, 1816 };
+                    : new[] { 204, 674, 848, 1098, 1408, 1606, 1850 };
                 foreach (var contentY in separators)
                 {
                     var lineY = contentY - scrollPosition;
@@ -1410,9 +1664,16 @@ internal sealed class WindowsTrayApplication : IDisposable
 
                     var line = new NativeRect
                     {
-                        Left = 32,
+                        Left = 32 - (simpleMode ? 0 : horizontalScrollPosition),
                         Top = lineY,
-                        Right = Math.Max(32, client.Right - 32),
+                        Right = simpleMode
+                            ? Math.Max(32, client.Right - 32)
+                            : Math.Max(
+                                32 - horizontalScrollPosition,
+                                WindowsTrayLayoutPolicy.AdvancedContentWidth
+                                    - 32
+                                    - horizontalScrollPosition
+                            ),
                         Bottom = lineY + 1
                     };
                     _ = FillRect(hdc, ref line, separatorBrush);
@@ -1475,6 +1736,45 @@ internal sealed class WindowsTrayApplication : IDisposable
             Position = scrollPosition
         };
         _ = SetScrollInfo(window, ScrollBarVertical, ref info, true);
+        UpdateHorizontalScrollBar(client.Right - client.Left);
+    }
+
+    private void UpdateHorizontalScrollBar(int clientWidth)
+    {
+        if (window == IntPtr.Zero)
+        {
+            return;
+        }
+
+        if (simpleMode)
+        {
+            horizontalScrollPosition = 0;
+            _ = ShowScrollBar(window, ScrollBarHorizontal, false);
+            return;
+        }
+
+        var page = Math.Max(1, clientWidth);
+        var maximum = WindowsTrayLayoutPolicy.AdvancedHorizontalMaximum(page);
+        horizontalScrollPosition = WindowsTrayLayoutPolicy.ClampHorizontalOffset(
+            true,
+            page,
+            horizontalScrollPosition
+        );
+        var info = new ScrollInfo
+        {
+            Size = (uint)Marshal.SizeOf<ScrollInfo>(),
+            Mask = ScrollInfoRange | ScrollInfoPage | ScrollInfoPosition,
+            Minimum = 0,
+            Maximum = Math.Max(0, WindowsTrayLayoutPolicy.AdvancedContentWidth - 1),
+            Page = (uint)page,
+            Position = horizontalScrollPosition
+        };
+        _ = SetScrollInfo(window, ScrollBarHorizontal, ref info, true);
+        _ = ShowScrollBar(
+            window,
+            ScrollBarHorizontal,
+            maximum > 0
+        );
     }
 
     private void HandleVerticalScroll(int command)
@@ -1528,6 +1828,96 @@ internal sealed class WindowsTrayApplication : IDisposable
         }
 
         SetScrollPosition(Math.Clamp(next, 0, maximum));
+    }
+
+    private void HandleHorizontalScroll(int command)
+    {
+        if (simpleMode || !GetClientRect(window, out var client))
+        {
+            return;
+        }
+
+        var page = Math.Max(1, client.Right - client.Left);
+        var maximum = WindowsTrayLayoutPolicy.AdvancedHorizontalMaximum(page);
+        var next = horizontalScrollPosition;
+        switch (command)
+        {
+            case ScrollCodeLineUp:
+                next -= 40;
+                break;
+            case ScrollCodeLineDown:
+                next += 40;
+                break;
+            case ScrollCodePageUp:
+                next -= page;
+                break;
+            case ScrollCodePageDown:
+                next += page;
+                break;
+            case ScrollCodeThumbPosition:
+            case ScrollCodeThumbTrack:
+            {
+                var info = new ScrollInfo
+                {
+                    Size = (uint)Marshal.SizeOf<ScrollInfo>(),
+                    Mask = ScrollInfoTrackPosition
+                };
+                if (GetScrollInfo(window, ScrollBarHorizontal, ref info))
+                {
+                    next = info.TrackPosition;
+                }
+                break;
+            }
+            case ScrollCodeTop:
+                next = 0;
+                break;
+            case ScrollCodeBottom:
+                next = maximum;
+                break;
+            case ScrollCodeEndScroll:
+                return;
+            default:
+                return;
+        }
+
+        SetHorizontalScrollPosition(Math.Clamp(next, 0, maximum));
+    }
+
+    private void SetHorizontalScrollPosition(int position)
+    {
+        if (simpleMode)
+        {
+            horizontalScrollPosition = 0;
+            return;
+        }
+
+        var clientWidth = 1;
+        if (window != IntPtr.Zero && GetClientRect(window, out var client))
+        {
+            clientWidth = Math.Max(1, client.Right - client.Left);
+        }
+
+        var next = WindowsTrayLayoutPolicy.ClampHorizontalOffset(
+            true,
+            clientWidth,
+            position
+        );
+        if (next == horizontalScrollPosition)
+        {
+            return;
+        }
+
+        horizontalScrollPosition = next;
+        BeginWindowUpdate();
+        try
+        {
+            MoveChildWindows();
+            UpdateHorizontalScrollBar(clientWidth);
+        }
+        finally
+        {
+            EndWindowUpdate();
+        }
     }
 
     private void HandleMouseWheel(int delta)
@@ -1623,6 +2013,31 @@ internal sealed class WindowsTrayApplication : IDisposable
         IntPtr lParam
     )
     {
+        // WM_GETMINMAXINFO is sent during CreateWindowEx, before the new
+        // HWND has been assigned to the window field. Handle that initial
+        // main-window message as well as later messages for the bound HWND;
+        // child/popup HWNDs continue through their normal default procedure.
+        if (target != IntPtr.Zero
+            && message == WindowMessageGetMinMaxInfo
+            && (target == window || window == IntPtr.Zero))
+        {
+            ApplyMinimumWindowSize(target, lParam);
+            return IntPtr.Zero;
+        }
+
+        if (target == consentWindow && target != IntPtr.Zero)
+        {
+            return HandleConsentWindowMessage(target, message, wParam, lParam);
+        }
+
+        // The consent popup uses the registered class only to keep one WndProc
+        // alive. Its creation messages arrive before consentWindow is bound;
+        // never route those HWNDs through the main window's layout handlers.
+        if (target != window)
+        {
+            return DefWindowProcedure(target, message, wParam, lParam);
+        }
+
         switch (message)
         {
             case WindowMessageClose:
@@ -1634,18 +2049,19 @@ internal sealed class WindowsTrayApplication : IDisposable
                 return IntPtr.Zero;
 
             case WindowMessageSize:
-                if (!modeSelectedByUser)
-                {
-                    ApplyResponsiveMode();
-                }
-                else
-                {
-                    UpdateScrollBar();
-                }
+                // Reflow even when the selected mode is unchanged. Dragging
+                // the window narrower must update Simple child widths and
+                // right-aligned actions; the old path only touched the
+                // scrollbar after a user-selected mode.
+                ApplyResponsiveMode();
                 return IntPtr.Zero;
 
             case WindowMessageVScroll:
                 HandleVerticalScroll(unchecked((int)wParam.ToInt64() & 0xFFFF));
+                return IntPtr.Zero;
+
+            case WindowMessageHScroll:
+                HandleHorizontalScroll(unchecked((int)wParam.ToInt64() & 0xFFFF));
                 return IntPtr.Zero;
 
             case WindowMessageMouseWheel:
@@ -1659,7 +2075,7 @@ internal sealed class WindowsTrayApplication : IDisposable
                 var notification = unchecked((int)((wParam.ToInt64() >> 16) & 0xFFFF));
                 var command = unchecked((int)wParam.ToInt64() & 0xFFFF);
                 if (notification == ComboBoxSelectionChanged
-                    && lParam == inputPathCombo)
+                    && (lParam == inputPathCombo || lParam == simpleInputPathCombo))
                 {
                     HandleInputPathSelection();
                 }
@@ -1686,6 +2102,10 @@ internal sealed class WindowsTrayApplication : IDisposable
                 HandleConsentRequest(wParam.ToInt64());
                 return IntPtr.Zero;
 
+            case WindowMessageConsentCancel:
+                HandleConsentCancellation(wParam.ToInt64());
+                return IntPtr.Zero;
+
             case WindowMessageDestroy:
                 RemoveTrayIcon();
                 ResolvePendingConsents();
@@ -1695,6 +2115,24 @@ internal sealed class WindowsTrayApplication : IDisposable
             default:
                 return DefWindowProcedure(target, message, wParam, lParam);
         }
+    }
+
+    private void ApplyMinimumWindowSize(IntPtr target, IntPtr lParam)
+    {
+        if (lParam == IntPtr.Zero)
+        {
+            return;
+        }
+
+        var workArea = GetWorkArea(target);
+        var minimum = WindowsTrayLayoutPolicy.MinimumWindowSize(
+            Math.Max(1, workArea.Right - workArea.Left),
+            Math.Max(1, workArea.Bottom - workArea.Top)
+        );
+        var info = Marshal.PtrToStructure<MinMaxInfo>(lParam);
+        info.MinTrackSize.X = Math.Max(info.MinTrackSize.X, minimum.Width);
+        info.MinTrackSize.Y = Math.Max(info.MinTrackSize.Y, minimum.Height);
+        Marshal.StructureToPtr(info, lParam, fDeleteOld: false);
     }
 
     private void HandleCommand(int command)
@@ -1736,13 +2174,14 @@ internal sealed class WindowsTrayApplication : IDisposable
 
     private void HandleInputPathSelection()
     {
-        if (inputPathCombo == IntPtr.Zero)
+        var selector = simpleMode ? simpleInputPathCombo : inputPathCombo;
+        if (selector == IntPtr.Zero)
         {
             return;
         }
 
         var selection = SendMessage(
-            inputPathCombo,
+            selector,
             ComboBoxGetCurrentSelection,
             IntPtr.Zero,
             IntPtr.Zero
@@ -1750,6 +2189,7 @@ internal sealed class WindowsTrayApplication : IDisposable
         var enabled = selection != 1;
         Volatile.Write(ref remoteInputEnabled, enabled ? 1 : 0);
         runtime.SetRemoteInputEnabled(enabled);
+        SyncInputPathSelectors();
         OnRuntimeStatusChanged(
             enabled
                 ? "Remote keyboard and mouse input enabled."
@@ -1798,9 +2238,10 @@ internal sealed class WindowsTrayApplication : IDisposable
             return;
         }
 
-        var checkBox = simpleMode
-            ? simpleControlAuthorizationCheckBox
-            : controlAuthorizationCheckBox;
+        // Automatic approval is intentionally an Advanced-mode setting. The
+        // compact view still exposes the current control state and Forget
+        // action, but never places a hidden checkbox in the command path.
+        var checkBox = controlAuthorizationCheckBox;
         var authorized = checkBox != IntPtr.Zero
             && SendMessage(
                 checkBox,
@@ -1933,7 +2374,7 @@ internal sealed class WindowsTrayApplication : IDisposable
             token
         );
 
-    private async Task<bool> RequestConsentAsync(
+    private Task<bool> RequestConsentAsync(
         string text,
         string title,
         CancellationToken token
@@ -1941,72 +2382,241 @@ internal sealed class WindowsTrayApplication : IDisposable
     {
         if (window == IntPtr.Zero || token.IsCancellationRequested)
         {
-            return false;
+            return Task.FromResult(false);
         }
 
-        var completion = new TaskCompletionSource<bool>(
-            TaskCreationOptions.RunContinuationsAsynchronously
-        );
-        var id = Interlocked.Increment(ref nextConsentID);
-        pendingConsents[id] = new ConsentRequest
-        {
-            Completion = completion,
-            Text = text,
-            Title = title
-        };
-
-        using var cancellation = token.Register(
-            static state =>
-            {
-                var request = ((WindowsTrayApplication Application, long ID))state!;
-                request.Application.CompleteConsent(request.ID, accepted: false);
-            },
-            (this, id)
-        );
-        if (!PostMessage(window, WindowMessageConsent, (IntPtr)id, IntPtr.Zero))
-        {
-            CompleteConsent(id, accepted: false);
-        }
-
-        try
-        {
-            return await completion.Task.ConfigureAwait(false);
-        }
-        finally
-        {
-            pendingConsents.TryRemove(id, out _);
-        }
+        return consentRequests.EnqueueAsync(text, title, token);
     }
 
-    private void HandleConsentRequest(long id)
+    private void HandleConsentRequest(long _)
     {
-        if (!pendingConsents.TryGetValue(id, out var request))
+        PumpConsentRequests();
+    }
+
+    private void HandleConsentCancellation(long id)
+    {
+        // Cancellation may have completed the request before this message
+        // reached the UI thread. Destroy only the popup still bound to that
+        // exact request, then serialize the next queued prompt.
+        DismissConsentWindow(id);
+        PumpConsentRequests();
+    }
+
+    private void PumpConsentRequests()
+    {
+        if (consentWindow != IntPtr.Zero)
         {
             return;
         }
 
-        var result = MessageBox(
-            window,
-            request.Text,
-            request.Title,
-            MessageBoxYesNo | MessageBoxQuestion | MessageBoxDefaultButtonTwo
-        );
-        CompleteConsent(id, result == MessageBoxYes);
+        if (!consentRequests.TryBeginNext(out var prompt))
+        {
+            return;
+        }
+
+        if (ShowConsentWindow(prompt))
+        {
+            return;
+        }
+
+        // A failed window creation is a visible denial to the receiver. The
+        // coordinator clears the request before the next pump, so no late UI
+        // callback can turn the failed request into a grant.
+        consentRequests.TryComplete(prompt.ID, accepted: false);
     }
 
-    private void CompleteConsent(long id, bool accepted)
+    private bool ShowConsentWindow(ConsentRequestCoordinator.Prompt prompt)
     {
-        if (pendingConsents.TryRemove(id, out var request))
+        var workArea = GetWorkArea();
+        var workWidth = Math.Max(1, workArea.Right - workArea.Left);
+        var workHeight = Math.Max(1, workArea.Bottom - workArea.Top);
+        var popupWidth = Math.Min(
+            ConsentWindowWidth,
+            Math.Max(320, workWidth - 32)
+        );
+        if (workWidth < 320)
         {
-            request.Completion.TrySetResult(accepted);
+            popupWidth = workWidth;
         }
+
+        // The consent frame is deliberately fixed-size. Its text control is
+        // a read-only multiline EDIT with a vertical scrollbar, so long
+        // pairing verification and key-replacement warnings remain available
+        // without pushing the Allow/Deny buttons outside the client area.
+        var popupHeight = Math.Min(
+            Math.Max(ConsentWindowHeight, 260),
+            Math.Max(260, workHeight - 24)
+        );
+        if (workHeight < 260)
+        {
+            popupHeight = workHeight;
+        }
+
+        var x = workArea.Left + Math.Max(0, (workWidth - popupWidth) / 2);
+        var y = workArea.Top + Math.Max(0, (workHeight - popupHeight) / 2);
+        var popup = CreateWindow(
+            WindowClassName,
+            prompt.Title,
+            ConsentWindowStyle | WindowStyleClipChildren,
+            x,
+            y,
+            popupWidth,
+            popupHeight,
+            IntPtr.Zero,
+            IntPtr.Zero
+        );
+        if (popup == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        consentWindow = popup;
+        consentWindowRequestID = prompt.ID;
+        if (!GetClientRect(popup, out var client))
+        {
+            DismissConsentWindow(prompt.ID);
+            return false;
+        }
+
+        var clientWidth = Math.Max(1, client.Right - client.Left);
+        var clientHeight = Math.Max(1, client.Bottom - client.Top);
+        const int edge = 24;
+        const int buttonHeight = 32;
+        const int buttonGap = 12;
+        const int buttonBottomGap = 16;
+        var buttonY = Math.Max(
+            edge,
+            clientHeight - buttonBottomGap - buttonHeight
+        );
+        var textBottom = Math.Max(edge, buttonY - buttonGap);
+        var textHeight = Math.Max(1, textBottom - edge);
+        var denyX = Math.Max(edge, clientWidth - edge - 96);
+        var allowX = Math.Max(edge, denyX - buttonGap - 96);
+        consentTextLabel = CreateWindow(
+            "EDIT",
+            prompt.Text.Replace("\r\n", "\n").Replace("\n", "\r\n"),
+            WindowStyleChild
+                | WindowStyleVisible
+                | EditStyleMultiline
+                | EditStyleAutoVScroll
+                | EditStyleReadOnly
+                | EditStyleWantReturn
+                | WindowStyleVerticalScroll,
+            edge,
+            edge,
+            Math.Max(1, clientWidth - edge * 2),
+            textHeight,
+            consentWindow,
+            IntPtr.Zero
+        );
+        consentYesButton = CreateWindow(
+            "BUTTON",
+            "Allow",
+            WindowStyleChild | WindowStyleVisible | WindowStyleTabStop | ButtonStylePushButton,
+            allowX,
+            buttonY,
+            96,
+            buttonHeight,
+            consentWindow,
+            (IntPtr)ConsentYesButtonID
+        );
+        consentNoButton = CreateWindow(
+            "BUTTON",
+            "Deny",
+            WindowStyleChild | WindowStyleVisible | WindowStyleTabStop | ButtonStylePushButton,
+            denyX,
+            buttonY,
+            96,
+            buttonHeight,
+            consentWindow,
+            (IntPtr)ConsentNoButtonID
+        );
+        if (consentTextLabel == IntPtr.Zero
+            || consentYesButton == IntPtr.Zero
+            || consentNoButton == IntPtr.Zero)
+        {
+            DismissConsentWindow(prompt.ID);
+            return false;
+        }
+
+        if (bodyFont != IntPtr.Zero)
+        {
+            _ = SendMessage(consentTextLabel, WindowMessageSetFont, bodyFont, IntPtr.Zero);
+        }
+        if (captionFont != IntPtr.Zero)
+        {
+            _ = SendMessage(consentYesButton, WindowMessageSetFont, captionFont, IntPtr.Zero);
+            _ = SendMessage(consentNoButton, WindowMessageSetFont, captionFont, IntPtr.Zero);
+        }
+
+        ShowWindow(consentWindow, ShowWindowShow);
+        SetForegroundWindow(consentWindow);
+        UpdateWindow(consentWindow);
+        _ = SetFocus(consentNoButton);
+        return true;
+    }
+
+    private IntPtr HandleConsentWindowMessage(
+        IntPtr target,
+        uint message,
+        IntPtr wParam,
+        IntPtr lParam
+    )
+    {
+        switch (message)
+        {
+            case WindowMessageCommand:
+                var command = unchecked((int)wParam.ToInt64() & 0xFFFF);
+                if (command == ConsentYesButtonID || command == ConsentNoButtonID)
+                {
+                    consentRequests.TryComplete(
+                        consentWindowRequestID,
+                        accepted: command == ConsentYesButtonID
+                    );
+                }
+                return IntPtr.Zero;
+
+            case WindowMessageClose:
+                consentRequests.TryComplete(
+                    consentWindowRequestID,
+                    accepted: false
+                );
+                return IntPtr.Zero;
+
+            case WindowMessageDestroy:
+                if (target == consentWindow)
+                {
+                    consentWindow = IntPtr.Zero;
+                    consentWindowRequestID = 0;
+                    consentTextLabel = IntPtr.Zero;
+                    consentYesButton = IntPtr.Zero;
+                    consentNoButton = IntPtr.Zero;
+                }
+                return IntPtr.Zero;
+
+            default:
+                return DefWindowProcedure(target, message, wParam, lParam);
+        }
+    }
+
+    private void DismissConsentWindow(long id)
+    {
+        if (id == 0
+            || consentWindow == IntPtr.Zero
+            || consentWindowRequestID != id)
+        {
+            return;
+        }
+
+        _ = DestroyWindow(consentWindow);
     }
 
     private void ResolvePendingConsents()
     {
-        foreach (var id in pendingConsents.Keys)
+        consentRequests.Dispose();
+        if (consentWindow != IntPtr.Zero)
         {
-            CompleteConsent(id, accepted: false);
+            DismissConsentWindow(consentWindowRequestID);
         }
     }
 
@@ -2045,8 +2655,7 @@ internal sealed class WindowsTrayApplication : IDisposable
         var authorized = hasPeer && runtime.IsControlAuthorized(peerID);
         foreach (var checkBox in new[]
         {
-            controlAuthorizationCheckBox,
-            simpleControlAuthorizationCheckBox
+            controlAuthorizationCheckBox
         })
         {
             if (checkBox == IntPtr.Zero)
@@ -2285,7 +2894,10 @@ internal sealed class WindowsTrayApplication : IDisposable
                     + $"Model: {runtime.Model}   Device ID: {runtime.Identity.Id.ToString()[..8]}\r\n"
                     + $"Pairing TCP: {runtime.PairingPort}\r\n"
                     + $"Secure TCP: {runtime.SecurePort} ({secure})\r\n"
-                    + $"Local key fingerprint: {Fingerprint(runtime.Identity.SigningPublicKey)}"
+                    + WindowsTrayLayoutPolicy.FormatFingerprint(
+                        "Local key fingerprint",
+                        Fingerprint(runtime.Identity.SigningPublicKey)
+                    )
             );
             SetWindowText(
                 supportPeerLabel,
@@ -2295,7 +2907,10 @@ internal sealed class WindowsTrayApplication : IDisposable
             );
             SetWindowText(
                 supportFingerprintLabel,
-                "Local key fingerprint: " + Fingerprint(runtime.Identity.SigningPublicKey)
+                WindowsTrayLayoutPolicy.FormatFingerprint(
+                    "Local key fingerprint",
+                    Fingerprint(runtime.Identity.SigningPublicKey)
+                )
             );
             SetWindowText(
                 monitorStatusLabel,
@@ -2306,9 +2921,7 @@ internal sealed class WindowsTrayApplication : IDisposable
             SetWindowText(simpleStatusLabel, latestStatus ?? string.Empty);
             SetWindowText(
                 simpleDetailsLabel,
-                $"Version: {WindowsKvmRuntime.ApplicationVersion} (build {WindowsKvmRuntime.ApplicationBuild})\r\n"
-                    + $"Model: {runtime.Model}   Device ID: {runtime.Identity.Id.ToString()[..8]}\r\n"
-                    + $"Pairing TCP: {runtime.PairingPort}   Secure TCP: {runtime.SecurePort}"
+                $"Version {WindowsKvmRuntime.ApplicationVersion} (build {WindowsKvmRuntime.ApplicationBuild})"
             );
             SetWindowText(
                 simplePairLabel,
@@ -2321,16 +2934,16 @@ internal sealed class WindowsTrayApplication : IDisposable
             SetWindowText(
                 simplePairDetailsLabel,
                 peerName is null
-                    ? "Start Pair on the MacKVM peer. A verification dialog will appear here."
-                    : $"Device ID: {peerID}\r\nKey fingerprint: {peerFingerprint}"
+                    ? "Start Pair on the MacKVM peer; consent appears here."
+                    : "Ready for Connect from this paired Mac."
             );
             SetWindowText(
                 simpleControlStateLabel,
                 !remoteInputIsEnabled
-                    ? "Local Windows input only; remote control requests are disabled."
+                    ? "Remote control is disabled; Windows input stays local."
                     : isControlActive
-                    ? "This Windows PC is receiving keyboard and mouse control."
-                    : "Waiting for an authenticated Mac to request control."
+                    ? "Control active on this PC."
+                    : "Waiting for a Mac control request."
             );
             SetLabelColor(
                 simpleControlStateLabel,
@@ -2451,24 +3064,11 @@ internal sealed class WindowsTrayApplication : IDisposable
             Console.Error.WriteLine($"WindowsKVM shutdown failed: {ex.Message}");
         }
 
-        try
-        {
-            instanceMutex.ReleaseMutex();
-        }
-        catch (ApplicationException)
-        {
-            // The mutex may already have been abandoned during a failed
-            // startup; disposing it is still sufficient for this process.
-        }
-        finally
-        {
-            instanceMutex.Dispose();
-            DeleteFont(ref titleFont);
-            DeleteFont(ref sectionFont);
-            DeleteFont(ref bodyFont);
-            DeleteFont(ref captionFont);
-            DeleteFont(ref monoFont);
-        }
+        DeleteFont(ref titleFont);
+        DeleteFont(ref sectionFont);
+        DeleteFont(ref bodyFont);
+        DeleteFont(ref captionFont);
+        DeleteFont(ref monoFont);
     }
 
     private static void DeleteFont(ref IntPtr font)
@@ -2543,6 +3143,25 @@ internal sealed class WindowsTrayApplication : IDisposable
         public int Top;
         public int Right;
         public int Bottom;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MonitorInfo
+    {
+        public uint Size;
+        public NativeRect MonitorArea;
+        public NativeRect WorkArea;
+        public uint Flags;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MinMaxInfo
+    {
+        public NativePoint Reserved;
+        public NativePoint MaxSize;
+        public NativePoint MaxPosition;
+        public NativePoint MinTrackSize;
+        public NativePoint MaxTrackSize;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -2725,6 +3344,26 @@ internal sealed class WindowsTrayApplication : IDisposable
     private static extern int GetSystemMetrics(int index);
 
     [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr MonitorFromWindow(
+        IntPtr window,
+        uint flags
+    );
+
+    [DllImport("user32.dll", EntryPoint = "GetMonitorInfoW", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool GetMonitorInfo(
+        IntPtr monitor,
+        ref MonitorInfo information
+    );
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool SystemParametersInfo(
+        uint action,
+        uint parameter,
+        ref NativeRect result,
+        uint update
+    );
+
+    [DllImport("user32.dll", SetLastError = true)]
     private static extern bool GetClientRect(IntPtr window, out NativeRect rectangle);
 
     [DllImport("user32.dll", SetLastError = true)]
@@ -2780,6 +3419,13 @@ internal sealed class WindowsTrayApplication : IDisposable
     );
 
     [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool ShowScrollBar(
+        IntPtr window,
+        int bar,
+        bool show
+    );
+
+    [DllImport("user32.dll", SetLastError = true)]
     private static extern bool GetScrollInfo(
         IntPtr window,
         int bar,
@@ -2788,6 +3434,9 @@ internal sealed class WindowsTrayApplication : IDisposable
 
     [DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(IntPtr window);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SetFocus(IntPtr window);
 
     [DllImport("user32.dll")]
     private static extern int GetMessage(
@@ -2799,6 +3448,12 @@ internal sealed class WindowsTrayApplication : IDisposable
 
     [DllImport("user32.dll")]
     private static extern bool TranslateMessage(ref NativeMessage message);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsDialogMessage(
+        IntPtr dialog,
+        ref NativeMessage message
+    );
 
     [DllImport("user32.dll")]
     private static extern IntPtr DispatchMessage(ref NativeMessage message);

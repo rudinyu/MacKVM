@@ -2,6 +2,93 @@
 
 # Changelog
 
+## WindowsKVM 1.02.22 (build 102) — 2026-09-14
+
+This Windows-only UI fix prevents the local key fingerprint in **Paired
+device information** from being clipped or overwritten on Advanced-mode
+windows. The fingerprint is rendered as explicit, DPI-tolerant lines and the
+following controls are reflowed below it. macOS sources, macOS version
+metadata, and the wire protocol are unchanged.
+
+### Fixed
+
+- Wrap the SHA-256 fingerprint at deterministic boundaries and allocate enough
+  native label height so the complete value remains readable instead of being
+  covered by the DPAPI support note.
+- Keep the Advanced content height and section separator aligned with the
+  expanded fingerprint block.
+
+### Validation
+
+- Cross-platform tests and Windows x64/ARM64 builds remain required; native
+  Windows DPI rendering still needs desktop acceptance on the target display.
+
+## WindowsKVM 1.02.21 (build 101) — 2026-09-14
+
+Windows-only UI fixes following desktop testing of **1.02.09 (build 89)
+Beta 3**. This build also includes the subsequent fixes listed below; macOS
+version metadata and the wire protocol are unchanged.
+
+### Fixed
+
+- Discard old child-window pixels when scrolling or resizing, and repaint
+  the parent, descendants, and control borders as one batch. Beta 3 moved
+  children individually and invalidated only the parent, leaving text trails.
+- Preserve the expanded native combo-box height separately from the
+  collapsed layout row, including after scrolling, resizing, or mode changes.
+  Both remote-input and local-only choices remain accessible; long trusted
+  peer lists use a bounded drop-down with a scrollbar.
+- Use **WindowsKVM** for the window title, main heading, and hide-to-tray
+  guidance. Stack the mode button below the longer name on narrow windows.
+
+### Validation
+
+- Add portable regression cases for combo geometry across scroll/resize
+  sequences, different item heights, long peer lists, and narrow headings.
+- Native scrolling, dropdown selection, and DPI behavior still require
+  Windows x64/ARM64 desktop acceptance; cross-builds alone do not verify pixels.
+
+## WindowsKVM 1.02.20 (build 100) — 2026-09-12
+
+This Windows-only maintenance update addresses input, control-lifecycle, and
+consent-dialog review findings. macOS sources, macOS version metadata, and
+the wire protocol are unchanged.
+
+### Fixed
+
+- Preserve held-key tracking when a native key-up fails so control teardown
+  can retry the release instead of silently leaving a modifier pressed.
+- Keep the authenticated connection open when valid input already in flight
+  arrives for an ended control request. Retired request tracking is bounded;
+  unknown request IDs remain protocol violations.
+- End and notify the Mac of the current grant when switching to local-only
+  input. Quickly re-enabling remote input cannot revive an old grant or an
+  approval that was already pending when input was disabled.
+- Forward repeated key-down events using the original held-key mapping.
+- Map Mac button 2 to the middle button, 3 to XBUTTON1, and 4 to XBUTTON2,
+  including release-all cleanup. Ignore unsupported extra buttons safely.
+- Ignore unsupported brightness and keyboard-illumination keys instead of
+  invoking unrelated Windows media or application-launch actions.
+- Serialize request-bound UI consent dialogs and close cancelled or expired
+  prompts, preventing stale acceptance and blocked subsequent prompts.
+- Share one listener-instance guard between UI and console receivers so they
+  cannot advertise the same identity from different ports. One-shot version
+  and paired-device management commands remain available.
+- Make Simple mode a compact status panel. Keep routine diagnostics and
+  full identity details in Advanced mode, remove the redundant in-window
+  Open window action, and keep the window within the available work area.
+  Reflow Simple controls when resizing and provide horizontal scrolling for
+  full-size Advanced controls in narrow windows.
+  Enforce a usable minimum tracking size to prevent Simple controls from
+  overlapping when the window is dragged extremely narrow.
+
+### Tests and documentation
+
+- Add desktop regression tests alongside the existing protocol self-test,
+  exercising production input and receiver paths with simulated native APIs.
+- Document Windows x64/ARM64 desktop acceptance checks and switching between
+  UI mode and console logging without starting a duplicate receiver.
+
 ## 1.02.19 (build 99) — 2026-09-05
 
 This cross-platform maintenance release gives the Windows secure-session

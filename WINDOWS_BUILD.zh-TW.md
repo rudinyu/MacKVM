@@ -79,8 +79,8 @@ reference graph 中的每個 project，避免 `net8.0` protocol library 與
 
 腳本在第一個 publish 失敗時停止。成功時會列出每個 executable 偵測到的 PE 架構
 （`x64` 或 `arm64`）。
-repository CI 也會在 Windows runner 重複兩種 publish，因此本機 cross-build 不會是唯一的
-Windows 建置檢查。
+發佈前仍須在兩種架構執行 Windows 桌面驗收；cross-build 成功不能驗證真實 Windows 桌面的
+原生對話框、熱鍵與輸入注入行為。
 
 ## 啟動配對 receiver
 
@@ -90,7 +90,9 @@ Windows 建置檢查。
 .\WindowsKVM.exe --version
 ```
 
-目前 UI 測試 build 應顯示 `WindowsKVM 1.02.19 (build 99)`。
+目前 UI 測試 build 應顯示 `WindowsKVM 1.02.22 (build 102)`。
+此版比回報捲動破圖與下拉清單問題時使用的 **1.02.09（build 89）Beta 3** 更新。
+替換前請先退出舊的系統匣 receiver；啟動後確認此版本及 **WindowsKVM** 視窗標題。
 
 在 Windows publish 後啟動常駐 UI：
 
@@ -98,16 +100,18 @@ Windows 建置檢查。
 .\dist\windows\arm64\WindowsKVM.exe
 ```
 
-UI 會加入 Windows 系統匣圖示、啟動兩個 listener，並以原生 Yes／No 對話框處理配對，以及關閉自動
+UI 會加入 Windows 系統匣圖示、啟動兩個 listener，並以原生 Allow／Deny 對話框處理配對，以及關閉自動
 同意後的控制請求。配對完成後會預設啟用目前釘選公開金鑰的自動控制；若要每次控制都重新確認，請在
 **Paired device information** 關閉 **Automatically allow control from this paired Mac**。
 關閉狀態視窗只會隱藏；從視窗或系統匣選單選 **Quit WindowsKVM** 才會停止所有 listener。要做腳本
 測試時，使用 `--pairing-listen`；`--yes` 只適合受控測試，會自動接受配對與控制但不會保存控制同意：
 
-狀態視窗沿用 macOS 面板順序，並提供兩種模式。螢幕小於 900×1120 像素，或視窗可用區域較窄／較矮時，
-會自動使用 **Simple mode**，保留 identity、就緒狀態、配對、控制權、防火牆、Refresh 與 Quit。
+狀態視窗提供兩種模式。預設使用精簡的 **Simple mode**，只保留 PC 名稱、簡短的就緒／配對／控制狀態、
+必要操作與小型版本／build 標示。型號、TCP port、UUID、完整金鑰指紋與冗長設定說明會先隱藏。
 **Advanced mode** 顯示完整的標題、**設定這台 PC**、**實體輸入路徑**、**附近的 Mac**、
-**鍵盤／滑鼠／觸控板**、**螢幕輸入**與**已配對裝置資訊**，小螢幕仍可捲動。標題列按鈕可在兩種模式間切換。
+**鍵盤／滑鼠／觸控板**、**螢幕輸入**與**已配對裝置資訊**，可垂直捲動，較窄視窗也提供橫向捲動。
+標題列按鈕可在兩種模式間切換，
+回到 Simple 時視窗會再縮小。
 Pair 與 Connect 仍由 MacKVM peer 發起，Windows 顯示相對應的同意對話框與即時狀態。
 
 若使用 console 模式，Mac 連入後 CLI 會顯示傳入裝置、六位數驗證碼與明確的
@@ -123,6 +127,13 @@ TCP port。console 模式會列出每個收到的 pairing frame，以及配對�
 錯誤；UI 模式則將主要狀態顯示在狀態視窗。Windows Defender Firewall 可能顯示標準的
 Private network 提示；只在信任的區域網路允許此程式。程式不會偷偷新增寬鬆的防火牆規則。
 
+UI 與 console 模式共用單一接收器保護。切換模式前，先從系統匣選 **Quit WindowsKVM**，
+或停止 console receiver；只隱藏 UI 視窗並不足夠。第二個 receiver 會顯示已在執行的訊息並退出，
+但一次性的版本查詢與配對管理指令仍可使用。
+
+UI 同一時間只顯示一個同意請求，取消的對話框會自動關閉；不能用舊對話框同意已過期的請求。
+請從 MacKVM 重試，重新核對目前的驗證碼。
+
 要從 console 檢查或移除 Windows 端的 trust pin，請先用 `--list-paired` 列出的完整 peer ID：
 
 ```powershell
@@ -133,8 +144,8 @@ Private network 提示；只在信任的區域網路允許此程式。程式不�
 ```
 
 `--forget` 是一次性的持久化 trust-store 操作；按 Connect 前必須從 MacKVM 重新 Pair。
-如果另一個 WindowsKVM receiver 已經在執行，CLI 操作後請重新啟動它以重新載入 trust store，或改用
-UI 的 **Forget paired Mac** 關閉該 peer 的 active session。
+如果另一個 WindowsKVM receiver 已經在執行，它會在控制准入與輸入傳送期間重新整理持久化 trust。
+若要立即關閉該 peer 的 active session（包括閒置中的 session），請使用 UI 的 **Forget paired Mac**。
 `--allow-control` 與 `--deny-control` 只更新選定釘選 Mac 的本機控制同意，不會替換公開金鑰；執行中的
 receiver 會在下一個控制請求前重新載入這份原子寫入的檔案。
 
@@ -184,7 +195,7 @@ identity。請先在所有曾信任這台 Windows 的 Mac 忘記舊 peer，再�
 `%LOCALAPPDATA%\MacKVM\identity.json`，然後重新啟動 receiver 產生新的 identity。
 這可避免 key／UUID 未通知就輪換，導致原有配對無聲失效。
 
-在 Windows 開發主機可執行 protocol self-test：
+在開發主機可執行 protocol 與 desktop regression self-test：
 
 ```powershell
 .\scripts\test-windows.ps1

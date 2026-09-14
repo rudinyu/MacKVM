@@ -8,7 +8,7 @@ authenticate a secure Connect session, and receive keyboard/mouse control over
 that encrypted session. A console mode remains available for automation and
 firewall diagnostics.
 
-## Current feature set — 1.02.19 (build 99)
+## Current feature set — 1.02.22 (build 102)
 
 The Windows host includes:
 
@@ -36,11 +36,17 @@ The Windows host includes:
 - Windows `SendInput` keyboard, modifier, Unicode fallback, mouse, button,
   media-key, and unit-aware pixel/line scroll injection (including pointer
   pressure and trackpad phase metadata);
+- key-repeat forwarding and native middle/XBUTTON1/XBUTTON2 mapping; unsupported
+  brightness, keyboard-illumination keys, and extra mouse buttons are safely
+  ignored instead of triggering unrelated Windows actions;
 - release-all cleanup on control end, input failure, disconnect, or process
   shutdown;
 - native pairing/control consent dialogs in the UI, a resident system-tray
   icon, a macOS-aligned scrollable status window, and public **Copy support
   information** output;
+- Advanced mode renders the complete local key fingerprint over deterministic
+  short lines, so high-DPI or narrow windows cannot let the following DPAPI
+  note overwrite it;
 - automatic control approval enabled by default when an interactive Mac
   pairing completes (the test-only `--yes` control approval remains one-shot);
   the **Automatically allow control from this paired Mac** checkbox and
@@ -49,9 +55,9 @@ The Windows host includes:
   dialog's **Allow** applies to that request only; use the checkbox or
   `--allow-control` to enable approval durably again;
 - responsive **Simple mode** and **Advanced mode** views: the UI starts in
-  Simple mode on compact displays, keeps essential identity/pairing/control
+  compact Simple mode, keeps essential identity/pairing/control
   actions visible, and lets the user switch modes from the header;
-- an explicit **Forget paired Mac** action in both UI modes that removes the
+- an explicit **Forget paired Mac** action in device management that removes the
   Windows trust pin and disconnects that peer's active secure session;
 - a shared console consent prompt in `--pairing-listen` mode (or `--yes` for
   test runs); and
@@ -84,17 +90,30 @@ work.
 The Windows status window follows the same information order as the macOS
 MacKVM panel. It has two views:
 
-- **Simple mode** is selected automatically when the screen is smaller than
-  900×1120 pixels or the window client area is compact. It keeps the version,
-  network/input readiness, pairing status, control state, firewall settings,
-  Refresh, and Quit actions visible without requiring a long scroll.
-- **Advanced mode** keeps the complete diagnostic and support sections. Use
-  the header button to switch modes; the advanced view remains scrollable on
-  short displays.
+- **Simple mode** is the compact default. It shows the PC name, concise
+  readiness, pairing and control status, essential actions, and a small
+  version/build label. Model, TCP ports, UUIDs, full key fingerprints, and
+  lengthy setup explanations are not shown in this everyday view.
+- **Advanced mode** keeps the full identities, firewall settings, device
+  management, control-approval settings, diagnostics, and support information.
+  Use the header button to switch modes; returning to Simple makes the window
+  compact again. Advanced scrolls vertically on short displays and adds a
+  horizontal scrollbar on narrow windows so full-size controls remain reachable.
+
+Manual resizing uses a monitor-aware minimum size and preserves Windows' own
+minimum, preventing Simple controls from overlapping in an extremely narrow window.
+The window title and heading are **WindowsKVM**. Narrow Simple windows place
+the mode button below the heading. Scrolling batches child movement and
+repaints the whole view instead of retaining old row pixels.
+
+Consent requests are never hidden by the selected mode. Use Advanced to read
+complete diagnostic details when the compact status reports an error. The
+tray menu can reopen the hidden status window; the visible main window does
+not need a second **Open window** button.
 
 The full Advanced view contains:
 
-1. **Header** — MacKVM branding, this PC's friendly name, device ID, model,
+1. **Header** — WindowsKVM branding, this PC's friendly name, device ID, model,
    version/build, and public key fingerprint.
 2. **Set up this PC** — Local Network, Input Monitoring, Accessibility,
    firewall settings, input readiness, control-request notifications, and a
@@ -103,6 +122,8 @@ The full Advanced view contains:
    the Windows `SendInput` path. **Local Windows input only** disables remote
    control admission (and releases any active grant); switch back to the first
    option to allow a paired Mac to request control again.
+   The dropdown opens with room for both options, even after scrolling or
+   resizing. This setting does not enable Windows-to-Mac input forwarding.
 4. **Nearby Macs** — pairing listener state and a selector containing every
    trusted Mac (including its short device ID); choose the peer before using
    **Forget paired Mac**. Pair and Connect are initiated from the MacKVM peer.
@@ -115,13 +136,22 @@ The full Advanced view contains:
    Mac** setting, local identity details, and the public **Copy support
    information** action.
 
-Native Windows Yes/No dialogs are used for pairing-code consent and for control
+Native Windows Allow/Deny dialogs are used for pairing-code consent and for control
 requests whose automatic approval was disabled. Peers from an interactive
 pairing are admitted without a control dialog until that setting is turned off;
 the test-only `--yes` pairing instead leaves approval unconfigured. After that, an
 individual control-dialog **Allow** is one-shot and does not change the durable
 setting; use the checkbox or `--allow-control` to restore automatic approval.
 The system-tray menu provides **Open WindowsKVM** and **Quit WindowsKVM**.
+
+Only one UI or console receiver may run at a time. Close the running receiver
+with **Quit WindowsKVM** before starting `--pairing-listen`; hiding its window
+does not stop it. Version and paired-device management commands remain usable
+without starting another receiver.
+
+Consent dialogs are tied to the current request and are shown one at a time.
+A cancelled or expired request closes its dialog; it cannot be approved later.
+If that happens, start a new request from MacKVM and verify its new code.
 
 ## Build and run
 
@@ -166,7 +196,7 @@ immediately.
    console test, use `WindowsKVM.exe --pairing-listen` instead.
 2. Start Pair on the paired Mac and compare the six-digit code.
 3. In UI mode, compare the six-digit code in the pairing dialog and click
-   **Yes**. In console mode, type `y` at the `Accept pairing?` prompt.
+   **Allow**. In console mode, type `y` at the `Accept pairing?` prompt.
 4. If the Windows peer was paired by an older W1 build, pair it once again so
    W2/W3 creates `%LOCALAPPDATA%\MacKVM\trusted-peers.json`.
 5. To remove a Windows-side trust pin, choose **Forget paired Mac** in the
@@ -185,6 +215,12 @@ immediately.
 8. To return control locally, press `Ctrl+Alt+Shift+Esc` on Windows, or end
    control from MacKVM. Any held key/button is released during either path.
 
+Returning control does not disconnect the authenticated session. Input already
+in flight for the ended request is ignored; a later control request must obtain
+a new grant. Selecting **Local Windows input only** also notifies the Mac that
+control ended. Re-enabling remote input permits a new request, but does not
+silently revive the previous grant.
+
 Successful authentication and control prints these lines in console mode (the
 same state is shown in the UI status window):
 
@@ -202,6 +238,53 @@ the verification code is accepted. If the identity file cannot be decrypted
 or validated, the receiver fails closed; follow the reset procedure in the
 [Windows build guide](../WINDOWS_BUILD.md).
 
+## Windows regression acceptance
+
+Run these checks on both Windows x64 and ARM64 using a compatible MacKVM peer.
+Use a disposable text document for input tests. Automated tests with simulated
+native APIs do not replace these desktop checks.
+
+1. Hold a letter, Backspace, and an arrow key in turn. Repeat should continue
+   while held and stop on release. End control while Ctrl or a mouse button is
+   down; ordinary local input must work afterwards without a stuck modifier.
+2. Check a middle click and both side buttons with a five-button mouse. The
+   middle button must not become Back; both side buttons must remain usable
+   without ending control. Test brightness/illumination keys: they must not
+   launch Mail, stop playback, or disconnect the session. Windows brightness
+   adjustment is not implemented by this receiver.
+3. Move the mouse continuously while using the Windows release hotkey. The
+   secure connection must remain established; request control again without
+   re-pairing or reconnecting.
+4. During control, select **Local Windows input only**, then quickly re-enable
+   remote input. The old grant must stay ended. A fresh request from MacKVM
+   must work; also repeat while a consent request is still pending.
+5. Disable automatic control approval for the test peer. Leave a control
+   consent dialog unanswered past its 15-second timeout, and separately cancel
+   a pairing request from the Mac. The obsolete dialog must close, and retry
+   must show only the new request. Test multiple queued requests and closing
+   the app while a consent dialog is open; none may accept a stale request.
+6. With UI mode resident, start `--pairing-listen` in a console: the second
+   receiver must exit while the first remains usable. Check `--version` and
+   `--list-paired` still work. Quit the UI, start the console receiver, and
+   repeat the duplicate-start check by opening the UI.
+7. Check Simple mode on a 1366×768 desktop and at 150%/200% scaling. Its
+   essential actions must remain reachable and the outer window must not
+   cover the taskbar. Open Advanced to inspect the hidden identity and port
+   details; on a narrow window, use the Advanced horizontal scrollbar to reach
+   the right-hand actions. Return to Simple and confirm the window shrinks and
+   the horizontal scrollbar disappears. Drag to the minimum size and check
+   that the mode and pairing buttons do not overlap. Resize or
+   move between monitors during a connection; changing the view must not
+   reset pairing or control, and consent prompts must remain usable.
+8. Confirm `--version` reports **1.02.22 (build 102)**; the reported UI defects
+   were tested on **1.02.09 (build 89) Beta 3**, not this build. Quit the old
+   tray receiver before starting the replacement. Check the title/heading say
+   **WindowsKVM**. Scroll Advanced rapidly up/down and drag both scrollbars;
+   old text must not remain. Open **Physical input path** before and after
+   scrolling/resizing and select each of the two options. Repeat in Simple
+   mode and check that both selectors reflect the same choice. Restore remote
+   input and request fresh control from the Mac to verify it still works.
+
 ## Compatibility
 
 Signed pairing works on Windows 10 build 19041 or later. Secure Connect
@@ -210,10 +293,12 @@ build providing the .NET ChaCha20-Poly1305 primitive used by W3. On an older
 Windows build, pairing remains available and the executable reports that
 secure Connect is disabled.
 
-Run the protocol self-test on a Windows development host with:
+Run the protocol and desktop regression self-tests on a development host with:
 
 ```powershell
 .\scripts\test-windows.ps1
 ```
 
-The macOS repository CI also runs this self-test when a .NET 8 SDK is present.
+The macOS repository CI also runs these self-tests when a .NET 8 SDK or newer
+is present. Desktop tests use injected platform boundaries for deterministic
+checks; native Windows dialog and input acceptance remains a separate step.

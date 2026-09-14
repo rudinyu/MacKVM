@@ -11,11 +11,12 @@ namespace WindowsKVM;
 /// </summary>
 internal sealed class WindowsKvmRuntime : IAsyncDisposable
 {
-    public const string ApplicationVersion = "1.02.19";
-    public const string ApplicationBuild = "99";
+    public const string ApplicationVersion = "1.02.22";
+    public const string ApplicationBuild = "102";
 
     private readonly DeviceCredentials credentials;
     private readonly WindowsTrustStore trustStore;
+    private readonly WindowsKvmListenerGuard listenerGuard;
     private readonly PairingTcpReceiver pairingReceiver;
     private readonly SecureSessionTcpReceiver? secureReceiver;
     private readonly object signingLock = new();
@@ -32,48 +33,59 @@ internal sealed class WindowsKvmRuntime : IAsyncDisposable
         int pairingPort = 0
     )
     {
-        credentials = WindowsIdentityStore.LoadOrCreate(requestedName);
-        trustStore = WindowsTrustStore.Load();
-        Model = RuntimeInformation.OSArchitecture == Architecture.Arm64
-            ? "Windows ARM64"
-            : "Windows x64";
-        pairingReceiver = new PairingTcpReceiver(
-            credentials,
-            Model,
-            requestedPort: pairingPort,
-            autoAccept: autoAccept,
-            // Automatic pairing is intended for unattended test runs only.
-            // It may create a new pin, but it must never silently replace a
-            // different public key for an existing peer. Interactive UI/CLI
-            // consent is the explicit authorization required for replacement.
-            pairingCompleted: (
-                peer,
-                consentedToKeyReplacement,
-                rememberControlApproval
-            ) => RecordPairing(
-                peer,
-                allowKeyReplacement: consentedToKeyReplacement,
-                rememberControlApproval: rememberControlApproval
-            ),
-            signingLock: signingLock,
-            pairingConsent: pairingConsent,
-            peerKeyChanged: trustStore.HasDifferentKey,
-            status: PublishStatus,
-            enableConsoleInput: enableConsoleInput
-        );
-
-        if (SecureSessionCapabilities.ChaCha20Poly1305Supported)
+        var acquiredListenerGuard = WindowsKvmListenerGuard.Acquire();
+        try
         {
-            secureReceiver = new SecureSessionTcpReceiver(
+            credentials = WindowsIdentityStore.LoadOrCreate(requestedName);
+            trustStore = WindowsTrustStore.Load();
+            Model = RuntimeInformation.OSArchitecture == Architecture.Arm64
+                ? "Windows ARM64"
+                : "Windows x64";
+            pairingReceiver = new PairingTcpReceiver(
                 credentials,
-                trustStore,
                 Model,
+                requestedPort: pairingPort,
+                autoAccept: autoAccept,
+                // Automatic pairing is intended for unattended test runs only.
+                // It may create a new pin, but it must never silently replace a
+                // different public key for an existing peer. Interactive UI/CLI
+                // consent is the explicit authorization required for replacement.
+                pairingCompleted: (
+                    peer,
+                    consentedToKeyReplacement,
+                    rememberControlApproval
+                ) => RecordPairing(
+                    peer,
+                    allowKeyReplacement: consentedToKeyReplacement,
+                    rememberControlApproval: rememberControlApproval
+                ),
                 signingLock: signingLock,
-                autoAcceptControl: autoAccept,
-                promptConsent: controlConsent ?? pairingReceiver.PromptYesNoAsync,
+                pairingConsent: pairingConsent,
+                peerKeyChanged: trustStore.HasDifferentKey,
                 status: PublishStatus,
-                controlStateChanged: PublishControlState
+                enableConsoleInput: enableConsoleInput
             );
+
+            if (SecureSessionCapabilities.ChaCha20Poly1305Supported)
+            {
+                secureReceiver = new SecureSessionTcpReceiver(
+                    credentials,
+                    trustStore,
+                    Model,
+                    signingLock: signingLock,
+                    autoAcceptControl: autoAccept,
+                    promptConsent: controlConsent ?? pairingReceiver.PromptYesNoAsync,
+                    status: PublishStatus,
+                    controlStateChanged: PublishControlState
+                );
+            }
+
+            listenerGuard = acquiredListenerGuard;
+        }
+        catch
+        {
+            acquiredListenerGuard.Dispose();
+            throw;
         }
     }
 
@@ -230,6 +242,7 @@ internal sealed class WindowsKvmRuntime : IAsyncDisposable
         finally
         {
             credentials.Dispose();
+            listenerGuard.Dispose();
         }
     }
 

@@ -50,9 +50,33 @@ internal sealed class WindowsControlReleaseHotKey : IDisposable
             return;
         }
 
+        var disposingOnHotKeyThread = ReferenceEquals(Thread.CurrentThread, thread);
         if (threadID != 0)
         {
             _ = PostThreadMessage(threadID, WindowMessageQuit, UIntPtr.Zero, IntPtr.Zero);
+        }
+
+        if (disposingOnHotKeyThread)
+        {
+            // The callback runs on the registration thread. Joining that
+            // thread from itself throws (and can leave the registration
+            // active). Unregister synchronously on the owning thread before
+            // returning so a new grant can register the same emergency key
+            // without colliding with this retired registration. A pool
+            // thread then waits for the message loop to finish its remaining
+            // cleanup.
+            _ = UnregisterHotKey(IntPtr.Zero, HotKeyID);
+            ThreadPool.QueueUserWorkItem(
+                _ =>
+                {
+                    if (thread.IsAlive)
+                    {
+                        _ = thread.Join(TimeSpan.FromSeconds(2));
+                    }
+                    ready.Dispose();
+                }
+            );
+            return;
         }
 
         if (thread.IsAlive && !thread.Join(TimeSpan.FromSeconds(2)))

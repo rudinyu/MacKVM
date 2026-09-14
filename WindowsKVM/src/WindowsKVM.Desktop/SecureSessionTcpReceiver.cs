@@ -55,10 +55,15 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
     private readonly Func<string, CancellationToken, Task<bool>>? promptConsent;
     private readonly Action<string>? status;
     private readonly Action<bool>? controlStateChanged;
-    private readonly WindowsInputSink inputSink = new();
+    private readonly WindowsInputSink inputSink;
+    private readonly Func<Action, IDisposable> createReleaseHotKey;
+    private readonly Action? beforeControlGranted;
     private readonly object activeControlLock = new();
     private Guid? activeControlPeerID;
     private Guid? activeControlRequestID;
+    private ActiveControlBinding? activeControlBinding;
+    private Task controlEndNotification = Task.CompletedTask;
+    private long remoteInputGeneration;
     // The UI can disable remote input without stopping the authenticated
     // transport. Keep this gate separate from the active-control identity so
     // a local-only selection immediately prevents new requests and releases
@@ -83,7 +88,10 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
         bool autoAcceptControl = false,
         Func<string, CancellationToken, Task<bool>>? promptConsent = null,
         Action<string>? status = null,
-        Action<bool>? controlStateChanged = null
+        Action<bool>? controlStateChanged = null,
+        WindowsInputSink? inputSink = null,
+        Func<Action, IDisposable>? createReleaseHotKey = null,
+        Action? beforeControlGranted = null
     )
     {
         this.credentials = credentials;
@@ -95,6 +103,10 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
         this.promptConsent = promptConsent;
         this.status = status;
         this.controlStateChanged = controlStateChanged;
+        this.inputSink = inputSink ?? new WindowsInputSink();
+        this.createReleaseHotKey = createReleaseHotKey
+            ?? (callback => new WindowsControlReleaseHotKey(callback));
+        this.beforeControlGranted = beforeControlGranted;
         listener = CreateListener(requestedPort);
     }
 
@@ -114,24 +126,42 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
     /// </summary>
     public void SetRemoteInputEnabled(bool enabled)
     {
-        Volatile.Write(ref remoteInputEnabled, enabled ? 1 : 0);
+        ActiveControlBinding? endedBinding = null;
+        IDisposable? detachedHotKey = null;
+        var ended = false;
+        lock (activeControlLock)
+        {
+            // Every local-only transition starts a new generation. A consent
+            // task that was already in flight must not acquire a grant after
+            // disable->enable merely because the setting is enabled again.
+            Volatile.Write(ref remoteInputEnabled, enabled ? 1 : 0);
+            remoteInputGeneration++;
+            if (!enabled
+                && activeControlPeerID is { } peerID
+                && activeControlRequestID is { } requestID)
+            {
+                ended = EndActiveControlLocked(
+                    peerID,
+                    requestID,
+                    out endedBinding,
+                    out detachedHotKey
+                );
+                if (endedBinding is not null)
+                {
+                    QueueControlEndNotificationLocked(endedBinding);
+                }
+            }
+        }
+
+        detachedHotKey?.Dispose();
+        if (ended)
+        {
+            PublishControlState(false);
+        }
         if (enabled)
         {
             PublishStatus("Remote keyboard and mouse input is enabled.");
             return;
-        }
-
-        Guid? peerID;
-        Guid? requestID;
-        lock (activeControlLock)
-        {
-            peerID = activeControlPeerID;
-            requestID = activeControlRequestID;
-        }
-
-        if (peerID is { } peer && requestID is { } request)
-        {
-            EndActiveControl(peer, request);
         }
 
         PublishStatus(
@@ -538,7 +568,7 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
             MaximumAuthenticatedBytesPerSecond
         );
         var controlRequestID = new SessionControlRequestState();
-        WindowsControlReleaseHotKey? releaseHotKey = null;
+        ActiveControlBinding? currentControlBinding = null;
         Task? livenessTask = null;
         var livenessTimedOut = 0;
         using var outputLock = new SemaphoreSlim(1, 1);
@@ -759,28 +789,21 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
                         var controlMessage = ControlMessageCodec.Decode(plaintext);
                         if (controlMessage.Kind == ControlMessageKind.RequestControl)
                         {
-                            // A hotkey teardown clears the request state before
-                            // its network acknowledgement completes. Dispose
-                            // the old message-thread registration here, on the
-                            // receive loop, before accepting a new request.
-                            if (controlRequestID.Value is null && releaseHotKey is not null)
-                            {
-                                releaseHotKey.Dispose();
-                                releaseHotKey = null;
-                            }
-                            // Disabling remote input releases the shared sink
-                            // immediately, while this receive loop may not see
-                            // another packet until later. Treat that stale
-                            // request as ended so re-enabling the setting does
-                            // not leave this connection permanently blocked.
-                            if (controlRequestID.Value is { } staleRequest
-                                && activePeerID is { } stalePeer
-                                && !IsControlActive(stalePeer, staleRequest))
-                            {
-                                releaseHotKey?.Dispose();
-                                releaseHotKey = null;
-                                controlRequestID.ClearIf(staleRequest);
-                            }
+                            // A local disable/hotkey teardown may have
+                            // retired the previous grant while its EndControl
+                            // packet is still being serialized. Do not start a
+                            // fresh grant until that notification has reached
+                            // the peer, otherwise the peer could observe a
+                            // new ControlGranted before the old EndControl.
+                            await GetControlEndNotificationBarrier()
+                                .WaitAsync(token)
+                                .ConfigureAwait(false);
+
+                            // A local teardown may have happened on the UI or
+                            // hotkey thread while this receive loop was idle.
+                            // Dispose any old registration before allowing a
+                            // new grant to attach its callback.
+                            controlRequestID.DisposeHotKeyIfIdle();
                             if (controlRequestID.Value is not null)
                             {
                                 throw new SecureSessionWireException(
@@ -799,6 +822,9 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
                                     SecureSessionWireErrorCode.InvalidHandshake,
                                     "The authenticated peer identity is missing."
                                 );
+                            var inputGeneration = Volatile.Read(
+                                ref remoteInputGeneration
+                            );
                             if (Volatile.Read(ref remoteInputEnabled) == 0)
                             {
                                 await SendControlMessageAsync(
@@ -830,9 +856,27 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
                                 peerIdentity,
                                 token
                             );
+                            currentControlBinding = null;
                             if (!consent.Allowed
                                 || Volatile.Read(ref remoteInputEnabled) == 0
-                                || !TryActivateControl(peerIdentity, requestID))
+                                || !TryActivateControl(
+                                    peerIdentity,
+                                    requestID,
+                                    inputGeneration,
+                                    controlRequestID,
+                                    consent.IsOneShot,
+                                    () => SendControlMessageAsync(
+                                        channel,
+                                        stream,
+                                        outputLock,
+                                        new ControlMessage(
+                                            ControlMessageKind.EndControl,
+                                            requestID
+                                        ),
+                                        token
+                                    ),
+                                    out currentControlBinding
+                                ))
                             {
                                 await SendControlMessageAsync(
                                     channel,
@@ -850,26 +894,37 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
                                 continue;
                             }
 
-                            controlRequestID.Set(requestID, consent.IsOneShot);
                             try
                             {
-                                releaseHotKey = new WindowsControlReleaseHotKey(() =>
+                                var hotKey = createReleaseHotKey(() =>
                                 {
                                     _ = EndControlFromHotKeyAsync(
                                         peerID,
-                                        requestID,
+                                        requestID
+                                    );
+                                });
+                                if (!controlRequestID.AttachHotKey(requestID, hotKey))
+                                {
+                                    hotKey.Dispose();
+                                    currentControlBinding?.GrantCompletion.TrySetResult(false);
+                                    EndActiveControl(peerID, requestID);
+                                    await SendControlMessageAsync(
                                         channel,
                                         stream,
                                         outputLock,
-                                        () => controlRequestID.ClearIf(requestID),
+                                        new ControlMessage(
+                                            ControlMessageKind.ControlDenied,
+                                            requestID
+                                        ),
                                         token
                                     );
-                                });
+                                    continue;
+                                }
                             }
                             catch (Exception ex)
                             {
+                                currentControlBinding?.GrantCompletion.TrySetResult(false);
                                 EndActiveControl(peerID, requestID);
-                                controlRequestID.ClearIf(requestID);
                                 Console.Error.WriteLine(
                                     $"Could not register the Windows release hotkey: {ex.Message}"
                                 );
@@ -886,16 +941,30 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
                                 continue;
                             }
 
-                            await SendControlMessageAsync(
-                                channel,
-                                stream,
-                                outputLock,
-                                new ControlMessage(
-                                    ControlMessageKind.ControlGranted,
-                                    requestID
-                                ),
-                                token
-                            );
+                            // Test and host seams may retire the grant at this
+                            // exact boundary. The notification path waits for
+                            // GrantCompletion below, so EndControl can never
+                            // overtake a ControlGranted already in flight.
+                            beforeControlGranted?.Invoke();
+                            try
+                            {
+                                await SendControlMessageAsync(
+                                    channel,
+                                    stream,
+                                    outputLock,
+                                    new ControlMessage(
+                                        ControlMessageKind.ControlGranted,
+                                        requestID
+                                    ),
+                                    token
+                                );
+                                currentControlBinding?.GrantCompletion.TrySetResult(true);
+                            }
+                            catch
+                            {
+                                currentControlBinding?.GrantCompletion.TrySetResult(false);
+                                throw;
+                            }
                             Console.WriteLine(
                                 $"Windows control granted for {Short(requestID)}. "
                                     + "Ctrl+Alt+Shift+Esc returns input locally."
@@ -913,56 +982,46 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
                                     SecureSessionWireErrorCode.InvalidHandshake,
                                     "An input message has no request ID."
                                 );
-                            if (Volatile.Read(ref remoteInputEnabled) == 0)
-                            {
-                                // A local-only switch can race with one input
-                                // frame already buffered by TCP. Ignore it and
-                                // clear the request admission state rather than
-                                // injecting it or treating it as malformed.
-                                if (controlRequestID.Value == requestID)
-                                {
-                                    if (activePeerID is { } disabledPeer)
-                                    {
-                                        EndActiveControl(disabledPeer, requestID);
-                                    }
-                                    controlRequestID.ClearIf(requestID);
-                                    releaseHotKey?.Dispose();
-                                    releaseHotKey = null;
-                                    try
-                                    {
-                                        await SendControlMessageAsync(
-                                            channel,
-                                            stream,
-                                            outputLock,
-                                            new ControlMessage(
-                                                ControlMessageKind.EndControl,
-                                                requestID
-                                            ),
-                                            token
-                                        );
-                                    }
-                                    catch (Exception ex) when (ex is IOException
-                                        or SocketException
-                                        or ObjectDisposedException
-                                        or OperationCanceledException)
-                                    {
-                                        Console.Error.WriteLine(
-                                            $"Could not notify MacKVM that remote input was disabled: {ex.Message}"
-                                        );
-                                    }
-                                }
-                                continue;
-                            }
-                            if (activePeerID is null
-                                || controlRequestID.Value != requestID
-                                || controlMessage.Input is null)
+                            if (activePeerID is null || controlMessage.Input is null)
                             {
                                 throw new SecureSessionWireException(
                                     SecureSessionWireErrorCode.UnexpectedMessage,
                                     "Input arrived without an active Windows control grant."
                                 );
                             }
+                            if (controlRequestID.Value != requestID)
+                            {
+                                // A release hotkey or local-only transition
+                                // can leave one final packet in the TCP
+                                // receive buffer. Ignore only a bounded,
+                                // known-ended request; unknown IDs remain a
+                                // protocol violation.
+                                if (controlRequestID.IsEnded(requestID))
+                                {
+                                    continue;
+                                }
 
+                                throw new SecureSessionWireException(
+                                    SecureSessionWireErrorCode.UnexpectedMessage,
+                                    "Input arrived without an active Windows control grant."
+                                );
+                            }
+                            if (Volatile.Read(ref remoteInputEnabled) == 0)
+                            {
+                                // SetRemoteInputEnabled(false) already ended
+                                // the grant and sent the EndControl barrier.
+                                // This frame may have been buffered before that
+                                // transition, so ignore only the ended request.
+                                if (controlRequestID.IsEnded(requestID))
+                                {
+                                    continue;
+                                }
+
+                                throw new SecureSessionWireException(
+                                    SecureSessionWireErrorCode.UnexpectedMessage,
+                                    "Input arrived without an active Windows control grant."
+                                );
+                            }
                             var inputPeer = activePeerIdentity
                                 ?? throw new SecureSessionWireException(
                                     SecureSessionWireErrorCode.InvalidHandshake,
@@ -995,39 +1054,42 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
                                 );
                             }
 
-                            // A release hotkey can race with one final packet
-                            // already in the TCP receive buffer. It is safe to
-                            // ignore that packet after the authenticated grant
-                            // has been ended, but an unknown request ID remains
-                            // a protocol violation.
-                            if (!IsControlActive(activePeerID.Value, requestID))
-                            {
-                                continue;
-                            }
-
+                            // Check the grant and inject while holding the same
+                            // lock used by teardown/new-grant activation. This
+                            // prevents an old receive-loop callback from
+                            // crossing into a newly activated peer's sink.
                             try
                             {
-                                inputSink.Receive(controlMessage.Input);
+                                if (!TryReceiveControlInput(
+                                    activePeerID.Value,
+                                    requestID,
+                                    controlMessage.Input
+                                ))
+                                {
+                                    if (controlRequestID.IsEnded(requestID))
+                                    {
+                                        continue;
+                                    }
+
+                                    throw new SecureSessionWireException(
+                                        SecureSessionWireErrorCode.UnexpectedMessage,
+                                        "Input arrived without an active Windows control grant."
+                                    );
+                                }
                             }
                             catch (WindowsInputException ex)
                             {
                                 Console.Error.WriteLine(
                                     $"Windows input injection failed; ending control: {ex.Message}"
                                 );
-                                EndActiveControl(activePeerID.Value, requestID);
-                                controlRequestID.ClearIf(requestID);
-                                releaseHotKey?.Dispose();
-                                releaseHotKey = null;
-                                await SendControlMessageAsync(
-                                    channel,
-                                    stream,
-                                    outputLock,
-                                    new ControlMessage(
-                                        ControlMessageKind.EndControl,
-                                        requestID
-                                    ),
-                                    token
-                                );
+                                if (EndActiveControl(
+                                    activePeerID.Value,
+                                    requestID,
+                                    out var endedBinding
+                                ) && endedBinding is not null)
+                                {
+                                    await NotifyControlEndedAsync(endedBinding);
+                                }
                             }
                             continue;
                         }
@@ -1043,9 +1105,6 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
                                 && controlRequestID.Value == requestID
                                 && EndActiveControl(activePeerID.Value, requestID))
                             {
-                                controlRequestID.ClearIf(requestID);
-                                releaseHotKey?.Dispose();
-                                releaseHotKey = null;
                                 Console.WriteLine(
                                     $"Windows control ended by the Mac ({Short(requestID)})."
                                 );
@@ -1135,6 +1194,10 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
         finally
         {
             handshakeCancellation.Cancel();
+            // If the connection exits between activation and the final grant
+            // write, unblock a concurrently scheduled local teardown without
+            // emitting a stale EndControl notification.
+            currentControlBinding?.GrantCompletion.TrySetResult(false);
             if (livenessTask is not null)
             {
                 try
@@ -1146,12 +1209,12 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
                 {
                 }
             }
-            releaseHotKey?.Dispose();
             if (activePeerID is { } endingPeer
                 && controlRequestID.Value is { } endingRequest)
             {
                 EndActiveControl(endingPeer, endingRequest);
             }
+            controlRequestID.DisposeHotKeyIfIdle();
 
             UnregisterConnectionContext(connectionContext);
             outputLock.Dispose();
@@ -1238,6 +1301,13 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
                 $"Allow keyboard/mouse control from {Short(peerID)}? y/N: ",
                 promptTimeout.Token
             ).ConfigureAwait(false);
+            if (promptTimeout.IsCancellationRequested)
+            {
+                Console.Error.WriteLine(
+                    "Control request consent completed after its deadline; denying it."
+                );
+                return ControlConsentResult.Denied;
+            }
             return new ControlConsentResult(accepted, IsOneShot: accepted);
         }
         catch (OperationCanceledException) when (promptTimeout.IsCancellationRequested)
@@ -1247,16 +1317,26 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
         }
     }
 
-    private bool TryActivateControl(PeerIdentity peer, Guid requestID)
+    private bool TryActivateControl(
+        PeerIdentity peer,
+        Guid requestID,
+        long inputGeneration,
+        SessionControlRequestState requestState,
+        bool oneShot,
+        Func<Task> notifyEndAsync,
+        out ActiveControlBinding? activatedBinding
+    )
     {
         var peerID = peer.Id;
         var activated = false;
+        activatedBinding = null;
         lock (activeControlLock)
         {
             // The local-only setting can change while a consent dialog is
             // open. Re-check it under the same lock as activation so a stale
             // approval can never acquire the Windows input sink.
             if (Volatile.Read(ref remoteInputEnabled) == 0
+                || remoteInputGeneration != inputGeneration
                 || !trustStore.Matches(peer)
                 || activeControlRequestID is not null)
             {
@@ -1264,8 +1344,17 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
             }
 
             inputSink.Begin();
+            requestState.Set(requestID, oneShot);
             activeControlPeerID = peerID;
             activeControlRequestID = requestID;
+            activatedBinding = new ActiveControlBinding
+            {
+                PeerID = peerID,
+                RequestID = requestID,
+                RequestState = requestState,
+                NotifyEndAsync = notifyEndAsync
+            };
+            activeControlBinding = activatedBinding;
             activated = true;
         }
 
@@ -1273,86 +1362,149 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
         return activated;
     }
 
-    private bool IsControlActive(Guid peerID, Guid requestID)
+    private bool TryReceiveControlInput(
+        Guid peerID,
+        Guid requestID,
+        RemoteInputEvent input
+    )
     {
         lock (activeControlLock)
         {
-            return activeControlPeerID == peerID
-                && activeControlRequestID == requestID
-                && inputSink.IsActive;
-        }
-    }
-
-    private bool EndActiveControl(Guid peerID, Guid requestID)
-    {
-        var ended = false;
-        lock (activeControlLock)
-        {
-            if (activeControlPeerID != peerID || activeControlRequestID != requestID)
+            if (activeControlPeerID != peerID
+                || activeControlRequestID != requestID
+                || !inputSink.IsActive)
             {
                 return false;
             }
 
-            activeControlPeerID = null;
-            activeControlRequestID = null;
-            inputSink.End();
-            ended = true;
+            inputSink.Receive(input);
+            return true;
         }
-
-        if (ended)
-        {
-            PublishControlState(false);
-        }
-        return ended;
     }
 
-    private async Task EndControlFromHotKeyAsync(
+    private bool EndActiveControl(Guid peerID, Guid requestID)
+        => EndActiveControl(peerID, requestID, out _);
+
+    private bool EndActiveControl(
         Guid peerID,
         Guid requestID,
-        SecureSessionChannel? channel,
-        NetworkStream stream,
-        SemaphoreSlim outputLock,
-        Action clearRequest,
-        CancellationToken token
+        out ActiveControlBinding? endedBinding
     )
     {
-        if (!EndActiveControl(peerID, requestID))
+        IDisposable? detachedHotKey;
+        lock (activeControlLock)
         {
-            return;
+            var ended = EndActiveControlLocked(
+                peerID,
+                requestID,
+                out endedBinding,
+                out detachedHotKey
+            );
+            if (!ended)
+            {
+                return false;
+            }
+
+            if (endedBinding is not null)
+            {
+                QueueControlEndNotificationLocked(endedBinding);
+            }
         }
 
-        // Clear the receive-loop admission state immediately after the local
-        // input sink is released. The acknowledgement may be delayed by the
-        // network, but a new control request must not be rejected as a second
-        // active request during that delay.
-        clearRequest();
+        detachedHotKey?.Dispose();
+        PublishControlState(false);
+        return true;
+    }
 
-        Console.WriteLine(
-            $"Windows control returned locally by hotkey ({Short(requestID)})."
-        );
-        PublishStatus("Keyboard/mouse control returned locally by hotkey.");
-        if (channel is null)
+    private void QueueControlEndNotificationLocked(ActiveControlBinding binding)
+    {
+        // The caller holds activeControlLock. Publishing the task before the
+        // lock is released closes the small race in which a new RequestControl
+        // could otherwise observe the old completed barrier and overtake this
+        // teardown. NotifyControlEndedAsync is once-only per binding and does
+        // not re-enter activeControlLock.
+        controlEndNotification = NotifyControlEndedAsync(binding);
+    }
+
+    private Task GetControlEndNotificationBarrier()
+    {
+        lock (activeControlLock)
+        {
+            return controlEndNotification;
+        }
+    }
+
+    private bool EndActiveControlLocked(
+        Guid peerID,
+        Guid requestID,
+        out ActiveControlBinding? endedBinding,
+        out IDisposable? detachedHotKey
+    )
+    {
+        endedBinding = null;
+        detachedHotKey = null;
+        if (activeControlPeerID != peerID || activeControlRequestID != requestID)
+        {
+            return false;
+        }
+
+        endedBinding = activeControlBinding;
+        activeControlPeerID = null;
+        activeControlRequestID = null;
+        activeControlBinding = null;
+        inputSink.End();
+        if (endedBinding is not null)
+        {
+            endedBinding.RequestState.End(requestID, out detachedHotKey);
+        }
+        return true;
+    }
+
+    private async Task NotifyControlEndedAsync(ActiveControlBinding binding)
+    {
+        if (Interlocked.Exchange(ref binding.NotificationStarted, 1) != 0)
         {
             return;
         }
 
         try
         {
-            await SendControlMessageAsync(
-                channel,
-                stream,
-                outputLock,
-                new ControlMessage(ControlMessageKind.EndControl, requestID),
-                token
-            ).ConfigureAwait(false);
+            // A local teardown may race with the receive loop's final
+            // ControlGranted write. Wait for that write's outcome so MacKVM
+            // never observes EndControl before the corresponding grant.
+            if (!await binding.GrantCompletion.Task.ConfigureAwait(false))
+            {
+                return;
+            }
+            await binding.NotifyEndAsync().ConfigureAwait(false);
         }
-        catch (Exception ex) when (ex is IOException or SocketException
-            or ObjectDisposedException or OperationCanceledException)
+        catch (Exception ex) when (ex is IOException
+            or SocketException
+            or ObjectDisposedException
+            or OperationCanceledException)
         {
             Console.Error.WriteLine(
                 $"Could not notify MacKVM that Windows control ended: {ex.Message}"
             );
         }
+    }
+
+    private async Task EndControlFromHotKeyAsync(
+        Guid peerID,
+        Guid requestID
+    )
+    {
+        if (!EndActiveControl(peerID, requestID, out var endedBinding)
+            || endedBinding is null)
+        {
+            return;
+        }
+
+        Console.WriteLine(
+            $"Windows control returned locally by hotkey ({Short(requestID)})."
+        );
+        PublishStatus("Keyboard/mouse control returned locally by hotkey.");
+        await NotifyControlEndedAsync(endedBinding).ConfigureAwait(false);
     }
 
     private static async Task SendControlMessageAsync(
@@ -1413,6 +1565,18 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
         catch (Exception ex) when (ex is SocketException
             or PlatformNotSupportedException or ArgumentException)
         {
+            if (!OperatingSystem.IsWindows())
+            {
+                // The portable production-path self-test uses loopback sockets
+                // on macOS. The Winsock SIO_KEEPALIVE_VALS fallback is a
+                // Windows-only API and must not be probed on that host.
+                Console.Error.WriteLine(
+                    "Secure session TCP keepalive uses the host OS default "
+                        + "outside Windows."
+                );
+                return;
+            }
+
             // Windows 10 builds that do not expose the explicit TCP options
             // still support the Winsock SIO_KEEPALIVE_VALS compatibility path.
             try
@@ -1584,6 +1748,17 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
         public Guid? PeerID { get; set; }
     }
 
+    private sealed class ActiveControlBinding
+    {
+        public required Guid PeerID { get; init; }
+        public required Guid RequestID { get; init; }
+        public required SessionControlRequestState RequestState { get; init; }
+        public required Func<Task> NotifyEndAsync { get; init; }
+        public TaskCompletionSource<bool> GrantCompletion { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public int NotificationStarted;
+    }
+
     private void PublishStatus(string message)
     {
         try
@@ -1612,9 +1787,13 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
 
     private sealed class SessionControlRequestState
     {
+        private const int MaximumEndedRequests = 16;
         private readonly object gate = new();
+        private readonly Queue<Guid> endedRequestOrder = [];
+        private readonly HashSet<Guid> endedRequests = [];
         private Guid? value;
         private bool oneShot;
+        private IDisposable? hotKey;
 
         public Guid? Value
         {
@@ -1636,6 +1815,35 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
             }
         }
 
+        public bool AttachHotKey(Guid requestID, IDisposable registration)
+        {
+            lock (gate)
+            {
+                if (value != requestID || hotKey is not null)
+                {
+                    return false;
+                }
+
+                hotKey = registration;
+                return true;
+            }
+        }
+
+        public void DisposeHotKeyIfIdle()
+        {
+            IDisposable? registration = null;
+            lock (gate)
+            {
+                if (value is null && hotKey is not null)
+                {
+                    registration = hotKey;
+                    hotKey = null;
+                }
+            }
+
+            registration?.Dispose();
+        }
+
         public bool IsOneShot(Guid requestID)
         {
             lock (gate)
@@ -1644,10 +1852,19 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
             }
         }
 
-        public bool ClearIf(Guid requestID)
+        public bool IsEnded(Guid requestID)
         {
             lock (gate)
             {
+                return endedRequests.Contains(requestID);
+            }
+        }
+
+        public bool End(Guid requestID, out IDisposable? detachedHotKey)
+        {
+            lock (gate)
+            {
+                detachedHotKey = null;
                 if (value != requestID)
                 {
                     return false;
@@ -1655,8 +1872,25 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
 
                 value = null;
                 oneShot = false;
+                detachedHotKey = hotKey;
+                hotKey = null;
+                if (endedRequests.Add(requestID))
+                {
+                    endedRequestOrder.Enqueue(requestID);
+                    while (endedRequestOrder.Count > MaximumEndedRequests)
+                    {
+                        endedRequests.Remove(endedRequestOrder.Dequeue());
+                    }
+                }
                 return true;
             }
+        }
+
+        public bool ClearIf(Guid requestID)
+        {
+            var ended = End(requestID, out var detachedHotKey);
+            detachedHotKey?.Dispose();
+            return ended;
         }
     }
 

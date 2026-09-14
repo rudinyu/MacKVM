@@ -3,6 +3,27 @@ using WindowsKVM.Protocol;
 
 namespace WindowsKVM;
 
+internal enum WindowsInputEventKind
+{
+    Keyboard,
+    Mouse
+}
+
+/// <summary>
+/// A platform-neutral description of one input event. The production sink
+/// converts this shape to Win32 INPUT immediately before calling SendInput;
+/// tests can inject a recorder/failure seam without loading user32.dll.
+/// </summary>
+internal readonly record struct WindowsInputEvent(
+    WindowsInputEventKind Kind,
+    ushort VirtualKey,
+    ushort ScanCode,
+    uint Flags,
+    int X,
+    int Y,
+    uint MouseData
+);
+
 /// <summary>
 /// Converts the authenticated MacKVM input protocol into Windows SendInput
 /// calls. All state is kept per receiver and every control teardown releases
@@ -38,10 +59,24 @@ internal sealed class WindowsInputSink : IDisposable
     private readonly object gate = new();
     private readonly Dictionary<ushort, InjectedKey> pressedKeys = [];
     private readonly HashSet<int> pressedMouseButtons = [];
+    private readonly Func<IReadOnlyList<WindowsInputEvent>, uint> sendInputs;
+    private readonly Func<int, int> getSystemMetrics;
+    private readonly Action<string>? reportUnsupported;
     private double verticalScrollRemainder;
     private double horizontalScrollRemainder;
     private bool active;
     private bool disposed;
+
+    public WindowsInputSink(
+        Func<IReadOnlyList<WindowsInputEvent>, uint>? sendInputs = null,
+        Func<int, int>? getSystemMetrics = null,
+        Action<string>? reportUnsupported = null
+    )
+    {
+        this.sendInputs = sendInputs ?? SendNativeInputs;
+        this.getSystemMetrics = getSystemMetrics ?? GetSystemMetrics;
+        this.reportUnsupported = reportUnsupported;
+    }
 
     public bool IsActive
     {
@@ -59,7 +94,12 @@ internal sealed class WindowsInputSink : IDisposable
         lock (gate)
         {
             ThrowIfDisposed();
-            ReleaseAllInputsLocked();
+            if (!ReleaseAllInputsLocked())
+            {
+                throw new WindowsInputException(
+                    "Windows input cleanup did not complete; refusing a new control grant."
+                );
+            }
             active = true;
         }
     }
@@ -147,13 +187,17 @@ internal sealed class WindowsInputSink : IDisposable
     {
         var keyCode = input.KeyCode
             ?? throw new WindowsInputException("A keyDown event has no key code.");
-        if (pressedKeys.ContainsKey(keyCode))
+        if (pressedKeys.TryGetValue(keyCode, out var held))
         {
+            // macOS sends another key-down for auto-repeat. Reuse the first
+            // mapping (including Unicode units) so a changed character field
+            // cannot make a held key release incorrectly later.
+            SendInputs(held.KeyDownInputs());
             return;
         }
 
         InjectedKey injected;
-        var events = new List<INPUT>();
+        var events = new List<WindowsInputEvent>();
         if (TryMapMacKey(keyCode, out var virtualKey, out var extended))
         {
             injected = InjectedKey.Virtual(virtualKey, extended);
@@ -173,15 +217,24 @@ internal sealed class WindowsInputSink : IDisposable
             );
         }
 
-        SendInputs(events);
         pressedKeys[keyCode] = injected;
+        try
+        {
+            SendInputs(events);
+        }
+        catch
+        {
+            // Keep the mapping when a partial/failed key-down may have
+            // reached Windows. End() can then issue a conservative key-up.
+            throw;
+        }
     }
 
     private void ReleaseKey(RemoteInputEvent input)
     {
         var keyCode = input.KeyCode
             ?? throw new WindowsInputException("A keyUp event has no key code.");
-        if (!pressedKeys.Remove(keyCode, out var injected))
+        if (!pressedKeys.TryGetValue(keyCode, out var injected))
         {
             // A duplicate or legacy keyUp must not create a new held key. If
             // the physical mapping is known, send a best-effort release.
@@ -199,6 +252,9 @@ internal sealed class WindowsInputSink : IDisposable
         }
 
         SendInputs(injected.KeyUpInputs());
+        // Do not lose teardown bookkeeping until the native release has
+        // succeeded. A transient SendInput failure must be retried by End().
+        pressedKeys.Remove(keyCode);
     }
 
     private void ChangeModifier(RemoteInputEvent input)
@@ -217,13 +273,22 @@ internal sealed class WindowsInputSink : IDisposable
         {
             if (pressedKeys.ContainsKey(keyCode))
             {
+                SendInputs(pressedKeys[keyCode].KeyDownInputs());
                 return;
             }
 
-            SendInputs([
-                KeyboardInput(virtualKey, 0, extended ? KeyEventExtended : 0)
-            ]);
-            pressedKeys[keyCode] = InjectedKey.Virtual(virtualKey, extended);
+            var injected = InjectedKey.Virtual(virtualKey, extended);
+            pressedKeys[keyCode] = injected;
+            try
+            {
+                SendInputs(injected.KeyDownInputs());
+            }
+            catch
+            {
+                // Preserve the held mapping so teardown can retry the release
+                // when only part of a modifier transition was injected.
+                throw;
+            }
         }
         else
         {
@@ -235,22 +300,13 @@ internal sealed class WindowsInputSink : IDisposable
     {
         var mediaKey = input.MediaKey
             ?? throw new WindowsInputException("A systemDefined event has no media key.");
-        var virtualKey = mediaKey switch
+        if (!TryMapMediaKey(mediaKey, out var virtualKey))
         {
-            MediaKey.SoundUp => VkVolumeUp,
-            MediaKey.SoundDown => VkVolumeDown,
-            MediaKey.BrightnessUp => VkBrightnessUp,
-            MediaKey.BrightnessDown => VkBrightnessDown,
-            MediaKey.Mute => VkVolumeMute,
-            MediaKey.Play => VkMediaPlayPause,
-            MediaKey.Next => VkMediaNextTrack,
-            MediaKey.Previous => VkMediaPreviousTrack,
-            MediaKey.Fast => VkMediaNextTrack,
-            MediaKey.Rewind => VkMediaPreviousTrack,
-            _ => throw new WindowsInputException(
-                $"Media key {mediaKey} is not supported by Windows input injection."
-            )
-        };
+            ReportUnsupported(
+                $"Media key {mediaKey} is not implemented by Windows input injection; ignored."
+            );
+            return;
+        }
 
         SendInputs([
             KeyboardInput(
@@ -259,6 +315,23 @@ internal sealed class WindowsInputSink : IDisposable
                 (KeyEventExtended | (input.IsPressed == true ? 0 : KeyEventKeyUp))
             )
         ]);
+    }
+
+    private static bool TryMapMediaKey(MediaKey mediaKey, out ushort virtualKey)
+    {
+        virtualKey = mediaKey switch
+        {
+            MediaKey.SoundUp => VkVolumeUp,
+            MediaKey.SoundDown => VkVolumeDown,
+            MediaKey.Mute => VkVolumeMute,
+            MediaKey.Play => VkMediaPlayPause,
+            MediaKey.Next => VkMediaNextTrack,
+            MediaKey.Previous => VkMediaPreviousTrack,
+            MediaKey.Fast => VkMediaNextTrack,
+            MediaKey.Rewind => VkMediaPreviousTrack,
+            _ => 0
+        };
+        return virtualKey != 0;
     }
 
     private void MoveMouse(RemoteInputEvent input)
@@ -272,38 +345,25 @@ internal sealed class WindowsInputSink : IDisposable
     {
         var button = input.ButtonNumber
             ?? throw new WindowsInputException("A mouse event has no button number.");
-        var flags = input.Kind switch
-        {
-            RemoteInputKind.LeftMouseDown => MouseLeftDown,
-            RemoteInputKind.LeftMouseUp => MouseLeftUp,
-            // The button is already held from the matching down event. A
-            // dragged event must move the pointer without synthesizing a
-            // second down edge on every mouse-move packet.
-            RemoteInputKind.LeftMouseDragged => MouseMove,
-            RemoteInputKind.RightMouseDown => MouseRightDown,
-            RemoteInputKind.RightMouseUp => MouseRightUp,
-            RemoteInputKind.RightMouseDragged => MouseMove,
-            RemoteInputKind.OtherMouseDown => MouseXDown,
-            RemoteInputKind.OtherMouseUp => MouseXUp,
-            RemoteInputKind.OtherMouseDragged => MouseMove,
-            _ => throw new WindowsInputException("Unsupported mouse button event.")
-        };
-        var mouseData = button switch
-        {
-            2 => 1u,
-            3 => 2u,
-            _ => 0u
-        };
-        if (button >= 2 && button > 3)
-        {
-            throw new WindowsInputException(
-                $"Windows supports only XBUTTON1 and XBUTTON2; got button {button}."
-            );
-        }
-
         var isRelease = input.Kind is RemoteInputKind.LeftMouseUp
             or RemoteInputKind.RightMouseUp
             or RemoteInputKind.OtherMouseUp;
+        if (!TryMapMouseButton(button, input.Kind, out var flags, out var mouseData))
+        {
+            ReportUnsupported(
+                $"Mouse button {button} is not supported by Windows input injection; ignored."
+            );
+            return;
+        }
+
+        if (input.Kind is RemoteInputKind.LeftMouseDragged
+            or RemoteInputKind.RightMouseDragged
+            or RemoteInputKind.OtherMouseDragged)
+        {
+            flags = MouseMove;
+            mouseData = 0;
+        }
+
         SendInputs([
             MouseInputForLocation(
                 input.Location
@@ -317,10 +377,56 @@ internal sealed class WindowsInputSink : IDisposable
         {
             pressedMouseButtons.Remove(button);
         }
-        else
+        else if (input.Kind is RemoteInputKind.LeftMouseDown
+            or RemoteInputKind.RightMouseDown
+            or RemoteInputKind.OtherMouseDown)
         {
             pressedMouseButtons.Add(button);
         }
+    }
+
+    private static bool TryMapMouseButton(
+        int button,
+        RemoteInputKind kind,
+        out uint flags,
+        out uint mouseData
+    )
+    {
+        var isDown = kind is RemoteInputKind.LeftMouseDown
+            or RemoteInputKind.RightMouseDown
+            or RemoteInputKind.OtherMouseDown;
+        var isUp = kind is RemoteInputKind.LeftMouseUp
+            or RemoteInputKind.RightMouseUp
+            or RemoteInputKind.OtherMouseUp;
+        var isDragged = kind is RemoteInputKind.LeftMouseDragged
+            or RemoteInputKind.RightMouseDragged
+            or RemoteInputKind.OtherMouseDragged;
+        if (isDragged && button is >= 0 and <= 4)
+        {
+            flags = MouseMove;
+            mouseData = 0;
+            return true;
+        }
+
+        flags = button switch
+        {
+            0 when isDown => MouseLeftDown,
+            0 when isUp => MouseLeftUp,
+            1 when isDown => MouseRightDown,
+            1 when isUp => MouseRightUp,
+            2 when isDown => MouseMiddleDown,
+            2 when isUp => MouseMiddleUp,
+            3 or 4 when isDown => MouseXDown,
+            3 or 4 when isUp => MouseXUp,
+            _ => 0
+        };
+        mouseData = button switch
+        {
+            3 => 1u,
+            4 => 2u,
+            _ => 0u
+        };
+        return flags != 0 && (button <= 1 || button is 2 or 3 or 4);
     }
 
     private void Scroll(RemoteInputEvent input)
@@ -340,7 +446,7 @@ internal sealed class WindowsInputSink : IDisposable
             input.ScrollDeltaX ?? 0,
             multiplier
         );
-        var events = new List<INPUT>(2);
+        var events = new List<WindowsInputEvent>(2);
         if (vertical != 0)
         {
             events.Add(MouseInput(0, unchecked((uint)vertical), MouseWheel));
@@ -355,9 +461,9 @@ internal sealed class WindowsInputSink : IDisposable
         }
     }
 
-    private void ReleaseAllInputsLocked()
+    private bool ReleaseAllInputsLocked()
     {
-        var events = new List<INPUT>(pressedKeys.Count + pressedMouseButtons.Count);
+        var events = new List<WindowsInputEvent>(pressedKeys.Count + pressedMouseButtons.Count);
         foreach (var injected in pressedKeys.Values)
         {
             events.AddRange(injected.KeyUpInputs());
@@ -368,22 +474,34 @@ internal sealed class WindowsInputSink : IDisposable
             {
                 0 => MouseInput(0, 0, MouseLeftUp),
                 1 => MouseInput(0, 0, MouseRightUp),
-                2 => MouseInput(0, 1, MouseXUp),
-                3 => MouseInput(0, 2, MouseXUp),
+                2 => MouseInput(0, 0, MouseMiddleUp),
+                3 => MouseInput(0, 1, MouseXUp),
+                4 => MouseInput(0, 2, MouseXUp),
                 _ => default
             });
         }
 
         if (events.Count > 0)
         {
-            try
+            for (var attempt = 0; attempt < 3; attempt++)
             {
-                SendInputs(events);
-            }
-            catch (WindowsInputException)
-            {
-                // Teardown is best effort. Clearing the state is still safer
-                // than replaying stale releases into a later session.
+                try
+                {
+                    SendInputs(events);
+                    break;
+                }
+                catch (WindowsInputException) when (attempt < 2)
+                {
+                    // Retry a transient/partial SendInput result while the
+                    // complete held-state map is still available.
+                }
+                catch (WindowsInputException)
+                {
+                    // Keep all bookkeeping on a persistent failure. A later
+                    // End()/Begin() can retry, and Begin() refuses to hand
+                    // the sink to a new grant until cleanup succeeds.
+                    return false;
+                }
             }
         }
 
@@ -391,6 +509,7 @@ internal sealed class WindowsInputSink : IDisposable
         pressedMouseButtons.Clear();
         verticalScrollRemainder = 0;
         horizontalScrollRemainder = 0;
+        return true;
     }
 
     private static int ConsumeScroll(ref double remainder, double delta, double multiplier)
@@ -405,49 +524,36 @@ internal sealed class WindowsInputSink : IDisposable
         return (int)whole;
     }
 
-    private static INPUT KeyboardInput(ushort virtualKey, ushort scanCode, uint flags)
+    private static WindowsInputEvent KeyboardInput(
+        ushort virtualKey,
+        ushort scanCode,
+        uint flags
+    )
         => new()
         {
-            Type = InputKeyboard,
-            Data = new InputUnion
-            {
-                Keyboard = new KEYBDINPUT
-                {
-                    VirtualKey = virtualKey,
-                    ScanCode = scanCode,
-                    Flags = flags,
-                    Time = 0,
-                    ExtraInfo = UIntPtr.Zero
-                }
-            }
+            Kind = WindowsInputEventKind.Keyboard,
+            VirtualKey = virtualKey,
+            ScanCode = scanCode,
+            Flags = flags
         };
 
-    private static INPUT MouseInput(uint dx, uint data, uint flags)
+    private static WindowsInputEvent MouseInput(uint dx, uint data, uint flags)
         => new()
         {
-            Type = InputMouse,
-            Data = new InputUnion
-            {
-                Mouse = new MOUSEINPUT
-                {
-                    Dx = unchecked((int)dx),
-                    Dy = 0,
-                    MouseData = data,
-                    Flags = flags,
-                    Time = 0,
-                    ExtraInfo = UIntPtr.Zero
-                }
-            }
+            Kind = WindowsInputEventKind.Mouse,
+            X = unchecked((int)dx),
+            MouseData = data,
+            Flags = flags
         };
 
-    private static INPUT MouseInputForLocation(
+    private WindowsInputEvent MouseInputForLocation(
         NormalizedPoint location,
         uint flags,
         uint mouseData = 0
     )
     {
-        var width = Math.Max(1, GetSystemMetrics(SmCxVirtualScreen));
-        var height = Math.Max(1, GetSystemMetrics(SmCyVirtualScreen));
+        var width = Math.Max(1, getSystemMetrics(SmCxVirtualScreen));
+        var height = Math.Max(1, getSystemMetrics(SmCyVirtualScreen));
         var x = Math.Clamp(
             (int)Math.Round(location.X * (width - 1)),
             0,
@@ -476,7 +582,7 @@ internal sealed class WindowsInputSink : IDisposable
         );
     }
 
-    private static INPUT MouseInputWithCoordinates(
+    private static WindowsInputEvent MouseInputWithCoordinates(
         uint x,
         uint y,
         uint data,
@@ -484,38 +590,89 @@ internal sealed class WindowsInputSink : IDisposable
     )
         => new()
         {
-            Type = InputMouse,
-            Data = new InputUnion
-            {
-                Mouse = new MOUSEINPUT
-                {
-                    Dx = unchecked((int)x),
-                    Dy = unchecked((int)y),
-                    MouseData = data,
-                    Flags = flags,
-                    Time = 0,
-                    ExtraInfo = UIntPtr.Zero
-                }
-            }
+            Kind = WindowsInputEventKind.Mouse,
+            X = unchecked((int)x),
+            Y = unchecked((int)y),
+            MouseData = data,
+            Flags = flags
         };
 
-    private static void SendInputs(IReadOnlyList<INPUT> inputs)
+    private void SendInputs(IReadOnlyList<WindowsInputEvent> inputs)
     {
         if (inputs.Count == 0)
         {
             return;
         }
 
-        var sent = SendInput(
-            (uint)inputs.Count,
-            inputs.ToArray(),
-            Marshal.SizeOf<INPUT>()
-        );
+        var sent = sendInputs(inputs);
         if (sent != inputs.Count)
         {
             throw new WindowsInputException(
                 $"SendInput injected {sent} of {inputs.Count} events (Win32 {Marshal.GetLastWin32Error()})."
             );
+        }
+    }
+
+    private static uint SendNativeInputs(IReadOnlyList<WindowsInputEvent> inputs)
+    {
+        var nativeInputs = inputs.Select(ToNativeInput).ToArray();
+        return SendInput(
+            (uint)nativeInputs.Length,
+            nativeInputs,
+            Marshal.SizeOf<INPUT>()
+        );
+    }
+
+    private static INPUT ToNativeInput(WindowsInputEvent input)
+    {
+        if (input.Kind == WindowsInputEventKind.Keyboard)
+        {
+            return new INPUT
+            {
+                Type = InputKeyboard,
+                Data = new InputUnion
+                {
+                    Keyboard = new KEYBDINPUT
+                    {
+                        VirtualKey = input.VirtualKey,
+                        ScanCode = input.ScanCode,
+                        Flags = input.Flags,
+                        Time = 0,
+                        ExtraInfo = UIntPtr.Zero
+                    }
+                }
+            };
+        }
+
+        return new INPUT
+        {
+            Type = InputMouse,
+            Data = new InputUnion
+            {
+                Mouse = new MOUSEINPUT
+                {
+                    Dx = input.X,
+                    Dy = input.Y,
+                    MouseData = input.MouseData,
+                    Flags = input.Flags,
+                    Time = 0,
+                    ExtraInfo = UIntPtr.Zero
+                }
+            }
+        };
+    }
+
+    private void ReportUnsupported(string message)
+    {
+        Console.Error.WriteLine($"Windows input ignored: {message}");
+        try
+        {
+            reportUnsupported?.Invoke(message);
+        }
+        catch
+        {
+            // Diagnostics are best effort and must not tear down an
+            // authenticated control session.
         }
     }
 
@@ -575,7 +732,19 @@ internal sealed class WindowsInputSink : IDisposable
         public static InjectedKey Unicode(char[] units)
             => new(0, units.Select(unit => (ushort)unit).ToArray(), true, false);
 
-        public IReadOnlyList<INPUT> KeyUpInputs()
+        public IReadOnlyList<WindowsInputEvent> KeyDownInputs()
+        {
+            if (IsUnicode)
+            {
+                return UnicodeUnits
+                    .Select(unit => KeyboardInput(0, unit, KeyEventUnicode))
+                    .ToArray();
+            }
+
+            return [KeyboardInput(VirtualKey, 0, Extended ? KeyEventExtended : 0)];
+        }
+
+        public IReadOnlyList<WindowsInputEvent> KeyUpInputs()
         {
             if (IsUnicode)
             {

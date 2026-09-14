@@ -109,6 +109,16 @@ from the console during startup. The Windows app currently has no persistent
 file logger or Event Viewer provider. Run the same receiver in console mode to
 retain the detailed pairing, mDNS, TCP, handshake, and input messages.
 
+Before switching to console mode, choose **Quit WindowsKVM** from the tray
+menu. Closing the status window only hides the running receiver. UI and
+`--pairing-listen` share one receiver-instance guard; a second receiver exits
+with an already-running message instead of advertising the same identity on
+another port. `--version`, `--list-paired`, `--forget`, `--allow-control`, and
+`--deny-control` remain available while the receiver is running.
+
+After collecting the console log, stop that receiver before reopening the UI.
+Redirecting `WindowsKVM.exe --ui` output does not enable persistent UI logging.
+
 ### Verify the executable and capture a complete log
 
 Run this from the repository root or change `$exe` to the path of the copied
