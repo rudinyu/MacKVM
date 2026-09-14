@@ -2,6 +2,65 @@
 
 # Changelog
 
+## WindowsKVM 1.02.25 (build 105) — 2026-09-14
+
+This Windows-only UI refinement makes the default Simple mode fit in one
+viewport and reduces typography in both views for a denser, more readable
+status panel.
+
+### Changed
+
+- Compact the Simple layout and its action rows so the normal 520x480 window
+  can show all essential setup, pairing, control, and input-path information
+  without mouse-wheel scrolling.
+- Reduce title, section, body, caption, and monospace font sizes consistently
+  in Simple and Advanced modes while preserving the existing responsive
+  reflow for narrow displays.
+
+### Validation
+
+- Windows x64/ARM64 cross-builds and the existing desktop self-test remain
+  required; native DPI rendering still needs acceptance on a Windows desktop.
+
+## WindowsKVM 1.02.24 (build 104) — 2026-09-14
+
+This Windows-only UI polish makes Advanced mode narrower and gives the
+resident status window a consistent, restrained visual style.
+
+### Changed
+
+- Reduce the Advanced canvas and reflow its status, input-path, pairing, and
+  action rows so the detailed view fits comfortably on laptop displays.
+- Replace the legacy white/static-control contrast with a slate background,
+  softer separators, and accessible primary, secondary, success, and warning
+  text colors.
+- Enable the native Windows common-controls visual style for buttons,
+  checkboxes, and combo boxes while preserving the existing Win32 behavior.
+
+### Validation
+
+- Windows x64/ARM64 cross-builds and the existing desktop self-test remain
+  required; native DPI rendering still needs acceptance on a Windows desktop.
+
+## WindowsKVM 1.02.23 (build 103) — 2026-09-14
+
+This Windows-only UI fix keeps the live Advanced-mode status readable after
+the receiver starts. Runtime details now stay within three explicit lines so
+the status row is not covered by overflowing endpoint or fingerprint text.
+
+### Fixed
+
+- Keep version, model, device ID, and TCP endpoint details in a bounded header
+  block. The complete key fingerprint remains in **Paired device information**
+  and **Copy support information**.
+- Prevent the live `Remote keyboard and mouse input enabled.` status from
+  being clipped or overwritten when the receiver updates its ports.
+
+### Validation
+
+- Windows x64/ARM64 cross-builds and the existing desktop self-test remain
+  required; native DPI rendering still needs acceptance on a Windows desktop.
+
 ## WindowsKVM 1.02.22 (build 102) — 2026-09-14
 
 This Windows-only UI fix prevents the local key fingerprint in **Paired

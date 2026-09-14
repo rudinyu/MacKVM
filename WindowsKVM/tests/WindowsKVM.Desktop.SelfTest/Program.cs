@@ -294,6 +294,10 @@ internal static class Program
             );
         }
         Assert(
+            normalClient.ContentHeight <= WindowsTrayLayoutPolicy.SimplePreferredHeight - 40,
+            "normal Simple mode content should fit without vertical scrolling"
+        );
+        Assert(
             normalClient[WindowsTraySimpleControl.Title].Right + 16
                 <= normalClient[WindowsTraySimpleControl.ModeButton].X,
             "compact title must leave room for the mode button"

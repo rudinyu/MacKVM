@@ -2,6 +2,48 @@
 
 # 變更記錄
 
+## WindowsKVM 1.02.25（build 105）— 2026-09-14
+
+本次 Windows 專用 UI 微調讓預設的 Simple 模式可在單一視窗檢視區完整顯示，並同步縮小兩種模式的字級，讓狀態面板更精簡易讀。
+
+### 變更
+
+- 壓縮 Simple 版面與操作列，正常的 520x480 視窗可一次顯示必要的設定、配對、控制與輸入路徑資訊，不需用滑鼠滾輪。
+- 統一縮小 Simple 與 Advanced 的標題、區段、本文、說明及等寬字型，同時保留窄螢幕的響應式重新排列。
+
+### 驗證
+
+- 仍須通過 Windows x64／ARM64 cross-build 與既有 desktop self-test；原生 DPI 顯示仍需在 Windows 實機驗收。
+
+## WindowsKVM 1.02.24（build 104）— 2026-09-14
+
+本次 Windows 專用 UI 微調讓 Advanced 模式更窄，並為常駐狀態視窗統一低飽和、易閱讀的視覺樣式。
+
+### 變更
+
+- 縮小 Advanced 畫布並重新排列狀態、輸入路徑、配對與操作列，讓詳細畫面在筆電螢幕上更容易完整顯示。
+- 以 slate 背景、柔和分隔線，以及清楚區分的主要、次要、成功與警告文字色彩取代舊版白色靜態控制項的強烈對比。
+- 啟用原生 Windows common-controls 視覺樣式，讓按鈕、核取方塊與下拉清單維持一致的原生外觀與既有 Win32 行為。
+
+### 驗證
+
+- 仍須通過 Windows x64／ARM64 cross-build 與既有 desktop self-test；原生 DPI 顯示仍需在 Windows 實機驗收。
+
+## WindowsKVM 1.02.23（build 103）— 2026-09-14
+
+本次 Windows 專用 UI 修正 Advanced 模式在 receiver 啟動並更新連接埠後的狀態文字顯示。
+執行期資訊現在固定在三行內，避免連接埠或指紋內容溢出而覆蓋狀態列。
+
+### 修正
+
+- 將版本、型號、裝置 ID 與 TCP endpoint 放在有界的標題區塊；完整金鑰指紋仍保留在
+  **Paired device information** 與 **Copy support information**。
+- 修正 receiver 更新連接埠後，`Remote keyboard and mouse input enabled.` 狀態文字被裁切或覆蓋的問題。
+
+### 驗證
+
+- 仍須通過 Windows x64／ARM64 cross-build 與既有 desktop self-test；原生 DPI 顯示仍需在 Windows 實機驗收。
+
 ## WindowsKVM 1.02.22（build 102）— 2026-09-14
 
 本次 Windows 專用 UI 修正避免 Advanced 模式的**已配對裝置資訊**中，本機金鑰指紋被截斷或被下一列覆蓋。

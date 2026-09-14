@@ -58,17 +58,20 @@ internal readonly record struct WindowsTraySimpleLayout(
 internal static class WindowsTrayLayoutPolicy
 {
     public const int SimplePreferredWidth = 520;
-    public const int SimplePreferredHeight = 500;
-    // Leave enough client width for the fixed Advanced rows after the
-    // overlapped frame and the always-present vertical scrollbar. Narrower
-    // work areas still use the horizontal range below.
-    public const int AdvancedPreferredWidth = 880;
+    // The compact view is intentionally short enough to fit in one normal
+    // window viewport. A small display can still fall back to scrolling, but
+    // the standard 520x480 window no longer needs a mouse-wheel gesture.
+    public const int SimplePreferredHeight = 480;
+    // Keep the detailed view compact enough for a normal laptop display.
+    // The native frame and the optional vertical scrollbar consume part of
+    // the outer width; AdvancedContentWidth is the logical canvas used by the
+    // child layout and horizontal-scroll calculations.
+    public const int AdvancedPreferredWidth = 760;
     public const int AdvancedPreferredHeight = 900;
-    // Advanced controls use coordinates through x=822 and retain their
-    // readable widths. Eight pixels of intentional right padding keeps the
-    // final labels/buttons reachable without an unnecessary scrollbar at the
-    // preferred outer size.
-    public const int AdvancedContentWidth = 830;
+    // Advanced controls end at x=700 and retain a 20-pixel right margin. The
+    // extra logical width leaves room for non-client chrome without forcing a
+    // horizontal scrollbar at the preferred outer size.
+    public const int AdvancedContentWidth = 720;
     // Keep long identity strings within a predictable native STATIC width.
     // The formatter is pure so the UI can be regression-tested without a
     // Windows desktop or a real DPAPI identity.
@@ -197,14 +200,14 @@ internal static class WindowsTrayLayoutPolicy
         var pairNameWidth = pairStacked
             ? available
             : Math.Max(1, available - pairGap - forgetWidth);
-        var pairNameY = 258;
-        var forgetY = pairStacked ? 290 : 254;
-        var pairDetailsY = pairStacked ? 330 : 290;
-        var pairDetailsHeight = pairStacked ? 42 : 36;
+        var pairNameY = 220;
+        var forgetY = pairStacked ? 248 : 216;
+        var pairDetailsY = pairStacked ? 278 : 248;
+        var pairDetailsHeight = pairStacked ? 34 : 30;
 
         var controlHeaderY = pairDetailsY + pairDetailsHeight + 8;
-        var controlStateY = controlHeaderY + 32;
-        var inputLabelY = controlStateY + 38;
+        var controlStateY = controlHeaderY + 30;
+        var inputLabelY = controlStateY + 34;
         var inputStacked = available < 220;
         var inputLabelWidth = inputStacked
             ? available
@@ -215,38 +218,38 @@ internal static class WindowsTrayLayoutPolicy
                 width - edge - 1,
                 edge + inputLabelWidth + 8
             );
-        var inputComboY = inputStacked ? inputLabelY + 28 : inputLabelY - 4;
+        var inputComboY = inputStacked ? inputLabelY + 26 : inputLabelY - 4;
         var inputComboWidth = inputStacked
             ? available
             : Math.Max(1, width - edge - inputComboX);
         var inputBottom = inputComboY + 32;
-        var buttonY = inputBottom + 16;
+        var buttonY = inputBottom + 12;
         var buttonsStacked = available < 250;
         var buttonWidth = buttonsStacked
             ? available
             : Math.Clamp((available - 16) / 2, 96, 140);
         var quitX = width - edge - buttonWidth;
-        var quitY = buttonsStacked ? buttonY + 40 : buttonY;
-        var contentHeight = Math.Max(500, quitY + 32 + 16);
+        var quitY = buttonsStacked ? buttonY + 36 : buttonY;
+        var contentHeight = Math.Max(430, quitY + 30 + 12);
 
         var controls = new Dictionary<WindowsTraySimpleControl, WindowsTrayChildBounds>
         {
             [WindowsTraySimpleControl.Title] = new(edge, 28, titleWidth, 40),
             [WindowsTraySimpleControl.ModeButton] = new(modeX, headerStacked ? 72 : 24, modeWidth, 36),
-            [WindowsTraySimpleControl.QuickSetup] = new(edge, 82, available, 28),
-            [WindowsTraySimpleControl.Details] = new(edge, 114, available, 22),
-            [WindowsTraySimpleControl.Status] = new(edge, 140, available, 32),
-            [WindowsTraySimpleControl.Readiness] = new(edge, 176, available, 40),
-            [WindowsTraySimpleControl.PairingHeader] = new(edge, 226, available, 28),
-            [WindowsTraySimpleControl.PairName] = new(edge, pairNameY, pairNameWidth, 28),
+            [WindowsTraySimpleControl.QuickSetup] = new(edge, 76, available, 24),
+            [WindowsTraySimpleControl.Details] = new(edge, 104, available, 20),
+            [WindowsTraySimpleControl.Status] = new(edge, 128, available, 28),
+            [WindowsTraySimpleControl.Readiness] = new(edge, 158, available, 28),
+            [WindowsTraySimpleControl.PairingHeader] = new(edge, 198, available, 24),
+            [WindowsTraySimpleControl.PairName] = new(edge, pairNameY, pairNameWidth, 26),
             [WindowsTraySimpleControl.PairDetails] = new(edge, pairDetailsY, available, pairDetailsHeight),
-            [WindowsTraySimpleControl.Forget] = new(width - edge - forgetWidth, forgetY, forgetWidth, 32),
-            [WindowsTraySimpleControl.ControlHeader] = new(edge, controlHeaderY, available, 28),
-            [WindowsTraySimpleControl.ControlState] = new(edge, controlStateY, available, 32),
-            [WindowsTraySimpleControl.InputPathLabel] = new(edge, inputLabelY, inputLabelWidth, 28),
+            [WindowsTraySimpleControl.Forget] = new(width - edge - forgetWidth, forgetY, forgetWidth, 30),
+            [WindowsTraySimpleControl.ControlHeader] = new(edge, controlHeaderY, available, 24),
+            [WindowsTraySimpleControl.ControlState] = new(edge, controlStateY, available, 28),
+            [WindowsTraySimpleControl.InputPathLabel] = new(edge, inputLabelY, inputLabelWidth, 24),
             [WindowsTraySimpleControl.InputPathCombo] = new(inputComboX, inputComboY, inputComboWidth, 32),
-            [WindowsTraySimpleControl.Refresh] = new(edge, buttonY, buttonWidth, 32),
-            [WindowsTraySimpleControl.Quit] = new(quitX, quitY, buttonWidth, 32)
+            [WindowsTraySimpleControl.Refresh] = new(edge, buttonY, buttonWidth, 30),
+            [WindowsTraySimpleControl.Quit] = new(quitX, quitY, buttonWidth, 30)
         };
 
         if (headerStacked)

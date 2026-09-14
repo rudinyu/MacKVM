@@ -129,7 +129,7 @@ internal sealed class WindowsTrayApplication : IDisposable
     // implementation-dependent word boundary and used to be clipped by the
     // following support-information row.
     private const int AdvancedContentHeight = 2000;
-    private const int SimpleContentHeight = 500;
+    private const int SimpleContentHeight = 430;
     private const int ScreenMetricWidth = 0;
     private const int ScreenMetricHeight = 1;
     private const uint SystemParametersInfoGetWorkArea = 0x0030;
@@ -140,6 +140,32 @@ internal sealed class WindowsTrayApplication : IDisposable
         & ~(WindowStyleThickFrame | WindowStyleMinimizeBox | WindowStyleMaximizeBox);
     private const int VirtualKeyEscape = 0x1B;
     private const int VirtualKeyReturn = 0x0D;
+
+    // The Advanced view uses a fixed logical canvas so every row remains
+    // readable while the outer window stays comfortable on a laptop display.
+    // Keep these values in one place to avoid a row growing past the canvas
+    // when a future label or action is added.
+    private const int AdvancedEdge = 32;
+    private const int AdvancedTextWidth = 668;
+    private const int AdvancedStatusX = 555;
+    private const int AdvancedStatusWidth = 145;
+    private const int AdvancedInputComboX = 360;
+    private const int AdvancedInputComboWidth = 340;
+    private const int AdvancedPeerSelectorWidth = 460;
+    private const int AdvancedForgetX = 505;
+    private const int AdvancedForgetWidth = 195;
+    private const int AdvancedQuitX = 570;
+    private const int AdvancedQuitWidth = 130;
+
+    // A restrained slate palette keeps the status panel distinct from the
+    // Windows desktop without the high-saturation blue/green blocks that the
+    // stock system brush produced in the previous build.
+    private static uint ThemeBackgroundColor => Rgb(247, 249, 251);
+    private static uint ThemeSeparatorColor => Rgb(218, 225, 232);
+    private static uint ThemePrimaryTextColor => Rgb(31, 41, 55);
+    private static uint ThemeSecondaryTextColor => Rgb(100, 116, 139);
+    private static uint ThemeSuccessTextColor => Rgb(21, 128, 61);
+    private static uint ThemeWarningTextColor => Rgb(180, 83, 9);
 
     private readonly WindowsKvmRuntime runtime;
     private readonly WndProc windowProc;
@@ -180,6 +206,8 @@ internal sealed class WindowsTrayApplication : IDisposable
     private IntPtr bodyFont;
     private IntPtr captionFont;
     private IntPtr monoFont;
+    private IntPtr backgroundBrush;
+    private IntPtr separatorBrush;
     private IntPtr simpleInputPathCombo;
     private IntPtr consentWindow;
     private IntPtr consentTextLabel;
@@ -298,6 +326,7 @@ internal sealed class WindowsTrayApplication : IDisposable
     {
         _ = FreeConsole();
         CreateFonts();
+        CreateBrushes();
         RegisterWindowClass();
         var initialWindowSize = WindowsTrayLayoutPolicy.ForSimple(
             GetWorkAreaWidth(),
@@ -330,15 +359,7 @@ internal sealed class WindowsTrayApplication : IDisposable
         ApplyResponsiveMode();
         UpdateScrollBar();
         AddTrayIcon();
-        SetWindowText(
-            detailLabel,
-            $"Version: {WindowsKvmRuntime.ApplicationVersion} "
-                + $"(build {WindowsKvmRuntime.ApplicationBuild})\r\n"
-                + $"This PC: {runtime.Identity.Name}\r\n"
-                + $"Model: {runtime.Model}\r\n"
-                + $"Device ID: {runtime.Identity.Id.ToString()[..8]}\r\n"
-                + "Pairing and Secure Connect are starting…"
-        );
+        SetWindowText(detailLabel, FormatHeaderDetails());
         runtime.Start();
         _ = MonitorRuntimeAsync();
         ShowWindow(window, ShowWindowDefault);
@@ -394,7 +415,7 @@ internal sealed class WindowsTrayApplication : IDisposable
     private void CreateFonts()
     {
         titleFont = CreateFont(
-            -28,
+            -24,
             0,
             0,
             0,
@@ -410,7 +431,7 @@ internal sealed class WindowsTrayApplication : IDisposable
             "Segoe UI"
         );
         sectionFont = CreateFont(
-            -19,
+            -16,
             0,
             0,
             0,
@@ -426,7 +447,7 @@ internal sealed class WindowsTrayApplication : IDisposable
             "Segoe UI"
         );
         bodyFont = CreateFont(
-            -17,
+            -14,
             0,
             0,
             0,
@@ -442,7 +463,7 @@ internal sealed class WindowsTrayApplication : IDisposable
             "Segoe UI"
         );
         captionFont = CreateFont(
-            -14,
+            -12,
             0,
             0,
             0,
@@ -458,7 +479,7 @@ internal sealed class WindowsTrayApplication : IDisposable
             "Segoe UI"
         );
         monoFont = CreateFont(
-            -14,
+            -12,
             0,
             0,
             0,
@@ -475,6 +496,12 @@ internal sealed class WindowsTrayApplication : IDisposable
         );
     }
 
+    private void CreateBrushes()
+    {
+        backgroundBrush = CreateSolidBrush(ThemeBackgroundColor);
+        separatorBrush = CreateSolidBrush(ThemeSeparatorColor);
+    }
+
     private void RegisterWindowClass()
     {
         var module = GetModuleHandle(null);
@@ -486,7 +513,9 @@ internal sealed class WindowsTrayApplication : IDisposable
             Instance = module,
             Icon = LoadIcon(IntPtr.Zero, (IntPtr)IconApplication),
             Cursor = LoadCursor(IntPtr.Zero, (IntPtr)CursorArrow),
-            Background = GetSysColorBrush(SystemColorWindow),
+            Background = backgroundBrush != IntPtr.Zero
+                ? backgroundBrush
+                : GetSysColorBrush(SystemColorWindow),
             ClassName = WindowClassName,
             SmallIcon = LoadIcon(IntPtr.Zero, (IntPtr)IconApplication)
         };
@@ -510,10 +539,10 @@ internal sealed class WindowsTrayApplication : IDisposable
         // nearby/paired devices, control state, monitor guidance, and a
         // support section. The content is taller than the window so shorter
         // Windows displays can reach every section with the vertical scroll bar.
-        titleLabel = CreateLabel(WindowTitle, 32, 28, 430, 40, titleFont);
+        titleLabel = CreateLabel(WindowTitle, AdvancedEdge, 28, 430, 40, titleFont);
         modeButton = CreateButton(
             "Simple mode",
-            520,
+            540,
             24,
             150,
             36,
@@ -522,63 +551,58 @@ internal sealed class WindowsTrayApplication : IDisposable
         var advancedControlStart = childLayouts.Count;
         CreateLabel(
             $"This PC: {runtime.Identity.Name}",
-            32,
+            AdvancedEdge,
             82,
-            760,
+            AdvancedTextWidth,
             30,
             bodyFont
         );
         detailLabel = CreateLabel(
-            $"Version: {WindowsKvmRuntime.ApplicationVersion} (build {WindowsKvmRuntime.ApplicationBuild})\r\n"
-                + $"Model: {runtime.Model}   Device ID: {runtime.Identity.Id.ToString()[..8]}\r\n"
-                + WindowsTrayLayoutPolicy.FormatFingerprint(
-                    "Key fingerprint",
-                    Fingerprint(runtime.Identity.SigningPublicKey)
-                ),
-            32,
+            FormatHeaderDetails(),
+            AdvancedEdge,
             116,
-            790,
+            AdvancedTextWidth,
             58,
             monoFont,
             LabelColor.Secondary
         );
         statusLabel = CreateLabel(
             lastStatus,
-            32,
+            AdvancedEdge,
             178,
-            790,
+            AdvancedTextWidth,
             26,
             captionFont,
             LabelColor.Secondary
         );
 
-        CreateLabel("Set up this PC", 32, 230, 780, 32, sectionFont);
-        CreateLabel("Local Network", 32, 270, 500, 28, bodyFont);
+        CreateLabel("Set up this PC", AdvancedEdge, 230, AdvancedTextWidth, 32, sectionFont);
+        CreateLabel("Local Network", AdvancedEdge, 270, 470, 28, bodyFont);
         localNetworkStatusLabel = CreateLabel(
             "✓ Ready",
-            650,
+            AdvancedStatusX,
             270,
-            160,
+            AdvancedStatusWidth,
             28,
             bodyFont,
             LabelColor.Green
         );
-        CreateLabel("Input Monitoring", 32, 306, 500, 28, bodyFont);
+        CreateLabel("Input Monitoring", AdvancedEdge, 306, 470, 28, bodyFont);
         inputMonitoringStatusLabel = CreateLabel(
             "✓ Complete",
-            650,
+            AdvancedStatusX,
             306,
-            160,
+            AdvancedStatusWidth,
             28,
             bodyFont,
             LabelColor.Green
         );
-        CreateLabel("Accessibility", 32, 342, 500, 28, bodyFont);
+        CreateLabel("Accessibility", AdvancedEdge, 342, 470, 28, bodyFont);
         accessibilityStatusLabel = CreateLabel(
             "✓ Complete",
-            650,
+            AdvancedStatusX,
             342,
-            160,
+            AdvancedStatusWidth,
             28,
             bodyFont,
             LabelColor.Green
@@ -587,16 +611,16 @@ internal sealed class WindowsTrayApplication : IDisposable
             "Windows does not use macOS privacy prompts. The receiver uses\r\n"
                 + "DPAPI for its identity; Windows Defender Firewall may ask\r\n"
                 + "for permission on the trusted Private network.",
-            32,
+            AdvancedEdge,
             378,
-            790,
+            AdvancedTextWidth,
             54,
             captionFont,
             LabelColor.Secondary
         );
         CreateButton(
             "Review Windows Firewall Settings",
-            32,
+            AdvancedEdge,
             442,
             310,
             36,
@@ -604,7 +628,7 @@ internal sealed class WindowsTrayApplication : IDisposable
         );
         inputReadyLabel = CreateLabel(
             "✓ Input permissions ready",
-            32,
+            AdvancedEdge,
             488,
             500,
             28,
@@ -613,7 +637,7 @@ internal sealed class WindowsTrayApplication : IDisposable
         );
         CreateLabel(
             "Control request notifications",
-            32,
+            AdvancedEdge,
             528,
             500,
             28,
@@ -621,9 +645,9 @@ internal sealed class WindowsTrayApplication : IDisposable
         );
         notificationsStatusLabel = CreateLabel(
             "✓ Enabled",
-            650,
+            AdvancedStatusX,
             528,
-            160,
+            AdvancedStatusWidth,
             28,
             bodyFont,
             LabelColor.Green
@@ -631,28 +655,28 @@ internal sealed class WindowsTrayApplication : IDisposable
         CreateLabel(
             "Native Windows dialogs are shown when automatic control approval\r\n"
                 + "is disabled; new pairings are approved by default.",
-            32,
+            AdvancedEdge,
             564,
-            790,
+            AdvancedTextWidth,
             44,
             captionFont,
             LabelColor.Secondary
         );
-        CreateButton("Refresh setup status", 32, 620, 230, 36, RefreshButtonID);
+        CreateButton("Refresh setup status", AdvancedEdge, 620, 230, 36, RefreshButtonID);
 
-        CreateLabel("Physical input path", 32, 700, 780, 32, sectionFont);
+        CreateLabel("Physical input path", AdvancedEdge, 700, AdvancedTextWidth, 32, sectionFont);
         CreateLabel(
             "Keyboard, mouse, and trackpad",
-            32,
+            AdvancedEdge,
             744,
             350,
             30,
             bodyFont
         );
         inputPathCombo = CreateComboBox(
-            410,
+            AdvancedInputComboX,
             738,
-            380,
+            AdvancedInputComboWidth,
             34,
             [
                 "This Windows PC receives remote input",
@@ -663,54 +687,54 @@ internal sealed class WindowsTrayApplication : IDisposable
             "Connect the physical keyboard and mouse to the MacKVM controller.\r\n"
                 + "After an authenticated request, Windows receives the input\r\n"
                 + "through the encrypted session and injects it with SendInput.",
-            32,
+            AdvancedEdge,
             786,
-            790,
+            AdvancedTextWidth,
             58,
             captionFont,
             LabelColor.Secondary
         );
 
-        CreateLabel("Nearby Macs", 32, 884, 780, 32, sectionFont);
+        CreateLabel("Nearby Macs", AdvancedEdge, 884, AdvancedTextWidth, 32, sectionFont);
         nearbyStatusLabel = CreateLabel(
             "Listening for MacKVM pairing requests on the local network…",
-            32,
+            AdvancedEdge,
             926,
-            790,
+            AdvancedTextWidth,
             28,
             captionFont,
             LabelColor.Secondary
         );
         pairedPeerSelector = CreateComboBox(
-            32,
+            AdvancedEdge,
             968,
-            560,
+            AdvancedPeerSelectorWidth,
             34,
             Array.Empty<string>()
         );
         pairedPeerDetailsLabel = CreateLabel(
             "Start Pair on the MacKVM peer; the verification dialog will appear here.",
-            32,
+            AdvancedEdge,
             1004,
-            790,
+            AdvancedTextWidth,
             42,
             captionFont,
             LabelColor.Secondary
         );
         forgetButton = CreateButton(
             "Forget paired Mac",
-            610,
+            AdvancedForgetX,
             964,
-            180,
+            AdvancedForgetWidth,
             36,
             ForgetButtonID
         );
         CreateLabel(
             "Pairing and Connect are initiated from MacKVM. Windows shows\r\n"
                 + "the consent dialog once, then keeps the decision with the pinned peer.",
-            32,
+            AdvancedEdge,
             1054,
-            790,
+            AdvancedTextWidth,
             44,
             captionFont,
             LabelColor.Secondary
@@ -718,21 +742,21 @@ internal sealed class WindowsTrayApplication : IDisposable
 
         CreateLabel(
             "Keyboard, mouse, and trackpad",
-            32,
+            AdvancedEdge,
             1140,
-            780,
+            AdvancedTextWidth,
             32,
             sectionFont
         );
-        CreateLabel("Input Monitoring", 32, 1182, 500, 28, bodyFont);
-        CreateLabel("✓ Complete", 650, 1182, 160, 28, bodyFont, LabelColor.Green);
-        CreateLabel("Accessibility", 32, 1218, 500, 28, bodyFont);
-        CreateLabel("✓ Complete", 650, 1218, 160, 28, bodyFont, LabelColor.Green);
+        CreateLabel("Input Monitoring", AdvancedEdge, 1182, 470, 28, bodyFont);
+        CreateLabel("✓ Complete", AdvancedStatusX, 1182, AdvancedStatusWidth, 28, bodyFont, LabelColor.Green);
+        CreateLabel("Accessibility", AdvancedEdge, 1218, 470, 28, bodyFont);
+        CreateLabel("✓ Complete", AdvancedStatusX, 1218, AdvancedStatusWidth, 28, bodyFont, LabelColor.Green);
         controlStateLabel = CreateLabel(
             "Waiting for an authenticated Mac to request control.",
-            32,
+            AdvancedEdge,
             1260,
-            790,
+            AdvancedTextWidth,
             30,
             bodyFont
         );
@@ -740,51 +764,51 @@ internal sealed class WindowsTrayApplication : IDisposable
             "The controlling Mac must pass its own Input Monitoring and\r\n"
                 + "Accessibility checks. Windows only accepts authenticated,\r\n"
                 + "consented input and releases held keys when control ends.",
-            32,
+            AdvancedEdge,
             1300,
-            790,
+            AdvancedTextWidth,
             58,
             captionFont,
             LabelColor.Secondary
         );
         CreateLabel(
             "Ctrl+Alt+Shift+Esc returns keyboard and mouse control locally.",
-            32,
+            AdvancedEdge,
             1370,
-            790,
+            AdvancedTextWidth,
             28,
             captionFont,
             LabelColor.Secondary
         );
 
-        CreateLabel("Monitor input", 32, 1440, 780, 32, sectionFont);
+        CreateLabel("Monitor input", AdvancedEdge, 1440, AdvancedTextWidth, 32, sectionFont);
         CreateLabel(
             "External display switching is optional; pairing and remote control\r\n"
                 + "work without an external display. Display input switching is\r\n"
                 + "controlled from MacKVM or the monitor's OSD input menu.",
-            32,
+            AdvancedEdge,
             1482,
-            790,
+            AdvancedTextWidth,
             58,
             captionFont,
             LabelColor.Secondary
         );
         monitorStatusLabel = CreateLabel(
             "Windows monitor switching is not required for keyboard/mouse sharing.",
-            32,
+            AdvancedEdge,
             1552,
-            790,
+            AdvancedTextWidth,
             28,
             captionFont,
             LabelColor.Secondary
         );
 
-        CreateLabel("Paired device information", 32, 1622, 780, 32, sectionFont);
+        CreateLabel("Paired device information", AdvancedEdge, 1622, AdvancedTextWidth, 32, sectionFont);
         supportPeerLabel = CreateLabel(
             "This PC: " + runtime.Model,
-            32,
+            AdvancedEdge,
             1664,
-            790,
+            AdvancedTextWidth,
             28,
             bodyFont
         );
@@ -793,9 +817,9 @@ internal sealed class WindowsTrayApplication : IDisposable
                 "Local key fingerprint",
                 Fingerprint(runtime.Identity.SigningPublicKey)
             ),
-            32,
+            AdvancedEdge,
             1700,
-            790,
+            AdvancedTextWidth,
             60,
             monoFont,
             LabelColor.Secondary
@@ -803,16 +827,16 @@ internal sealed class WindowsTrayApplication : IDisposable
         CreateLabel(
             "Private keys are protected by Windows DPAPI and are never included\r\n"
                 + "in support information.",
-            32,
+            AdvancedEdge,
             1770,
-            790,
+            AdvancedTextWidth,
             44,
             captionFont,
             LabelColor.Secondary
         );
         controlAuthorizationCheckBox = CreateCheckBox(
             "Automatically allow control from this paired Mac",
-            32,
+            AdvancedEdge,
             1818,
             620,
             30,
@@ -821,27 +845,27 @@ internal sealed class WindowsTrayApplication : IDisposable
         CreateLabel(
             "Enabled by default after pairing; this approval is remembered for the pinned key.\r\n"
                 + "Turn it off here when every control request should require confirmation.",
-            32,
+            AdvancedEdge,
             1852,
-            790,
+            AdvancedTextWidth,
             40,
             captionFont,
             LabelColor.Secondary
         );
         CreateButton(
             "Copy support information",
-            32,
+            AdvancedEdge,
             1904,
             250,
             36,
             CopyButtonID
         );
-        CreateButton("Quit", 690, 1904, 130, 36, QuitButtonID);
+        CreateButton("Quit", AdvancedQuitX, 1904, AdvancedQuitWidth, 36, QuitButtonID);
         CreateLabel(
             "Ready on the local network. Closing this window hides WindowsKVM to the system tray.",
-            32,
+            AdvancedEdge,
             1960,
-            790,
+            AdvancedTextWidth,
             28,
             captionFont,
             LabelColor.Secondary
@@ -855,15 +879,32 @@ internal sealed class WindowsTrayApplication : IDisposable
         CreateSimpleControls();
     }
 
+    /// <summary>
+    /// Keeps the Advanced header to three explicit lines. The status row
+    /// follows immediately below this label, so including the full
+    /// fingerprint or one line per TCP endpoint here would overflow the
+    /// native STATIC control and make the live status text appear clipped.
+    /// The complete fingerprint remains available in Paired device
+    /// information and in Copy support information.
+    /// </summary>
+    private string FormatHeaderDetails()
+    {
+        var secure = runtime.SecureConnectAvailable ? "available" : "unavailable";
+        return $"Version: {WindowsKvmRuntime.ApplicationVersion} "
+            + $"(build {WindowsKvmRuntime.ApplicationBuild})\r\n"
+            + $"Model: {runtime.Model}   Device ID: {runtime.Identity.Id.ToString()[..8]}\r\n"
+            + $"Pairing TCP: {runtime.PairingPort}   Secure TCP: {runtime.SecurePort} ({secure})";
+    }
+
     private void CreateSimpleControls()
     {
         simpleQuickSetupLabel = RegisterSimpleControl(
             CreateLabel(
                 $"This PC: {runtime.Identity.Name}",
                 24,
-                82,
+                76,
                 472,
-                28,
+                24,
                 sectionFont
             )
         );
@@ -871,9 +912,9 @@ internal sealed class WindowsTrayApplication : IDisposable
             CreateLabel(
                 $"Version {WindowsKvmRuntime.ApplicationVersion} (build {WindowsKvmRuntime.ApplicationBuild})",
                 24,
-                114,
+                104,
                 472,
-                22,
+                20,
                 captionFont,
                 LabelColor.Secondary
             )
@@ -882,9 +923,9 @@ internal sealed class WindowsTrayApplication : IDisposable
             CreateLabel(
                 lastStatus,
                 24,
-                140,
+                128,
                 472,
-                32,
+                28,
                 captionFont,
                 LabelColor.Secondary
             )
@@ -893,66 +934,66 @@ internal sealed class WindowsTrayApplication : IDisposable
             CreateLabel(
                 "✓ Network ready • input ready • notifications on",
                 24,
-                176,
+                158,
                 472,
-                40,
+                28,
                 bodyFont,
                 LabelColor.Green
             )
         );
 
         simplePairingHeaderLabel = RegisterSimpleControl(
-            CreateLabel("Pairing", 24, 226, 472, 28, sectionFont)
+            CreateLabel("Pairing", 24, 198, 472, 24, sectionFont)
         );
         simplePairLabel = RegisterSimpleControl(
-            CreateLabel("No paired Macs yet", 24, 258, 285, 28, bodyFont)
+            CreateLabel("No paired Macs yet", 24, 220, 285, 26, bodyFont)
         );
         simplePairDetailsLabel = RegisterSimpleControl(
             CreateLabel(
                 "Start Pair on the MacKVM peer; consent appears here.",
                 24,
-                290,
+                248,
                 472,
-                36,
+                30,
                 captionFont,
                 LabelColor.Secondary
             )
         );
         simpleForgetButton = RegisterSimpleControl(
-            CreateButton("Forget paired Mac", 326, 254, 170, 32, ForgetButtonID)
+            CreateButton("Forget paired Mac", 326, 216, 170, 30, ForgetButtonID)
         );
 
         simpleControlHeaderLabel = RegisterSimpleControl(
-            CreateLabel("Keyboard and mouse", 24, 334, 472, 28, sectionFont)
+            CreateLabel("Keyboard and mouse", 24, 286, 472, 24, sectionFont)
         );
         simpleControlStateLabel = RegisterSimpleControl(
             CreateLabel(
                 "Waiting for a Mac control request.",
                 24,
-                366,
+                316,
                 472,
-                32,
+                28,
                 bodyFont,
                 LabelColor.Secondary
             )
         );
         simpleInputPathLabel = RegisterSimpleControl(
-            CreateLabel("Input path", 24, 404, 180, 28, captionFont, LabelColor.Secondary)
+            CreateLabel("Input path", 24, 350, 180, 24, captionFont, LabelColor.Secondary)
         );
         simpleInputPathCombo = RegisterSimpleControl(
             CreateComboBox(
                 204,
-                400,
+                346,
                 292,
                 32,
                 ["Remote input enabled", "Local Windows input only"]
             )
         );
         simpleRefreshButton = RegisterSimpleControl(
-            CreateButton("Refresh", 24, 448, 110, 32, RefreshButtonID)
+            CreateButton("Refresh", 24, 390, 110, 30, RefreshButtonID)
         );
         simpleQuitButton = RegisterSimpleControl(
-            CreateButton("Quit", 386, 448, 110, 32, QuitButtonID)
+            CreateButton("Quit", 386, 390, 110, 30, QuitButtonID)
         );
     }
 
@@ -1638,21 +1679,18 @@ internal sealed class WindowsTrayApplication : IDisposable
                 return;
             }
 
-            var background = CreateSolidBrush(Rgb(250, 250, 250));
-            try
-            {
-                _ = FillRect(hdc, ref client, background);
-            }
-            finally
-            {
-                _ = DeleteObject(background);
-            }
+            var background = backgroundBrush != IntPtr.Zero
+                ? backgroundBrush
+                : GetSysColorBrush(SystemColorWindow);
+            _ = FillRect(hdc, ref client, background);
 
-            var separatorBrush = CreateSolidBrush(Rgb(224, 226, 230));
-            try
+            var separator = separatorBrush != IntPtr.Zero
+                ? separatorBrush
+                : GetSysColorBrush(SystemColorWindow);
+            if (separator != IntPtr.Zero)
             {
                 var separators = simpleMode
-                    ? new[] { 230, 360, 506 }
+                    ? new[] { 190, 278, 430 }
                     : new[] { 204, 674, 848, 1098, 1408, 1606, 1850 };
                 foreach (var contentY in separators)
                 {
@@ -1671,17 +1709,13 @@ internal sealed class WindowsTrayApplication : IDisposable
                             : Math.Max(
                                 32 - horizontalScrollPosition,
                                 WindowsTrayLayoutPolicy.AdvancedContentWidth
-                                    - 32
+                                    - 20
                                     - horizontalScrollPosition
                             ),
                         Bottom = lineY + 1
                     };
-                    _ = FillRect(hdc, ref line, separatorBrush);
+                    _ = FillRect(hdc, ref line, separator);
                 }
-            }
-            finally
-            {
-                _ = DeleteObject(separatorBrush);
             }
         }
         finally
@@ -1693,21 +1727,23 @@ internal sealed class WindowsTrayApplication : IDisposable
     private IntPtr PaintStaticControl(IntPtr hdc, IntPtr control)
     {
         _ = SetBkMode(hdc, 1); // TRANSPARENT
-        var color = Rgb(32, 35, 40);
+        var color = ThemePrimaryTextColor;
         if (greenLabels.Contains(control))
         {
-            color = Rgb(0, 164, 72);
+            color = ThemeSuccessTextColor;
         }
         else if (orangeLabels.Contains(control))
         {
-            color = Rgb(211, 112, 0);
+            color = ThemeWarningTextColor;
         }
         else if (secondaryLabels.Contains(control))
         {
-            color = Rgb(102, 108, 118);
+            color = ThemeSecondaryTextColor;
         }
         _ = SetTextColor(hdc, color);
-        return GetSysColorBrush(SystemColorWindow);
+        return backgroundBrush != IntPtr.Zero
+            ? backgroundBrush
+            : GetSysColorBrush(SystemColorWindow);
     }
 
     private void UpdateScrollBar()
@@ -2889,15 +2925,7 @@ internal sealed class WindowsTrayApplication : IDisposable
                 : "Secure Connect unavailable on this Windows build";
             SetWindowText(
                 detailLabel,
-                $"Version: {WindowsKvmRuntime.ApplicationVersion} "
-                    + $"(build {WindowsKvmRuntime.ApplicationBuild})\r\n"
-                    + $"Model: {runtime.Model}   Device ID: {runtime.Identity.Id.ToString()[..8]}\r\n"
-                    + $"Pairing TCP: {runtime.PairingPort}\r\n"
-                    + $"Secure TCP: {runtime.SecurePort} ({secure})\r\n"
-                    + WindowsTrayLayoutPolicy.FormatFingerprint(
-                        "Local key fingerprint",
-                        Fingerprint(runtime.Identity.SigningPublicKey)
-                    )
+                FormatHeaderDetails()
             );
             SetWindowText(
                 supportPeerLabel,
@@ -3069,6 +3097,8 @@ internal sealed class WindowsTrayApplication : IDisposable
         DeleteFont(ref bodyFont);
         DeleteFont(ref captionFont);
         DeleteFont(ref monoFont);
+        DeleteBrush(ref backgroundBrush);
+        DeleteBrush(ref separatorBrush);
     }
 
     private static void DeleteFont(ref IntPtr font)
@@ -3077,6 +3107,15 @@ internal sealed class WindowsTrayApplication : IDisposable
         {
             _ = DeleteObject(font);
             font = IntPtr.Zero;
+        }
+    }
+
+    private static void DeleteBrush(ref IntPtr brush)
+    {
+        if (brush != IntPtr.Zero)
+        {
+            _ = DeleteObject(brush);
+            brush = IntPtr.Zero;
         }
     }
 

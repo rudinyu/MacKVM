@@ -8,7 +8,7 @@ authenticate a secure Connect session, and receive keyboard/mouse control over
 that encrypted session. A console mode remains available for automation and
 firewall diagnostics.
 
-## Current feature set — 1.02.22 (build 102)
+## Current feature set — 1.02.25 (build 105)
 
 The Windows host includes:
 
@@ -276,7 +276,7 @@ native APIs do not replace these desktop checks.
    that the mode and pairing buttons do not overlap. Resize or
    move between monitors during a connection; changing the view must not
    reset pairing or control, and consent prompts must remain usable.
-8. Confirm `--version` reports **1.02.22 (build 102)**; the reported UI defects
+8. Confirm `--version` reports **1.02.25 (build 105)**; the reported UI defects
    were tested on **1.02.09 (build 89) Beta 3**, not this build. Quit the old
    tray receiver before starting the replacement. Check the title/heading say
    **WindowsKVM**. Scroll Advanced rapidly up/down and drag both scrollbars;
