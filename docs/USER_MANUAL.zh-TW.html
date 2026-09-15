@@ -43,7 +43,7 @@
 <body>
   <main>
     <header>
-      <div class="badge">MacKVM 1.100.06</div>
+      <div class="badge">MacKVM 1.100.09</div>
       <h1>MacKVM 使用手冊</h1>
       <p class="lede">提供選單列入口與一般控制視窗，讓兩台 MacBook Pro 共用一組鍵盤、滑鼠與觸控板，並可選擇切換 BenQ MA270U 螢幕的 macOS app。</p>
       <p><a href="USER_MANUAL.html" lang="en">English Version</a> · <a href="USER_MANUAL.zh-TW.md">Markdown 版本</a></p>
@@ -98,7 +98,7 @@
       <p>要建立 DMG，可使用：</p>
       <pre><code>./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist &amp;&amp; shasum -a 256 -c MacKVM-1.100.06-universal.dmg.sha256)</code></pre>
+(cd dist &amp;&amp; shasum -a 256 -c MacKVM-1.100.09-universal.dmg.sha256)</code></pre>
       <p>DMG 會從乾淨的暫存目錄建立，並在旁邊產生可攜式 SHA-256 檔案；驗證結果應顯示 <strong>OK</strong>。</p>
       <p>未提供 Developer ID 時是 ad-hoc 簽章，只適合本機測試；跨電腦散布前請用
         <code>--sign "Developer ID Application: …" --require-developer-id</code>，
@@ -183,7 +183,7 @@
     <section id="pair">
       <h2>7. 探索、配對與控制</h2>
       <ol>
-        <li>確認兩台 Mac 都開著 MacKVM，並在選單的 <strong>Nearby Macs</strong> 看見對方。</li>
+        <li>確認兩台 Mac 都開著 MacKVM，並在選單的 <strong>Nearby devices</strong> 看見對方。</li>
         <li>在其中一台按 <strong>Pair</strong>。</li>
         <li>比較兩邊的六位數驗證碼是否相同，並確認各自顯示的「對方」裝置名稱正確。接收端在驗證碼相同時按 <strong>Accept</strong>；發起端比對相同驗證碼後按 <strong>Confirm code</strong>。</li>
         <li>兩邊的簽署決定都完成後，MacKVM 會自動嘗試建立加密連線；若狀態仍是 idle，請在已配對裝置列按 <strong>Connect</strong>。</li>
@@ -198,6 +198,8 @@
       <p>配對後，MacKVM 會在本機保存每台裝置的友善名稱、Bonjour 提供的 Mac
         型號、最後一次成功完成加密連線的時間，以及固定的 SHA-256 公開金鑰指紋。新配對
         的 Mac 預設會啟用無縫控制，也可在每台配對裝置旁關閉。</p>
+      <p>選擇 <strong>Forget</strong> 可撤銷已配對的 Mac。配對列與 <strong>Quit</strong> 旁的狀態會立即更新為
+        <strong>Pairing forgotten</strong>；不可繼續顯示舊 peer 名稱，也不需要重開 MacKVM。</p>
       <ol>
         <li>在選單的 <strong>已配對裝置資訊</strong> 查看裝置資料。</li>
         <li>可在 <strong>Friendly name</strong> 欄位輸入容易辨識的名稱並按
@@ -264,7 +266,7 @@
     </section>
 
     <footer>
-      <p>MacKVM 使用手冊 · 對應版本 1.100.06 · 最後更新 2026-09-13</p>
+      <p>MacKVM 使用手冊 · 對應版本 1.100.09 · 最後更新 2026-09-15</p>
     </footer>
   </main>
 </body>

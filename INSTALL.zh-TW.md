@@ -76,7 +76,7 @@ transport 與 VCP `0x60` 輸入狀態。唯讀報告可保存為：
 ./scripts/verify-release.sh \
   --app dist/universal/MacKVM.app \
   --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.100.04-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.100.09-universal.dmg.sha256)
 ```
 
 ad-hoc 簽章只適合本機測試。要在 Mac App Store 以外正式散布，請使用獨立的 notarized
@@ -159,7 +159,7 @@ Mac 的本機鍵盤、滑鼠或觸控板控制。
 ## 配對與控制兩台 Mac
 
 1. 完成本機網路步驟後，在兩台 Mac 開啟 MacKVM 選單。
-2. 在 **Nearby Macs** 其中一台按 **Pair**。
+2. 在 **Nearby devices** 其中一台按 **Pair**。
 3. 比對兩邊的六位數驗證碼與對方裝置名稱。
 4. 接收端確認驗證碼相同後按 **Accept**；發起端比對相同驗證碼後按
    **Confirm code**。
@@ -201,6 +201,9 @@ Allow，關閉該選項的裝置才需要重新取得控制同意。**Disconnect
 友善名稱、對方廣播的型號、最後成功完成驗證連線的時間，以及已釘選公開金鑰的
 SHA-256 指紋。
 新配對的 Mac 預設會啟用無縫控制；可在這裡關閉每台配對裝置的授權。
+
+選擇 **Forget** 可撤銷已配對的 Mac。配對列與 **Quit** 旁的狀態會立即更新為
+**Pairing forgotten**；不可繼續顯示舊 peer 名稱，也不需要重開 MacKVM。
 
 遇到問題時按 **Copy support information**。支援報告包含公開的版本、作業系統、
 裝置、指紋與連線狀態資料，不包含私密金鑰、密碼、憑證或網路端點。

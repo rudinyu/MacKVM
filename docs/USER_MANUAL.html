@@ -43,7 +43,7 @@
 <body>
   <main>
     <header>
-      <div class="badge">MacKVM 1.100.06</div>
+      <div class="badge">MacKVM 1.100.09</div>
       <h1>MacKVM User Manual</h1>
       <p class="lede">A macOS app with a KVM menu-bar entry and full control window for sharing one keyboard, mouse, and trackpad, plus an optional BenQ MA270U display, between two MacBook Pro computers.</p>
       <p><a href="USER_MANUAL.zh-TW.html" lang="zh-Hant">繁體中文版</a> · <a href="USER_MANUAL.md">Markdown version</a></p>
@@ -95,7 +95,7 @@
       <p>Create and verify a DMG:</p>
       <pre><code>./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist &amp;&amp; shasum -a 256 -c MacKVM-1.100.06-universal.dmg.sha256)</code></pre>
+(cd dist &amp;&amp; shasum -a 256 -c MacKVM-1.100.09-universal.dmg.sha256)</code></pre>
       <p>The DMG is built from a clean staging directory and produces a portable SHA-256 sidecar. Ad-hoc signing is for local testing; distribution requires Developer ID, hardened runtime, and Apple notarization.</p>
       <p>For direct distribution outside the Mac App Store, create a notarytool Keychain profile once, then use the separate release script:</p>
       <pre><code>xcrun notarytool store-credentials "mackvm-notary" \
@@ -168,7 +168,7 @@
     <section id="pair">
       <h2>7. Discovery, pairing, and control</h2>
       <ol>
-        <li>Confirm both Macs show the other under <strong>Nearby Macs</strong>.</li>
+        <li>Confirm both Macs show the other under <strong>Nearby devices</strong>.</li>
         <li>Select <strong>Pair</strong> on one Mac.</li>
         <li>Compare the six-digit security code and the displayed peer names. The receiving Mac selects <strong>Accept</strong> only when the codes match; the initiating Mac selects <strong>Confirm code</strong> after comparing the same code.</li>
         <li>After both signed decisions complete, MacKVM automatically attempts to connect the encrypted session. If it remains idle, select <strong>Connect</strong> on a paired row.</li>
@@ -181,6 +181,7 @@
     <section id="profiles">
       <h2>8. Device profiles and support information</h2>
       <p>After pairing, MacKVM stores each peer's friendly name, advertised Mac model, last authenticated connection time, and SHA-256 fingerprint of the pinned public key. New pairings enable seamless control automatically; the per-peer toggle can revoke it.</p>
+      <p>Select <strong>Forget</strong> to revoke a paired Mac. The pairing row and the status beside <strong>Quit</strong> update immediately to <strong>Pairing forgotten</strong>; the old peer name does not remain visible, and restarting MacKVM is not required.</p>
       <ol>
         <li>Open <strong>Paired device information</strong> to view the profile.</li>
         <li>Edit the <strong>Friendly name</strong> field and select <strong>Save</strong>; the name survives relaunch.</li>
@@ -229,7 +230,7 @@
     </section>
 
     <footer>
-      <p>MacKVM User Manual · Version 1.100.06 · Updated 2026-09-13</p>
+      <p>MacKVM User Manual · Version 1.100.09 · Updated 2026-09-15</p>
     </footer>
   </main>
 </body>

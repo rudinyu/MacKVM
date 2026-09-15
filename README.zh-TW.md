@@ -143,7 +143,7 @@ repository，正常 CI 也會建置三種診斷目標。按下 Ctrl-C 或收到 
 
 1. 在兩台 Mac 安裝並啟動相符架構的 `MacKVM.app`。
 2. 依畫面順序授予 Local Network、Input Monitoring 與 Accessibility 權限。
-3. 在 **Nearby Macs** 找到另一台 Mac，按 **Pair** 並核對兩邊的六位數驗證碼。
+3. 在 **Nearby devices** 找到另一台裝置，按 **Pair** 並核對兩邊的六位數驗證碼。
 4. 接收端確認驗證碼相同後按 **Accept**；發起端比對相同驗證碼後按
    **Confirm code**。兩邊的簽署決定都完成後，MacKVM 會自動嘗試建立加密連線；若
    狀態仍是 idle，可在已配對裝置列按 **Connect**。控制端需要 Input Monitoring 與

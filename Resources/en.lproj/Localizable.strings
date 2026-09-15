@@ -27,7 +27,7 @@
 "Request Input Monitoring" = "Request Input Monitoring";
 "Request Accessibility" = "Request Accessibility";
 "Settings" = "Settings";
-"If nearby Macs are not found, confirm MacKVM is allowed in Local Network settings. macOS does not let MacKVM verify that choice itself." = "If nearby Macs are not found, confirm MacKVM is allowed in Local Network settings. macOS does not let MacKVM verify that choice itself.";
+"If nearby devices are not found, confirm MacKVM is allowed in Local Network settings. macOS does not let MacKVM verify that choice itself." = "If nearby devices are not found, confirm MacKVM is allowed in Local Network settings. macOS does not let MacKVM verify that choice itself.";
 "Optional but recommended: enable this before the first request so Allow/Deny alerts are ready while the menu is closed." = "Optional but recommended: enable this before the first request so Allow/Deny alerts are ready while the menu is closed.";
 "Respond to the macOS Local Network prompt before continuing." = "Respond to the macOS Local Network prompt before continuing.";
 "Pairing requests" = "Pairing requests";
@@ -41,7 +41,7 @@
 "Compare this code with %@ before confirming:" = "Compare this code with %@ before confirming:";
 "Confirm code" = "Confirm code";
 "Cancel" = "Cancel";
-"Nearby Macs" = "Nearby Macs";
+"Nearby devices" = "Nearby devices";
 "Paired" = "Paired";
 "Disconnect" = "Disconnect";
 "Connect" = "Connect";
@@ -49,7 +49,7 @@
 "Key changed" = "Key changed";
 "Forget old key" = "Forget old key";
 "Pair" = "Pair";
-"Unavailable paired Macs" = "Unavailable paired Macs";
+"Unavailable paired devices" = "Unavailable paired devices";
 "Keyboard and mouse" = "Keyboard and mouse";
 "Keyboard, mouse, and trackpad" = "Keyboard, mouse, and trackpad";
 "This Mac is receiving remote control." = "This Mac is receiving remote control.";

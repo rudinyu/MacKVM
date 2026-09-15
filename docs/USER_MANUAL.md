@@ -117,7 +117,7 @@ See the [diagnostic guide](../Tools/DDCDiagnostic/README.md).
 
 ## Pair and control
 
-1. Under **Nearby Macs**, select **Pair** on one Mac.
+1. Under **Nearby devices**, select **Pair** on one device.
 2. Compare the six-digit security code and peer names. The receiving Mac selects
    **Accept** only when the codes match; the initiating Mac selects
    **Confirm code** after comparing the same code.
@@ -171,6 +171,10 @@ retains the name, advertised model, last authenticated connection time, and
 SHA-256 fingerprint of the pinned public key. New pairings enable seamless
 control automatically; use the per-peer toggle to require Allow for every
 request.
+
+To remove a paired Mac, select **Forget**. The pairing row and the status beside
+**Quit** update immediately to **Pairing forgotten**; the forgotten peer name
+does not remain visible, and restarting MacKVM is not required.
 
 Select **Copy support information** for a support report. It contains public
 version, OS, device, UUID, fingerprint, and connection status data; it excludes

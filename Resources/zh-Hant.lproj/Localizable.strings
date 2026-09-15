@@ -27,7 +27,7 @@
 "Request Input Monitoring" = "請求輸入監控";
 "Request Accessibility" = "請求輔助使用";
 "Settings" = "設定";
-"If nearby Macs are not found, confirm MacKVM is allowed in Local Network settings. macOS does not let MacKVM verify that choice itself." = "如果找不到附近的 Mac，請確認 MacKVM 已在本機網路設定中允許。macOS 不提供讓 MacKVM 自行確認這項選擇的 API。";
+"If nearby devices are not found, confirm MacKVM is allowed in Local Network settings. macOS does not let MacKVM verify that choice itself." = "如果找不到附近的裝置，請確認 MacKVM 已在本機網路設定中允許。macOS 不提供讓 MacKVM 自行確認這項選擇的 API。";
 "Optional but recommended: enable this before the first request so Allow/Deny alerts are ready while the menu is closed." = "選用但建議啟用：在第一次請求前完成，讓選單關閉時也能使用允許／拒絕通知。";
 "Respond to the macOS Local Network prompt before continuing." = "請先回應 macOS 的本機網路提示，再繼續。";
 "Pairing requests" = "配對請求";
@@ -41,7 +41,7 @@
 "Compare this code with %@ before confirming:" = "確認前請將此驗證碼與 %@ 比對：";
 "Confirm code" = "確認驗證碼";
 "Cancel" = "取消";
-"Nearby Macs" = "附近的 Mac";
+"Nearby devices" = "附近裝置";
 "Paired" = "已配對";
 "Disconnect" = "中斷連線";
 "Connect" = "連線";
@@ -49,7 +49,7 @@
 "Key changed" = "金鑰已變更";
 "Forget old key" = "忘記舊金鑰";
 "Pair" = "配對";
-"Unavailable paired Macs" = "無法連線的已配對 Mac";
+"Unavailable paired devices" = "無法連線的已配對裝置";
 "Keyboard and mouse" = "鍵盤與滑鼠";
 "Keyboard, mouse, and trackpad" = "鍵盤、滑鼠與觸控板";
 "This Mac is receiving remote control." = "這台 Mac 正在接收遠端控制。";

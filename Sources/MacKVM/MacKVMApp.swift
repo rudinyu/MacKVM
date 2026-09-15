@@ -220,7 +220,7 @@ private func peerDisplayName(
     from discovery: PeerDiscoveryService?
 ) -> String {
     let candidateName = discovery?.peers.first { $0.identity.id == peerID }?.name
-        ?? "Mac \(peerID.uuidString.prefix(8))"
+        ?? "Device \(peerID.uuidString.prefix(8))"
     let trimmedName = candidateName.trimmingCharacters(
         in: .whitespacesAndNewlines
     )
@@ -1000,7 +1000,7 @@ private struct MacKVMMenuView: View {
                     PrivacySettings.open(.localNetwork)
                 }
                 .font(.caption)
-                Text("If nearby Macs are not found, confirm MacKVM is allowed in Local Network settings. macOS does not let MacKVM verify that choice itself.")
+            Text("If nearby devices are not found, confirm MacKVM is allowed in Local Network settings. macOS does not let MacKVM verify that choice itself.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -1259,11 +1259,11 @@ private struct MacKVMMenuView: View {
 
     private var peerSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Nearby Macs")
+            Text("Nearby devices")
                 .font(.subheadline.weight(.semibold))
 
             if !bootstrap.networkServicesStarted {
-                Text("Complete the Local Network step above to discover nearby Macs.")
+                Text("Complete the Local Network step above to discover nearby devices.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else if discovery.peers.isEmpty {
@@ -1309,7 +1309,7 @@ private struct MacKVMMenuView: View {
                 }
             }
             if !unavailablePairedPeerIDs.isEmpty {
-                Text("Unavailable paired Macs")
+                Text("Unavailable paired devices")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                 ForEach(unavailablePairedPeerIDs, id: \.self) { peerID in
@@ -1317,7 +1317,7 @@ private struct MacKVMMenuView: View {
                         Image(systemName: "laptopcomputer.slash")
                         Text(
                             discovery.pairedPeerProfile(for: peerID)?.friendlyName
-                                ?? "Mac \(peerID.uuidString.prefix(8))"
+                                ?? "Device \(peerID.uuidString.prefix(8))"
                         )
                             .font(.caption.monospaced())
                         Spacer()
@@ -1427,7 +1427,7 @@ private struct MacKVMMenuView: View {
             // handshake will replace this fallback with the peer's name.
             return PairedPeerProfile(
                 peerID: peerID,
-                friendlyName: "Mac \(peerID.uuidString.prefix(8))",
+                friendlyName: "Device \(peerID.uuidString.prefix(8))",
                 model: nil,
                 signingPublicKey: publicKey
             )

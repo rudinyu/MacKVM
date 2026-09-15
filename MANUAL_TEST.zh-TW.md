@@ -31,7 +31,7 @@ Intel Mac 的 `/Applications`，再開啟各自架構的 app。
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.100.04-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.100.09-universal.dmg.sha256)
 ```
 
 本機 ad-hoc 簽章只能用於測試；正式散布必須使用 Developer ID、hardened runtime
@@ -109,7 +109,7 @@ HDMI 1 使用 VCP 17（`0x11`）。其他型號使用自己的 mapping；螢幕�
 
 ## 4. 探索與配對
 
-1. 兩台都開啟 MacKVM，在 **Nearby Macs** 看見對方。
+1. 兩台都開啟 MacKVM，在 **Nearby devices** 看見對方。
 2. 任一台按 **Pair**，核對兩台相同的六位數驗證碼與對方名稱。
 3. 接收端在驗證碼一致時按 **Accept**；發起端比對相同驗證碼後按
    **Confirm code**。
@@ -134,6 +134,8 @@ HDMI 1 使用 VCP 17（`0x11`）。其他型號使用自己的 mapping；螢幕�
    自動顯示斷線，不需要手動按 **Disconnect**。
 6. 喚醒 M5 Pro，等待安全工作階段重新連線；不先在 Intel Mac 按 **Disconnect**，直接測試
    鍵盤／滑鼠／觸控板 Hotkey。
+7. 對已配對的 peer 按 **Forget**。確認配對列立即移除或變成未配對，**Quit** 旁的狀態立即
+   變成 **Pairing forgotten**；不可繼續顯示舊 peer 名稱，也不應需要重開 MacKVM。
 
 預期結果：網路中斷立即停止遠端輸入並釋放按鍵／滑鼠按鈕；重連不需要重新配對，
 即使沒有本機鍵盤／滑鼠的 peer 也會偵測非預期的控制端斷線、清除 stale session，
@@ -141,6 +143,8 @@ HDMI 1 使用 VCP 17（`0x11`）。其他型號使用自己的 mapping；螢幕�
 已啟用無縫控制的 peer 也不需要再次按 **Allow**。手動 Disconnect、Forget 或 Quit
 不會再次自動連線。系統休眠會先關閉舊傳輸，喚醒後從本機輸入狀態重新連回先前選取的
 peer。
+- Forget 不只會移除儲存的信任，也會立即清除 UI 狀態；舊的 **Paired with …** 不會殘留，
+  不需要重開 app。
 
 ## 6. 鍵盤、滑鼠、觸控板與控制同意
 

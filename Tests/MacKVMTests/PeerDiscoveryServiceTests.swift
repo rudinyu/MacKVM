@@ -1,7 +1,84 @@
+import Combine
+import CryptoKit
+import Foundation
 import XCTest
 @testable import MacKVM
+@testable import MacKVMCore
 
 final class PeerDiscoveryServiceTests: XCTestCase {
+    func testForgetPublishesAStatusWithoutTheForgottenPeerName() throws {
+        let privateKey = P256.Signing.PrivateKey()
+        let credentials = DeviceCredentials(
+            identity: PeerIdentity(
+                name: "Local Mac",
+                signingPublicKey: privateKey.publicKey.x963Representation
+            ),
+            privateKey: privateKey,
+            wasLoadedFromStorage: false
+        )
+        let suiteName = "PeerDiscoveryServiceTests." + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let registry = PairingRegistry(
+            defaults: defaults,
+            storageKey: "pairedPeers",
+            persistenceApplicationID: suiteName
+        )
+        let service = PeerDiscoveryService(
+            credentials: credentials,
+            registry: registry
+        )
+        let statusPublished = expectation(description: "Forget status")
+        let cancellable = service.$status.dropFirst().sink { status in
+            if status == "Pairing forgotten" {
+                statusPublished.fulfill()
+            }
+        }
+
+        service.forget(UUID())
+
+        wait(for: [statusPublished], timeout: 1)
+        XCTAssertEqual(service.status, "Pairing forgotten")
+        cancellable.cancel()
+    }
+
+    func testPairingCompletionStatusRequiresCurrentGenerationAndKey() {
+        let key = Data([0x01, 0x02, 0x03])
+
+        XCTAssertTrue(
+            PairingStatusPublicationPolicy.allows(
+                expectedGeneration: 4,
+                currentGeneration: 4,
+                expectedSigningPublicKey: key,
+                currentSigningPublicKey: key
+            )
+        )
+        XCTAssertFalse(
+            PairingStatusPublicationPolicy.allows(
+                expectedGeneration: 4,
+                currentGeneration: 5,
+                expectedSigningPublicKey: key,
+                currentSigningPublicKey: key
+            )
+        )
+        XCTAssertFalse(
+            PairingStatusPublicationPolicy.allows(
+                expectedGeneration: 4,
+                currentGeneration: 4,
+                expectedSigningPublicKey: key,
+                currentSigningPublicKey: nil
+            )
+        )
+        XCTAssertFalse(
+            PairingStatusPublicationPolicy.allows(
+                expectedGeneration: 4,
+                currentGeneration: 4,
+                expectedSigningPublicKey: key,
+                currentSigningPublicKey: Data([0x04, 0x05, 0x06])
+            )
+        )
+    }
+
     func testPairingActivityExposesActivePeerForRetry() {
         let peerID = UUID()
 

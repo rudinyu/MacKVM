@@ -4,6 +4,21 @@
 
 ## 尚未發布
 
+## 1.100.09（build 84）— 2026-09-15
+
+### 修正
+
+- 忘記裝置後立即清除過期的配對狀態；移除配對後，選單列不會繼續顯示已忘記的
+  Windows KVM。
+- 如果 peer 的信任 generation 或簽章金鑰已變更，拒絕遲到的配對完成狀態，讓同時執行的
+  Forget 保持最終狀態。
+- 將 **Nearby devices** 與 **Unavailable paired devices** 改為跨平台的中性名稱，正確呈現
+  Windows 裝置，也為未來可能支援的 Linux 裝置保留一致用詞。
+- 建置 universal DDC 診斷工具時分別驗證兩個架構切片，修正目前 Xcode `lipo` 指令語法造成的
+  release validation 失敗。
+
+## 1.100.07（build 82）— 2026-09-14
+
 ## 1.100.06（build 81）— 2026-09-13
 
 ### 新增

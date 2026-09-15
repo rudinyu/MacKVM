@@ -101,7 +101,7 @@ mapping 原始碼。按下 Ctrl-C 或收到 SIGTERM 時會停止候選值迴圈�
 
 ## 配對與控制
 
-1. 在 **Nearby Macs** 其中一台按 **Pair**。
+1. 在 **Nearby devices** 其中一台按 **Pair**。
 2. 比對六位數驗證碼與裝置名稱；接收端確認驗證碼一致後按 **Accept**，發起端比對
    相同驗證碼後按 **Confirm code**。
    任一台 Mac 都可以發起配對。若接收端出現 macOS Firewall 提示，先允許 incoming
@@ -140,6 +140,9 @@ mapping 原始碼。按下 Ctrl-C 或收到 SIGTERM 時會停止候選值迴圈�
 在 **Paired device information** 修改並儲存友善名稱。MacKVM 會保留名稱、廣播型號、
 最後成功完成驗證連線的時間，以及已釘選公開金鑰的 SHA-256 指紋。新配對的 Mac 預設
 會啟用無縫控制；可在每台配對裝置旁關閉此授權。
+
+要移除已配對的 Mac，請選擇 **Forget**。配對列與 **Quit** 旁的狀態會立即更新為
+**Pairing forgotten**；被忘記的 peer 名稱不會繼續顯示，也不需要重開 MacKVM。
 
 遇到問題時按 **Copy support information**。報告包含公開的版本、OS、裝置、UUID、
 指紋與連線狀態，不包含私密金鑰、密碼、憑證或網路端點。

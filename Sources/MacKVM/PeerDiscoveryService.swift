@@ -114,6 +114,28 @@ enum PairingConnectionEOFPolicy {
     }
 }
 
+private struct PairingStatusContext {
+    let peerID: UUID
+    let expectedGeneration: UInt64
+    let expectedSigningPublicKey: Data?
+}
+
+enum PairingStatusPublicationPolicy {
+    /// A peer-specific status may be shown only while the same revocation
+    /// generation is still current. Completed pairings additionally bind the
+    /// status to the same trusted signing key.
+    static func allows(
+        expectedGeneration: UInt64,
+        currentGeneration: UInt64,
+        expectedSigningPublicKey: Data?,
+        currentSigningPublicKey: Data?
+    ) -> Bool {
+        expectedGeneration == currentGeneration
+            && (expectedSigningPublicKey == nil
+                || expectedSigningPublicKey == currentSigningPublicKey)
+    }
+}
+
 enum PairingContributionPolicy {
     /// Whether an incoming reveal/confirmation should be recorded and should
     /// (re)start the user-decision timeout. A request that already has a
@@ -537,6 +559,7 @@ final class PeerDiscoveryService: ObservableObject {
             let peerName = self.requestTargets[requestID]?.name
                 ?? self.requestMessages[requestID]?.sender.name
                 ?? "peer"
+            let statusContext = self.pairingStatusContext(for: requestID)
             self.logPairingPhase(
                 "user.cancel",
                 requestID: requestID,
@@ -547,7 +570,10 @@ final class PeerDiscoveryService: ObservableObject {
                 requestID: requestID,
                 userCancelledPersistence: true
             )
-            self.publishStatus("Pairing with \(peerName) canceled")
+            self.publishStatus(
+                "Pairing with \(peerName) canceled",
+                context: statusContext
+            )
         }
     }
 
@@ -649,6 +675,7 @@ final class PeerDiscoveryService: ObservableObject {
             registry.generation(for: peer.identity.id),
             for: request.requestID
         )
+        let statusContext = pairingStatusContext(for: request.requestID)
         publishMain {
             $0.pairingRetryPeer = nil
             $0.pairingActivity = .connecting(
@@ -658,7 +685,8 @@ final class PeerDiscoveryService: ObservableObject {
         }
         publishStatus(
             "Connecting to \(peer.name)… If macOS asks about the firewall on "
-                + "the receiving Mac, allow it, then select Retry pairing."
+                + "the receiving Mac, allow it, then select Retry pairing.",
+            context: statusContext
         )
         logPairingPhase(
             "request.created",
@@ -683,7 +711,10 @@ final class PeerDiscoveryService: ObservableObject {
                 )
                 self.send(request, over: connection)
                 self.receive(on: connection)
-                self.publishStatus("Negotiating a security code with \(peer.name)…")
+                self.publishStatus(
+                    "Negotiating a security code with \(peer.name)…",
+                    context: statusContext
+                )
             case .failed(let error):
                 guard self.requestConnections[request.requestID] === connection
                 else { return }
@@ -699,7 +730,8 @@ final class PeerDiscoveryService: ObservableObject {
                         self.pairingTransportFailureMessage(
                             peerName: peer.name,
                             detail: error.localizedDescription
-                        )
+                        ),
+                        context: statusContext
                     )
                 }
             case .cancelled:
@@ -719,7 +751,8 @@ final class PeerDiscoveryService: ObservableObject {
                         self.pairingTransportFailureMessage(
                             peerName: peer.name,
                             detail: "pairing connection canceled"
-                        )
+                        ),
+                        context: statusContext
                     )
                 }
             case .waiting(let error):
@@ -731,7 +764,8 @@ final class PeerDiscoveryService: ObservableObject {
                 )
                 self.publishStatus(
                     "Waiting for \(peer.name)… If the receiving Mac shows a "
-                        + "firewall prompt, allow it, then select Retry pairing."
+                        + "firewall prompt, allow it, then select Retry pairing.",
+                    context: statusContext
                 )
             default:
                 break
@@ -781,6 +815,7 @@ final class PeerDiscoveryService: ObservableObject {
             publishStatus("The pairing confirmation has expired")
             return
         }
+        let statusContext = pairingStatusContext(for: requestID)
         logPairingPhase(
             accepted ? "user.confirm.accept" : "user.confirm.decline",
             requestID: requestID,
@@ -832,10 +867,11 @@ final class PeerDiscoveryService: ObservableObject {
                     ? "Code confirmed; completing pairing with "
                         + peer.name + "…"
                     : "Code confirmed; waiting for " + peer.name
-                        + " to accept…"
+                        + " to accept…",
+                context: statusContext
             )
         } else {
-            publishStatus("Pairing declined")
+            publishStatus("Pairing declined", context: statusContext)
         }
         pendingPairingConfirmationRequestID = nil
         publishMain {
@@ -854,6 +890,7 @@ final class PeerDiscoveryService: ObservableObject {
             removePendingRequest(id: pending.id)
             return
         }
+        let statusContext = pairingStatusContext(for: pending.id)
 
         logPairingPhase(
             accepted ? "user.accept" : "user.decline",
@@ -882,7 +919,8 @@ final class PeerDiscoveryService: ObservableObject {
                     self.pairingTransportFailureMessage(
                         peerName: pending.peer.name,
                         detail: "pairing response failed"
-                    )
+                    ),
+                    context: statusContext
                 )
                 return
             }
@@ -910,7 +948,8 @@ final class PeerDiscoveryService: ObservableObject {
         publishStatus(
             accepted
                 ? "Accepted here; completing pairing with \(pending.peer.name)…"
-                : "Pairing request declined"
+                : "Pairing request declined",
+            context: statusContext
         )
     }
 
@@ -919,6 +958,7 @@ final class PeerDiscoveryService: ObservableObject {
         // listener runs on another queue and must not authenticate this peer
         // while the queued discovery cleanup is waiting to run.
         registry.revoke(peerID)
+        publishStatus("Pairing forgotten")
         queue.async { [weak self] in
             guard let self else { return }
             self.cancelledPersistenceTrustJobsByPeer.removeValue(
@@ -1237,7 +1277,10 @@ final class PeerDiscoveryService: ObservableObject {
                     MacKVMLogger.pairing.error(
                         "phase=receive.incomplete-frame connection=\(MacKVMLogger.short(connectionID), privacy: .public)"
                     )
-                    publishStatus("Received an incomplete pairing message")
+                    publishStatus(
+                        "Received an incomplete pairing message",
+                        context: pairingStatusContext(for: connection)
+                    )
                     connection.cancel()
                     removeConnection(connection)
                 }
@@ -1248,14 +1291,20 @@ final class PeerDiscoveryService: ObservableObject {
             MacKVMLogger.pairing.error(
                 "phase=receive.too-many-messages connection=\(MacKVMLogger.short(connectionID), privacy: .public)"
             )
-            publishStatus("Received too many pairing messages in one delivery")
+            publishStatus(
+                "Received too many pairing messages in one delivery",
+                context: pairingStatusContext(for: connection)
+            )
             connection.cancel()
             removeConnection(connection)
         } catch {
             MacKVMLogger.pairing.error(
                 "phase=receive.invalid-frame connection=\(MacKVMLogger.short(connectionID), privacy: .public) error=\(error.localizedDescription, privacy: .public)"
             )
-            publishStatus("Received an invalid pairing message")
+            publishStatus(
+                "Received an invalid pairing message",
+                context: pairingStatusContext(for: connection)
+            )
             connection.cancel()
             removeConnection(connection)
         }
@@ -1280,7 +1329,8 @@ final class PeerDiscoveryService: ObservableObject {
                     remoteID: message.sender.id
                 ) {
                     publishStatus(
-                        "Kept the outgoing pairing request after a simultaneous request"
+                        "Kept the outgoing pairing request after a simultaneous request",
+                        context: pairingStatusContext(for: outboundRequestID)
                     )
                     connection.cancel()
                     return
@@ -1313,13 +1363,25 @@ final class PeerDiscoveryService: ObservableObject {
                     peerID: message.sender.id,
                     detail: "reason=\(statusMessage(for: decision))"
                 )
-                publishStatus(statusMessage(for: decision))
+                publishStatus(
+                    statusMessage(for: decision),
+                    context: pairingStatusContext(
+                        for: message.sender.id,
+                        signingPublicKey: registry.publicKey(for: message.sender.id)
+                    )
+                )
                 connection.cancel()
                 return
             }
             guard let peerCommitment = message.verificationCommitment,
                   peerCommitment.count == SHA256.Digest.byteCount else {
-                publishStatus("Rejected an invalid pairing commitment")
+                publishStatus(
+                    "Rejected an invalid pairing commitment",
+                    context: pairingStatusContext(
+                        for: message.sender.id,
+                        signingPublicKey: registry.publicKey(for: message.sender.id)
+                    )
+                )
                 connection.cancel()
                 return
             }
@@ -1346,6 +1408,7 @@ final class PeerDiscoveryService: ObservableObject {
                 registry.generation(for: message.sender.id),
                 for: message.requestID
             )
+            let statusContext = pairingStatusContext(for: message.requestID)
             logPairingPhase(
                 "request.accepted",
                 requestID: message.requestID,
@@ -1364,7 +1427,10 @@ final class PeerDiscoveryService: ObservableObject {
                 senderModel: localModel
             )
             send(challenge, over: connection)
-            publishStatus("Negotiating a security code with \(message.sender.name)…")
+            publishStatus(
+                "Negotiating a security code with \(message.sender.name)…",
+                context: statusContext
+            )
 
         case .challenge:
             guard let expectedPeer = validatedOutboundPeer(for: message),
@@ -1398,7 +1464,10 @@ final class PeerDiscoveryService: ObservableObject {
                 peerID: expectedPeer.id,
                 detail: "role=initiator"
             )
-            publishStatus("Waiting for \(expectedPeer.name) to confirm the code…")
+            publishStatus(
+                "Waiting for \(expectedPeer.name) to confirm the code…",
+                context: pairingStatusContext(for: message.requestID)
+            )
 
         case .reveal:
             guard let request = requestMessages[message.requestID],
@@ -1451,7 +1520,8 @@ final class PeerDiscoveryService: ObservableObject {
             // Give that action its own bounded window instead of consuming
             // the remainder of the transport handshake deadline.
             scheduleTimeout(for: connection, phase: .userDecision)
-            publishMain { service in
+            let statusContext = pairingStatusContext(for: message.requestID)
+            publishPairingMain(context: statusContext) { service in
                 if !service.pendingRequests.contains(where: { $0.id == message.requestID }) {
                     service.pendingRequests.append(
                         PendingPairingRequest(
@@ -1534,7 +1604,8 @@ final class PeerDiscoveryService: ObservableObject {
                 peerID: expectedPeer.id,
                 detail: "role=initiator"
             )
-            publishMain {
+            let statusContext = pairingStatusContext(for: message.requestID)
+            publishPairingMain(context: statusContext) {
                 $0.activeVerificationCode = verificationCode
                 $0.pendingPairingConfirmation = PendingPairingConfirmation(
                     id: message.requestID,
@@ -1547,7 +1618,8 @@ final class PeerDiscoveryService: ObservableObject {
                 )
             }
             publishStatus(
-                "Compare security code \(verificationCode) with \(expectedPeer.name), then confirm…"
+                "Compare security code \(verificationCode) with \(expectedPeer.name), then confirm…",
+                context: pairingStatusContext(for: message.requestID)
             )
 
         case .decision:
@@ -1571,7 +1643,11 @@ final class PeerDiscoveryService: ObservableObject {
                     requestID: message.requestID,
                     peerID: peer.id
                 )
-                publishStatus("\(message.sender.name) declined pairing")
+                let statusContext = pairingStatusContext(for: message.requestID)
+                publishStatus(
+                    "\(message.sender.name) declined pairing",
+                    context: statusContext
+                )
                 finish(requestID: message.requestID)
                 return
             }
@@ -1587,7 +1663,8 @@ final class PeerDiscoveryService: ObservableObject {
                 )
             } else {
                 publishStatus(
-                    "\(peer.name) confirmed; accept this request when the code matches"
+                    "\(peer.name) confirmed; accept this request when the code matches",
+                    context: pairingStatusContext(for: message.requestID)
                 )
             }
 
@@ -1723,6 +1800,7 @@ final class PeerDiscoveryService: ObservableObject {
         reportsError: Bool = true,
         completion: ((Bool) -> Void)? = nil
     ) {
+        let statusContext = pairingStatusContext(for: message.requestID)
         logPairingPhase(
             "send.begin.\(message.kind.rawValue)",
             requestID: message.requestID,
@@ -1745,7 +1823,8 @@ final class PeerDiscoveryService: ObservableObject {
                         )
                         if reportsError {
                             self?.publishStatus(
-                                "Send failed: \(error.localizedDescription)"
+                                "Send failed: \(error.localizedDescription)",
+                                context: statusContext
                             )
                         }
                     } else {
@@ -1762,7 +1841,10 @@ final class PeerDiscoveryService: ObservableObject {
             MacKVMLogger.pairing.error(
                 "phase=send.encode-failed kind=\(message.kind.rawValue, privacy: .public) request=\(MacKVMLogger.short(message.requestID), privacy: .public)"
             )
-            publishStatus("Could not encode pairing message")
+            publishStatus(
+                "Could not encode pairing message",
+                context: statusContext
+            )
             completion?(false)
         }
     }
@@ -1780,13 +1862,14 @@ final class PeerDiscoveryService: ObservableObject {
     /// successful write for that peer superseded it. This runs on the
     /// discovery queue, so the registry check and cleanup decision are
     /// serialized with every retry result.
-    private func revokeCancelledPersistenceTrust(for peerID: UUID) {
+    @discardableResult
+    private func revokeCancelledPersistenceTrust(for peerID: UUID) -> UInt64? {
         guard latestSuccessfulPersistenceRequestIDsByPeer[peerID] == nil else {
             cancelledPersistenceTrustJobsByPeer.removeValue(forKey: peerID)
-            return
+            return nil
         }
         guard let jobs = cancelledPersistenceTrustJobsByPeer[peerID] else {
-            return
+            return nil
         }
         let currentGeneration = registry.generation(for: peerID)
         let currentKey = registry.publicKey(for: peerID)
@@ -1795,9 +1878,9 @@ final class PeerDiscoveryService: ObservableObject {
                 && currentKey == $0.peer.signingPublicKey
         }) else {
             cancelledPersistenceTrustJobsByPeer.removeValue(forKey: peerID)
-            return
+            return nil
         }
-        _ = registry.revoke(peerID)
+        let nextGeneration = registry.revoke(peerID)
         cancelledPersistenceTrustJobsByPeer.removeValue(forKey: peerID)
         latestSuccessfulPersistenceRequestIDsByPeer.removeValue(forKey: peerID)
         logPairingPhase(
@@ -1806,6 +1889,7 @@ final class PeerDiscoveryService: ObservableObject {
             peerID: peerID,
             detail: "cancelled-retry-failed"
         )
+        return nextGeneration
     }
 
     private func handlePairingPersistenceResult(
@@ -1835,6 +1919,7 @@ final class PeerDiscoveryService: ObservableObject {
             // publishing anything to SwiftUI or auto-connecting the session.
             // Never revoke a newer retry's record: its persistence request has
             // a different token even when the peer uses the same signing key.
+            var cancellationStatusGeneration = job.expectedRegistryGeneration
             if saved,
                registry.generation(for: job.peer.id)
                     == job.expectedRegistryGeneration,
@@ -1851,13 +1936,25 @@ final class PeerDiscoveryService: ObservableObject {
                 } else if latestSuccessfulPersistenceRequestIDsByPeer[
                     job.peer.id
                 ] == nil {
-                    _ = registry.revoke(job.peer.id)
+                    let nextGeneration = registry.revoke(job.peer.id)
+                    // Accept only the generation immediately produced by this
+                    // rollback. A jump means Forget (or another revocation)
+                    // raced the cleanup, so its terminal status must remain
+                    // authoritative and the late cancellation is stale.
+                    if nextGeneration
+                        == job.expectedRegistryGeneration &+ 1 {
+                        cancellationStatusGeneration = nextGeneration
+                    }
                     cancelledPersistenceTrustJobsByPeer.removeValue(
                         forKey: job.peer.id
                     )
                 }
             } else if isLatestPersistenceJob {
-                revokeCancelledPersistenceTrust(for: job.peer.id)
+                if let nextGeneration = revokeCancelledPersistenceTrust(
+                    for: job.peer.id
+                ), nextGeneration == job.expectedRegistryGeneration &+ 1 {
+                    cancellationStatusGeneration = nextGeneration
+                }
             }
             logPairingPhase(
                 "pairing.persist.discarded",
@@ -1865,7 +1962,18 @@ final class PeerDiscoveryService: ObservableObject {
                 peerID: job.peer.id,
                 detail: "user-cancelled"
             )
-            publishStatus("Pairing with \(job.peer.name) canceled")
+            publishStatus(
+                "Pairing with \(job.peer.name) canceled",
+                // A successful write may have been rolled back above, which
+                // advances the registry generation. Capture the context only
+                // after that rollback so the terminal cancellation status is
+                // not discarded as stale work.
+                context: PairingStatusContext(
+                    peerID: job.peer.id,
+                    expectedGeneration: cancellationStatusGeneration,
+                    expectedSigningPublicKey: nil
+                )
+            )
             return
         }
         logPairingPhase(
@@ -1888,14 +1996,28 @@ final class PeerDiscoveryService: ObservableObject {
             MacKVMLogger.pairing.error(
                 "phase=pairing.persist.failed request=\(MacKVMLogger.short(job.requestID), privacy: .public) peer=\(MacKVMLogger.short(job.peer.id), privacy: .public)"
             )
-            publishStatus(
-                "Could not save pairing with \(job.peer.name); try Pair again"
-            )
+            var failureStatusGeneration = job.expectedRegistryGeneration
             if isLatestPersistenceJob
                 && latestSuccessfulPersistenceRequestIDsByPeer[job.peer.id]
-                    == nil {
-                revokeCancelledPersistenceTrust(for: job.peer.id)
+                    == nil,
+               let nextGeneration = revokeCancelledPersistenceTrust(
+                   for: job.peer.id
+               ),
+               nextGeneration == job.expectedRegistryGeneration &+ 1 {
+                // The rollback belongs to this pairing attempt's generation.
+                // Publish the failure after it so the user sees why Retry is
+                // needed, while a larger jump still suppresses stale status
+                // after a concurrent Forget/revocation.
+                failureStatusGeneration = nextGeneration
             }
+            publishStatus(
+                "Could not save pairing with \(job.peer.name); try Pair again",
+                context: PairingStatusContext(
+                    peerID: job.peer.id,
+                    expectedGeneration: failureStatusGeneration,
+                    expectedSigningPublicKey: nil
+                )
+            )
             // A failed durable write is terminal for this pairing attempt. Do
             // not leave the connection/request tracked until the 60-second
             // timeout, otherwise the UI appears stuck and the next attempt is
@@ -1940,7 +2062,12 @@ final class PeerDiscoveryService: ObservableObject {
             // Re-check at publication time so a Forget action queued between
             // the background write and this main-queue update cannot leave a
             // stale green Paired indicator behind.
-            guard self.registry.publicKey(for: peerID) == signingPublicKey else {
+            guard PairingStatusPublicationPolicy.allows(
+                expectedGeneration: job.expectedRegistryGeneration,
+                currentGeneration: self.registry.generation(for: peerID),
+                expectedSigningPublicKey: signingPublicKey,
+                currentSigningPublicKey: self.registry.publicKey(for: peerID)
+            ) else {
                 return
             }
             service.pairedPeerIDs.insert(peerID)
@@ -1951,7 +2078,21 @@ final class PeerDiscoveryService: ObservableObject {
             }
         }
         onPairingCompleted?(peerID, job.expectedRegistryGeneration)
-        publishStatus("Paired with \(job.peer.name)")
+        publishMain { service in
+            // The completion callback can pass its queue-side generation
+            // check just before Forget revokes the peer. Recheck both values
+            // on the main queue so this late status cannot overwrite
+            // "Pairing forgotten".
+            guard PairingStatusPublicationPolicy.allows(
+                expectedGeneration: job.expectedRegistryGeneration,
+                currentGeneration: self.registry.generation(for: peerID),
+                expectedSigningPublicKey: signingPublicKey,
+                currentSigningPublicKey: self.registry.publicKey(for: peerID)
+            ) else {
+                return
+            }
+            service.status = "Paired with \(job.peer.name)"
+        }
 
         guard requestIsTracked else { return }
         guard peerSupportsCompletionCloseRequestIDs.contains(job.requestID)
@@ -2220,11 +2361,17 @@ final class PeerDiscoveryService: ObservableObject {
                 .contains { requestID in
                     self.requestConnections[requestID] === connection
                 }
+            let timeoutContext = requestIDForConnection(connection).flatMap {
+                self.pairingStatusContext(for: $0)
+            }
             if !wasPersisted {
                 MacKVMLogger.pairing.error(
                     "phase=pairing.timeout timeoutPhase=\(String(describing: phase), privacy: .public) connection=\(MacKVMLogger.short(connectionID), privacy: .public)"
                 )
-                self.publishStatus("Pairing request timed out")
+                self.publishStatus(
+                    "Pairing request timed out",
+                    context: timeoutContext
+                )
             }
             connection.cancel()
             self.removeConnection(connection)
@@ -2240,8 +2387,73 @@ final class PeerDiscoveryService: ObservableObject {
         publishMain { $0.pendingRequests.removeAll { $0.id == id } }
     }
 
-    private func publishStatus(_ message: String) {
-        publishMain { $0.status = message }
+    private func pairingStatusContext(
+        for requestID: UUID
+    ) -> PairingStatusContext? {
+        guard let peerID = peerIDForRequest(requestID) else {
+            return nil
+        }
+        return PairingStatusContext(
+            peerID: peerID,
+            expectedGeneration: requestForgetGenerations.current(
+                for: requestID
+            ),
+            expectedSigningPublicKey: nil
+        )
+    }
+
+    private func pairingStatusContext(
+        for peerID: UUID,
+        signingPublicKey: Data? = nil
+    ) -> PairingStatusContext {
+        PairingStatusContext(
+            peerID: peerID,
+            expectedGeneration: registry.generation(for: peerID),
+            expectedSigningPublicKey: signingPublicKey
+        )
+    }
+
+    private func requestIDForConnection(_ connection: NWConnection) -> UUID? {
+        requestConnections.first { $0.value === connection }?.key
+    }
+
+    private func pairingStatusContext(
+        for connection: NWConnection
+    ) -> PairingStatusContext? {
+        requestIDForConnection(connection).flatMap {
+            pairingStatusContext(for: $0)
+        }
+    }
+
+    private func publishStatus(
+        _ message: String,
+        context: PairingStatusContext? = nil
+    ) {
+        publishPairingMain(context: context) { service in
+            service.status = message
+        }
+    }
+
+    private func publishPairingMain(
+        context: PairingStatusContext?,
+        _ update: @escaping (PeerDiscoveryService) -> Void
+    ) {
+        publishMain { service in
+            if let context,
+               !PairingStatusPublicationPolicy.allows(
+                   expectedGeneration: context.expectedGeneration,
+                   currentGeneration: service.registry.generation(
+                       for: context.peerID
+                   ),
+                   expectedSigningPublicKey: context.expectedSigningPublicKey,
+                   currentSigningPublicKey: service.registry.publicKey(
+                       for: context.peerID
+                   )
+               ) {
+                return
+            }
+            update(service)
+        }
     }
 
     /// Logs only pairing state and short identifiers. Keep this separate from
@@ -2807,7 +3019,10 @@ final class PeerDiscoveryService: ObservableObject {
         _ message: PairingEnvelope,
         on connection: NWConnection
     ) {
-        publishStatus("Rejected an unexpected pairing message")
+        publishStatus(
+            "Rejected an unexpected pairing message",
+            context: pairingStatusContext(for: message.requestID)
+        )
         connection.cancel()
         if requestConnections[message.requestID] === connection {
             finish(requestID: message.requestID)

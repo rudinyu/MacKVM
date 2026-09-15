@@ -441,7 +441,7 @@ behavior are covered by the automated test suite.
    activation remain available to open it on demand.
 9. After the Local Network step is complete, open the MacKVM menu-bar item on
    either Mac to inspect nearby devices.
-10. Under **Nearby Macs**, select **Pair** on one Mac.
+10. Under **Nearby devices**, select **Pair** on one device.
 11. Compare the six-digit security code shown on both Macs. Verify the peer name
     on each Mac, then press **Accept** on the receiver and **Confirm code** on
     the initiator only when the codes match.

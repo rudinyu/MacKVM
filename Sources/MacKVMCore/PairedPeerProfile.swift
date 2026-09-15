@@ -3,13 +3,22 @@ import Foundation
 
 public enum PeerMetadataValidation {
     public static let maximumModelBytes = 64
-    public static let unknownModel = "Unknown Mac"
+    public static let unknownModel = "Unknown device"
+    public static let legacyUnknownModel = "Unknown Mac"
+
+    public static func isUnknownModel(_ model: String?) -> Bool {
+        guard let model else { return true }
+        return model == unknownModel || model == legacyUnknownModel
+    }
 
     public static func validatedModel(_ model: String?) -> String {
         guard let model else { return unknownModel }
         let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.utf8.count <= maximumModelBytes,
               PeerIdentity.isValidDisplayName(trimmed) else {
+            return unknownModel
+        }
+        if isUnknownModel(trimmed) {
             return unknownModel
         }
         return trimmed
@@ -54,7 +63,7 @@ public struct PairedPeerProfile: Codable, Equatable, Sendable, Identifiable {
     ) {
         self.peerID = peerID
         self.friendlyName = PeerIdentity.validatedDisplayName(friendlyName)
-            ?? "Mac \(peerID.uuidString.prefix(8))"
+            ?? "Device \(peerID.uuidString.prefix(8))"
         self.model = PeerMetadataValidation.validatedModel(model)
         self.lastConnectedAt = lastConnectedAt
         self.seamlessControlAuthorized = seamlessControlAuthorized
@@ -76,7 +85,7 @@ public struct PairedPeerProfile: Codable, Equatable, Sendable, Identifiable {
         let friendlyName = try container.decodeIfPresent(
             String.self,
             forKey: .friendlyName
-        ) ?? "Mac \(peerID.uuidString.prefix(8))"
+        ) ?? "Device \(peerID.uuidString.prefix(8))"
         let model = try container.decodeIfPresent(
             String.self,
             forKey: .model

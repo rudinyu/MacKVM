@@ -4,6 +4,23 @@
 
 ## Unreleased
 
+## 1.100.09 (build 84) — 2026-09-15
+
+### Fixed
+
+- Clear the stale pairing status immediately after a device is forgotten, so
+  the menu bar no longer continues to show the forgotten Windows KVM after
+  the pairing is removed.
+- Reject a late pairing-completion status after the peer's trust generation or
+  signing key has changed, so a concurrent Forget action remains authoritative.
+- Use platform-neutral **Nearby devices** and **Unavailable paired devices**
+  labels so Windows peers are represented correctly and future Linux peers do
+  not appear as Macs.
+- Verify both slices separately when building the universal DDC diagnostic so
+  the release validation works with the current Xcode `lipo` command syntax.
+
+## 1.100.07 (build 82) — 2026-09-14
+
 ## 1.100.06 (build 81) — 2026-09-13
 
 ### Added

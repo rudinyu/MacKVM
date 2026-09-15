@@ -85,7 +85,7 @@ Create and verify a universal DMG for local testing:
 ./scripts/verify-release.sh \
   --app dist/universal/MacKVM.app \
   --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.100.06-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.100.09-universal.dmg.sha256)
 ```
 
 Ad-hoc signing is suitable only for local testing. For direct distribution
@@ -188,7 +188,7 @@ trackpad control on either Mac.
 ## Pair and control the Macs
 
 1. After the Local Network step is complete, open the MacKVM menu on both Macs.
-2. Under **Nearby Macs**, select **Pair** on one Mac.
+2. Under **Nearby devices**, select **Pair** on one device.
 3. Compare the six-digit security code and peer name on both Macs.
 4. On the receiving Mac, select **Accept** only when the code matches. On the
    initiating Mac, select **Confirm code** after comparing the same code.
@@ -242,6 +242,10 @@ retains the name, advertised model, last authenticated connection time, and
 the SHA-256 fingerprint of the pinned public key across relaunches. A newly
 paired Mac is automatically authorized for seamless control; use the per-peer
 toggle there to require Allow for every request.
+
+Select **Forget** to revoke a paired Mac. The paired row and the status beside
+**Quit** update immediately to **Pairing forgotten**; the old peer name must not
+remain, and restarting MacKVM is not required.
 
 Select **Copy support information** when reporting a problem. The report
 contains public version, OS, device, fingerprint, and connection-status data;

@@ -33,7 +33,7 @@ Release check (from the M5 Pro) is also available:
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.100.06-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.100.09-universal.dmg.sha256)
 ```
 
 Expected: the app reports both `arm64` and `x86_64`, and an ad-hoc signature
@@ -158,7 +158,7 @@ Expected:
    click the corresponding **Settings** button and then use **Refresh setup
    status** after returning to the app.
 8. If Local Network was denied, use **Review Local Network Settings**, allow
-   MacKVM there, then confirm nearby Macs can be discovered. The app cannot
+   MacKVM there, then confirm nearby devices can be discovered. The app cannot
    preflight this particular macOS setting.
 
 Expected:
@@ -176,7 +176,7 @@ Expected:
 
 ## 4. Discovery and pairing
 
-1. Confirm each Mac appears under **Nearby Macs**.
+1. Confirm each peer appears under **Nearby devices**.
 2. Press **Pair** on one Mac.
 3. Confirm both Macs show the same six-digit code and peer name.
 4. On the receiving Mac, press **Accept** once. On the initiating Mac, press
@@ -216,6 +216,10 @@ Expected:
    session without requiring a manual **Disconnect** click.
 7. Wake the M5 Pro and wait for the secure session to reconnect. Confirm the
   keyboard, mouse, and trackpad Hotkeys work without first disconnecting from the Intel Mac.
+8. Select **Forget** for the paired peer. Confirm the paired row is removed or
+   becomes unpaired and the status beside **Quit** immediately changes to
+   **Pairing forgotten**; the old peer name must not remain and restarting
+   MacKVM must not be required.
 
 Expected:
 
@@ -229,6 +233,8 @@ Expected:
   resume control without another Allow prompt.
 - A system sleep closes the old transport before networking suspends; wake
   reconnects the previously selected peer and starts from local input.
+- Forget immediately revokes the pairing in the UI as well as in storage; the
+  stale **Paired with …** status is cleared without requiring an app restart.
 
 ## 6. Keyboard, mouse, and trackpad control
 
