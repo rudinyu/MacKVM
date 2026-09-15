@@ -695,7 +695,7 @@ internal sealed class WindowsTrayApplication : IDisposable
             LabelColor.Secondary
         );
 
-        CreateLabel("Nearby Macs", AdvancedEdge, 884, AdvancedTextWidth, 32, sectionFont);
+        CreateLabel("Nearby devices", AdvancedEdge, 884, AdvancedTextWidth, 32, sectionFont);
         nearbyStatusLabel = CreateLabel(
             "Listening for MacKVM pairing requests on the local network…",
             AdvancedEdge,

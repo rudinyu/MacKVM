@@ -2,6 +2,21 @@
 
 # 變更記錄
 
+## WindowsKVM 1.02.26（build 106）— 2026-09-15
+
+本次 Windows 專用用語更新讓裝置選擇器可正確涵蓋 Mac、Windows 與未來的 peer。
+
+### 變更
+
+- 將 Advanced mode 的 **Nearby Macs** 區段改為 **Nearby devices**；受信任的
+  peer 不再被描述成只能是 Mac。
+- 同步更新英文與繁體中文 Windows 文件，並將 UI build metadata 更新為
+  1.02.26（build 106）。
+
+### 驗證
+
+- 仍須通過 Windows x64／ARM64 cross-build 與既有 desktop self-test；原生 DPI 顯示仍需在 Windows 實機驗收。
+
 ## WindowsKVM 1.02.25（build 105）— 2026-09-14
 
 本次 Windows 專用 UI 微調讓預設的 Simple 模式可在單一視窗檢視區完整顯示，並同步縮小兩種模式的字級，讓狀態面板更精簡易讀。

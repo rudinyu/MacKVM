@@ -23,7 +23,7 @@ Windows Raw Input 擷取與最後的防火牆 UX 會在後續 Windows 階段實�
 ChaCha20-Poly1305 實作來建立加密連線。較舊版本仍可配對，但執行檔會明確
 顯示 secure Connect 已停用。
 
-此 Windows beta 不相容於 MacKVM 1.00.00 正式版。Mac peer 必須使用包含簽名的
+此 Windows release candidate 不相容於 MacKVM 1.00.00 正式版。Mac peer 必須使用包含簽名的
 `disconnectSignalVersion` capability 的 MacKVM build（MacKVM 1.100.00／build 75 加入），
 才能進行配對與 secure Connect。舊 peer 會明確回報需要升級，不會靜默降級成未認證的 EOF
 關閉。
@@ -90,7 +90,7 @@ reference graph 中的每個 project，避免 `net8.0` protocol library 與
 .\WindowsKVM.exe --version
 ```
 
-目前 UI 測試 build 應顯示 `WindowsKVM 1.02.25 (build 105)`。
+目前 UI 測試 build 應顯示 `WindowsKVM 1.02.26 (build 106)`。
 此版比回報捲動破圖與下拉清單問題時使用的 **1.02.09（build 89）Beta 3** 更新。
 替換前請先退出舊的系統匣 receiver；啟動後確認此版本及 **WindowsKVM** 視窗標題。
 
@@ -108,7 +108,7 @@ UI 會加入 Windows 系統匣圖示、啟動兩個 listener，並以原生 Allo
 
 狀態視窗提供兩種模式。預設使用精簡的 **Simple mode**，只保留 PC 名稱、簡短的就緒／配對／控制狀態、
 必要操作與小型版本／build 標示。型號、TCP port、UUID、完整金鑰指紋與冗長設定說明會先隱藏。
-**Advanced mode** 顯示完整的標題、**設定這台 PC**、**實體輸入路徑**、**附近的 Mac**、
+**Advanced mode** 顯示完整的標題、**設定這台 PC**、**實體輸入路徑**、**附近裝置**、
 **鍵盤／滑鼠／觸控板**、**螢幕輸入**與**已配對裝置資訊**，可垂直捲動，較窄視窗也提供橫向捲動。
 標題列按鈕可在兩種模式間切換，
 回到 Simple 時視窗會再縮小。

@@ -2,6 +2,23 @@
 
 # Changelog
 
+## WindowsKVM 1.02.26 (build 106) — 2026-09-15
+
+This Windows-only terminology update makes the device selector accurate for
+Mac, Windows, and future peers.
+
+### Changed
+
+- Rename the Advanced-mode **Nearby Macs** section to **Nearby devices**;
+  trusted peers are no longer described as Mac-only.
+- Keep the English and Traditional Chinese Windows documentation aligned with
+  the new label and bump the UI build metadata to 1.02.26 (build 106).
+
+### Validation
+
+- Windows x64/ARM64 cross-builds and the existing desktop self-test remain
+  required; native DPI rendering still needs acceptance on a Windows desktop.
+
 ## WindowsKVM 1.02.25 (build 105) — 2026-09-14
 
 This Windows-only UI refinement makes the default Simple mode fit in one

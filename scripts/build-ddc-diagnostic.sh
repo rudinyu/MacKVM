@@ -124,7 +124,11 @@ if [[ "$target_arch" == "universal" ]]; then
     "$scratch_path/ddc-diagnostic-x86_64" \
     -output "$output_path"
   chmod 755 "$output_path"
-  lipo "$output_path" -verify_arch arm64 x86_64
+  # The lipo shipped with current Xcode accepts one architecture per
+  # -verify_arch invocation. Verify both slices explicitly instead of
+  # treating the second architecture as another input file.
+  lipo "$output_path" -verify_arch arm64
+  lipo "$output_path" -verify_arch x86_64
 else
   build_one "$target_arch" "$output_path"
 fi

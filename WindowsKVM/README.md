@@ -8,11 +8,11 @@ authenticate a secure Connect session, and receive keyboard/mouse control over
 that encrypted session. A console mode remains available for automation and
 firewall diagnostics.
 
-## Current feature set — 1.02.25 (build 105)
+## Current feature set — 1.02.26 (build 106)
 
 The Windows host includes:
 
-- MacKVM 1.00.00 is not supported by this beta; use a MacKVM build with the
+- MacKVM 1.00.00 is not supported by this Windows release candidate; use a MacKVM build with the
   signed `disconnectSignalVersion` capability (introduced in MacKVM
   1.100.00/build 75) for pairing and authenticated secure Connect;
 - authenticated secure Connect includes the signed
@@ -124,8 +124,8 @@ The full Advanced view contains:
    option to allow a paired Mac to request control again.
    The dropdown opens with room for both options, even after scrolling or
    resizing. This setting does not enable Windows-to-Mac input forwarding.
-4. **Nearby Macs** — pairing listener state and a selector containing every
-   trusted Mac (including its short device ID); choose the peer before using
+4. **Nearby devices** — pairing listener state and a selector containing every
+   trusted peer (including its short device ID); choose the peer before using
    **Forget paired Mac**. Pair and Connect are initiated from the MacKVM peer.
 5. **Keyboard, mouse, and trackpad** — permission state, current control state,
    and the local-return hotkey.
@@ -276,7 +276,7 @@ native APIs do not replace these desktop checks.
    that the mode and pairing buttons do not overlap. Resize or
    move between monitors during a connection; changing the view must not
    reset pairing or control, and consent prompts must remain usable.
-8. Confirm `--version` reports **1.02.25 (build 105)**; the reported UI defects
+8. Confirm `--version` reports **1.02.26 (build 106)**; the reported UI defects
    were tested on **1.02.09 (build 89) Beta 3**, not this build. Quit the old
    tray receiver before starting the replacement. Check the title/heading say
    **WindowsKVM**. Scroll Advanced rapidly up/down and drag both scrollbars;

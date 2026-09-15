@@ -29,7 +29,7 @@ Connect additionally requires Windows build `10.0.20142` or later because .NET
 session. On an older build the executable keeps pairing available and reports
 that secure Connect is disabled.
 
-This Windows beta is not compatible with the MacKVM 1.00.00 release. The Mac
+This Windows release candidate is not compatible with the MacKVM 1.00.00 release. The Mac
 peer must use a MacKVM build with the signed `disconnectSignalVersion`
 capability (introduced in MacKVM 1.100.00/build 75) for pairing and secure
 Connect. An older peer is rejected with an explicit upgrade-required error
@@ -100,7 +100,7 @@ Confirm the executable before starting a test:
 .\WindowsKVM.exe --version
 ```
 
-The current UI test build reports `WindowsKVM 1.02.25 (build 105)`.
+The current UI test build reports `WindowsKVM 1.02.26 (build 106)`.
 This is newer than **1.02.09 (build 89) Beta 3** used in the reported scrolling
 and dropdown tests. Quit the previous tray receiver before replacing it;
 check this version label and the **WindowsKVM** window title after startup.
@@ -126,7 +126,7 @@ the PC name, concise readiness, pairing/control status, essential actions,
 and a small version/build label. Model, TCP ports, UUIDs, full key fingerprints,
 and lengthy setup explanations are hidden until needed. **Advanced mode**
 shows the complete header, **Set up this PC**, **Physical input path**,
-**Nearby Macs**, **Keyboard, mouse, and trackpad**, **Monitor input**, and
+**Nearby devices**, **Keyboard, mouse, and trackpad**, **Monitor input**, and
 **Paired device information** sections. The header button switches between the
 two modes; switching back to Simple shrinks the window, while Advanced remains
 vertically scrollable on short displays, with horizontal scrolling available
