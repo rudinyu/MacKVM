@@ -277,7 +277,7 @@ final class MonitorControllerTests: XCTestCase {
 
         let superseded = state.deferSwitch(
             input: .hdmi1,
-            description: "the other Mac",
+            description: "the other device",
             intent: .normal,
             completion: { completed.append("remote") }
         )
@@ -298,7 +298,7 @@ final class MonitorControllerTests: XCTestCase {
 
         _ = state.deferSwitch(
             input: .hdmi1,
-            description: "the other Mac",
+            description: "the other device",
             intent: .normal,
             completion: { completions += 1 },
             result: { results.append($0) }
@@ -319,7 +319,7 @@ final class MonitorControllerTests: XCTestCase {
 
         _ = state.deferSwitch(
             input: .hdmi1,
-            description: "the other Mac",
+            description: "the other device",
             intent: .normal,
             completion: { completed.append("old remote") }
         )
@@ -338,7 +338,7 @@ final class MonitorControllerTests: XCTestCase {
 
         let ignoredNormalRoute = state.deferSwitch(
             input: .hdmi1,
-            description: "the other Mac",
+            description: "the other device",
             intent: .normal,
             completion: { completed.append("ignored remote") }
         )
@@ -360,7 +360,7 @@ final class MonitorControllerTests: XCTestCase {
 
         _ = state.deferSwitch(
             input: .hdmi1,
-            description: "the other Mac",
+            description: "the other device",
             intent: .normal,
             completion: { cancelledRouteCompletionCount += 1 }
         )

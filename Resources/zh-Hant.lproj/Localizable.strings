@@ -71,10 +71,10 @@
 "Intel / HDMI preset" = "Intel／HDMI 預設";
 "This Mac" = "這台 Mac";
 "This Mac: %@" = "這台 Mac：%@";
-"Other Mac" = "另一台 Mac";
+"Other device" = "另一台裝置";
 "Detect DDC-capable displays" = "偵測支援 DDC 的螢幕";
 "Selected DDC display verified" = "已驗證選取的 DDC 螢幕";
-"Show other Mac" = "顯示另一台 Mac";
+"Show other device" = "顯示另一台裝置";
 "Return display to this Mac" = "將螢幕切回這台 Mac";
 "No DDC-capable display detected yet. Connect an external display, then detect it." = "尚未偵測到支援 DDC 的螢幕。請連接外接螢幕後再執行偵測。";
 "Only a detected DDC-capable display can enable automatic switching." = "只有偵測到支援 DDC 的螢幕才能啟用自動切換。";
@@ -112,5 +112,5 @@
 "This switches the display, then shares the keyboard, mouse, and trackpad. Press Control-Option-Command-Escape to interrupt and return them to this Mac." = "這會先切換螢幕，再分享鍵盤、滑鼠與觸控板。按下 Control-Option-Command-Escape 可中斷並將它們交還給這台 Mac。";
 "After manually selecting the monitor input, Control-Option-Command-K switches keyboard/mouse control. Control-Option-Command-O automatically switches the display first and then transfers keyboard/mouse ownership. Escape is the emergency local-return shortcut." = "手動選擇螢幕輸入後，Control-Option-Command-K 可切換鍵盤／滑鼠控制；Control-Option-Command-O 會自動先切換螢幕，再交接鍵盤／滑鼠控制權。Escape 是緊急交還本機的快捷鍵。";
 "After manually selecting the monitor input, Control-Option-Command-K switches keyboard, mouse, and trackpad control. Control-Option-Command-O automatically switches the display first and then transfers input ownership. Escape is the emergency local-return shortcut." = "手動選擇螢幕輸入後，Control-Option-Command-K 可切換鍵盤、滑鼠與觸控板控制；Control-Option-Command-O 會自動先切換螢幕，再交接輸入控制權。Escape 是緊急交還本機的快捷鍵。";
-"This switches the display, then shares the keyboard and mouse. Control-Option-Command-O performs the same automatic toggle; press it again from the other Mac to return the display and input. If you switched the monitor input manually, use Control-Option-Command-K to change keyboard/mouse control. Control-Option-Command-Escape interrupts and returns them to this Mac." = "這會先切換螢幕，再分享鍵盤與滑鼠。Control-Option-Command-O 會執行相同的自動切換；從另一台 Mac 再按一次可恢復螢幕與輸入。若你已手動切換螢幕輸入，請用 Control-Option-Command-K 切換鍵盤／滑鼠控制；Control-Option-Command-Escape 可中斷並將它們交還給這台 Mac。";
-"This switches the display, then shares the keyboard, mouse, and trackpad. Control-Option-Command-O performs the same automatic toggle; press it again from the other Mac to return the display and input. If you switched the monitor input manually, use Control-Option-Command-K to change keyboard, mouse, and trackpad control. Control-Option-Command-Escape interrupts and returns them to this Mac." = "這會先切換螢幕，再分享鍵盤、滑鼠與觸控板。Control-Option-Command-O 會執行相同的自動切換；從另一台 Mac 再按一次可恢復螢幕與輸入。若你已手動切換螢幕輸入，請用 Control-Option-Command-K 切換鍵盤、滑鼠與觸控板控制；Control-Option-Command-Escape 可中斷並將它們交還給這台 Mac。";
+"This switches the display, then shares the keyboard and mouse. Control-Option-Command-O performs the same automatic toggle; press it again from the other device to return the display and input. If you switched the monitor input manually, use Control-Option-Command-K to change keyboard/mouse control. Control-Option-Command-Escape interrupts and returns them to this Mac." = "這會先切換螢幕，再分享鍵盤與滑鼠。Control-Option-Command-O 會執行相同的自動切換；從另一台裝置再按一次可恢復螢幕與輸入。若你已手動切換螢幕輸入，請用 Control-Option-Command-K 切換鍵盤／滑鼠控制；Control-Option-Command-Escape 可中斷並將它們交還給這台 Mac。";
+"This switches the display, then shares the keyboard, mouse, and trackpad. Control-Option-Command-O performs the same automatic toggle; press it again from the other device to return the display and input. If you switched the monitor input manually, use Control-Option-Command-K to change keyboard, mouse, and trackpad control. Control-Option-Command-Escape interrupts and returns them to this Mac." = "這會先切換螢幕，再分享鍵盤、滑鼠與觸控板。Control-Option-Command-O 會執行相同的自動切換；從另一台裝置再按一次可恢復螢幕與輸入。若你已手動切換螢幕輸入，請用 Control-Option-Command-K 切換鍵盤、滑鼠與觸控板控制；Control-Option-Command-Escape 可中斷並將它們交還給這台 Mac。";

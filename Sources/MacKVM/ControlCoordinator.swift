@@ -252,7 +252,7 @@ final class ControlCoordinator: ObservableObject {
         // grants the request.
         inputSink.refreshPermission()
         guard inputSink.hasAccessibilityPermission else {
-            status = "Accessibility permission is required to control another Mac"
+            status = "Accessibility permission is required to control another device"
             return false
         }
         return true
@@ -275,7 +275,7 @@ final class ControlCoordinator: ObservableObject {
             activeControlRequestCompletion = completion
             activeControlDisplayAlreadyRemote = displayAlreadyRemote
             activeControlManagesDisplayRoute = managesDisplayRoute
-            status = "Waiting for the other Mac to grant control…"
+            status = "Waiting for the other device to grant control…"
             send(
                 ControlMessage.requestControl(
                     requestID: requestID,
@@ -301,7 +301,7 @@ final class ControlCoordinator: ObservableObject {
     /// Toggles keyboard/mouse ownership after the user has manually selected
     /// the monitor input. Marking the request as pre-routed prevents the grant
     /// callback from starting the automatic DDC display route, which belongs
-    /// to the O/Show other Mac flow.
+    /// to the O/Show other device flow.
     func toggleControlFromManualMonitorHotKey() {
         toggleControlFromHotKey(displayAlreadyRemote: true)
     }
@@ -661,7 +661,7 @@ final class ControlCoordinator: ObservableObject {
             activeControlDisplayAlreadyRemote = false
             activeControlManagesDisplayRoute = true
             completeActiveControlRequest(false)
-            status = "The other Mac denied control"
+            status = "The other device denied control"
         case .endControl:
             if message.requestID == activeOutboundRequestID,
                state == .controlling || state == .suspended {
@@ -684,20 +684,20 @@ final class ControlCoordinator: ObservableObject {
                 if wasControlling && sessionManagedDisplayRoute {
                     onControllingStopped?()
                 }
-                status = "The other Mac ended control; input is local"
+                status = "The other device ended control; input is local"
             }
             if let request = pendingIncomingControlRequest,
                message.requestID == request.id {
                 cancelIncomingControlRequest(
                     request,
-                    reason: "The other Mac cancelled its control request"
+                    reason: "The other device cancelled its control request"
                 )
             }
             if let request = preparingIncomingControlRequest,
                message.requestID == request.id {
                 cancelIncomingControlRequest(
                     request,
-                    reason: "The other Mac cancelled its control request"
+                    reason: "The other device cancelled its control request"
                 )
             }
             if let request = activeInboundControlRequest,
@@ -705,7 +705,7 @@ final class ControlCoordinator: ObservableObject {
                isReceivingControl {
                 finishReceivingControl(
                     request,
-                    reason: "The other Mac returned control",
+                    reason: "The other device returned control",
                     notifyPeer: false
                 )
             }
@@ -732,7 +732,7 @@ final class ControlCoordinator: ObservableObject {
             remoteMinimumVersion: message.minimumProtocolVersion
         ) else {
             sendResponse(kind: .controlDenied, for: request)
-            status = "Denied control: the other Mac uses an incompatible protocol"
+            status = "Denied control: the other device uses an incompatible protocol"
             return
         }
         // A differing keyboard layout no longer denies the request outright:
@@ -748,7 +748,7 @@ final class ControlCoordinator: ObservableObject {
            remoteLayout != localLayout,
            (message.protocolVersion ?? 1) < 2 {
             sendResponse(kind: .controlDenied, for: request)
-            status = "Denied control: the other Mac's keyboard layout differs and its MacKVM version cannot remap it"
+            status = "Denied control: the other device's keyboard layout differs and its MacKVM version cannot remap it"
             return
         }
         guard !isRemoteInputTearingDown else {
@@ -800,7 +800,7 @@ final class ControlCoordinator: ObservableObject {
                 cancelPendingRequestForSimultaneousControl()
             } else {
                 stopControl(
-                    reason: "Yielded control to a request from the other Mac"
+                    reason: "Yielded control to a request from the other device"
                 )
             }
         }
@@ -814,7 +814,7 @@ final class ControlCoordinator: ObservableObject {
             acceptIncomingControlRequest(requestID)
             return
         }
-        status = "The other Mac requests control — choose Allow or Deny"
+        status = "The other device requests control — choose Allow or Deny"
         scheduleIncomingRequestTimeout(for: request)
         onIncomingControlRequest?(request)
     }
@@ -848,7 +848,7 @@ final class ControlCoordinator: ObservableObject {
         isReceivingControl = true
         onReceivingStarted?()
         sendResponse(kind: .controlGranted, for: request)
-        status = "Remote control granted to the other Mac"
+        status = "Remote control granted to the other device"
     }
 
     private func handleControlGranted() {
@@ -883,7 +883,7 @@ final class ControlCoordinator: ObservableObject {
                 onControllingStarted?()
             }
             completeActiveControlRequest(true)
-            status = "Controlling the other Mac — ⌃⌥⌘Esc returns locally"
+            status = "Controlling the other device — ⌃⌥⌘Esc returns locally"
         } catch {
             if let requestID = activeOutboundRequestID {
                 send(
@@ -1020,7 +1020,7 @@ final class ControlCoordinator: ObservableObject {
         activeControlDisplayAlreadyRemote = false
         activeControlManagesDisplayRoute = true
         completeActiveControlRequest(false)
-        status = "Yielded a simultaneous request to the other Mac"
+        status = "Yielded a simultaneous request to the other device"
     }
 
     private func scheduleRequestTimeout() {

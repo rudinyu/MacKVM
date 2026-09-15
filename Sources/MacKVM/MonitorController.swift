@@ -166,7 +166,7 @@ final class MonitorController: ObservableObject {
         localInput = .usbC
         remoteInput = .hdmi1
         automationEnabled = true
-        status = "Preset: this Mac uses USB-C; the other Mac uses HDMI 1"
+        status = "Preset: this Mac uses USB-C; the other device uses HDMI 1"
     }
 
     func applyIntelHDMIPreset() {
@@ -349,7 +349,7 @@ final class MonitorController: ObservableObject {
     func switchToRemote(completion: (() -> Void)? = nil) {
         switchInput(
             remoteInput,
-            description: "the other Mac",
+            description: "the other device",
             intent: .normal,
             completion: completion
         )
@@ -389,7 +389,7 @@ final class MonitorController: ObservableObject {
         }
         switchInput(
             remoteInput,
-            description: "the other Mac",
+            description: "the other device",
             intent: .normal,
             completion: nil,
             result: completion
@@ -514,7 +514,7 @@ final class MonitorController: ObservableObject {
                     decisionSource = "readback"
                 } else {
                     // A failed read is not evidence that the requested input
-                    // is still active. The other Mac (or the monitor OSD) may
+                    // is still active. The other device (or the monitor OSD) may
                     // have changed the route since this process last wrote it,
                     // so preserve the safe write fallback instead of trusting
                     // a stale process-local cache.
@@ -596,7 +596,7 @@ final class MonitorController: ObservableObject {
             ) {
                 // A single native DDC display is unambiguous. Select it as
                 // soon as discovery completes so the first-run "Show this
-                // Mac" and "Show other Mac" buttons work without requiring
+                // Mac" and "Show other device" buttons work without requiring
                 // the user to guess that the display row is also a picker.
                 displaySelector = selector
                 lastVerifiedDisplay = displays.first {

@@ -322,7 +322,7 @@ public struct RemoteInputEvent: Codable, Equatable, Sendable {
     }
 
     /// Returns only the device-independent flags that can be reconstructed on
-    /// another Mac. Capture uses this before encoding, and injection uses it
+    /// another device. Capture uses this before encoding, and injection uses it
     /// again so legacy peers cannot pass device-specific bits through.
     public static func normalizedModifierFlags(_ flags: UInt64) -> UInt64 {
         flags & publicModifierFlagsMask

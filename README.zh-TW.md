@@ -162,21 +162,21 @@ repository，正常 CI 也會建置三種診斷目標。按下 Ctrl-C 或收到 
    M5 Pro 套用 **M5 / USB-C preset**，Intel Mac 套用 **Intel / HDMI preset**。
    Intel 新安裝會以 HDMI 1 作為本機預設；若從舊版升級並保存了 USB-C 設定，請再次套用
    Intel 預設修正本機路由。
-   在任一台 Mac 按 **Show other Mac** 時，若控制前置條件已完成，也會開始受保護的鍵盤／滑鼠／
-   觸控板分享；**Share keyboard, mouse, and trackpad with [other Mac]** 可作為明確的等效操作。
+   在任一台 Mac 按 **Show other device** 時，若控制前置條件已完成，也會開始受保護的鍵盤／滑鼠／
+   觸控板分享；**Share keyboard, mouse, and trackpad with [other device]** 可作為明確的等效操作。
    接收端
    只有在未啟用該配對裝置的無縫控制時才需要按 **Allow**。若只是切換了螢幕而尚未共享輸入，
    可按 **Return display to this Mac** 恢復本機畫面。
    控制中可隨時按 `Control-Option-Command-Escape` 中斷並把鍵盤、滑鼠與觸控板還給本機。
    `Control-Option-Command-K` 適用於已手動選好螢幕輸入的情況，只切換鍵盤／滑鼠／觸控板控制權，
    不會啟動自動 DDC 螢幕切換；閒置時會開始請求，控制中或接收中會返回本機／控制端。
-   `Control-Option-Command-O` 會沿用 **Show other Mac** 的受保護先切螢幕流程，將螢幕與
-   鍵盤／滑鼠／觸控板一起交給另一台 Mac；如果本機正在接收控制，按下後會結束接收並把螢幕與
+   `Control-Option-Command-O` 會沿用 **Show other device** 的受保護先切螢幕流程，將螢幕與
+   鍵盤／滑鼠／觸控板一起交給另一台裝置；如果本機正在接收控制，按下後會結束接收並把螢幕與
    輸入還給控制端。需要在手動螢幕路由下切換鍵盤／滑鼠／觸控板控制權時，使用
    `Control-Option-Command-K`；`Control-Option-Command-O` 則用於自動切螢幕並同步交接控制權。
    若要從接收端切回控制端，請在接收端按 **Return keyboard, mouse, and trackpad to
-   [other Mac]**；接收端會釋放輸入，螢幕路由也會返回控制端。
-   macOS 即將休眠時，MacKVM 會先關閉安全傳輸，讓另一台 Mac 立即釋放遠端輸入；
+   [other device]**；接收端會釋放輸入，螢幕路由也會返回控制端。
+   macOS 即將休眠時，MacKVM 會先關閉安全傳輸，讓另一台裝置立即釋放遠端輸入；
    喚醒後會重新探索並連回休眠前選取的 peer，不需要先在 Intel Mac 手動按 **Disconnect**，
    鍵盤／滑鼠／觸控板 Hotkey 就能再次使用。
 7. 若通知被停用，仍可從選單列 KVM 圖示或 Dock／一般視窗開啟並處理控制請求。

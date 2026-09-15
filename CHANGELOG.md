@@ -4,6 +4,15 @@
 
 ## Unreleased
 
+## 1.100.10 (build 85) — 2026-09-15
+
+### Changed
+
+- Use platform-neutral remote-target labels such as **Show other device** and
+  **Other device** throughout the app, status messages, and user guides so
+  Windows peers are represented correctly and future Linux peers do not appear
+  to be Macs.
+
 ## 1.100.09 (build 84) — 2026-09-15
 
 ### Fixed

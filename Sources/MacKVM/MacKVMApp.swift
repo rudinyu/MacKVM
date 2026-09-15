@@ -474,9 +474,9 @@ private final class AppBootstrap: ObservableObject {
     }
 
     /// Switches monitor input together with keyboard/mouse ownership: routes
-    /// display and input to the other Mac if this Mac currently owns them, or
+    /// display and input to the other device if this Mac currently owns them, or
     /// ends receiving and restores the controller's display if this Mac is
-    /// currently being controlled. Shared by the Show other Mac action and
+    /// currently being controlled. Shared by the Show other device action and
     /// the Control-Option-Command-O global shortcut so their behavior cannot
     /// diverge.
     func switchToOtherMac() {
@@ -492,16 +492,16 @@ private final class AppBootstrap: ObservableObject {
         }
         if control.isPreparingIncomingControl {
             // Allow clears the visible request before Accessibility setup
-            // finishes. Treat O/Show other Mac as an explicit return during
+            // finishes. Treat O/Show other device as an explicit return during
             // that window so the pending preparation is rejected before its
             // asynchronous completion can grant input or restore a route.
             control.stopControl(
-                reason: "Returned input to the other Mac"
+                reason: "Returned input to the other device"
             )
             monitor.switchToRemote()
         } else if control.isReceivingControl {
             control.endReceivingControl(
-                reason: "Returned input to the other Mac"
+                reason: "Returned input to the other device"
             )
         } else if control.state == .controlling || control.state == .suspended {
             // A second press while already controlling (or while a direct
@@ -539,7 +539,7 @@ private final class AppBootstrap: ObservableObject {
         }
         guard control.canRequestControl() else {
             combinedControlStatus =
-                "Connect to the other Mac and complete the control setup before sharing keyboard, mouse, and trackpad."
+                "Connect to the other device and complete the control setup before sharing keyboard, mouse, and trackpad."
             return false
         }
         guard monitor.canStartAutomaticRemoteSwitching() else {
@@ -577,7 +577,7 @@ private final class AppBootstrap: ObservableObject {
                 self.endCombinedControlRequest(requestGeneration)
                 if !granted && ownsRoute {
                     self.combinedControlStatus =
-                        "The other Mac did not accept keyboard, mouse, and trackpad control."
+                        "The other device did not accept keyboard, mouse, and trackpad control."
                     monitor?.switchToLocal()
                 }
             }
@@ -1671,7 +1671,7 @@ private struct MacKVMMenuView: View {
                 "\(peerDisplayName(for: request.peerID, from: discovery)) requests control of this Mac."
             )
                 .font(.caption)
-            Text("Allow only if you expect to use the other Mac's keyboard, mouse, and trackpad.")
+            Text("Allow only if you expect to use the other device's keyboard, mouse, and trackpad.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
             HStack {
@@ -1718,7 +1718,7 @@ private struct MacKVMMenuView: View {
                     Text(input.name).tag(input)
                 }
             }
-            Picker("Other Mac", selection: $monitor.remoteInput) {
+            Picker("Other device", selection: $monitor.remoteInput) {
                 ForEach(MonitorInputSource.allCases, id: \.self) { input in
                     Text(input.name).tag(input)
                 }
@@ -1768,7 +1768,7 @@ private struct MacKVMMenuView: View {
 
             TextField("Native DDC display selector", text: $monitor.displaySelector)
 
-            Button("Show other Mac") {
+            Button("Show other device") {
                 bootstrap.switchToOtherMac()
             }
 
@@ -1793,7 +1793,7 @@ private struct MacKVMMenuView: View {
                 Button(shareKeyboardAndMouseTitle) {
                     // The share action must be all-or-nothing: if its live
                     // preflight fails, leave both the display and physical
-                    // input local. The Show other Mac action owns the explicit
+                    // input local. The Show other device action owns the explicit
                     // display-only fallback; sharing must never create a
                     // split route when no control request was sent.
                     _ = bootstrap.startCombinedControlRequest()
@@ -1804,7 +1804,7 @@ private struct MacKVMMenuView: View {
                         || bootstrap.combinedControlRequestInFlight
                 )
                 Text(
-                    "This switches the display, then shares the keyboard, mouse, and trackpad. Control-Option-Command-O performs the same automatic toggle; press it again from the other Mac to return the display and input. If you switched the monitor input manually, use Control-Option-Command-K to change keyboard, mouse, and trackpad control. Control-Option-Command-Escape interrupts and returns them to this Mac."
+                    "This switches the display, then shares the keyboard, mouse, and trackpad. Control-Option-Command-O performs the same automatic toggle; press it again from the other device to return the display and input. If you switched the monitor input manually, use Control-Option-Command-K to change keyboard, mouse, and trackpad control. Control-Option-Command-Escape interrupts and returns them to this Mac."
                 )
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -1851,7 +1851,7 @@ private struct MacKVMMenuView: View {
 
     private var connectedPeerName: String {
         guard let peerID = secureSession.connectedPeerID else {
-            return "the other Mac"
+            return "the other device"
         }
         return peerDisplayName(for: peerID, from: discovery)
     }

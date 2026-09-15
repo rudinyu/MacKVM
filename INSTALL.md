@@ -85,7 +85,7 @@ Create and verify a universal DMG for local testing:
 ./scripts/verify-release.sh \
   --app dist/universal/MacKVM.app \
   --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.100.09-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.100.10-universal.dmg.sha256)
 ```
 
 Ad-hoc signing is suitable only for local testing. For direct distribution
@@ -158,7 +158,7 @@ Dock when needed.
 4. On either Mac, select **Detect DDC-capable displays** and choose the
    intended external display explicitly, then select the matching preset.
 5. On the M5 Pro, **M5 / USB-C preset** selects logical USB-C locally and HDMI
-   1 (VCP 17) on the other Mac. The MA270U EDID mapping sends USB-C as VCP 19
+   1 (VCP 17) on the other device. The MA270U EDID mapping sends USB-C as VCP 19
    (`0x13`); on other models use the diagnostic scan. On the Intel Mac,
    **Intel / HDMI preset** selects HDMI 1 locally and keeps native DDC enabled.
    A fresh Intel install uses HDMI 1 as its local default; use the preset to
@@ -168,15 +168,15 @@ Dock when needed.
    mouse are connected to the M5 Pro or the MA270U USB hub. HDMI does not carry
    USB data to the Intel Mac, but either Mac can still request control from its
    own keyboard, mouse, and trackpad.
-7. Use **Show other Mac** to verify switching. Some MA270U firmware has no
+7. Use **Show other device** to verify switching. Some MA270U firmware has no
    DDC/CI OSD toggle; if native detection fails, use the diagnostic text,
    check the direct cable path, and switch inputs through the MA270U OSD.
    For a display-only route, use **Return display to this Mac**. Returning
    control with the emergency shortcut or the receiver's
-   **Return keyboard, mouse, and trackpad to [other Mac]** action restores the
-   local route. On either Mac, **Show other Mac** also starts the guarded
+   **Return keyboard, mouse, and trackpad to [other device]** action restores the
+   local route. On either Mac, **Show other device** also starts the guarded
    keyboard, mouse, and trackpad hand-off when the control prerequisites are
-   ready. **Share keyboard, mouse, and trackpad with [other Mac]** remains the
+   ready. **Share keyboard, mouse, and trackpad with [other device]** remains the
    explicit equivalent; the receiver selects **Allow** unless seamless control
    was enabled for the paired peer.
 
@@ -200,8 +200,8 @@ trackpad control on either Mac.
 5. After both signed decisions complete, MacKVM automatically attempts to
    connect the encrypted session. If it remains idle, select **Connect** on
    either paired row.
-6. On either Mac, select **Share keyboard, mouse, and trackpad with [other Mac]**.
-   This switches the MA270U to the other Mac when DDC is configured and then
+6. On either Mac, select **Share keyboard, mouse, and trackpad with [other device]**.
+   This switches the MA270U to the other device when DDC is configured and then
    starts the keyboard, mouse, and trackpad control request.
 7. A newly paired receiver automatically enables seamless control for that
    pinned peer. To keep per-request consent, turn off **Automatically allow
@@ -210,13 +210,13 @@ trackpad control on either Mac.
    Allow/Deny/Review notification, and Review opens the MacKVM approval dialog.
 8. Either Mac can interrupt at any time with
    `Control-Option-Command-Escape`. To switch back from Intel, select
-   **Return keyboard, mouse, and trackpad to [other Mac]** on the receiving
+   **Return keyboard, mouse, and trackpad to [other device]** on the receiving
    Mac. The controller can also select **Return keyboard, mouse, and trackpad
    to this Mac**. The global `Control-Option-Command-K` shortcut toggles
    keyboard, mouse, and trackpad ownership after
    you manually select the monitor input; it starts a request when idle and
    returns input when controlling or receiving, without running automatic DDC
-   switching. `Control-Option-Command-O` follows the guarded **Show other Mac**
+   switching. `Control-Option-Command-O` follows the guarded **Show other device**
    route: it automatically switches the display and then requests keyboard,
    mouse, and trackpad control, or ends receiving and restores the controller's
    display and input.
