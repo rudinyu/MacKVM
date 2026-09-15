@@ -399,8 +399,11 @@ behavior are covered by the automated test suite.
 
    ```sh
    ./scripts/build-app.sh --arch arm64
-   ./scripts/build-app.sh --arch x86_64
+   ./scripts/build-app.sh --arch x86_64 --no-clean
    ```
+
+   A direct build cleans `.build` and `dist` first. The second architecture
+   uses `--no-clean` only to preserve the first bundle in this same batch.
 
    Copy `dist/arm64/MacKVM.app` into `/Applications` on the M5 Pro and
    `dist/x86_64/MacKVM.app` into `/Applications` on the 2019 Intel Mac. On

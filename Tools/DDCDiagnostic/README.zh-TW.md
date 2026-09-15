@@ -23,6 +23,9 @@
 ./scripts/build-ddc-diagnostic.sh --arch universal
 ```
 
+直接建置診斷工具前會先清除 repository 的 `.build` 狀態與全部 `dist` 產物。同一批次建置多個
+目標時，後續指令請加上 `--no-clean`，才能保留前面已完成的執行檔。
+
 程式會輸出到 `dist/ddc-diagnostic-arm64`、`dist/ddc-diagnostic-x86_64` 與
 `dist/ddc-diagnostic-universal`。Universal 程式可複製到兩種 Mac 執行。
 

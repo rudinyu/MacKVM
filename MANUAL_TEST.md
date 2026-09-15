@@ -12,7 +12,7 @@ On the M5 Pro, build both app architectures:
 ```sh
 ./scripts/ci.sh
 ./scripts/build-app.sh --arch arm64
-./scripts/build-app.sh --arch x86_64
+./scripts/build-app.sh --arch x86_64 --no-clean
 ```
 
 Copy `dist/arm64/MacKVM.app` to `/Applications` on the M5 Pro. Copy
@@ -48,8 +48,8 @@ Build all supported diagnostic targets from the same checkout:
 
 ```sh
 ./scripts/build-ddc-diagnostic.sh --arch arm64
-./scripts/build-ddc-diagnostic.sh --arch x86_64
-./scripts/build-ddc-diagnostic.sh --arch universal
+./scripts/build-ddc-diagnostic.sh --arch x86_64 --no-clean
+./scripts/build-ddc-diagnostic.sh --arch universal --no-clean
 ```
 
 On the real machines, save one read-only report from each native binary:

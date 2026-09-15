@@ -7,15 +7,20 @@ cd "$project_root"
 usage() {
   cat >&2 <<'EOF'
 Usage: scripts/build-ddc-diagnostic.sh [--arch native|arm64|x86_64|universal]
-       [--output PATH]
+       [--output PATH] [--no-clean]
 
 Builds the standalone native DDC diagnostic tool. The tool is intentionally
 not part of the MacKVM.app bundle; copy it to the Mac being diagnosed.
+
+Builds are clean by default: Swift/Clang state and all dist outputs are
+removed before compiling. Use --no-clean only when composing multiple targets
+in one higher-level build (for example, CI).
 EOF
 }
 
 requested_arch="native"
 output_path=""
+clean_build=true
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --arch)
@@ -36,6 +41,10 @@ while [[ $# -gt 0 ]]; do
     --output=*)
       output_path="${1#--output=}"
       [[ -n "$output_path" ]] || { usage; exit 2; }
+      shift
+      ;;
+    --no-clean)
+      clean_build=false
       shift
       ;;
     -h|--help)
@@ -64,6 +73,10 @@ case "$target_arch" in
     exit 2
     ;;
 esac
+
+if [[ "$clean_build" == true ]]; then
+  "$project_root/scripts/clean-build.sh"
+fi
 
 if [[ -z "$output_path" ]]; then
   if [[ "$target_arch" == "universal" ]]; then

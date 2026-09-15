@@ -63,6 +63,9 @@ MA270U 的 USB-C 輸入使用 VCP 0x60 值 `19 (0x13)`；MacKVM 會依 EDID 套�
 ./scripts/package-dmg.sh --arch universal
 ```
 
+每次直接建置 app 或診斷工具都會先清除 repository 的 `.build` 狀態與全部 `dist` 產物。
+CI 與 universal DMG wrapper 只會在批次開始清理一次，再用腳本內部的 `--no-clean` 保留前一個架構。
+
 產物位於 `dist/`。本機測試使用 ad-hoc 簽章；要提供給其他 Mac 正式安裝，請用
 Developer ID Application、hardened runtime，並在公開發佈前完成 Apple notarization。
 

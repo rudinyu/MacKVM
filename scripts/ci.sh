@@ -4,6 +4,10 @@ set -euo pipefail
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$project_root"
 
+# CI is one multi-target build batch. Clean once here, then keep the outputs
+# while each architecture and diagnostic target is produced below.
+./scripts/clean-build.sh
+
 if [[ -d /Applications/Xcode.app/Contents/Developer ]]; then
   export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 fi
@@ -17,12 +21,12 @@ swift test --disable-sandbox
 # Exercise both the documented native output and the two supported release
 # architectures. Cross-build validation is intentionally part of CI because
 # releases are distributed to both Apple Silicon and Intel Macs.
-./scripts/build-app.sh
-./scripts/build-app.sh --arch arm64
-./scripts/build-app.sh --arch x86_64
-./scripts/build-ddc-diagnostic.sh --arch arm64
-./scripts/build-ddc-diagnostic.sh --arch x86_64
-./scripts/build-ddc-diagnostic.sh --arch universal
+./scripts/build-app.sh --no-clean
+./scripts/build-app.sh --arch arm64 --no-clean
+./scripts/build-app.sh --arch x86_64 --no-clean
+./scripts/build-ddc-diagnostic.sh --arch arm64 --no-clean
+./scripts/build-ddc-diagnostic.sh --arch x86_64 --no-clean
+./scripts/build-ddc-diagnostic.sh --arch universal --no-clean
 ./dist/ddc-diagnostic-universal --help >/dev/null
 
 # The Windows protocol and desktop production-path self-tests are framework
@@ -74,7 +78,8 @@ if [[ "$run_windows_ci" != "0" && "$run_windows_ci" != "false" ]] \
   dotnet build \
     WindowsKVM/src/WindowsKVM.Desktop/WindowsKVM.Desktop.csproj \
     --configuration Release \
-    -p:EnableWindowsTargeting=true
+    -p:EnableWindowsTargeting=true \
+    --artifacts-path "$windows_build_dir/Desktop-build"
   for windows_test_suite in Protocol Desktop; do
     windows_test_name="WindowsKVM.$windows_test_suite.SelfTest"
     windows_test_output="$windows_build_dir/$windows_test_suite"
@@ -83,6 +88,7 @@ if [[ "$run_windows_ci" != "0" && "$run_windows_ci" != "false" ]] \
       --configuration Release \
       --runtime "$windows_test_runtime" \
       --self-contained true \
+      --artifacts-path "$windows_build_dir/$windows_test_suite-build" \
       --output "$windows_test_output"
     "$windows_test_output/$windows_test_name"
   done

@@ -29,12 +29,45 @@ if (-not (Test-Path -LiteralPath $projectPath -PathType Leaf)) {
     throw "Windows project was not found at $projectPath"
 }
 
-if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
+$outputDirectoryWasDefault = [string]::IsNullOrWhiteSpace($OutputDirectory)
+if ($outputDirectoryWasDefault) {
     $OutputDirectory = Join-Path $projectRoot "dist/windows"
 } elseif (-not [System.IO.Path]::IsPathRooted($OutputDirectory)) {
     $OutputDirectory = Join-Path $projectRoot $OutputDirectory
 }
 $OutputDirectory = [System.IO.Path]::GetFullPath($OutputDirectory)
+
+# A custom output is allowed outside the checkout for local experiments, but
+# a path inside the repository must stay below `dist`. This prevents a typo
+# such as `-OutputDirectory .` from deleting source files when the clean step
+# runs. The default path is always the repository's `dist` directory.
+$pathSeparatorChars = [char[]]@(
+    [System.IO.Path]::DirectorySeparatorChar
+    [System.IO.Path]::AltDirectorySeparatorChar
+)
+$projectRootPath = [System.IO.Path]::GetFullPath($projectRoot).TrimEnd($pathSeparatorChars)
+$distRootPath = [System.IO.Path]::GetFullPath((Join-Path $projectRoot "dist")).TrimEnd($pathSeparatorChars)
+$normalizedOutputPath = $OutputDirectory.TrimEnd($pathSeparatorChars)
+$repositoryPrefix = $projectRootPath + [System.IO.Path]::DirectorySeparatorChar
+$distPrefix = $distRootPath + [System.IO.Path]::DirectorySeparatorChar
+$outputIsRepositoryRoot = $normalizedOutputPath.Equals(
+    $projectRootPath,
+    [System.StringComparison]::OrdinalIgnoreCase
+)
+$outputIsInsideRepository = $normalizedOutputPath.StartsWith(
+    $repositoryPrefix,
+    [System.StringComparison]::OrdinalIgnoreCase
+)
+$outputIsDist = $normalizedOutputPath.Equals(
+    $distRootPath,
+    [System.StringComparison]::OrdinalIgnoreCase
+) -or $normalizedOutputPath.StartsWith(
+    $distPrefix,
+    [System.StringComparison]::OrdinalIgnoreCase
+)
+if (($outputIsRepositoryRoot -or $outputIsInsideRepository) -and -not $outputIsDist) {
+    throw "Custom -OutputDirectory must be outside the repository or inside dist: $OutputDirectory"
+}
 
 $configurationName = $Configuration.Substring(0, 1).ToUpperInvariant() +
     $Configuration.Substring(1).ToLowerInvariant()
@@ -87,6 +120,34 @@ function Get-PeMachine {
     }
 }
 
+function Clear-GeneratedDirectory {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $separatorChars = [char[]]@(
+        [System.IO.Path]::DirectorySeparatorChar
+        [System.IO.Path]::AltDirectorySeparatorChar
+    )
+    $trimmedPath = $fullPath.TrimEnd($separatorChars)
+    $rootPath = [System.IO.Path]::GetPathRoot($fullPath).TrimEnd($separatorChars)
+
+    if ([string]::IsNullOrWhiteSpace($trimmedPath) -or $trimmedPath -eq $rootPath) {
+        throw "Refusing to clean a filesystem root: $fullPath"
+    }
+
+    if (Test-Path -LiteralPath $fullPath) {
+        $existing = Get-Item -LiteralPath $fullPath -Force
+        if (-not $existing.PSIsContainer) {
+            throw "Build output path is a file, not a directory: $fullPath"
+        }
+        if (($existing.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Refusing to clean a reparse point: $fullPath"
+        }
+        Remove-Item -LiteralPath $fullPath -Recurse -Force
+    }
+    New-Item -ItemType Directory -Force -Path $fullPath | Out-Null
+}
+
 Write-Host "MacKVM Windows .NET publish plan"
 Write-Host "  project:       $projectPath"
 Write-Host "  configuration: $configurationName"
@@ -121,6 +182,20 @@ if ($projectText -notmatch "net8\.0-windows") {
     throw "The Windows project must target net8.0-windows before it can be published."
 }
 
+# A direct build starts from a clean output and intermediate state. For an
+# all-architecture invocation this runs once before the loop, preserving the
+# x64 output while the arm64 publish is added. Custom output paths are cleaned
+# independently; the repository's dist root is only cleared for the default
+# output location.
+if ($outputDirectoryWasDefault) {
+    Clear-GeneratedDirectory -Path (Join-Path $projectRoot "dist")
+} else {
+    Clear-GeneratedDirectory -Path $OutputDirectory
+}
+
+$buildStateRoot = Join-Path ([System.IO.Path]::GetTempPath()) "MacKVM-WindowsKVM"
+Clear-GeneratedDirectory -Path $buildStateRoot
+
 foreach ($target in $buildTargets) {
     $architectureDirectory = Join-Path $OutputDirectory $target.Label
     New-Item -ItemType Directory -Force -Path $architectureDirectory | Out-Null
@@ -131,9 +206,8 @@ foreach ($target in $buildTargets) {
     # of this app. The publish output remains in the requested architecture
     # directory, while a Windows build cannot leave intermediate files that
     # are easy to commit accidentally.
-    $buildStateRoot = Join-Path ([System.IO.Path]::GetTempPath()) "MacKVM-WindowsKVM"
     $buildStateDirectory = Join-Path $buildStateRoot $target.Rid
-    New-Item -ItemType Directory -Force -Path $buildStateDirectory | Out-Null
+    Clear-GeneratedDirectory -Path $buildStateDirectory
 
     $arguments = @(
         "publish",

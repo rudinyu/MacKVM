@@ -2,6 +2,24 @@
 
 # 變更記錄
 
+## WindowsKVM 1.02.27（build 107）— 2026-09-15
+
+本次 Windows 維護版本讓每次直接執行 Windows 或 macOS 建置時都從乾淨的產物狀態開始，
+避免預設 `dist` 中殘留舊執行檔。
+
+### 變更
+
+- 直接建置 macOS app 或原生 DDC 診斷工具前，清除 SwiftPM／Clang 建置狀態與 repository
+  的 `dist` 目錄。
+- 每次執行 `build-windows.ps1` 前清除 Windows `dist` 產物與暫存 publish 狀態；同一次
+  `-Architecture both` 建置仍會保留兩種架構的輸出。
+- macOS 腳本新增明確的 `--no-clean`，只供 CI 與多架構 wrapper 在同一批次的第一次清理後使用。
+
+### 驗證
+
+- 一般 CI 建置流程會驗證 clean-build 行為；系統有 .NET 8 SDK 時仍須通過 Windows protocol
+  與 desktop self-test。
+
 ## WindowsKVM 1.02.26（build 106）— 2026-09-15
 
 本次 Windows 專用用語更新讓裝置選擇器可正確涵蓋 Mac、Windows 與未來的 peer。

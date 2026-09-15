@@ -75,6 +75,11 @@ dist\windows\x64\WindowsKVM.exe
 dist\windows\arm64\WindowsKVM.exe
 ```
 
+Each direct publish starts clean. The default `dist` directory and the
+temporary Windows publish state are removed before the first target is built;
+`-Architecture both` performs that cleanup once and then keeps the x64 output
+while publishing arm64. A custom `-OutputDirectory` is cleaned independently.
+
 Intermediate `bin`/`obj` state is written under the system temporary
 directory, not into the repository. The publish script also isolates each
 project in the reference graph so the `net8.0` protocol library cannot collide
@@ -100,7 +105,7 @@ Confirm the executable before starting a test:
 .\WindowsKVM.exe --version
 ```
 
-The current UI test build reports `WindowsKVM 1.02.26 (build 106)`.
+The current UI test build reports `WindowsKVM 1.02.27 (build 107)`.
 This is newer than **1.02.09 (build 89) Beta 3** used in the reported scrolling
 and dropdown tests. Quit the previous tray receiver before replacing it;
 check this version label and the **WindowsKVM** window title after startup.

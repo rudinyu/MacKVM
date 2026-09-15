@@ -67,6 +67,10 @@ dist\windows\x64\WindowsKVM.exe
 dist\windows\arm64\WindowsKVM.exe
 ```
 
+每次直接 publish 都會從乾淨狀態開始。第一個目標建置前會移除預設的 `dist` 與 Windows
+暫存 publish 狀態；`-Architecture both` 只清理一次，再保留 x64 輸出並建置 arm64。自訂
+`-OutputDirectory` 則只會清理該輸出目錄。
+
 中間的 `bin`／`obj` 狀態會放在系統暫存目錄，不會寫進 repository。腳本也會隔離
 reference graph 中的每個 project，避免 `net8.0` protocol library 與
 `net8.0-windows` app 共用 restore 狀態而互相覆蓋。
@@ -90,7 +94,7 @@ reference graph 中的每個 project，避免 `net8.0` protocol library 與
 .\WindowsKVM.exe --version
 ```
 
-目前 UI 測試 build 應顯示 `WindowsKVM 1.02.26 (build 106)`。
+目前 UI 測試 build 應顯示 `WindowsKVM 1.02.27 (build 107)`。
 此版比回報捲動破圖與下拉清單問題時使用的 **1.02.09（build 89）Beta 3** 更新。
 替換前請先退出舊的系統匣 receiver；啟動後確認此版本及 **WindowsKVM** 視窗標題。
 

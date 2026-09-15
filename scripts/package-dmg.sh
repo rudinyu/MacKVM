@@ -80,13 +80,19 @@ if [[ "$require_developer_id" == true && -z "$signing_identity" ]]; then
   exit 2
 fi
 
+# A DMG is one multi-architecture build batch. Clean its generated state once
+# here, then keep the architecture bundles while composing the image below.
+./scripts/clean-build.sh
+
 if [[ "$requested_arch" == universal ]]; then
+  # Keep the first app while adding the second architecture; otherwise the
+  # second invocation would remove the first bundle before lipo combines them.
   if [[ -n "$signing_identity" ]]; then
-    ./scripts/build-app.sh --arch arm64 --sign "$signing_identity"
-    ./scripts/build-app.sh --arch x86_64 --sign "$signing_identity"
+    ./scripts/build-app.sh --arch arm64 --sign "$signing_identity" --no-clean
+    ./scripts/build-app.sh --arch x86_64 --sign "$signing_identity" --no-clean
   else
-    ./scripts/build-app.sh --arch arm64
-    ./scripts/build-app.sh --arch x86_64
+    ./scripts/build-app.sh --arch arm64 --no-clean
+    ./scripts/build-app.sh --arch x86_64 --no-clean
   fi
   app_dir="$project_root/dist/universal/MacKVM.app"
   rm -rf "$app_dir"
@@ -98,9 +104,9 @@ if [[ "$requested_arch" == universal ]]; then
     -output "$app_dir/Contents/MacOS/MacKVM"
 else
   if [[ -n "$signing_identity" ]]; then
-    ./scripts/build-app.sh --arch "$requested_arch" --sign "$signing_identity"
+    ./scripts/build-app.sh --arch "$requested_arch" --sign "$signing_identity" --no-clean
   else
-    ./scripts/build-app.sh --arch "$requested_arch"
+    ./scripts/build-app.sh --arch "$requested_arch" --no-clean
   fi
   app_dir="$project_root/dist/$requested_arch/MacKVM.app"
 fi

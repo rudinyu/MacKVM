@@ -8,7 +8,7 @@ authenticate a secure Connect session, and receive keyboard/mouse control over
 that encrypted session. A console mode remains available for automation and
 firewall diagnostics.
 
-## Current feature set — 1.02.26 (build 106)
+## Current feature set — 1.02.27 (build 107)
 
 The Windows host includes:
 
@@ -169,6 +169,10 @@ For console log capture and cross-platform diagnosis, see the
 .\dist\windows\x64\WindowsKVM.exe
 ```
 
+Each direct publish starts clean: the default `dist` output and temporary
+publish state are removed before building. Use `-Architecture both` when both
+architectures are needed in one batch; it cleans once and keeps both outputs.
+
 The default command starts the resident UI and tray host. Use
 `--pairing-listen --name "Windows x64"` for the console receiver. Use the ARM64 executable on Windows ARM. Allow the normal Windows Defender
 Firewall prompt for the trusted Private network only; WindowsKVM does not add
@@ -276,7 +280,7 @@ native APIs do not replace these desktop checks.
    that the mode and pairing buttons do not overlap. Resize or
    move between monitors during a connection; changing the view must not
    reset pairing or control, and consent prompts must remain usable.
-8. Confirm `--version` reports **1.02.26 (build 106)**; the reported UI defects
+8. Confirm `--version` reports **1.02.27 (build 107)**; the reported UI defects
    were tested on **1.02.09 (build 89) Beta 3**, not this build. Quit the old
    tray receiver before starting the replacement. Check the title/heading say
    **WindowsKVM**. Scroll Advanced rapidly up/down and drag both scrollbars;

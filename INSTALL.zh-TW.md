@@ -29,6 +29,9 @@ EDID mapping 使用 `19`／`0x13`；其他型號保留通用值，或先執行�
 把 `dist/arm64/MacKVM.app` 安裝到 M5 Pro，把 `dist/x86_64/MacKVM.app` 安裝到
 Intel Mac。建置腳本會驗證 Mach-O 架構與 ad-hoc 簽章。
 
+直接建置預設會先清理：編譯前移除 `.build` 與全部 `dist` 產物。若同一批次要建置多種架構，
+wrapper 只會在開始時清理一次，並保留先完成的架構輸出。
+
 ### 準備 Windows 開發環境
 
 完整流程請參閱獨立的 [Windows 建置手冊](WINDOWS_BUILD.zh-TW.md)。

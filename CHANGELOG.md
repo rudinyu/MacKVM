@@ -2,6 +2,28 @@
 
 # Changelog
 
+## WindowsKVM 1.02.27 (build 107) — 2026-09-15
+
+This Windows-only maintenance release makes every direct Windows or macOS
+build start from clean generated state, so stale binaries cannot remain in the
+default `dist` output.
+
+### Changed
+
+- Clean SwiftPM/Clang build state and the repository `dist` directory before a
+  direct macOS app or native DDC diagnostic build.
+- Clean the Windows `dist` output and temporary publish state before each
+  `build-windows.ps1` invocation; publishing both architectures still keeps
+  both outputs in the same batch.
+- Add an explicit `--no-clean` option for macOS scripts used only by CI and
+  multi-architecture wrapper flows after their one initial clean.
+
+### Validation
+
+- Clean-build behavior is exercised by the normal CI build sequence; Windows
+  protocol and desktop self-tests remain required when the .NET 8 SDK is
+  available.
+
 ## WindowsKVM 1.02.26 (build 106) — 2026-09-15
 
 This Windows-only terminology update makes the device selector accurate for

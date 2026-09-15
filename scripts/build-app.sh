@@ -7,15 +7,20 @@ cd "$project_root"
 usage() {
   cat >&2 <<'EOF'
 Usage: scripts/build-app.sh [--arch native|arm64|x86_64]
-       [--sign SIGNING_IDENTITY]
+       [--sign SIGNING_IDENTITY] [--no-clean]
 
 Without --sign, the app is ad-hoc signed for local testing. A non-ad-hoc
 identity is signed with the hardened runtime enabled.
+
+Builds are clean by default: SwiftPM state and all dist outputs are removed
+before compiling. Use --no-clean only when composing multiple architectures in
+one higher-level build (for example, the universal DMG or CI flow).
 EOF
 }
 
 requested_arch="native"
 signing_identity=""
+clean_build=true
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --arch)
@@ -50,6 +55,10 @@ while [[ $# -gt 0 ]]; do
       fi
       shift
       ;;
+    --no-clean)
+      clean_build=false
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -79,6 +88,10 @@ case "$target_arch" in
     ;;
 esac
 
+if [[ "$clean_build" == true ]]; then
+  "$project_root/scripts/clean-build.sh"
+fi
+
 if [[ -d /Applications/Xcode.app/Contents/Developer ]]; then
   export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 fi
@@ -98,9 +111,10 @@ build_arguments=(
 )
 
 swift build "${build_arguments[@]}"
-# SwiftPM places an explicit triple under <scratch>/<triple>/<configuration>;
-# CI verifies this path for both supported architectures on the build host.
-binary_dir="$scratch_path/$target_triple/release"
+# SwiftPM's output layout differs between toolchain generations (some use the
+# triple/configuration path, while newer Xcode versions use out/Products).
+# Ask SwiftPM for the authoritative bin path instead of guessing its layout.
+binary_dir="$(swift build "${build_arguments[@]}" --show-bin-path)"
 binary_path="$binary_dir/MacKVM"
 
 if [[ ! -x "$binary_path" ]]; then

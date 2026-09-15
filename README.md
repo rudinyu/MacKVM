@@ -98,6 +98,11 @@ These commands produce `dist/arm64/MacKVM.app` and
 app to the M5 Pro Mac. The build script verifies the Mach-O architecture and
 the ad-hoc code signature without trying to execute the cross-built app.
 
+Every direct app or diagnostic build starts clean: the repository `.build`
+state and all `dist` outputs are removed first. CI and the universal DMG
+wrapper clean once and then use the scripts' internal `--no-clean` option to
+keep the earlier architecture while adding the next one.
+
 ### Windows development (Windows branch)
 
 For the complete build procedure, see the standalone

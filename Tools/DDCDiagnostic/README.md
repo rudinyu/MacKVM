@@ -28,6 +28,10 @@ Build the tool on a Mac with the repository checkout:
 ./scripts/build-ddc-diagnostic.sh --arch universal
 ```
 
+Direct diagnostic builds clean the repository `.build` state and all `dist`
+outputs first. When building several targets in one batch, pass
+`--no-clean` to the later invocations so earlier binaries remain available.
+
 The executables are written to `dist/ddc-diagnostic-arm64`,
 `dist/ddc-diagnostic-x86_64`, and `dist/ddc-diagnostic-universal`. The
 universal binary can be copied to either Mac.

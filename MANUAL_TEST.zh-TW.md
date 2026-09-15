@@ -13,7 +13,7 @@ macOS 隱私權提示，因此仍需在兩台實機執行以下步驟。
 ```sh
 ./scripts/ci.sh
 ./scripts/build-app.sh --arch arm64
-./scripts/build-app.sh --arch x86_64
+./scripts/build-app.sh --arch x86_64 --no-clean
 ```
 
 將 `dist/arm64/MacKVM.app` 複製到 M5 Pro，將 `dist/x86_64/MacKVM.app` 複製到
@@ -43,8 +43,8 @@ Intel Mac 的 `/Applications`，再開啟各自架構的 app。
 
 ```sh
 ./scripts/build-ddc-diagnostic.sh --arch arm64
-./scripts/build-ddc-diagnostic.sh --arch x86_64
-./scripts/build-ddc-diagnostic.sh --arch universal
+./scripts/build-ddc-diagnostic.sh --arch x86_64 --no-clean
+./scripts/build-ddc-diagnostic.sh --arch universal --no-clean
 ```
 
 在實機上分別用原生架構執行並保存唯讀報告：

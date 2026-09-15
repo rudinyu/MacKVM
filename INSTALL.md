@@ -34,6 +34,11 @@ Install `dist/arm64/MacKVM.app` on the M5 Pro and
 `dist/x86_64/MacKVM.app` on the Intel Mac. The build script verifies the
 Mach-O architecture and the ad-hoc signature.
 
+Direct builds are clean by default: `.build` and all `dist` outputs are
+removed before compilation. When producing multiple architectures in one
+batch, the wrapper cleans once and preserves earlier outputs for the remaining
+targets.
+
 ### Prepare Windows development
 
 For the complete procedure, see the standalone
