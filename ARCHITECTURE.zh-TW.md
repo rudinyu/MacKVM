@@ -7,6 +7,37 @@
 MacKVM 是 macOS 選單列與一般視窗工具，實作附近裝置探索、雙方配對、持久化加密連線、
 鍵盤、滑鼠與觸控板轉送、接收端明確同意、安全返回、權限設定檢查與原生 DDC/CI 螢幕輸入切換。
 
+## Windows companion 邊界
+
+`WindowsKVM/` 是原生 C#／.NET 8 companion，不是第二個 Swift target。它重用 MacKVM
+的 wire-level 配對、Secure Connect、控制訊息、輸入驗證與簽署的
+`disconnectSignalVersion` 契約；平台專屬工作則留在 Windows 元件：
+
+```mermaid
+flowchart LR
+    Mac["MacKVM\nSwiftUI + Network.framework"]
+    WinUI["WindowsKVM\nWin32 狀態視窗 + tray"]
+    WinPair["PairingTcpReceiver\nDPAPI identity + trust store"]
+    WinSecure["SecureSessionTcpReceiver\nP-256 + HKDF + ChaCha20-Poly1305\nv2 heartbeat/disconnect"]
+    WinInput["WindowsInputSink\nSendInput + release-all"]
+    Firewall["Windows Defender Firewall\n只同意 Private network"]
+    LAN["受信任本機網路\nBonjour/mDNS + TCP"]
+    Mac <--> LAN
+    WinUI --> WinPair
+    WinUI --> WinSecure
+    WinUI --> Firewall
+    WinPair --> LAN
+    WinSecure --> LAN
+    WinSecure --> WinInput
+    Mac <--> WinSecure
+```
+
+目前 Windows process 是接收端：Pair 與 Connect 由 MacKVM 發起，Windows 顯示原生配對／
+控制同意視窗，並在本機注入已驗證的輸入。常駐 tray 與 console `--pairing-listen` 共用
+single-instance guard，同一時間只能有一個 receiver 擁有 TCP listener。Windows 由
+`scripts/build-windows.ps1` 建置 self-contained `win-x64` 與 `win-arm64`；macOS
+`scripts/ci.sh` 偵測到 .NET 8 SDK 時會執行 Windows protocol 與 desktop self-test。
+
 ```mermaid
 flowchart LR
     A["M5 Pro\nMacKVM.app"] <-->|"Bonjour 探索"| B["可信任本機網路"]

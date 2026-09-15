@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>WindowsKVM.Desktop.SelfTest</AssemblyName>
+    <RootNamespace>WindowsKVM.Desktop.SelfTest</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/WindowsKVM.Protocol/WindowsKVM.Protocol.csproj" />
+    <Compile Include="../../src/WindowsKVM.Desktop/ConsentRequestCoordinator.cs" Link="ConsentRequestCoordinator.cs" />
+    <Compile Include="../../src/WindowsKVM.Desktop/WindowsControlReleaseHotKey.cs" Link="WindowsControlReleaseHotKey.cs" />
+    <Compile Include="../../src/WindowsKVM.Desktop/WindowsInputSink.cs" Link="WindowsInputSink.cs" />
+    <Compile Include="../../src/WindowsKVM.Desktop/WindowsKvmListenerGuard.cs" Link="WindowsKvmListenerGuard.cs" />
+    <Compile Include="../../src/WindowsKVM.Desktop/WindowsTrayLayoutPolicy.cs" Link="WindowsTrayLayoutPolicy.cs" />
+    <Compile Include="../../src/WindowsKVM.Desktop/WindowsTrustStore.cs" Link="WindowsTrustStore.cs" />
+    <Compile Include="../../src/WindowsKVM.Desktop/MdnsAdvertiser.cs" Link="MdnsAdvertiser.cs" />
+    <Compile Include="../../src/WindowsKVM.Desktop/SecureSessionTcpReceiver.cs" Link="SecureSessionTcpReceiver.cs" />
+  </ItemGroup>
+</Project>

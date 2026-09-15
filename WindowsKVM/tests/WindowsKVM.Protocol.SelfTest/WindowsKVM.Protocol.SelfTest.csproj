@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>WindowsKVM.Protocol.SelfTest</AssemblyName>
+    <RootNamespace>WindowsKVM.Protocol.SelfTest</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/WindowsKVM.Protocol/WindowsKVM.Protocol.csproj" />
+  </ItemGroup>
+</Project>

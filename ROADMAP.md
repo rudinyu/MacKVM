@@ -51,6 +51,19 @@ path now covers keyboard, mouse, and the public Quartz trackpad event surface.
 Impact is measured against daily two-Mac use, not against feature parity with
 other KVM software.
 
+## Windows companion status
+
+The Windows companion is maintained in this repository alongside the stable
+macOS client. The current W3 scope is implemented: signed pairing with DPAPI
+identity storage, mDNS discovery, authenticated Secure Connect with the same
+v2 disconnect/heartbeat capability as MacKVM, strict control/input validation,
+Windows `SendInput` injection with release-all teardown, resident tray and
+compact/Advanced UI modes, firewall guidance, and x64/ARM64 publish scripts.
+The platform-neutral protocol and desktop self-tests run from
+`scripts/ci.sh` when a .NET 8 SDK is available. Raw Input capture and a
+polished firewall setup wizard remain future Windows work; the current flow
+expects MacKVM to initiate Pair and Connect.
+
 ## P0 — make it usable every day
 
 ### F1. Clipboard sync

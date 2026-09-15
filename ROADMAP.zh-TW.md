@@ -35,6 +35,16 @@
 | F12 | 檔案傳輸與拖放 | 低 | P3 |
 | F13 | 休眠／喚醒重連 | 低 | **完成** |
 
+## Windows companion 狀態
+
+Windows companion 與穩定 macOS client 同一個 repository 維護。目前 W3 範圍已完成：以
+DPAPI 保存 identity 的簽署配對、mDNS 探索、與 MacKVM 相同 v2 disconnect／heartbeat
+capability 的 authenticated Secure Connect、嚴格控制／輸入驗證、Windows `SendInput`
+與 release-all 清理、常駐 tray、Simple／Advanced UI、防火牆指引，以及 x64／ARM64
+建置 script。安裝 .NET 8 SDK 時，`scripts/ci.sh` 會執行 platform-neutral protocol 與
+desktop self-test。Raw Input 擷取與完整防火牆設定精靈仍是後續工作；目前流程由 MacKVM
+發起 Pair 與 Connect。
+
 ## F7 原生 DDC/CI — 已完成
 
 MacKVM 現在透過原生 IOKit bridge 探索外接顯示器，直接傳送 DDC/CI 的 VCP 0x60

@@ -2,25 +2,45 @@
 # .build-before-review/ that reviews and bisects leave behind.
 .build*/
 .swiftpm/
+**/.build/
 
-# Release artifacts produced by scripts/build-app.sh,
-# scripts/build-ddc-diagnostic.sh, and scripts/package-dmg.sh: MacKVM.app
-# bundles, per-architecture and universal output, dist/.staging, the
-# ddc-diagnostic binaries, and the packaged .dmg images.
-dist/
+# Release artifacts produced by macOS and Windows build scripts.
+/dist/
+**/dist/
+build/
+**/build/
+*.app/
+*.dmg
+*.dmg.sha256
+ddc-diagnostic-*
 
-# Xcode per-user state
+# Xcode and IDE per-user state.
 xcuserdata/
 *.xcuserstate
+.vs/
 
-# macOS Finder metadata
+# .NET build outputs (keep source projects and checked-in tests only).
+**/bin/
+**/obj/
+
+# macOS Finder metadata.
 .DS_Store
 
 # Local agent workflow, instruction, and review files. These stay on the
-# machine and must never reach GitHub; .codex/ was previously removed from
-# the tree for this reason.
+# machine and must never reach GitHub.
 .claude/
 .codex/
 CLAUDE.md
 AGENTS.md
 CODEX_*.md
+
+# Never add local credentials or certificate material to a commit.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.cer
+*.crt

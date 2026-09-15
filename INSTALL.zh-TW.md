@@ -35,6 +35,24 @@ Intel Mac。建置腳本會驗證 Mach-O 架構與 ad-hoc 簽章。
 ./scripts/ci.sh
 ```
 
+## 建置 Windows companion
+
+Windows 支援位於 `WindowsKVM/`，使用 C#／.NET 8，不使用 Swift。請在安裝 .NET 8 SDK 的
+Windows 主機上建置 x64（`x86_64`）或 ARM64 執行檔：
+
+```powershell
+.\scripts\build-windows.ps1 -Architecture x64
+.\scripts\build-windows.ps1 -Architecture arm64
+# 或在同一個 clean batch 建置兩種架構
+.\scripts\build-windows.ps1 -Architecture both
+```
+
+產物位於 `dist\windows\x64` 與 `dist\windows\arm64`。script 會驗證 PE 架構，並把 .NET
+中間狀態放在 repository 外。Windows UI 與 tray receiver 共用 MacKVM 的簽署配對與 Secure
+Connect 協定；Windows Defender Firewall 只應允許受信任的 Private network。建置、配對、防火牆
+與疑難排解請參閱[Windows 建置指南](WINDOWS_BUILD.zh-TW.md)。安裝 .NET 8 時，macOS
+`scripts/ci.sh` 會執行 Windows self-test；必要的 CI 環境可設定 `RUN_WINDOWS_CI=1`。
+
 ### 建置原生 DDC 診斷工具
 
 repository 同時提供獨立的 `ddc-diagnostic` 原始碼與建置腳本。可在兩台 Mac 建置

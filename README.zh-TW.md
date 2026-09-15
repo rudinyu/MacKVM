@@ -94,6 +94,24 @@ MA270U 的 USB-C 輸入使用 VCP 0x60 值 `19 (0x13)`；MacKVM 會依 EDID 套�
 產物位於 `dist/`。本機測試使用 ad-hoc 簽章；要透過 GitHub 或其他方式提供給其他
 Mac 正式安裝，請使用獨立的 notarized release script，不需要上架 Mac App Store。
 
+### Windows companion
+
+repository 同時包含 `WindowsKVM/` 下的原生 C#／.NET 8 Windows companion。它與 MacKVM
+共用簽署配對、Secure Connect、控制協定與輸入驗證契約，可建置 Windows x64（`x86_64`）
+與 ARM64 的 self-contained 執行檔。請在 Windows 主機安裝 .NET 8 SDK 後執行：
+
+```powershell
+.\scripts\build-windows.ps1 -Architecture both
+```
+
+產物位於 `dist\windows\x64\WindowsKVM.exe` 與
+`dist\windows\arm64\WindowsKVM.exe`。Windows UI 提供常駐 tray、配對／控制同意、精簡
+Simple mode 與完整 Advanced mode。請參閱
+[Windows 建置指南](WINDOWS_BUILD.zh-TW.md)、[WindowsKVM 說明](WindowsKVM/README.zh-TW.md)
+與[除錯指南](DEBUGGING.zh-TW.md)；其中包含 Windows build、防火牆與 log 步驟。macOS
+CI 在偵測到 .NET 8 SDK 時會執行 Windows protocol／desktop self-test；設定
+`RUN_WINDOWS_CI=1` 可將缺少 SDK 視為失敗。
+
 第一次使用時，在 Keychain 建立 notarytool profile（指令會安全提示輸入
 app-specific password）：
 

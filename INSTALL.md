@@ -40,6 +40,28 @@ Run the local checks before installation:
 ./scripts/ci.sh
 ```
 
+## Build the Windows companion
+
+Windows support lives in `WindowsKVM/` and uses C#/.NET 8 rather than Swift.
+Build the self-contained x64 (`x86_64`) or ARM64 executable on a Windows host
+with the .NET 8 SDK:
+
+```powershell
+.\scripts\build-windows.ps1 -Architecture x64
+.\scripts\build-windows.ps1 -Architecture arm64
+# or publish both in one clean batch
+.\scripts\build-windows.ps1 -Architecture both
+```
+
+Outputs are written to `dist\windows\x64` and `dist\windows\arm64`. The
+script verifies the PE architecture and keeps intermediate .NET state outside
+the repository. The Windows UI and tray receiver share MacKVM's signed pairing
+and Secure Connect protocol; Windows Defender Firewall should be allowed on
+the trusted Private network only. See [WINDOWS_BUILD.md](WINDOWS_BUILD.md) for
+publishing, pairing, firewall, and troubleshooting details. The macOS
+`scripts/ci.sh` runs the Windows self-tests when .NET 8 is installed; use
+`RUN_WINDOWS_CI=1` in required CI environments.
+
 ### Build the native DDC diagnostic
 
 The repository also ships the source and build script for the standalone

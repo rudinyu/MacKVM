@@ -9,6 +9,42 @@ session, validated keyboard, mouse, and trackpad forwarding, explicit receiver c
 safe local-return controls, a sequential macOS setup checklist, and native
 DDC/CI monitor input switching.
 
+## Windows companion boundary
+
+`WindowsKVM/` is a native C#/.NET 8 companion rather than a second Swift
+target. It reuses the wire-level pairing, Secure Connect, control-message,
+input-validation, and signed `disconnectSignalVersion` contracts from
+MacKVM, while keeping platform responsibilities in Windows-specific
+components:
+
+```mermaid
+flowchart LR
+    Mac["MacKVM\nSwiftUI + Network.framework"]
+    WinUI["WindowsKVM\nWin32 status window + tray"]
+    WinPair["PairingTcpReceiver\nDPAPI identity + trust store"]
+    WinSecure["SecureSessionTcpReceiver\nP-256 + HKDF + ChaCha20-Poly1305\nv2 heartbeat/disconnect"]
+    WinInput["WindowsInputSink\nSendInput + release-all"]
+    WinFirewall["Windows Defender Firewall\nPrivate network consent"]
+    LAN["Trusted local network\nBonjour/mDNS + TCP"]
+    Mac <--> LAN
+    WinUI --> WinPair
+    WinUI --> WinSecure
+    WinUI --> WinFirewall
+    WinPair --> LAN
+    WinSecure --> LAN
+    WinSecure --> WinInput
+    Mac <--> WinSecure
+```
+
+The Windows process is a receiver in the current product flow: Pair and
+Connect are initiated from MacKVM, while Windows presents native pairing and
+control consent and injects authenticated input locally. The resident tray
+host and console `--pairing-listen` mode share the same single-instance guard;
+only one receiver may own the TCP listeners at a time. Windows publishes
+self-contained `win-x64` and `win-arm64` binaries with
+`scripts/build-windows.ps1`. macOS `scripts/ci.sh` runs the Windows protocol
+and desktop self-tests when a .NET 8 SDK is available.
+
 ```mermaid
 flowchart LR
     subgraph MacA["MacBook Pro A"]

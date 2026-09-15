@@ -126,6 +126,28 @@ These commands produce `dist/arm64/MacKVM.app` and
 app to the M5 Pro Mac. The build script verifies the Mach-O architecture and
 the ad-hoc code signature without trying to execute the cross-built app.
 
+### Windows companion
+
+The repository also contains a native C#/.NET 8 Windows companion under
+`WindowsKVM/`. It shares the signed pairing, Secure Connect, control protocol,
+and input-validation contract with MacKVM, and publishes self-contained x64
+(`x86_64`) and ARM64 executables. Build it on a Windows host with the .NET 8
+SDK:
+
+```powershell
+.\scripts\build-windows.ps1 -Architecture both
+```
+
+The output is `dist\windows\x64\WindowsKVM.exe` and
+`dist\windows\arm64\WindowsKVM.exe`. The Windows UI includes the resident
+tray host, pairing/control consent, compact Simple mode and full Advanced
+mode. See [WINDOWS_BUILD.md](WINDOWS_BUILD.md),
+[WindowsKVM/README.md](WindowsKVM/README.md), and
+[DEBUGGING.md](DEBUGGING.md) for the Windows build, firewall, and log
+procedures. The macOS CI script runs the Windows protocol/desktop self-tests
+when a .NET 8 SDK is available; set `RUN_WINDOWS_CI=1` to make that check
+mandatory.
+
 ### Native DDC diagnostics
 
 Build the architecture-aware diagnostic tool when a monitor's input mapping
