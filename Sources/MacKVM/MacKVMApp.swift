@@ -299,7 +299,12 @@ private final class AppBootstrap: ObservableObject {
             )
             control.onControllingStarted = { monitor.switchToRemote() }
             control.onControllingStopped = { monitor.switchToLocal() }
-            control.onReceivingStarted = { monitor.switchToLocal() }
+            control.onReceivingStarted = {
+                MacKVMLogger.monitor.info(
+                    "phase=local-route.requested source=remote-control"
+                )
+                monitor.switchToLocal(wakeDisplayForKVMSwitch: true)
+            }
             control.onReceivingStopped = { completion in
                 monitor.switchToRemote(completion: completion)
             }

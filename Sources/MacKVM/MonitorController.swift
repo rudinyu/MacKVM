@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import Darwin
 import Foundation
+import IOKit.pwr_mgt
 import MacKVMCore
 
 /// A display returned by the native DDC/CI discovery layer.
@@ -121,6 +122,10 @@ final class MonitorController: ObservableObject {
     /// model-specific VCP mapping.
     private var lastVerifiedDisplay: DDCDisplay?
     private var deferredAutomaticSwitchState = DeferredAutomaticSwitchState()
+    /// IOPMAssertionDeclareUserActivity returns an expiring activity token.
+    /// Reuse the latest token when rapid incoming switches report activity
+    /// again, as required by the IOKit API contract.
+    private var displayWakeActivityID = IOPMAssertionID(kIOPMNullAssertionID)
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -328,12 +333,16 @@ final class MonitorController: ObservableObject {
         status = "Selected \(display.name) for native DDC/CI switching"
     }
 
-    func switchToLocal(completion: (() -> Void)? = nil) {
+    func switchToLocal(
+        wakeDisplayForKVMSwitch: Bool = false,
+        completion: (() -> Void)? = nil
+    ) {
         switchInput(
             localInput,
             description: "this Mac",
             intent: .normal,
-            completion: completion
+            completion: completion,
+            shouldWakeDisplayForKVMSwitch: wakeDisplayForKVMSwitch
         )
     }
 
@@ -401,7 +410,8 @@ final class MonitorController: ObservableObject {
         description: String,
         intent: DeferredAutomaticSwitchIntent,
         completion: (() -> Void)?,
-        result: ((Bool) -> Void)? = nil
+        result: ((Bool) -> Void)? = nil,
+        shouldWakeDisplayForKVMSwitch: Bool = false
     ) {
         let reportResult: (Bool) -> Void = { success in
             guard let result else { return }
@@ -457,7 +467,8 @@ final class MonitorController: ObservableObject {
                 description: description,
                 intent: intent,
                 completion: completion,
-                result: result
+                result: result,
+                shouldWakeDisplayForKVMSwitch: shouldWakeDisplayForKVMSwitch
             )
             cancelledCompletions.forEach { $0() }
             status = "Verifying the saved DDC display before switching…"
@@ -485,7 +496,13 @@ final class MonitorController: ObservableObject {
         // spelling to the native C bridge.
         let nativeSelector = routeDisplay?.selector ?? selector
         status = "Switching \(displayName) to \(input.name)…"
+        MacKVMLogger.monitor.info(
+            "phase=input.switch.requested input=\(input.rawValue, privacy: .public) description=\(description, privacy: .public) wakeDisplay=\(shouldWakeDisplayForKVMSwitch, privacy: .public)"
+        )
         queue.async { [weak self] in
+            if shouldWakeDisplayForKVMSwitch {
+                self?.wakeDisplayForKVMSwitch()
+            }
             do {
                 // Read VCP 0x60 first so a route restore does not write the
                 // same value again and make the MA270U visibly re-negotiate
@@ -541,6 +558,9 @@ final class MonitorController: ObservableObject {
                     attemptID: routePreservationAttemptID
                 )
                 let action = alreadySelected ? "is already showing" : "switched to"
+                MacKVMLogger.monitor.info(
+                    "phase=input.switch.completed success=true input=\(input.rawValue, privacy: .public) description=\(description, privacy: .public)"
+                )
                 self?.publish(
                     "\(displayName) \(action) \(input.name) for \(description)",
                     completion: completion
@@ -551,6 +571,9 @@ final class MonitorController: ObservableObject {
                     success: false,
                     attemptID: routePreservationAttemptID
                 )
+                MacKVMLogger.monitor.error(
+                    "phase=input.switch.completed success=false input=\(input.rawValue, privacy: .public) description=\(description, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+                )
                 self?.publish(
                     "Native DDC/CI switch failed; use the monitor OSD to select \(input.name)",
                     diagnostic: Self.diagnostic(from: error),
@@ -559,6 +582,34 @@ final class MonitorController: ObservableObject {
                 reportResult(false)
             }
         }
+    }
+
+    /// Reports local user activity immediately before an incoming KVM route
+    /// is written to the monitor. macOS documents this API as waking a
+    /// powered-down display and postponing display sleep only until the
+    /// user's normal display-sleep deadline; it is not a permanent
+    /// PreventUserIdleDisplaySleep assertion and needs no root privilege.
+    ///
+    /// This runs on `queue`, not the main thread, because the IOKit call is an
+    /// IPC operation. The returned activity ID is reused for rapid switches;
+    /// the system owns its expiry according to the user activity timer.
+    private func wakeDisplayForKVMSwitch() {
+        MacKVMLogger.monitor.info("phase=display.wake.requested")
+        let result = IOPMAssertionDeclareUserActivity(
+            "MacKVM Switch" as CFString,
+            kIOPMUserActiveLocal,
+            &displayWakeActivityID
+        )
+        guard result == kIOReturnSuccess else {
+            displayWakeActivityID = IOPMAssertionID(kIOPMNullAssertionID)
+            MacKVMLogger.monitor.error(
+                "phase=display.wake.failed return=\(result, privacy: .public)"
+            )
+            return
+        }
+        MacKVMLogger.monitor.info(
+            "phase=display.wake.succeeded activityID=\(self.displayWakeActivityID, privacy: .public)"
+        )
     }
 
     private func publish(
@@ -679,7 +730,9 @@ final class MonitorController: ObservableObject {
             description: deferredAutomaticSwitch.description,
             intent: deferredAutomaticSwitch.intent,
             completion: deferredAutomaticSwitch.completeCompletions,
-            result: deferredAutomaticSwitch.result
+            result: deferredAutomaticSwitch.result,
+            shouldWakeDisplayForKVMSwitch:
+                deferredAutomaticSwitch.shouldWakeDisplayForKVMSwitch
         )
     }
 
@@ -829,6 +882,7 @@ struct DeferredAutomaticSwitch {
     let input: MonitorInputSource
     let description: String
     let intent: DeferredAutomaticSwitchIntent
+    let shouldWakeDisplayForKVMSwitch: Bool
     let completions: [() -> Void]
     let result: ((Bool) -> Void)?
 
@@ -837,11 +891,13 @@ struct DeferredAutomaticSwitch {
         description: String,
         intent: DeferredAutomaticSwitchIntent,
         completion: (() -> Void)?,
-        result: ((Bool) -> Void)?
+        result: ((Bool) -> Void)?,
+        shouldWakeDisplayForKVMSwitch: Bool = false
     ) {
         self.input = input
         self.description = description
         self.intent = intent
+        self.shouldWakeDisplayForKVMSwitch = shouldWakeDisplayForKVMSwitch
         completions = completion.map { [$0] } ?? []
         self.result = result
     }
@@ -889,7 +945,8 @@ struct DeferredAutomaticSwitchState {
         description: String,
         intent: DeferredAutomaticSwitchIntent,
         completion: (() -> Void)?,
-        result: ((Bool) -> Void)? = nil
+        result: ((Bool) -> Void)? = nil,
+        shouldWakeDisplayForKVMSwitch: Bool = false
     ) -> [() -> Void] {
         guard intent == .terminating || !isTerminating else {
             return DeferredAutomaticSwitch(
@@ -897,7 +954,8 @@ struct DeferredAutomaticSwitchState {
                 description: description,
                 intent: intent,
                 completion: completion,
-                result: result
+                result: result,
+                shouldWakeDisplayForKVMSwitch: shouldWakeDisplayForKVMSwitch
             ).resolveCallbacks(success: false)
         }
         let supersededCompletions = deferredAutomaticSwitch?.resolveCallbacks(
@@ -908,7 +966,8 @@ struct DeferredAutomaticSwitchState {
             description: description,
             intent: intent,
             completion: completion,
-            result: result
+            result: result,
+            shouldWakeDisplayForKVMSwitch: shouldWakeDisplayForKVMSwitch
         )
         return supersededCompletions
     }

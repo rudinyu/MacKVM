@@ -87,8 +87,21 @@ export CLANG_MODULE_CACHE_PATH="$project_root/.build/ModuleCache"
 export SWIFTPM_MODULECACHE_OVERRIDE="$CLANG_MODULE_CACHE_PATH"
 
 # Keep architecture build databases isolated so cached object files can never
-# leak from one target architecture into the other.
+# leak from one target architecture into the other. Start each release app
+# build from a clean, script-owned scratch path as well. A checkout can have
+# source timestamps older than an incremental object produced before a branch
+# change, which would otherwise package an executable whose strings and code
+# do not match the current source tree.
 scratch_path="$project_root/.build/app-$target_arch"
+case "$scratch_path" in
+  "$project_root/.build/app-arm64"|"$project_root/.build/app-x86_64")
+    ;;
+  *)
+    echo "Refusing to clean an unexpected app scratch path: $scratch_path" >&2
+    exit 1
+    ;;
+esac
+rm -rf -- "$scratch_path"
 target_triple="$target_arch-apple-macosx"
 build_arguments=(
   -c release
@@ -98,12 +111,14 @@ build_arguments=(
 )
 
 swift build "${build_arguments[@]}"
-# SwiftPM places an explicit triple under <scratch>/<triple>/<configuration>;
-# CI verifies this path for both supported architectures on the build host.
-binary_dir="$scratch_path/$target_triple/release"
-binary_path="$binary_dir/MacKVM"
+# SwiftPM has used more than one product layout for an explicit triple across
+# Xcode releases (for example, <scratch>/<triple>/release and
+# <scratch>/out/Products/Release). The scratch path is clean and dedicated to
+# this executable, so locate the resulting release binary instead of assuming
+# one Xcode-specific directory shape.
+binary_path="$(find "$scratch_path" -type f -name MacKVM -perm -111 -print -quit)"
 
-if [[ ! -x "$binary_path" ]]; then
+if [[ -z "$binary_path" || ! -x "$binary_path" ]]; then
   echo "Built executable was not found at $binary_path" >&2
   exit 1
 fi

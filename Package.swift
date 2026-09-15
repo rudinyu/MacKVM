@@ -28,7 +28,10 @@ let package = Package(
             linkerSettings: [
                 // CarbonKeyboardLayout.swift uses TIS/UCKeyTranslate for
                 // cross-layout keyboard remapping.
-                .linkedFramework("Carbon")
+                .linkedFramework("Carbon"),
+                // MonitorController.swift declares local user activity through
+                // IOKit power management before an incoming KVM switch.
+                .linkedFramework("IOKit")
             ]
         ),
         .testTarget(

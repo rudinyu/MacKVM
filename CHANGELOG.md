@@ -4,7 +4,15 @@
 
 ## Unreleased
 
-## 1.100.10 (build 85) — 2026-09-15
+## 1.100.10 (build 86) — 2026-09-15
+
+### Fixed
+
+- Rebuild release app slices from clean architecture-specific SwiftPM output so
+  packaged executables cannot retain stale `Mac` labels after the source has
+  been changed to platform-neutral `device` labels.
+- Wake the local macOS display pipeline with native user activity immediately
+  before an incoming KVM display route is switched.
 
 ### Changed
 

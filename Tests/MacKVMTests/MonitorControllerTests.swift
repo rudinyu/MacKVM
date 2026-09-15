@@ -104,6 +104,22 @@ final class MonitorControllerTests: XCTestCase {
         )
     }
 
+    func testDeferredSwitchPreservesDisplayWakeIntent() {
+        var state = DeferredAutomaticSwitchState()
+
+        _ = state.deferSwitch(
+            input: .hdmi1,
+            description: "this Mac",
+            intent: .normal,
+            completion: nil,
+            shouldWakeDisplayForKVMSwitch: true
+        )
+
+        XCTAssertTrue(
+            state.takeDeferredSwitch()?.shouldWakeDisplayForKVMSwitch == true
+        )
+    }
+
     func testSavedSelectorWaitsForItsFirstVerification() {
         XCTAssertEqual(
             MonitorController.automaticSwitchDecision(
