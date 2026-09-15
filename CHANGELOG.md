@@ -4,6 +4,15 @@
 
 ## Unreleased
 
+## 1.100.10 (build 87) — 2026-09-15
+
+### Release candidate 2.1
+
+- Refresh the macOS build metadata from build 86 to build 87 while preserving
+  the existing 1.100.10 release behavior and documentation.
+- Package the merged cross-platform tree together with WindowsKVM 1.02.27
+  build 108 for the RC2.1 validation release.
+
 ## 1.100.10 (build 86) — 2026-09-15
 
 ### Fixed

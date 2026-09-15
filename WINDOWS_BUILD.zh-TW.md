@@ -4,7 +4,7 @@
 
 配對、Secure Connect、mDNS、防火牆與 console log 收集方式請參閱[跨平台除錯與診斷手冊](DEBUGGING.zh-TW.md)。
 
-本手冊說明如何建置 MacKVM 的 Windows 分支。目前內容是 C#/.NET 8 protocol library、簽章
+本手冊說明如何從統一的 `main` tree 建置 Windows companion。目前內容是 C#/.NET 8 protocol library、簽章
 配對 state machine、原生 Win32 狀態視窗與系統匣常駐 host、DPAPI identity、配對與 secure
 Connect 的免外部套件 mDNS 廣播器、嚴格 control／input 驗證、Windows SendInput 注入、
 釋放所有輸入狀態，以及緊急交還快捷鍵。Authenticated secure session 使用有界 Windows TCP
@@ -33,16 +33,16 @@ Windows ARM64（`win-arm64`）。不支援 32-bit `i686`。
 
 ## 取得原始碼
 
-請使用 Windows 開發分支，不要使用穩定的 macOS 分支：
+請使用統一的 `main` 分支：
 
 ```powershell
 git clone https://github.com/rudinyu/MacKVM.git
 Set-Location MacKVM
-git switch feature/windows-w0-scaffold
+git switch main
 ```
 
-如果分支尚未 push，請把含有 Windows scaffold 的工作目錄複製到 Windows
-建置主機，或改用實際存在的 Windows 分支名稱。
+如果 Windows 建置主機尚未取得最新的 `main` commit，請先 fetch repository，
+再切換到 `main` 後建置。
 
 ## 建置單一架構
 
@@ -94,7 +94,7 @@ reference graph 中的每個 project，避免 `net8.0` protocol library 與
 .\WindowsKVM.exe --version
 ```
 
-目前 UI 測試 build 應顯示 `WindowsKVM 1.02.27 (build 107)`。
+目前 UI 測試 build 應顯示 `WindowsKVM 1.02.27 (build 108)`。
 此版比回報捲動破圖與下拉清單問題時使用的 **1.02.09（build 89）Beta 3** 更新。
 替換前請先退出舊的系統匣 receiver；啟動後確認此版本及 **WindowsKVM** 視窗標題。
 

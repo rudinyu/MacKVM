@@ -5,7 +5,7 @@
 For pairing, Secure Connect, mDNS, firewall, and console log collection, see
 the [cross-platform debugging guide](DEBUGGING.md).
 
-This guide builds the Windows branch of MacKVM. The current deliverable is a
+This guide builds the Windows companion from the unified `main` tree. The current deliverable is a
 C#/.NET 8 protocol library, signed pairing state machine, native Win32 status
 window and resident tray host, DPAPI-backed identity, dependency-free mDNS
 advertisers, authenticated encrypted Connect, strict control/input validation,
@@ -40,16 +40,16 @@ The supported native publish targets are Windows x64 (`win-x64`, also called
 
 ## Get the source
 
-Use the Windows development branch rather than the stable macOS branch:
+Use the unified `main` branch:
 
 ```powershell
 git clone https://github.com/rudinyu/MacKVM.git
 Set-Location MacKVM
-git switch feature/windows-w0-scaffold
+git switch main
 ```
 
-If the branch has not been pushed yet, copy the working tree to the Windows
-host or use the branch name that contains the Windows scaffold.
+If the latest `main` commit has not been fetched yet, fetch the repository and
+switch to `main` before building.
 
 ## Publish one architecture
 
@@ -105,7 +105,7 @@ Confirm the executable before starting a test:
 .\WindowsKVM.exe --version
 ```
 
-The current UI test build reports `WindowsKVM 1.02.27 (build 107)`.
+The current UI test build reports `WindowsKVM 1.02.27 (build 108)`.
 This is newer than **1.02.09 (build 89) Beta 3** used in the reported scrolling
 and dropdown tests. Quit the previous tray receiver before replacing it;
 check this version label and the **WindowsKVM** window title after startup.
