@@ -29,6 +29,31 @@ final class RemoteInputProtocolTests: XCTestCase {
         )
     }
 
+    func testKeyboardEventCarriesAutoRepeatState() throws {
+        let event = RemoteInputEvent(
+            kind: .keyDown,
+            keyCode: 12,
+            isAutorepeat: true
+        )
+
+        XCTAssertEqual(
+            try RemoteInputCodec.decode(RemoteInputCodec.encode(event)),
+            event
+        )
+    }
+
+    func testKeyUpRejectsAutoRepeatState() {
+        let event = RemoteInputEvent(
+            kind: .keyUp,
+            keyCode: 12,
+            isAutorepeat: true
+        )
+
+        XCTAssertThrowsError(try RemoteInputCodec.encode(event)) { error in
+            XCTAssertEqual(error as? RemoteInputError, .invalidFields)
+        }
+    }
+
     func testPointerEventRejectsKeyboardLayoutIdentifier() {
         let event = RemoteInputEvent(
             kind: .mouseMoved,

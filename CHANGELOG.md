@@ -4,11 +4,59 @@
 
 ## Unreleased
 
+## 1.100.10 (build 86) — 2026-09-15
+
+### Fixed
+
+- Rebuild release app slices from clean architecture-specific SwiftPM output so
+  packaged executables cannot retain stale `Mac` labels after the source has
+  been changed to platform-neutral `device` labels.
+- Wake the local macOS display pipeline with native user activity immediately
+  before an incoming KVM display route is switched.
+
+### Changed
+
+- Use platform-neutral remote-target labels such as **Show other device** and
+  **Other device** throughout the app, status messages, and user guides so
+  Windows peers are represented correctly and future Linux peers do not appear
+  to be Macs.
+
+## 1.100.09 (build 84) — 2026-09-15
+
+### Fixed
+
+- Clear the stale pairing status immediately after a device is forgotten, so
+  the menu bar no longer continues to show the forgotten Windows KVM after
+  the pairing is removed.
+- Reject a late pairing-completion status after the peer's trust generation or
+  signing key has changed, so a concurrent Forget action remains authoritative.
+- Use platform-neutral **Nearby devices** and **Unavailable paired devices**
+  labels so Windows peers are represented correctly and future Linux peers do
+  not appear as Macs.
+- Verify both slices separately when building the universal DDC diagnostic so
+  the release validation works with the current Xcode `lipo` command syntax.
+
+## 1.100.07 (build 82) — 2026-09-14
+
+## 1.100.06 (build 81) — 2026-09-13
+
 ### Added
 
 - Include double-click install and uninstall commands plus the installation
   guides in the DMG. The scripts validate the MacKVM bundle and preserve
   pairing data, private keys, preferences, and macOS privacy permissions.
+
+### Fixed
+
+- Preserve fractional trackpad scrolling and terminate active scroll and
+  momentum phases during teardown; release held media keys and preserve
+  keyboard auto-repeat state.
+- Use the correct Carbon no-dead-key option and keep manual
+  `Control-Option-Command-K` sessions from restoring the display route after
+  transport loss.
+- Add an authenticated application heartbeat lease so a peer that sleeps or
+  stops servicing MacKVM is cleared even when its TCP socket remains open;
+  both Macs must use the current secure-session capability.
 
 ## 1.100.05 (build 80) — 2026-09-07
 

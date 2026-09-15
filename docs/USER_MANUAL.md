@@ -71,14 +71,14 @@ steal focus; use the menu-bar icon or activate MacKVM from the Dock to reopen it
    diagnostic scan before relying on a new model.
    A fresh Intel installation defaults its local route to HDMI 1; the Intel
    preset repairs older saved USB-C preferences.
-4. Use **Show other Mac** to verify switching. If native detection or
+4. Use **Show other device** to verify switching. If native detection or
    switching fails, read the diagnostic, check the direct cable path, and use
    the MA270U OSD. For a display-only route, use **Return display to this Mac**;
    the emergency shortcut and the receiver's **Return keyboard, mouse, and
    trackpad to [M5 Mac]** action restore the local route during control.
-   On either Mac, **Show other Mac** also performs the guarded keyboard, mouse,
+   On either Mac, **Show other device** also performs the guarded keyboard, mouse,
    and trackpad hand-off when control prerequisites are ready. **Share keyboard,
-   mouse, and trackpad with [other Mac]** remains the explicit equivalent; the
+   mouse, and trackpad with [other device]** remains the explicit equivalent; the
    receiver selects
    **Allow** unless seamless control was enabled for the paired M5 Pro.
 
@@ -117,7 +117,7 @@ See the [diagnostic guide](../Tools/DDCDiagnostic/README.md).
 
 ## Pair and control
 
-1. Under **Nearby Macs**, select **Pair** on one Mac.
+1. Under **Nearby devices**, select **Pair** on one device.
 2. Compare the six-digit security code and peer names. The receiving Mac selects
    **Accept** only when the codes match; the initiating Mac selects
    **Confirm code** after comparing the same code.
@@ -129,7 +129,7 @@ See the [diagnostic guide](../Tools/DDCDiagnostic/README.md).
 3. After both signed decisions complete, MacKVM automatically attempts to
    connect the encrypted session. If it remains idle, select
    **Connect** on a paired row. With the external keyboard and mouse connected to the M5 Pro, use
-   **Show other Mac** or **Share keyboard, mouse, and trackpad with [other Mac]**; on the
+   **Show other device** or **Share keyboard, mouse, and trackpad with [other device]**; on the
    M5 Pro both use the display-first route and request control in one action.
    The controlling Mac needs both Input
    Monitoring and Accessibility for its active event tap.
@@ -171,6 +171,10 @@ retains the name, advertised model, last authenticated connection time, and
 SHA-256 fingerprint of the pinned public key. New pairings enable seamless
 control automatically; use the per-peer toggle to require Allow for every
 request.
+
+To remove a paired Mac, select **Forget**. The pairing row and the status beside
+**Quit** update immediately to **Pairing forgotten**; the forgotten peer name
+does not remain visible, and restarting MacKVM is not required.
 
 Select **Copy support information** for a support report. It contains public
 version, OS, device, UUID, fingerprint, and connection status data; it excludes

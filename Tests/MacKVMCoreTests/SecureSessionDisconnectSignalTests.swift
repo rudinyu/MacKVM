@@ -38,4 +38,40 @@ final class SecureSessionDisconnectSignalTests: XCTestCase {
             )
         )
     }
+
+    func testHeartbeatRequiresAnExactAuthenticatedPayload() {
+        XCTAssertTrue(
+            SecureSessionControlSignal.isHeartbeat(
+                SecureSessionControlSignal.heartbeat
+            )
+        )
+        XCTAssertFalse(
+            SecureSessionControlSignal.isHeartbeat(
+                Data("MacKVM secure session heartbeat v2".utf8)
+            )
+        )
+        XCTAssertFalse(
+            SecureSessionControlSignal.isHeartbeat(
+                SecureSessionControlSignal.heartbeatAcknowledgement
+            )
+        )
+    }
+
+    func testHeartbeatAcknowledgementRequiresAnExactAuthenticatedPayload() {
+        XCTAssertTrue(
+            SecureSessionControlSignal.isHeartbeatAcknowledgement(
+                SecureSessionControlSignal.heartbeatAcknowledgement
+            )
+        )
+        XCTAssertFalse(
+            SecureSessionControlSignal.isHeartbeatAcknowledgement(
+                SecureSessionControlSignal.heartbeat
+            )
+        )
+        XCTAssertFalse(
+            SecureSessionControlSignal.isHeartbeatAcknowledgement(
+                Data("MacKVM secure session heartbeat acknowledgement v2".utf8)
+            )
+        )
+    }
 }

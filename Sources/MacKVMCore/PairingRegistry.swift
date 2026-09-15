@@ -253,7 +253,7 @@ public final class PairingRegistry {
         )
         let retainedName: String
         if let existingName = existing?.friendlyName,
-           existingName != generatedName {
+           !isGeneratedFriendlyName(existingName, for: peerID) {
             // Keep an explicitly chosen name, including one that happens to
             // differ from the currently advertised signed identity name.
             retainedName = existingName
@@ -658,15 +658,25 @@ public final class PairingRegistry {
             return existing ?? PeerMetadataValidation.unknownModel
         }
         let validated = PeerMetadataValidation.validatedModel(candidate)
-        if validated == PeerMetadataValidation.unknownModel,
+        if PeerMetadataValidation.isUnknownModel(validated),
            let existing,
-           existing != PeerMetadataValidation.unknownModel {
+           !PeerMetadataValidation.isUnknownModel(existing) {
             return existing
         }
         return validated
     }
 
     private func generatedFriendlyName(for peerID: UUID) -> String {
-        "Mac \(peerID.uuidString.prefix(8))"
+        "Device \(peerID.uuidString.prefix(8))"
+    }
+
+    private func isGeneratedFriendlyName(
+        _ name: String,
+        for peerID: UUID
+    ) -> Bool {
+        name == generatedFriendlyName(for: peerID)
+            // Keep recognizing the pre-1.100.09 fallback so an upgrade can
+            // replace an old generated name with the authenticated peer name.
+            || name == "Mac \(peerID.uuidString.prefix(8))"
     }
 }

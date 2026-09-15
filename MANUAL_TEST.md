@@ -33,7 +33,7 @@ Release check (from the M5 Pro) is also available:
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.100.05-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.100.10-universal.dmg.sha256)
 ```
 
 Expected: the app reports both `arm64` and `x86_64`, and an ad-hoc signature
@@ -105,9 +105,9 @@ scan before accepting a new model mapping.
 
 Expected:
 
-- **Show other Mac** on the M5 Pro selects HDMI 1 and starts the guarded
+- **Show other device** on the M5 Pro selects HDMI 1 and starts the guarded
   keyboard, mouse, and trackpad hand-off when control prerequisites are ready.
-- If control prerequisites are not ready, **Show other Mac** still performs
+- If control prerequisites are not ready, **Show other device** still performs
   the display-only route and leaves the physical input local.
 - A reconnect or additional display does not silently redirect DDC to display
   number 1; the selected native DDC display remains visibly verified.
@@ -153,12 +153,12 @@ Expected:
 4. Select **Request Accessibility** and grant it.
 5. After the checklist is complete, select **Enable** beside **Control request
    notifications** and grant the optional macOS alert permission.
-6. Repeat on the other Mac.
+6. Repeat on the other device.
 7. If a system permission sheet does not reappear after a previous denial,
    click the corresponding **Settings** button and then use **Refresh setup
    status** after returning to the app.
 8. If Local Network was denied, use **Review Local Network Settings**, allow
-   MacKVM there, then confirm nearby Macs can be discovered. The app cannot
+   MacKVM there, then confirm nearby devices can be discovered. The app cannot
    preflight this particular macOS setting.
 
 Expected:
@@ -176,7 +176,7 @@ Expected:
 
 ## 4. Discovery and pairing
 
-1. Confirm each Mac appears under **Nearby Macs**.
+1. Confirm each peer appears under **Nearby devices**.
 2. Press **Pair** on one Mac.
 3. Confirm both Macs show the same six-digit code and peer name.
 4. On the receiving Mac, press **Accept** once. On the initiating Mac, press
@@ -216,6 +216,10 @@ Expected:
    session without requiring a manual **Disconnect** click.
 7. Wake the M5 Pro and wait for the secure session to reconnect. Confirm the
   keyboard, mouse, and trackpad Hotkeys work without first disconnecting from the Intel Mac.
+8. Select **Forget** for the paired peer. Confirm the paired row is removed or
+   becomes unpaired and the status beside **Quit** immediately changes to
+   **Pairing forgotten**; the old peer name must not remain and restarting
+   MacKVM must not be required.
 
 Expected:
 
@@ -229,6 +233,8 @@ Expected:
   resume control without another Allow prompt.
 - A system sleep closes the old transport before networking suspends; wake
   reconnects the previously selected peer and starts from local input.
+- Forget immediately revokes the pairing in the UI as well as in storage; the
+  stale **Paired with …** status is cleared without requiring an app restart.
 
 ## 6. Keyboard, mouse, and trackpad control
 
@@ -331,7 +337,7 @@ Expected:
 - Using the emergency shortcut or the receiver's **Return keyboard, mouse, and
   trackpad to [M5 Mac]** action while a request is active or waiting stops
   remote capture and restores the local display and input route.
-- After a display-only **Show other Mac**, **Return display to this Mac** is
+- After a display-only **Show other device**, **Return display to this Mac** is
   available even when the global emergency shortcut could not be registered.
 - A second inbound control request is denied without disturbing the active one.
 - Toggling an input method (step 13) does not end control and does not change
@@ -374,11 +380,11 @@ Expected:
 
 ## 7. Safe return and monitor routing
 
-1. On the M5 Pro, select **Show other Mac** (or the explicit
+1. On the M5 Pro, select **Show other device** (or the explicit
    **Share keyboard, mouse, and trackpad with [Intel Mac]** action) and verify that the
    display switches before input capture starts.
 2. With the session connected and idle, press **Control-Option-Command-O** and
-   verify that it follows the guarded **Show other Mac** route: the monitor
+   verify that it follows the guarded **Show other device** route: the monitor
    switches first, then the control request starts without opening the menu.
    After the receiver accepts (when seamless control is disabled), verify that
    the display and keyboard, mouse, and trackpad ownership move together.
@@ -405,7 +411,7 @@ Expected:
 8. Repeat the hotkey test from the receiving Mac when a bidirectional USB path
    is configured; verify it returns control to the controller.
 9. Repeat while DDC/CI is disabled or unavailable and confirm the OSD fallback.
-10. Quit MacKVM while the monitor shows the other Mac.
+10. Quit MacKVM while the monitor shows the other device.
 11. Repeat step 10 while this Mac is receiving remote control.
 
 Expected:
@@ -501,7 +507,7 @@ or macOS privacy prompts.
    **External USB switch (bidirectional)** on both, verify both systems see the
    devices, and test control in both directions. Do not rely on the app to
    detect the switch.
-4. Use **Show other Mac** while watching the MA270U OSD: HDMI 1 (or the
+4. Use **Show other device** while watching the MA270U OSD: HDMI 1 (or the
    selected HDMI input) must show the Intel Mac. If DDC/CI fails, use the OSD
    manually and record the diagnostic text.
 5. During an active control session, test the menu-bar **Return keyboard, mouse, and trackpad to [M5 Mac]**

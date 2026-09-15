@@ -220,7 +220,7 @@ private func peerDisplayName(
     from discovery: PeerDiscoveryService?
 ) -> String {
     let candidateName = discovery?.peers.first { $0.identity.id == peerID }?.name
-        ?? "Mac \(peerID.uuidString.prefix(8))"
+        ?? "Device \(peerID.uuidString.prefix(8))"
     let trimmedName = candidateName.trimmingCharacters(
         in: .whitespacesAndNewlines
     )
@@ -299,7 +299,12 @@ private final class AppBootstrap: ObservableObject {
             )
             control.onControllingStarted = { monitor.switchToRemote() }
             control.onControllingStopped = { monitor.switchToLocal() }
-            control.onReceivingStarted = { monitor.switchToLocal() }
+            control.onReceivingStarted = {
+                MacKVMLogger.monitor.info(
+                    "phase=local-route.requested source=remote-control"
+                )
+                monitor.switchToLocal(wakeDisplayForKVMSwitch: true)
+            }
             control.onReceivingStopped = { completion in
                 monitor.switchToRemote(completion: completion)
             }
@@ -474,9 +479,9 @@ private final class AppBootstrap: ObservableObject {
     }
 
     /// Switches monitor input together with keyboard/mouse ownership: routes
-    /// display and input to the other Mac if this Mac currently owns them, or
+    /// display and input to the other device if this Mac currently owns them, or
     /// ends receiving and restores the controller's display if this Mac is
-    /// currently being controlled. Shared by the Show other Mac action and
+    /// currently being controlled. Shared by the Show other device action and
     /// the Control-Option-Command-O global shortcut so their behavior cannot
     /// diverge.
     func switchToOtherMac() {
@@ -492,16 +497,16 @@ private final class AppBootstrap: ObservableObject {
         }
         if control.isPreparingIncomingControl {
             // Allow clears the visible request before Accessibility setup
-            // finishes. Treat O/Show other Mac as an explicit return during
+            // finishes. Treat O/Show other device as an explicit return during
             // that window so the pending preparation is rejected before its
             // asynchronous completion can grant input or restore a route.
             control.stopControl(
-                reason: "Returned input to the other Mac"
+                reason: "Returned input to the other device"
             )
             monitor.switchToRemote()
         } else if control.isReceivingControl {
             control.endReceivingControl(
-                reason: "Returned input to the other Mac"
+                reason: "Returned input to the other device"
             )
         } else if control.state == .controlling || control.state == .suspended {
             // A second press while already controlling (or while a direct
@@ -539,7 +544,7 @@ private final class AppBootstrap: ObservableObject {
         }
         guard control.canRequestControl() else {
             combinedControlStatus =
-                "Connect to the other Mac and complete the control setup before sharing keyboard, mouse, and trackpad."
+                "Connect to the other device and complete the control setup before sharing keyboard, mouse, and trackpad."
             return false
         }
         guard monitor.canStartAutomaticRemoteSwitching() else {
@@ -577,7 +582,7 @@ private final class AppBootstrap: ObservableObject {
                 self.endCombinedControlRequest(requestGeneration)
                 if !granted && ownsRoute {
                     self.combinedControlStatus =
-                        "The other Mac did not accept keyboard, mouse, and trackpad control."
+                        "The other device did not accept keyboard, mouse, and trackpad control."
                     monitor?.switchToLocal()
                 }
             }
@@ -1000,7 +1005,7 @@ private struct MacKVMMenuView: View {
                     PrivacySettings.open(.localNetwork)
                 }
                 .font(.caption)
-                Text("If nearby Macs are not found, confirm MacKVM is allowed in Local Network settings. macOS does not let MacKVM verify that choice itself.")
+            Text("If nearby devices are not found, confirm MacKVM is allowed in Local Network settings. macOS does not let MacKVM verify that choice itself.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -1259,11 +1264,11 @@ private struct MacKVMMenuView: View {
 
     private var peerSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Nearby Macs")
+            Text("Nearby devices")
                 .font(.subheadline.weight(.semibold))
 
             if !bootstrap.networkServicesStarted {
-                Text("Complete the Local Network step above to discover nearby Macs.")
+                Text("Complete the Local Network step above to discover nearby devices.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else if discovery.peers.isEmpty {
@@ -1309,7 +1314,7 @@ private struct MacKVMMenuView: View {
                 }
             }
             if !unavailablePairedPeerIDs.isEmpty {
-                Text("Unavailable paired Macs")
+                Text("Unavailable paired devices")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                 ForEach(unavailablePairedPeerIDs, id: \.self) { peerID in
@@ -1317,7 +1322,7 @@ private struct MacKVMMenuView: View {
                         Image(systemName: "laptopcomputer.slash")
                         Text(
                             discovery.pairedPeerProfile(for: peerID)?.friendlyName
-                                ?? "Mac \(peerID.uuidString.prefix(8))"
+                                ?? "Device \(peerID.uuidString.prefix(8))"
                         )
                             .font(.caption.monospaced())
                         Spacer()
@@ -1427,7 +1432,7 @@ private struct MacKVMMenuView: View {
             // handshake will replace this fallback with the peer's name.
             return PairedPeerProfile(
                 peerID: peerID,
-                friendlyName: "Mac \(peerID.uuidString.prefix(8))",
+                friendlyName: "Device \(peerID.uuidString.prefix(8))",
                 model: nil,
                 signingPublicKey: publicKey
             )
@@ -1671,7 +1676,7 @@ private struct MacKVMMenuView: View {
                 "\(peerDisplayName(for: request.peerID, from: discovery)) requests control of this Mac."
             )
                 .font(.caption)
-            Text("Allow only if you expect to use the other Mac's keyboard, mouse, and trackpad.")
+            Text("Allow only if you expect to use the other device's keyboard, mouse, and trackpad.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
             HStack {
@@ -1718,7 +1723,7 @@ private struct MacKVMMenuView: View {
                     Text(input.name).tag(input)
                 }
             }
-            Picker("Other Mac", selection: $monitor.remoteInput) {
+            Picker("Other device", selection: $monitor.remoteInput) {
                 ForEach(MonitorInputSource.allCases, id: \.self) { input in
                     Text(input.name).tag(input)
                 }
@@ -1768,7 +1773,7 @@ private struct MacKVMMenuView: View {
 
             TextField("Native DDC display selector", text: $monitor.displaySelector)
 
-            Button("Show other Mac") {
+            Button("Show other device") {
                 bootstrap.switchToOtherMac()
             }
 
@@ -1793,7 +1798,7 @@ private struct MacKVMMenuView: View {
                 Button(shareKeyboardAndMouseTitle) {
                     // The share action must be all-or-nothing: if its live
                     // preflight fails, leave both the display and physical
-                    // input local. The Show other Mac action owns the explicit
+                    // input local. The Show other device action owns the explicit
                     // display-only fallback; sharing must never create a
                     // split route when no control request was sent.
                     _ = bootstrap.startCombinedControlRequest()
@@ -1804,7 +1809,7 @@ private struct MacKVMMenuView: View {
                         || bootstrap.combinedControlRequestInFlight
                 )
                 Text(
-                    "This switches the display, then shares the keyboard, mouse, and trackpad. Control-Option-Command-O performs the same automatic toggle; press it again from the other Mac to return the display and input. If you switched the monitor input manually, use Control-Option-Command-K to change keyboard, mouse, and trackpad control. Control-Option-Command-Escape interrupts and returns them to this Mac."
+                    "This switches the display, then shares the keyboard, mouse, and trackpad. Control-Option-Command-O performs the same automatic toggle; press it again from the other device to return the display and input. If you switched the monitor input manually, use Control-Option-Command-K to change keyboard, mouse, and trackpad control. Control-Option-Command-Escape interrupts and returns them to this Mac."
                 )
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -1851,7 +1856,7 @@ private struct MacKVMMenuView: View {
 
     private var connectedPeerName: String {
         guard let peerID = secureSession.connectedPeerID else {
-            return "the other Mac"
+            return "the other device"
         }
         return peerDisplayName(for: peerID, from: discovery)
     }

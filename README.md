@@ -56,7 +56,7 @@ The current MVP provides:
   after the monitor input has been selected manually, and a
   `Control-Option-Command-O` guarded display-first shortcut that automatically
   switches the display before transferring keyboard, mouse, and trackpad ownership like
-  **Show other Mac**;
+  **Show other device**;
 - native DDC/CI input switching through IOKit on both Apple Silicon and Intel,
   including display discovery, stable display selection, diagnostics, and a
   manual OSD fallback when the monitor or cable does not expose DDC/CI.
@@ -157,7 +157,7 @@ The package is built from a fresh staging directory and writes a portable
 SHA-256 sidecar next to the DMG. Verify the pair from the `dist` directory:
 
 ```sh
-(cd dist && shasum -a 256 -c MacKVM-1.100.05-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.100.10-universal.dmg.sha256)
 ```
 
 For direct distribution outside the Mac App Store, use the separate notarized
@@ -269,7 +269,7 @@ In the MacKVM menu:
    display number 1; a display that is not rediscovered cannot enable automatic
    switching.
 3. On the M5 Pro Mac, select **M5 / USB-C preset**. This sets this Mac to
-   logical USB-C, the other Mac to HDMI 1 (VCP 17), and enables native DDC.
+   logical USB-C, the other device to HDMI 1 (VCP 17), and enables native DDC.
    MacKVM applies the MA270U EDID-specific USB-C value (VCP 19 / 0x13); other
    monitor models keep their generic firmware value. Use the diagnostic scan
    when the model or firmware is unknown.
@@ -279,7 +279,7 @@ In the MacKVM menu:
    preset is still useful when upgrading an installation with older saved
    USB-C preferences.
 5. If the Intel Mac uses HDMI 2, change both matching input pickers to HDMI 2.
-6. Use **Show other Mac** to verify switching before starting remote control.
+6. Use **Show other device** to verify switching before starting remote control.
    MA270U firmware may not expose a DDC/CI toggle in its OSD; MacKVM uses the
    native bridge when macOS exposes the display. If detection or switching
    fails, read the **DDC diagnostic**, check the direct cable path, and use the
@@ -287,9 +287,9 @@ In the MacKVM menu:
    display to this Mac**; during control, the emergency shortcut or the
    receiver's **Return keyboard, mouse, and trackpad to [M5 Mac]** action restores the
    local route.
-   On either Mac, **Show other Mac** also starts the guarded keyboard, mouse,
+   On either Mac, **Show other device** also starts the guarded keyboard, mouse,
    and trackpad hand-off when the control prerequisites are ready. **Share
-   keyboard, mouse, and trackpad with [other Mac]** remains the explicit
+   keyboard, mouse, and trackpad with [other device]** remains the explicit
    equivalent; the receiver selects **Allow** unless seamless control was
    enabled for the paired peer.
 
@@ -334,14 +334,14 @@ either MacBook can be the software controller from its local keyboard, mouse,
 and trackpad. After sharing starts, press
 **Control-Option-Command-Escape** on the M5 Pro at any time to interrupt the
 session and return input locally. The receiving Mac can select **Return
-keyboard, mouse, and trackpad to [other Mac]**; it releases injected input and
+   keyboard, mouse, and trackpad to [other device]**; it releases injected input and
 the monitor route returns to the controller.
 The global **Control-Option-Command-K** shortcut is for a manually selected
 monitor route: it toggles keyboard, mouse, and trackpad ownership without running automatic
 DDC display switching. It starts a request while idle and returns input while
 controlling or receiving.
 The **Control-Option-Command-O** shortcut follows the guarded display-first
-**Show other Mac** route: when this Mac owns the local route, it switches the
+**Show other device** route: when this Mac owns the local route, it switches the
 display and then requests keyboard, mouse, and trackpad control; when this Mac is receiving
 control, it ends receiving and restores the controller's display and input.
 

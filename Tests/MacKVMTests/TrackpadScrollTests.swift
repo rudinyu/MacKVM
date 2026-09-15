@@ -77,6 +77,61 @@ final class TrackpadScrollTests: XCTestCase {
         )
     }
 
+    func testCapturedFixedPointFieldIsDecodedFromSignedSixteenSixteen() {
+        XCTAssertEqual(
+            ScrollEventEncoding.decodedFixedPointDelta(24_576),
+            0.375,
+            accuracy: 0.000001
+        )
+        XCTAssertEqual(
+            ScrollEventEncoding.decodedFixedPointDelta(-81_920),
+            -1.25,
+            accuracy: 0.000001
+        )
+    }
+
+    func testScrollStreamStateTerminatesTouchAndMomentumIndependently() {
+        var state = ScrollStreamState()
+        state.observe(
+            RemoteInputEvent(
+                kind: .scroll,
+                modifierFlags: UInt64(CGEventFlags.maskShift.rawValue),
+                scrollDeltaX: 0.25,
+                scrollDeltaY: 0.5,
+                scrollPhase: .began,
+                scrollEventUnit: .pixel
+            )
+        )
+        XCTAssertTrue(state.needsTermination)
+        XCTAssertTrue(state.hasActiveScrollPhase)
+        XCTAssertFalse(state.hasActiveMomentumPhase)
+
+        state.observe(
+            RemoteInputEvent(
+                kind: .scroll,
+                scrollDeltaX: 0,
+                scrollDeltaY: 0,
+                scrollPhase: .ended,
+                scrollMomentumPhase: .begin,
+                scrollEventUnit: .pixel
+            )
+        )
+        XCTAssertTrue(state.needsTermination)
+        XCTAssertFalse(state.hasActiveScrollPhase)
+        XCTAssertTrue(state.hasActiveMomentumPhase)
+
+        state.observe(
+            RemoteInputEvent(
+                kind: .scroll,
+                scrollDeltaX: 0,
+                scrollDeltaY: 0,
+                scrollMomentumPhase: .end,
+                scrollEventUnit: .pixel
+            )
+        )
+        XCTAssertFalse(state.needsTermination)
+    }
+
     func testTrackpadPressureIsForwardedOnlyWhenPresent() {
         XCTAssertEqual(
             RemoteInputEvent(

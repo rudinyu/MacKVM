@@ -104,6 +104,22 @@ final class MonitorControllerTests: XCTestCase {
         )
     }
 
+    func testDeferredSwitchPreservesDisplayWakeIntent() {
+        var state = DeferredAutomaticSwitchState()
+
+        _ = state.deferSwitch(
+            input: .hdmi1,
+            description: "this Mac",
+            intent: .normal,
+            completion: nil,
+            shouldWakeDisplayForKVMSwitch: true
+        )
+
+        XCTAssertTrue(
+            state.takeDeferredSwitch()?.shouldWakeDisplayForKVMSwitch == true
+        )
+    }
+
     func testSavedSelectorWaitsForItsFirstVerification() {
         XCTAssertEqual(
             MonitorController.automaticSwitchDecision(
@@ -277,7 +293,7 @@ final class MonitorControllerTests: XCTestCase {
 
         let superseded = state.deferSwitch(
             input: .hdmi1,
-            description: "the other Mac",
+            description: "the other device",
             intent: .normal,
             completion: { completed.append("remote") }
         )
@@ -298,7 +314,7 @@ final class MonitorControllerTests: XCTestCase {
 
         _ = state.deferSwitch(
             input: .hdmi1,
-            description: "the other Mac",
+            description: "the other device",
             intent: .normal,
             completion: { completions += 1 },
             result: { results.append($0) }
@@ -319,7 +335,7 @@ final class MonitorControllerTests: XCTestCase {
 
         _ = state.deferSwitch(
             input: .hdmi1,
-            description: "the other Mac",
+            description: "the other device",
             intent: .normal,
             completion: { completed.append("old remote") }
         )
@@ -338,7 +354,7 @@ final class MonitorControllerTests: XCTestCase {
 
         let ignoredNormalRoute = state.deferSwitch(
             input: .hdmi1,
-            description: "the other Mac",
+            description: "the other device",
             intent: .normal,
             completion: { completed.append("ignored remote") }
         )
@@ -360,7 +376,7 @@ final class MonitorControllerTests: XCTestCase {
 
         _ = state.deferSwitch(
             input: .hdmi1,
-            description: "the other Mac",
+            description: "the other device",
             intent: .normal,
             completion: { cancelledRouteCompletionCount += 1 }
         )

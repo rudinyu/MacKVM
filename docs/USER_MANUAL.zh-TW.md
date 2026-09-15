@@ -62,11 +62,11 @@ notarization。
    MA270U 的 EDID mapping 會把 USB-C 傳成 VCP 19（`0x13`），HDMI 1 傳成 VCP 17（`0x11`）；
    其他型號使用自己的韌體 mapping。依賴新型號前先執行診斷掃描。
    Intel 新安裝會以 HDMI 1 作為本機路由；舊版若保存了 USB-C 設定，請重新套用 Intel 預設。
-4. 用 **Show other Mac** 測試；若原生探索或切換失敗，查看診斷、確認線材直接連接，再用
+4. 用 **Show other device** 測試；若原生探索或切換失敗，查看診斷、確認線材直接連接，再用
    MA270U OSD 手動切換。若只是切換螢幕，可按 **Return display to this Mac**；控制中的
    緊急快速鍵或接收端的 **Return keyboard, mouse, and trackpad to [M5 Mac]** 操作可恢復本機路由。
-   在 M5 Pro 按 **Show other Mac** 時，若控制前置條件已完成，也會使用先切畫面的流程
-   分享鍵盤、滑鼠與觸控板；**Share keyboard, mouse, and trackpad with [other Mac]** 仍是明確的等效操作。
+   在 M5 Pro 按 **Show other device** 時，若控制前置條件已完成，也會使用先切畫面的流程
+   分享鍵盤、滑鼠與觸控板；**Share keyboard, mouse, and trackpad with [other device]** 仍是明確的等效操作。
    接收端只有在未啟用該配對裝置的無縫控制時才需要按 **Allow**。
 
 ### 找出不同螢幕的 input mapping
@@ -101,7 +101,7 @@ mapping 原始碼。按下 Ctrl-C 或收到 SIGTERM 時會停止候選值迴圈�
 
 ## 配對與控制
 
-1. 在 **Nearby Macs** 其中一台按 **Pair**。
+1. 在 **Nearby devices** 其中一台按 **Pair**。
 2. 比對六位數驗證碼與裝置名稱；接收端確認驗證碼一致後按 **Accept**，發起端比對
    相同驗證碼後按 **Confirm code**。
    任一台 Mac 都可以發起配對。若接收端出現 macOS Firewall 提示，先允許 incoming
@@ -110,7 +110,7 @@ mapping 原始碼。按下 Ctrl-C 或收到 SIGTERM 時會停止候選值迴圈�
    連入時的 workaround；配對協定本身不綁定架構。
 3. 兩邊的簽署決定都完成後，MacKVM 會自動嘗試建立加密連線；若狀態仍是 idle，
    可在已配對裝置列按 **Connect**。外接鍵盤與滑鼠接在 M5 Pro 時，請按
-   **Show other Mac** 或 **Share keyboard, mouse, and trackpad with [other Mac]**；在 M5 Pro 兩者
+   **Show other device** 或 **Share keyboard, mouse, and trackpad with [other device]**；在 M5 Pro 兩者
    都會先切換螢幕，再送出控制請求。
 4. 新配對的接收端會自動啟用該已釘選 Mac 的無縫控制。若要每次控制都重新按
    **Allow**，請在 **Paired device information** 關閉
@@ -120,7 +120,7 @@ mapping 原始碼。按下 Ctrl-C 或收到 SIGTERM 時會停止候選值迴圈�
 5. M5 Pro 可隨時按 `Control-Option-Command-Escape` 中斷共享；全域
    `Control-Option-Command-K` 適用於已手動選好的螢幕輸入，不必開啟選單即可切換鍵盤／
    滑鼠／觸控板控制，且不會啟動自動 DDC；閒置時開始請求、控制中或接收中返回本機／控制端。
-   `Control-Option-Command-O` 沿用 **Show other Mac** 的受保護流程，自動先切換螢幕，再請求
+   `Control-Option-Command-O` 沿用 **Show other device** 的受保護流程，自動先切換螢幕，再請求
    鍵盤／滑鼠／觸控板控制；如果本機正在接收控制，則結束接收並把螢幕與輸入還給控制端。要從 Intel Mac
    切回 M5 Pro，請在 Intel Mac 按 **Return keyboard, mouse, and trackpad to [M5 Mac]**；
    控制端也可按 **Return keyboard, mouse, and trackpad to this Mac**。
@@ -140,6 +140,9 @@ mapping 原始碼。按下 Ctrl-C 或收到 SIGTERM 時會停止候選值迴圈�
 在 **Paired device information** 修改並儲存友善名稱。MacKVM 會保留名稱、廣播型號、
 最後成功完成驗證連線的時間，以及已釘選公開金鑰的 SHA-256 指紋。新配對的 Mac 預設
 會啟用無縫控制；可在每台配對裝置旁關閉此授權。
+
+要移除已配對的 Mac，請選擇 **Forget**。配對列與 **Quit** 旁的狀態會立即更新為
+**Pairing forgotten**；被忘記的 peer 名稱不會繼續顯示，也不需要重開 MacKVM。
 
 遇到問題時按 **Copy support information**。報告包含公開的版本、OS、裝置、UUID、
 指紋與連線狀態，不包含私密金鑰、密碼、憑證或網路端點。

@@ -31,7 +31,7 @@ Intel Mac 的 `/Applications`，再開啟各自架構的 app。
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.100.04-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.100.10-universal.dmg.sha256)
 ```
 
 本機 ad-hoc 簽章只能用於測試；正式散布必須使用 Developer ID、hardened runtime
@@ -93,8 +93,8 @@ transport 與 VCP `0x60` 狀態。若型號 mapping 不明，明確執行掃描�
 HDMI 1 使用 VCP 17（`0x11`）。其他型號使用自己的 mapping；螢幕可能在 I2C 傳輸成功時
 仍靜默忽略未公告的輸入值。新增型號前先執行診斷掃描。
 
-預期結果：**Show other Mac** 顯示指定 HDMI；在 M5 Pro
-若控制前置條件已完成，**Show other Mac** 同時開始受保護的鍵盤／滑鼠／觸控板分享；若前置
+預期結果：**Show other device** 顯示指定 HDMI；在 M5 Pro
+若控制前置條件已完成，**Show other device** 同時開始受保護的鍵盤／滑鼠／觸控板分享；若前置
 條件未完成，仍只執行顯示器切換並讓實體輸入留在本機；原生 DDC/CI 失敗時五秒內回報
 診斷並可用 OSD 手動切換，不能悄悄改用不明顯示器。
 
@@ -109,7 +109,7 @@ HDMI 1 使用 VCP 17（`0x11`）。其他型號使用自己的 mapping；螢幕�
 
 ## 4. 探索與配對
 
-1. 兩台都開啟 MacKVM，在 **Nearby Macs** 看見對方。
+1. 兩台都開啟 MacKVM，在 **Nearby devices** 看見對方。
 2. 任一台按 **Pair**，核對兩台相同的六位數驗證碼與對方名稱。
 3. 接收端在驗證碼一致時按 **Accept**；發起端比對相同驗證碼後按
    **Confirm code**。
@@ -134,6 +134,8 @@ HDMI 1 使用 VCP 17（`0x11`）。其他型號使用自己的 mapping；螢幕�
    自動顯示斷線，不需要手動按 **Disconnect**。
 6. 喚醒 M5 Pro，等待安全工作階段重新連線；不先在 Intel Mac 按 **Disconnect**，直接測試
    鍵盤／滑鼠／觸控板 Hotkey。
+7. 對已配對的 peer 按 **Forget**。確認配對列立即移除或變成未配對，**Quit** 旁的狀態立即
+   變成 **Pairing forgotten**；不可繼續顯示舊 peer 名稱，也不應需要重開 MacKVM。
 
 預期結果：網路中斷立即停止遠端輸入並釋放按鍵／滑鼠按鈕；重連不需要重新配對，
 即使沒有本機鍵盤／滑鼠的 peer 也會偵測非預期的控制端斷線、清除 stale session，
@@ -141,12 +143,14 @@ HDMI 1 使用 VCP 17（`0x11`）。其他型號使用自己的 mapping；螢幕�
 已啟用無縫控制的 peer 也不需要再次按 **Allow**。手動 Disconnect、Forget 或 Quit
 不會再次自動連線。系統休眠會先關閉舊傳輸，喚醒後從本機輸入狀態重新連回先前選取的
 peer。
+- Forget 不只會移除儲存的信任，也會立即清除 UI 狀態；舊的 **Paired with …** 不會殘留，
+  不需要重開 app。
 
 ## 6. 鍵盤、滑鼠、觸控板與控制同意
 
 1. 配對完成後，在接收端的 **Paired device information** 確認該配對 Mac 的
    **Automatically allow control from this Mac** 已開啟。
-2. 任一台 Mac 的控制端按 **Show other Mac**（或明確的 **Share keyboard, mouse, and trackpad with [other Mac]**），
+2. 任一台 Mac 的控制端按 **Show other device**（或明確的 **Share keyboard, mouse, and trackpad with [other device]**），
    確認不需再次按 Allow 即可開始控制，且螢幕與鍵盤、滑鼠、觸控板路由一致。
 3. 在接收端關閉 **Automatically allow control from this Mac**，回到本機後再次請求控制。
 4. 接收端分別測試選單中的 **Allow**、**Deny**、逾時，以及選單關閉時的原生通知
@@ -178,7 +182,7 @@ peer。
     控制端本身不受影響。
 16. 控制中按控制端實體鍵盤的電源鍵，確認兩台都沒有任何反應（接收端不會跳出關機
     或睡眠對話框）；按 Caps Lock 確認只切換一次、不會誤觸發兩次。
-17. 連線閒置時按 `Control-Option-Command-O`，確認沿用受保護的 **Show other Mac**
+17. 連線閒置時按 `Control-Option-Command-O`，確認沿用受保護的 **Show other device**
     流程：先切換螢幕，再在不開啟選單的情況下開始控制請求；若未啟用無縫控制，接收端
     按 Allow 後，確認螢幕與鍵盤／滑鼠／觸控板控制權一起移動。
 18. 控制進行中，在控制端 M5 Pro（同一把共用鍵盤）再按一次

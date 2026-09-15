@@ -565,7 +565,7 @@ private struct CarbonUnicodeLayoutTranslator: UnicodeLayoutCharacterProviding {
                 // picked the wrong sub-table on ISO/JIS hardware; the real
                 // hardware type is required.
                 UInt32(LMGetKbdType()),
-                OptionBits(kUCKeyTranslateNoDeadKeysBit),
+                OptionBits(kUCKeyTranslateNoDeadKeysMask),
                 &deadKeyState,
                 chars.count,
                 &actualLength,

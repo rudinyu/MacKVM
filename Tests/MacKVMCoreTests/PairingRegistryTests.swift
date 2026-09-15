@@ -334,6 +334,27 @@ final class PairingRegistryTests: XCTestCase {
         )
     }
 
+    func testLegacyUnknownModelUsesNeutralFallback() {
+        let peer = PeerIdentity(
+            name: "Legacy peer",
+            signingPublicKey: P256.Signing.PrivateKey()
+                .publicKey.x963Representation
+        )
+        let registry = makeRegistry(storageKey: "legacy-model")
+
+        registry.add(peer, model: PeerMetadataValidation.legacyUnknownModel)
+
+        XCTAssertTrue(
+            PeerMetadataValidation.isUnknownModel(
+                PeerMetadataValidation.legacyUnknownModel
+            )
+        )
+        XCTAssertEqual(
+            registry.profile(for: peer.id)?.model,
+            PeerMetadataValidation.unknownModel
+        )
+    }
+
     func testAuthenticatedNameReplacesPersistedGeneratedFallback() {
         let peerID = UUID()
         let peer = PeerIdentity(

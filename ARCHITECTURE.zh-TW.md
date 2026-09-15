@@ -164,13 +164,13 @@ stateDiagram-v2
 裝置列按 **Connect**。日常操作時，在 **Paired device information** 查看或修改名稱、
 關閉無縫控制授權，
 需要回報問題按 **Copy support information**。在任一台 Mac 按
-**Show other Mac** 會沿用受保護的先切畫面流程，並在控制前置條件完成時開始分享；
-**Share keyboard, mouse, and trackpad with [other Mac]** 是明確的等效操作。要從 Intel Mac 返回 M5 Pro，接收端按
+**Show other device** 會沿用受保護的先切畫面流程，並在控制前置條件完成時開始分享；
+**Share keyboard, mouse, and trackpad with [other device]** 是明確的等效操作。要從 Intel Mac 返回 M5 Pro，接收端按
 **Return keyboard, mouse, and trackpad to [M5 Mac]**，控制端也可按
 **Return keyboard, mouse, and trackpad to this Mac** 交還控制權；在手動選好螢幕輸入後，使用
 `Control-Option-Command-K` 可在閒置／控制中切換鍵盤／滑鼠／觸控板控制，或用
 `Control-Option-Command-Escape` 緊急中斷。獨立的
-`Control-Option-Command-O` 沿用 **Show other Mac** 的受保護流程，先切換螢幕再請求
+`Control-Option-Command-O` 沿用 **Show other device** 的受保護流程，先切換螢幕再請求
 鍵盤／滑鼠／觸控板控制；如果本機正在接收控制，則結束接收並把螢幕與輸入還給控制端。
 
 公開 Quartz 事件路徑會轉送觸控板移動、點按、拖曳、次要點按、精準雙軸捲動與捲動相位／

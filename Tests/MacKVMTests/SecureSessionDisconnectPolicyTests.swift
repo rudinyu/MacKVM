@@ -45,7 +45,7 @@ final class SecureSessionDisconnectPolicyTests: XCTestCase {
             .requiresPeerUpgrade
         )
         XCTAssertEqual(
-            SecureSessionCompatibilityPolicy.decision(for: 2),
+            SecureSessionCompatibilityPolicy.decision(for: 1),
             .requiresPeerUpgrade
         )
     }
@@ -222,6 +222,87 @@ final class SecureSessionDisconnectPolicyTests: XCTestCase {
                 isClosing: false,
                 scheduledGeneration: 2,
                 expiredGeneration: 1
+            )
+        )
+    }
+
+    // MARK: - Authenticated heartbeat lease
+
+    func testAuthenticatedSessionSchedulesOneHeartbeatLease() {
+        XCTAssertTrue(
+            SecureSessionHeartbeatPolicy.shouldSchedule(
+                isAuthenticated: true,
+                isClosing: false,
+                hasScheduledHeartbeat: false,
+                awaitingAcknowledgement: false
+            )
+        )
+        XCTAssertFalse(
+            SecureSessionHeartbeatPolicy.shouldSchedule(
+                isAuthenticated: true,
+                isClosing: false,
+                hasScheduledHeartbeat: true,
+                awaitingAcknowledgement: false
+            )
+        )
+        XCTAssertFalse(
+            SecureSessionHeartbeatPolicy.shouldSchedule(
+                isAuthenticated: true,
+                isClosing: false,
+                hasScheduledHeartbeat: false,
+                awaitingAcknowledgement: true
+            )
+        )
+    }
+
+    func testHeartbeatLeaseDoesNotStartBeforeAuthenticationOrDuringClose() {
+        XCTAssertFalse(
+            SecureSessionHeartbeatPolicy.shouldSchedule(
+                isAuthenticated: false,
+                isClosing: false,
+                hasScheduledHeartbeat: false,
+                awaitingAcknowledgement: false
+            )
+        )
+        XCTAssertFalse(
+            SecureSessionHeartbeatPolicy.shouldSchedule(
+                isAuthenticated: true,
+                isClosing: true,
+                hasScheduledHeartbeat: false,
+                awaitingAcknowledgement: false
+            )
+        )
+    }
+
+    func testHeartbeatTimeoutFailsOnlyTheCurrentOutstandingLease() {
+        XCTAssertTrue(
+            SecureSessionHeartbeatPolicy.shouldFailAfterTimeout(
+                isCurrentContext: true,
+                isAuthenticated: true,
+                isClosing: false,
+                awaitingAcknowledgement: true,
+                scheduledGeneration: 4,
+                expiredGeneration: 4
+            )
+        )
+        XCTAssertFalse(
+            SecureSessionHeartbeatPolicy.shouldFailAfterTimeout(
+                isCurrentContext: true,
+                isAuthenticated: true,
+                isClosing: false,
+                awaitingAcknowledgement: false,
+                scheduledGeneration: 4,
+                expiredGeneration: 4
+            )
+        )
+        XCTAssertFalse(
+            SecureSessionHeartbeatPolicy.shouldFailAfterTimeout(
+                isCurrentContext: true,
+                isAuthenticated: true,
+                isClosing: false,
+                awaitingAcknowledgement: true,
+                scheduledGeneration: 5,
+                expiredGeneration: 4
             )
         )
     }

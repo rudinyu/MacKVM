@@ -85,7 +85,7 @@ The pairing protocol currently works as follows:
 1. Each Mac creates a persistent UUID and P-256 signing key. The private key
    is stored in the macOS Keychain; the public identity is advertised through
    Bonjour TXT data.
-2. `NWBrowser` discovers the other Mac and reads its name, UUID, and public
+2. `NWBrowser` discovers the other device and reads its name, UUID, and public
    key.
 3. The initiator and responder exchange signed commitments to independent
    random contributions, then reveal those contributions only after both
@@ -292,7 +292,7 @@ injected input and return control to the controller.
 The global **Control–Option–Command–K** shortcut toggles the same route: it
 starts a normal control request while idle and returns input when either side
 is actively controlling or receiving. The independent
-**Control–Option–Command–O** shortcut shares the guarded **Show other Mac**
+**Control–Option–Command–O** shortcut shares the guarded **Show other device**
 route: it changes the monitor input before requesting keyboard, mouse, and trackpad control,
 and ends receiving to restore the controller's display and input.
 
@@ -441,18 +441,18 @@ behavior are covered by the automated test suite.
    activation remain available to open it on demand.
 9. After the Local Network step is complete, open the MacKVM menu-bar item on
    either Mac to inspect nearby devices.
-10. Under **Nearby Macs**, select **Pair** on one Mac.
+10. Under **Nearby devices**, select **Pair** on one device.
 11. Compare the six-digit security code shown on both Macs. Verify the peer name
     on each Mac, then press **Accept** on the receiver and **Confirm code** on
     the initiator only when the codes match.
 12. On either Mac, select **Detect DDC-capable displays** and choose the
     intended display explicitly before selecting the matching preset. Native
     DDC/CI uses `IOAVService` on Apple Silicon and `IOI2C` on Intel. Test
-    **Show other Mac**. If the display does not expose DDC/CI, follow the
+    **Show other device**. If the display does not expose DDC/CI, follow the
     diagnostic and use the monitor OSD.
 13. After the receiver accepts and the initiator confirms the matching code, the
     app automatically attempts to connect the encrypted session. If it remains idle, select **Connect** on
-    one paired row. When the encrypted session is connected, **Show other Mac**
+    one paired row. When the encrypted session is connected, **Show other device**
     on the physical-input M5 Pro follows the guarded display-first path and
     starts the keyboard, mouse, and trackpad request when its prerequisites are
     ready. **Share keyboard, mouse, and trackpad with [Intel Mac]** is the
@@ -460,7 +460,7 @@ behavior are covered by the automated test suite.
 14. The controlling Mac needs both Input Monitoring and Accessibility because
     its active event tap suppresses local input while forwarding it. The
     receiving Mac must select **Allow** before input is sent only to the
-    other Mac unless seamless control is enabled for that pinned peer. With the
+    other device unless seamless control is enabled for that pinned peer. With the
     menu closed, it can use the native notification's
     **Allow**, **Deny**, or **Review in MacKVM** action; Review opens an
     explicit approval dialog, Allow requires macOS authentication if the

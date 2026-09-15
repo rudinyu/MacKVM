@@ -4,10 +4,51 @@
 
 ## 尚未發布
 
+## 1.100.10（build 86）— 2026-09-15
+
+### 修正
+
+- 每次從乾淨的架構專用 SwiftPM 輸出建立 release app，避免 source 已改成中性
+  `device` 字串後，封裝結果仍殘留舊的 `Mac` 字串。
+- 在接收端即將切換本機 KVM 螢幕路由前，使用原生 user activity 喚醒 macOS 顯示管線。
+
+### 變更
+
+- 將 App、狀態訊息與使用指南中的遠端目標名稱改為中性用詞，例如
+  **Show other device** 與 **Other device**，讓 Windows peer 顯示正確，也為未來可能支援的
+  Linux 裝置保留一致的用詞。
+
+## 1.100.09（build 84）— 2026-09-15
+
+### 修正
+
+- 忘記裝置後立即清除過期的配對狀態；移除配對後，選單列不會繼續顯示已忘記的
+  Windows KVM。
+- 如果 peer 的信任 generation 或簽章金鑰已變更，拒絕遲到的配對完成狀態，讓同時執行的
+  Forget 保持最終狀態。
+- 將 **Nearby devices** 與 **Unavailable paired devices** 改為跨平台的中性名稱，正確呈現
+  Windows 裝置，也為未來可能支援的 Linux 裝置保留一致用詞。
+- 建置 universal DDC 診斷工具時分別驗證兩個架構切片，修正目前 Xcode `lipo` 指令語法造成的
+  release validation 失敗。
+
+## 1.100.07（build 82）— 2026-09-14
+
+## 1.100.06（build 81）— 2026-09-13
+
 ### 新增
 
 - 在 DMG 內加入可雙擊執行的安裝與解除安裝 command，以及安裝指南。Script 會驗證
   MacKVM bundle，並保留配對資料、私密金鑰、偏好設定與 macOS 隱私權限。
+
+### 修正
+
+- 保留觸控板的 fractional 滾動精度，並在拆除時終止仍作用中的滾動／慣性相位；釋放
+  按住的媒體鍵，並保留鍵盤 auto-repeat 狀態。
+- 使用正確的 Carbon no-dead-key 選項；手動 `Control-Option-Command-K` 工作階段在
+  傳輸中斷後不再還原螢幕路由。
+- 加入經驗證的應用層 heartbeat lease；即使 peer 的 TCP socket 仍開啟，只要 peer
+  休眠或停止處理 MacKVM，stale 工作階段也會被清除。兩台 Mac 都必須使用目前的
+  secure-session capability。
 
 ## 1.100.05（build 80）— 2026-09-07
 
