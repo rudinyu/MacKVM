@@ -6,12 +6,16 @@
 
 ## 1.100.10（build 87）— 2026-09-15
 
-### RC2.1 預發行版
+### macOS 正式版
 
 - 將 macOS build metadata 從 86 更新為 87，同時保留既有 1.100.10 的功能與
   文件說明。
-- 將合併後的跨平台 tree 與 WindowsKVM 1.02.27 build 108 一起封裝，供 RC2.1
-  驗證使用。
+- 將 universal macOS DMG 以正式版發布，不使用 RC 標籤。
+
+### Windows RC2.1 companion build
+
+- 將合併後的跨平台 tree 與 WindowsKVM 1.02.27 build 108 一起封裝，供 Windows
+  RC2.1 驗證使用。
 
 ## 1.100.10（build 86）— 2026-09-15
 
