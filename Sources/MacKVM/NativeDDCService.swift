@@ -66,6 +66,11 @@ enum NativeDDCService {
         guard !selector.isEmpty else {
             throw NativeDDCServiceError(message: "No DDC display is selected")
         }
+        // The display can disappear from CoreGraphics while the monitor is
+        // showing the other input. In that window the caller may not have a
+        // live DDCDisplay value, but the canonical native selector still
+        // carries the EDID vendor/product IDs needed for model-specific VCP
+        // mappings (for example, MA270U USB-C is 19 rather than generic 27).
         var error = [CChar](repeating: 0, count: 512)
         let succeeded = selector.withCString { selectorPointer in
             MacKVMNativeDDCSwitchInput(
@@ -73,7 +78,8 @@ enum NativeDDCService {
                 MonitorInputMapping.rawValue(
                     for: input,
                     vendorID: vendorID,
-                    productID: productID
+                    productID: productID,
+                    nativeSelector: selector
                 ),
                 &error,
                 error.count

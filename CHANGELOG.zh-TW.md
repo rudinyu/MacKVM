@@ -4,6 +4,41 @@
 
 ## 尚未發布
 
+## 1.100.10（build 90）— 2026-09-16
+
+### 修正
+
+- 啟用自動 DDC/CI 切換且已驗證顯示器後，持續保持外接顯示管線喚醒，避免
+  Intel framebuffer／I2C provider 在兩次切換間進入閒置；可靠度等同於
+  `caffeinate -d`，但不需要額外執行程序。關閉自動切換或退出 MacKVM 時會
+  釋放 assertion，恢復正常螢幕睡眠行為。
+- 在自動切換開關旁說明保持顯示管線喚醒的電源行為，讓設定變更清楚可見。
+
+## 1.100.10（build 89）— 2026-09-16
+
+### 修正
+
+- Intel 版優先透過 CoreGraphics 的 `CGDisplayIOServicePort` 取得正確的
+  `IOFramebuffer`，再使用顯示器 metadata fallback。避免把 IOKit 路徑的
+  `@1` 與 `CGDisplayUnitNumber` 的 `7` 當成同一個編號，導致 MA270U 從
+  原生 DDC 探測清單消失。
+- metadata fallback 只有在身份候選唯一時才採用，保留相同零序號複製螢幕的
+  fail-closed 安全行為。
+
+## 1.100.10（build 88）— 2026-09-15
+
+### 修正
+
+- 每次原生 DDC 讀寫期間都短暫保持顯示管線喚醒；行為等同於觀察到在
+  Intel Mac 上有效的 `caffeinate -d`，但不會改變使用者長期的螢幕睡眠設定。
+- 當 CoreGraphics 暫時沒有可用的顯示器項目時，從 canonical native display
+  selector 還原廠商／型號 ID，仍能套用 BenQ MA270U USB-C 的實測 VCP 值 19。
+
+### 診斷
+
+- 新增結構化 DDC log，記錄 selector、解析出的 mapping 來源、VCP 值、顯示器
+  喚醒，以及有界電源 assertion 的建立／釋放生命週期。
+
 ## 1.100.10（build 87）— 2026-09-15
 
 ### macOS 正式版

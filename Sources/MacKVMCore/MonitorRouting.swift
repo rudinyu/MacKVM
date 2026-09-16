@@ -34,14 +34,52 @@ public enum MonitorInputSource: Int, CaseIterable, Codable, Sendable {
 /// persisted preferences while allowing a model-specific EDID override (the
 /// BenQ MA270U tested with MacKVM uses 0x13).
 public enum MonitorInputMapping {
+    /// The native display selector encodes the EDID vendor and product IDs
+    /// before its serial number or EDID fingerprint.  CoreGraphics can
+    /// temporarily return an empty display list while a monitor changes
+    /// inputs, so callers must be able to recover this identity from the
+    /// persisted selector instead of falling back to a generic VCP value.
+    ///
+    /// Only the canonical `native-ddc:<vendor>:<product>:...` form is
+    /// accepted.  Numeric legacy selectors and malformed/user-edited values
+    /// are rejected rather than being treated as monitor identity.
+    public static func displayIdentity(
+        fromNativeSelector selector: String
+    ) -> (vendorID: UInt32, productID: UInt32)? {
+        let normalized = selector.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        let components = normalized.split(
+            separator: ":",
+            omittingEmptySubsequences: false
+        )
+        guard components.count >= 4,
+              components[0].caseInsensitiveCompare("native-ddc") == .orderedSame,
+              let vendorID = UInt32(components[1]),
+              let productID = UInt32(components[2]),
+              vendorID > 0,
+              productID > 0 else {
+            return nil
+        }
+        return (vendorID: vendorID, productID: productID)
+    }
+
     public static func rawValue(
         for input: MonitorInputSource,
         vendorID: UInt32?,
-        productID: UInt32?
+        productID: UInt32?,
+        nativeSelector: String? = nil
     ) -> UInt32 {
+        let selectorIdentity = nativeSelector.flatMap {
+            displayIdentity(fromNativeSelector: $0)
+        }
+        let effectiveVendorID = vendorID.flatMap { $0 > 0 ? $0 : nil }
+            ?? selectorIdentity?.vendorID
+        let effectiveProductID = productID.flatMap { $0 > 0 ? $0 : nil }
+            ?? selectorIdentity?.productID
         if input == .usbC,
-           vendorID == 2513,
-           productID == 32884 {
+           effectiveVendorID == 2513,
+           effectiveProductID == 32884 {
             return 19
         }
         return UInt32(input.rawValue)
@@ -55,12 +93,14 @@ public enum MonitorInputMapping {
         currentValue: UInt16,
         input: MonitorInputSource,
         vendorID: UInt32?,
-        productID: UInt32?
+        productID: UInt32?,
+        nativeSelector: String? = nil
     ) -> Bool {
         UInt32(currentValue) == rawValue(
             for: input,
             vendorID: vendorID,
-            productID: productID
+            productID: productID,
+            nativeSelector: nativeSelector
         )
     }
 }

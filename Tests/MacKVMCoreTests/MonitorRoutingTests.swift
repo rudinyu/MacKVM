@@ -43,6 +43,54 @@ final class MonitorRoutingTests: XCTestCase {
         )
     }
 
+    func testNativeSelectorProvidesMA270UIdentityWhenDisplayMetadataIsMissing() {
+        let selector = "native-ddc:2513:32884:edid-0123456789abcdef"
+        let identity = MonitorInputMapping.displayIdentity(
+            fromNativeSelector: selector
+        )
+
+        XCTAssertEqual(identity?.vendorID, 2513)
+        XCTAssertEqual(identity?.productID, 32884)
+        XCTAssertEqual(
+            MonitorInputMapping.rawValue(
+                for: .usbC,
+                vendorID: nil,
+                productID: nil,
+                nativeSelector: selector
+            ),
+            19
+        )
+        XCTAssertTrue(
+            MonitorInputMapping.isInputSelected(
+                currentValue: 19,
+                input: .usbC,
+                vendorID: nil,
+                productID: nil,
+                nativeSelector: selector
+            )
+        )
+    }
+
+    func testNativeSelectorIdentityRejectsLegacyAndMalformedValues() {
+        let invalidSelectors = [
+            "1",
+            "native-ddc:0:32884:serial",
+            "native-ddc:2513:0:serial",
+            "native-ddc:2513:not-a-number:serial",
+            "other-ddc:2513:32884:serial",
+            "native-ddc:2513:32884"
+        ]
+
+        for selector in invalidSelectors {
+            XCTAssertNil(
+                MonitorInputMapping.displayIdentity(
+                    fromNativeSelector: selector
+                ),
+                "Unexpected identity for \(selector)"
+            )
+        }
+    }
+
     func testReadBackUsesTheMonitorSpecificInputMapping() {
         XCTAssertTrue(
             MonitorInputMapping.isInputSelected(

@@ -4,6 +4,46 @@
 
 ## Unreleased
 
+## 1.100.10 (build 90) — 2026-09-16
+
+### Fixed
+
+- Keep the verified external display path awake while automatic DDC/CI
+  switching is enabled. This prevents Intel framebuffer/I2C providers from
+  going idle between switches, matching the reliability of `caffeinate -d`
+  without requiring a separate process. Disabling automatic switching or
+  quitting MacKVM releases the assertion and restores normal display sleep.
+- Show the display-path keep-awake behavior next to the automatic switching
+  toggle so the power-policy change is explicit.
+
+## 1.100.10 (build 89) — 2026-09-16
+
+### Fixed
+
+- Resolve Intel `IOFramebuffer` instances through CoreGraphics'
+  `CGDisplayIOServicePort` mapping before using metadata fallback. This avoids
+  confusing the IOKit path suffix (for example `@1`) with
+  `CGDisplayUnitNumber` (for example `7`), which could make a valid MA270U
+  disappear from native DDC discovery.
+- Require an identity-only fallback to be unique before exposing it for DDC,
+  preserving the fail-closed behavior for cloned zero-serial displays.
+
+## 1.100.10 (build 88) — 2026-09-15
+
+### Fixed
+
+- Keep every native DDC route awake for the duration of its read/write, which
+  mirrors the short `caffeinate -d` workaround observed on Intel Macs without
+  changing the user's persistent display-sleep policy.
+- Recover vendor/product IDs from the canonical native display selector when
+  CoreGraphics temporarily has no live display entry, so model-specific input
+  mappings such as the BenQ MA270U USB-C value (19) are still used.
+
+### Diagnostics
+
+- Add structured DDC logs for the selector, resolved mapping source, VCP value,
+  display wake, and bounded power assertion lifecycle.
+
 ## 1.100.10 (build 87) — 2026-09-15
 
 ### Stable macOS release

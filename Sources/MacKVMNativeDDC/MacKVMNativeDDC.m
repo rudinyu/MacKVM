@@ -419,36 +419,13 @@ static bool displayInfoMatches(
         && (uint32_t)vendor == CGDisplayVendorNumber(displayID)
         && (uint32_t)product == CGDisplayModelNumber(displayID)
         && (uint32_t)serial == CGDisplaySerialNumber(displayID);
-    if (matches) {
-        // Vendor/product/serial is not sufficient for cloned panels: many
-        // displays report a zero serial, and identical panels can expose the
-        // same EDID. IODisplayLocation includes the framebuffer unit after
-        // the last '@' (for example, ...@1,...). Use it when available so
-        // each CGDirectDisplayID is paired with its own framebuffer.
-        CFTypeRef location = CFDictionaryGetValue(
-            info,
-            CFSTR("IODisplayLocation")
-        );
-        if (location != NULL
-            && CFGetTypeID(location) == CFStringGetTypeID()) {
-            char locationBuffer[256] = { 0 };
-            if (CFStringGetCString(
-                (CFStringRef)location,
-                locationBuffer,
-                sizeof(locationBuffer),
-                kCFStringEncodingUTF8
-            )) {
-                const char *at = strrchr(locationBuffer, '@');
-                if (at != NULL && at[1] != '\0') {
-                    char *end = NULL;
-                    unsigned long unit = strtoul(at + 1, &end, 10);
-                    if (end != at + 1 && unit <= UINT32_MAX) {
-                        matches = (uint32_t)unit == CGDisplayUnitNumber(displayID);
-                    }
-                }
-            }
-        }
-    }
+    // Do not compare the numeric suffix in IODisplayLocation with
+    // CGDisplayUnitNumber. They are identifiers from different namespaces:
+    // an Intel display can legitimately report unit 7 while its IOKit path
+    // contains a framebuffer suffix such as "@1". Treating those numbers as
+    // interchangeable makes a valid IOFramebuffer disappear from discovery.
+    // Cloned zero-serial panels remain safe because framebufferForDisplay()
+    // rejects an ambiguous set of identity-only candidates.
     CFRelease(info);
     return matches;
 }
@@ -921,6 +898,19 @@ static IOAVServiceRef avServiceForDisplay(
 #endif
 
 static io_service_t framebufferForDisplay(CGDirectDisplayID displayID) {
+    // CoreGraphics provides the display's IOFramebuffer service directly.
+    // Apple documents this port as graphics-owned, so retain one reference
+    // before handing it to MacKVMNativeDDCDisplay (which releases owned
+    // framebuffer references when a list or route snapshot is destroyed).
+    // This avoids trying to reconstruct the association from unrelated
+    // IODisplayLocation and CGDisplayUnitNumber namespaces on Intel Macs.
+    io_service_t direct = CGDisplayIOServicePort(displayID);
+    if (direct != MACH_PORT_NULL
+        && IOObjectConformsTo(direct, "IOFramebuffer")
+        && IOObjectRetain(direct) == KERN_SUCCESS) {
+        return direct;
+    }
+
     CFMutableDictionaryRef matching = IOServiceMatching("IOFramebuffer");
     if (matching == NULL) {
         return MACH_PORT_NULL;
@@ -933,16 +923,29 @@ static io_service_t framebufferForDisplay(CGDirectDisplayID displayID) {
     ) != KERN_SUCCESS) {
         return MACH_PORT_NULL;
     }
+    io_service_t match = MACH_PORT_NULL;
+    bool ambiguous = false;
     io_service_t service = MACH_PORT_NULL;
     while ((service = IOIteratorNext(iterator)) != MACH_PORT_NULL) {
         if (displayInfoMatches(service, displayID)) {
-            IOObjectRelease(iterator);
-            return service;
+            if (match == MACH_PORT_NULL && !ambiguous) {
+                match = service;
+            } else {
+                ambiguous = true;
+                IOObjectRelease(service);
+            }
+            continue;
         }
         IOObjectRelease(service);
     }
     IOObjectRelease(iterator);
-    return MACH_PORT_NULL;
+    if (ambiguous) {
+        if (match != MACH_PORT_NULL) {
+            IOObjectRelease(match);
+        }
+        return MACH_PORT_NULL;
+    }
+    return match;
 }
 
 static bool addDisplay(

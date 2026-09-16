@@ -1703,6 +1703,12 @@ private struct MacKVMMenuView: View {
             Toggle("Automatic DDC/CI switching", isOn: $monitor.automationEnabled)
                 .disabled(!monitor.supportsAutomaticDDCSwitching)
 
+            if monitor.automationEnabled && monitor.isDisplaySelectorVerified {
+                Text("The verified display path stays awake while automatic switching is enabled.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
             if !monitor.supportsAutomaticDDCSwitching {
                 Text("This Mac does not expose a native DDC/CI transport; use the monitor OSD input menu.")
                     .font(.caption2)

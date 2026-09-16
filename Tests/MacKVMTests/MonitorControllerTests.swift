@@ -39,6 +39,49 @@ final class MonitorControllerTests: XCTestCase {
         }
     }
 
+    func testDisplaySleepLeaseRequiresASelectedVerifiedDisplay() {
+        XCTAssertFalse(
+            MonitorController.shouldKeepDisplayAwake(
+                automationEnabled: true,
+                displaySelector: "",
+                isDisplaySelectorVerified: false,
+                hasVerifiedDisplayForSelector: false
+            )
+        )
+        XCTAssertFalse(
+            MonitorController.shouldKeepDisplayAwake(
+                automationEnabled: true,
+                displaySelector: "native-ddc:1:2:3",
+                isDisplaySelectorVerified: false,
+                hasVerifiedDisplayForSelector: false
+            )
+        )
+        XCTAssertTrue(
+            MonitorController.shouldKeepDisplayAwake(
+                automationEnabled: true,
+                displaySelector: "native-ddc:1:2:3",
+                isDisplaySelectorVerified: true,
+                hasVerifiedDisplayForSelector: false
+            )
+        )
+        XCTAssertTrue(
+            MonitorController.shouldKeepDisplayAwake(
+                automationEnabled: true,
+                displaySelector: "NATIVE-DDC:1:2:3",
+                isDisplaySelectorVerified: false,
+                hasVerifiedDisplayForSelector: true
+            )
+        )
+        XCTAssertFalse(
+            MonitorController.shouldKeepDisplayAwake(
+                automationEnabled: false,
+                displaySelector: "native-ddc:1:2:3",
+                isDisplaySelectorVerified: true,
+                hasVerifiedDisplayForSelector: true
+            )
+        )
+    }
+
     func testAutomaticSwitchingRequiresAVerifiedDDCSelection() {
         XCTAssertFalse(
             MonitorController.canUseAutomaticDDCSwitching(

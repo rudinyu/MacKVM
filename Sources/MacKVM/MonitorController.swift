@@ -85,9 +85,75 @@ private struct RoutePreservationAttempt {
     var refreshAfterCurrentDiscovery = false
 }
 
+/// Keeps the external display pipeline awake while automatic DDC/CI routing
+/// is enabled. Intel framebuffers can suspend their I2C provider after the
+/// normal display-idle deadline even though the Mac itself remains awake;
+/// that makes a later VCP write fail until another app (for example
+/// `caffeinate -d` or DeskIn) happens to hold the same power assertion.
+///
+/// The lease is deliberately owned by `MonitorController` and is toggled only
+/// after a real native display selector has been verified. Disabling automatic
+/// switching, forgetting the display, or terminating the app releases it so
+/// the user's normal display-sleep policy is restored.
+private final class DisplaySleepAssertionLease {
+    private var assertionID: IOPMAssertionID?
+
+    func setEnabled(_ enabled: Bool) {
+        if enabled {
+            enable()
+        } else {
+            disable()
+        }
+    }
+
+    private func enable() {
+        guard assertionID == nil else { return }
+
+        var newAssertionID = IOPMAssertionID(kIOPMNullAssertionID)
+        let result = IOPMAssertionCreateWithName(
+            kIOPMAssertionTypePreventUserIdleDisplaySleep as CFString,
+            IOPMAssertionLevel(kIOPMAssertionLevelOn),
+            "MacKVM automatic DDC/CI" as CFString,
+            &newAssertionID
+        )
+        guard result == kIOReturnSuccess else {
+            MacKVMLogger.monitor.error(
+                "phase=display.sleep-lease.enable-failed return=\(result, privacy: .public)"
+            )
+            return
+        }
+        assertionID = newAssertionID
+        MacKVMLogger.monitor.info(
+            "phase=display.sleep-lease.enabled assertionID=\(newAssertionID, privacy: .public)"
+        )
+    }
+
+    private func disable() {
+        guard let assertionID else { return }
+        let result = IOPMAssertionRelease(assertionID)
+        if result == kIOReturnSuccess {
+            MacKVMLogger.monitor.info(
+                "phase=display.sleep-lease.disabled assertionID=\(assertionID, privacy: .public)"
+            )
+        } else {
+            MacKVMLogger.monitor.error(
+                "phase=display.sleep-lease.disable-failed assertionID=\(assertionID, privacy: .public) return=\(result, privacy: .public)"
+            )
+        }
+        self.assertionID = nil
+    }
+
+    deinit {
+        disable()
+    }
+}
+
 final class MonitorController: ObservableObject {
     @Published var automationEnabled: Bool {
-        didSet { defaults.set(automationEnabled, forKey: Keys.automationEnabled) }
+        didSet {
+            defaults.set(automationEnabled, forKey: Keys.automationEnabled)
+            scheduleDisplaySleepLease()
+        }
     }
     @Published var localInput: MonitorInputSource {
         didSet { defaults.set(localInput.rawValue, forKey: Keys.localInput) }
@@ -99,6 +165,7 @@ final class MonitorController: ObservableObject {
         didSet {
             defaults.set(displaySelector, forKey: Keys.displaySelector)
             updateSelectorVerification()
+            scheduleDisplaySleepLease()
         }
     }
     @Published private(set) var status = "Monitor switching is ready"
@@ -126,6 +193,7 @@ final class MonitorController: ObservableObject {
     /// Reuse the latest token when rapid incoming switches report activity
     /// again, as required by the IOKit API contract.
     private var displayWakeActivityID = IOPMAssertionID(kIOPMNullAssertionID)
+    private let displaySleepAssertionLease = DisplaySleepAssertionLease()
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -157,6 +225,7 @@ final class MonitorController: ObservableObject {
             // topology notification is being reconciled.
             self?.handleDisplayConfigurationChange()
         }
+        scheduleDisplaySleepLease()
     }
 
     deinit {
@@ -330,11 +399,12 @@ final class MonitorController: ObservableObject {
             return
         }
         lastVerifiedDisplay = display
+        scheduleDisplaySleepLease()
         status = "Selected \(display.name) for native DDC/CI switching"
     }
 
     func switchToLocal(
-        wakeDisplayForKVMSwitch: Bool = false,
+        wakeDisplayForKVMSwitch: Bool = true,
         completion: (() -> Void)? = nil
     ) {
         switchInput(
@@ -351,7 +421,8 @@ final class MonitorController: ObservableObject {
             localInput,
             description: "this Mac",
             intent: .terminating,
-            completion: completion
+            completion: completion,
+            shouldWakeDisplayForKVMSwitch: true
         )
     }
 
@@ -360,7 +431,8 @@ final class MonitorController: ObservableObject {
             remoteInput,
             description: "the other device",
             intent: .normal,
-            completion: completion
+            completion: completion,
+            shouldWakeDisplayForKVMSwitch: true
         )
     }
 
@@ -401,7 +473,8 @@ final class MonitorController: ObservableObject {
             description: "the other device",
             intent: .normal,
             completion: nil,
-            result: completion
+            result: completion,
+            shouldWakeDisplayForKVMSwitch: true
         )
     }
 
@@ -411,7 +484,7 @@ final class MonitorController: ObservableObject {
         intent: DeferredAutomaticSwitchIntent,
         completion: (() -> Void)?,
         result: ((Bool) -> Void)? = nil,
-        shouldWakeDisplayForKVMSwitch: Bool = false
+        shouldWakeDisplayForKVMSwitch: Bool = true
     ) {
         let reportResult: (Bool) -> Void = { success in
             guard let result else { return }
@@ -495,13 +568,48 @@ final class MonitorController: ObservableObject {
         // editable field case-insensitive without passing a user-edited
         // spelling to the native C bridge.
         let nativeSelector = routeDisplay?.selector ?? selector
+        let selectorIdentity = MonitorInputMapping.displayIdentity(
+            fromNativeSelector: nativeSelector
+        )
+        let displayVendorID = routeDisplay.flatMap {
+            $0.vendorID > 0 ? $0.vendorID : nil
+        }
+        let displayProductID = routeDisplay.flatMap {
+            $0.productID > 0 ? $0.productID : nil
+        }
+        let effectiveVendorID = displayVendorID ?? selectorIdentity?.vendorID
+        let effectiveProductID = displayProductID ?? selectorIdentity?.productID
+        let mappingSource = displayVendorID != nil && displayProductID != nil
+            ? "display"
+            : selectorIdentity == nil ? "none" : "selector"
+        let mappedInputValue = MonitorInputMapping.rawValue(
+            for: input,
+            vendorID: effectiveVendorID,
+            productID: effectiveProductID,
+            nativeSelector: nativeSelector
+        )
         status = "Switching \(displayName) to \(input.name)…"
         MacKVMLogger.monitor.info(
-            "phase=input.switch.requested input=\(input.rawValue, privacy: .public) description=\(description, privacy: .public) wakeDisplay=\(shouldWakeDisplayForKVMSwitch, privacy: .public)"
+            "phase=input.switch.requested input=\(input.rawValue, privacy: .public) vcpValue=\(mappedInputValue, privacy: .public) mapping=\(mappingSource, privacy: .public) selector=\(nativeSelector, privacy: .public) description=\(description, privacy: .public) wakeDisplay=\(shouldWakeDisplayForKVMSwitch, privacy: .public)"
         )
         queue.async { [weak self] in
+            guard let self else { return }
+            // A short assertion mirrors `caffeinate -d` for the duration of
+            // this DDC transaction. It is deliberately released in `defer`
+            // so a failed read/write cannot leave a permanent power assertion
+            // behind. The user-activity call below additionally wakes a
+            // display that has already entered its idle state.
+            let displaySleepAssertionID = shouldWakeDisplayForKVMSwitch
+                ? self.beginPreventingDisplaySleep()
+                : nil
+            defer {
+                if let displaySleepAssertionID {
+                    self.endPreventingDisplaySleep(displaySleepAssertionID)
+                }
+            }
             if shouldWakeDisplayForKVMSwitch {
-                self?.wakeDisplayForKVMSwitch()
+                self.wakeDisplayForKVMSwitch()
+                self.waitForDisplayWake()
             }
             do {
                 // Read VCP 0x60 first so a route restore does not write the
@@ -525,8 +633,9 @@ final class MonitorController: ObservableObject {
                     alreadySelected = MonitorInputMapping.isInputSelected(
                         currentValue: UInt16(truncatingIfNeeded: readValue),
                         input: input,
-                        vendorID: routeDisplay?.vendorID,
-                        productID: routeDisplay?.productID
+                        vendorID: effectiveVendorID,
+                        productID: effectiveProductID,
+                        nativeSelector: nativeSelector
                     )
                     decisionSource = "readback"
                 } else {
@@ -542,18 +651,20 @@ final class MonitorController: ObservableObject {
                     MacKVMLogger.monitor.info(
                         "phase=input.write selector=\(nativeSelector, privacy: .public) input=\(input.rawValue, privacy: .public) source=\(decisionSource, privacy: .public)"
                     )
-                    try NativeDDCService.switchInput(
+                    try self.writeInputWithRetry(
                         displaySelector: nativeSelector,
                         input: input,
-                        vendorID: routeDisplay?.vendorID,
-                        productID: routeDisplay?.productID
+                        vendorID: effectiveVendorID,
+                        productID: effectiveProductID,
+                        shouldWakeDisplayForKVMSwitch:
+                            shouldWakeDisplayForKVMSwitch
                     )
                 } else {
                     MacKVMLogger.monitor.info(
                         "phase=input.noop selector=\(nativeSelector, privacy: .public) input=\(input.rawValue, privacy: .public) source=\(decisionSource, privacy: .public)"
                     )
                 }
-                self?.completeDisplayRouteSwitch(
+                self.completeDisplayRouteSwitch(
                     success: true,
                     attemptID: routePreservationAttemptID
                 )
@@ -561,20 +672,20 @@ final class MonitorController: ObservableObject {
                 MacKVMLogger.monitor.info(
                     "phase=input.switch.completed success=true input=\(input.rawValue, privacy: .public) description=\(description, privacy: .public)"
                 )
-                self?.publish(
+                self.publish(
                     "\(displayName) \(action) \(input.name) for \(description)",
                     completion: completion
                 )
                 reportResult(true)
             } catch {
-                self?.completeDisplayRouteSwitch(
+                self.completeDisplayRouteSwitch(
                     success: false,
                     attemptID: routePreservationAttemptID
                 )
                 MacKVMLogger.monitor.error(
                     "phase=input.switch.completed success=false input=\(input.rawValue, privacy: .public) description=\(description, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
                 )
-                self?.publish(
+                self.publish(
                     "Native DDC/CI switch failed; use the monitor OSD to select \(input.name)",
                     diagnostic: Self.diagnostic(from: error),
                     completion: completion
@@ -610,6 +721,90 @@ final class MonitorController: ObservableObject {
         MacKVMLogger.monitor.info(
             "phase=display.wake.succeeded activityID=\(self.displayWakeActivityID, privacy: .public)"
         )
+    }
+
+    /// The display power assertion is asynchronous from the framebuffer's
+    /// point of view. Give WindowServer and the Intel I2C provider a short,
+    /// bounded settle window before the first transaction; this is the part
+    /// that a manually running `caffeinate -d` supplies in practice.
+    private func waitForDisplayWake() {
+        let settleInterval: TimeInterval = 0.15
+        MacKVMLogger.monitor.debug(
+            "phase=display.wake.settling durationMs=\(Int(settleInterval * 1000), privacy: .public)"
+        )
+        Thread.sleep(forTimeInterval: settleInterval)
+    }
+
+    /// Retries one idempotent Set-VCP operation after re-announcing activity.
+    /// Intel framebuffers can report a transient no-device result while their
+    /// external output is being resumed. A retry is intentionally limited to
+    /// one attempt and remains inside the bounded display-sleep assertion.
+    private func writeInputWithRetry(
+        displaySelector: String,
+        input: MonitorInputSource,
+        vendorID: UInt32?,
+        productID: UInt32?,
+        shouldWakeDisplayForKVMSwitch: Bool
+    ) throws {
+        do {
+            try NativeDDCService.switchInput(
+                displaySelector: displaySelector,
+                input: input,
+                vendorID: vendorID,
+                productID: productID
+            )
+        } catch {
+            guard shouldWakeDisplayForKVMSwitch else { throw error }
+            MacKVMLogger.monitor.info(
+                "phase=input.write.retry selector=\(displaySelector, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+            )
+            wakeDisplayForKVMSwitch()
+            waitForDisplayWake()
+            try NativeDDCService.switchInput(
+                displaySelector: displaySelector,
+                input: input,
+                vendorID: vendorID,
+                productID: productID
+            )
+        }
+    }
+
+    /// Keeps the external display pipeline awake while a native DDC request
+    /// is in flight. This is intentionally scoped to one read/write operation
+    /// rather than held for the lifetime of the app, so MacKVM does not change
+    /// the user's normal display-sleep policy. It is the programmatic
+    /// equivalent of running `caffeinate -d` just long enough to route input.
+    private func beginPreventingDisplaySleep() -> IOPMAssertionID? {
+        var assertionID = IOPMAssertionID(kIOPMNullAssertionID)
+        let result = IOPMAssertionCreateWithName(
+            kIOPMAssertionTypePreventUserIdleDisplaySleep as CFString,
+            IOPMAssertionLevel(kIOPMAssertionLevelOn),
+            "MacKVM DDC switch" as CFString,
+            &assertionID
+        )
+        guard result == kIOReturnSuccess else {
+            MacKVMLogger.monitor.error(
+                "phase=display.sleep-assertion.failed return=\(result, privacy: .public)"
+            )
+            return nil
+        }
+        MacKVMLogger.monitor.debug(
+            "phase=display.sleep-assertion.created assertionID=\(assertionID, privacy: .public)"
+        )
+        return assertionID
+    }
+
+    private func endPreventingDisplaySleep(_ assertionID: IOPMAssertionID) {
+        let result = IOPMAssertionRelease(assertionID)
+        if result == kIOReturnSuccess {
+            MacKVMLogger.monitor.debug(
+                "phase=display.sleep-assertion.released assertionID=\(assertionID, privacy: .public)"
+            )
+        } else {
+            MacKVMLogger.monitor.error(
+                "phase=display.sleep-assertion.release-failed assertionID=\(assertionID, privacy: .public) return=\(result, privacy: .public)"
+            )
+        }
     }
 
     private func publish(
@@ -684,6 +879,7 @@ final class MonitorController: ObservableObject {
             } else {
                 updateSelectorVerification()
             }
+            self.scheduleDisplaySleepLease()
 
             // Legacy m1ddc selectors were numeric indexes. Native CoreGraphics
             // and IOKit enumeration order is not guaranteed to match that
@@ -744,6 +940,41 @@ final class MonitorController: ObservableObject {
             && detectedDisplays.contains {
                 $0.matches(selector: selector) && $0.isDDCCapable
             }
+    }
+
+    static func shouldKeepDisplayAwake(
+        automationEnabled: Bool,
+        displaySelector: String,
+        isDisplaySelectorVerified: Bool,
+        hasVerifiedDisplayForSelector: Bool
+    ) -> Bool {
+        let selector = displaySelector.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        return automationEnabled
+            && !selector.isEmpty
+            && (isDisplaySelectorVerified || hasVerifiedDisplayForSelector)
+    }
+
+    /// Schedules the persistent display-sleep lease on the same serial queue
+    /// as native DDC transactions. This keeps assertion creation/release
+    /// ordered with a switch and avoids touching IOPM from SwiftUI callbacks.
+    private func scheduleDisplaySleepLease() {
+        let selector = displaySelector.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        let hasVerifiedDisplayForSelector = lastVerifiedDisplay?.matches(
+            selector: selector
+        ) == true
+        let shouldKeepDisplayAwake = Self.shouldKeepDisplayAwake(
+            automationEnabled: automationEnabled,
+            displaySelector: selector,
+            isDisplaySelectorVerified: isDisplaySelectorVerified,
+            hasVerifiedDisplayForSelector: hasVerifiedDisplayForSelector
+        )
+        queue.async { [weak self] in
+            self?.displaySleepAssertionLease.setEnabled(shouldKeepDisplayAwake)
+        }
     }
 
     static func canUseAutomaticDDCSwitching(
@@ -892,7 +1123,7 @@ struct DeferredAutomaticSwitch {
         intent: DeferredAutomaticSwitchIntent,
         completion: (() -> Void)?,
         result: ((Bool) -> Void)?,
-        shouldWakeDisplayForKVMSwitch: Bool = false
+        shouldWakeDisplayForKVMSwitch: Bool = true
     ) {
         self.input = input
         self.description = description
@@ -946,7 +1177,7 @@ struct DeferredAutomaticSwitchState {
         intent: DeferredAutomaticSwitchIntent,
         completion: (() -> Void)?,
         result: ((Bool) -> Void)? = nil,
-        shouldWakeDisplayForKVMSwitch: Bool = false
+        shouldWakeDisplayForKVMSwitch: Bool = true
     ) -> [() -> Void] {
         guard intent == .terminating || !isTerminating else {
             return DeferredAutomaticSwitch(
