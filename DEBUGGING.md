@@ -104,10 +104,12 @@ accepted the selected input; use the readback/scanning report.
 
 ### Why the console mode is preferred for debugging
 
-The Windows UI shows live status and native consent dialogs, but it detaches
-from the console during startup. The Windows app currently has no persistent
-file logger or Event Viewer provider. Run the same receiver in console mode to
-retain the detailed pairing, mDNS, TCP, handshake, and input messages.
+The Windows UI shows live status and native consent dialogs, and writes a
+bounded status log to `%LOCALAPPDATA%\MacKVM\logs\WindowsKVM.log`. **Copy
+support information** includes the recent status events with pairing codes
+redacted. For detailed pairing, mDNS, TCP, handshake, and input messages, run
+the receiver in console mode as described below. The app does not register an
+Event Viewer provider.
 
 Before switching to console mode, choose **Quit WindowsKVM** from the tray
 menu. Closing the status window only hides the running receiver. UI and

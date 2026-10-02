@@ -105,7 +105,7 @@ Confirm the executable before starting a test:
 .\WindowsKVM.exe --version
 ```
 
-The current UI test build reports `WindowsKVM 1.02.27 (build 108)`.
+The current UI test build reports `WindowsKVM 1.02.28 (build 109)`.
 This is newer than **1.02.09 (build 89) Beta 3** used in the reported scrolling
 and dropdown tests. Quit the previous tray receiver before replacing it;
 check this version label and the **WindowsKVM** window title after startup.

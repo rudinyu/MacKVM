@@ -23,7 +23,7 @@ Build on the M5 Pro and copy the matching app to `/Applications`:
 
 ```sh
 ./scripts/build-app.sh --arch arm64
-./scripts/build-app.sh --arch x86_64
+./scripts/build-app.sh --arch x86_64 --no-clean
 ```
 
 MacKVM uses native IOKit DDC/CI: `IOAVService` on Apple Silicon and `IOI2C`

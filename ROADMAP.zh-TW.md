@@ -2,7 +2,7 @@
 
 # MacKVM 開發路線圖
 
-本路線圖以 1.100.04 程式碼為基準。配對、公開金鑰釘選、加密連線、輸入驗證、
+本路線圖以 1.100.10（build 91）程式碼為基準。配對、公開金鑰釘選、加密連線、輸入驗證、
 接收端明確同意、權限引導與有界佇列已完成；後續項目主要改善日常使用體驗。
 
 ## 目前狀態
@@ -29,8 +29,8 @@
 | F6 | 鍵盤配置重新映射（已完成） | 中 | **完成** |
 | F7 | 原生 DDC/CI（已完成） | 中 | **完成** |
 | F8 | 三台以上 Mac | 低 | P2 |
-| F9 | Notarized 發佈與更新 | 低 | P2 |
-| F10 | 連線診斷 | 低 | P2 |
+| F9 | 自動更新發佈 | 低 | P2 |
+| F10 | 連線診斷與有界狀態 log | 低 | **部分完成** |
 | F11 | 高階觸控板手勢 | 中 | P3 |
 | F12 | 檔案傳輸與拖放 | 低 | P3 |
 | F13 | 休眠／喚醒重連 | 低 | **完成** |
@@ -38,12 +38,13 @@
 ## Windows companion 狀態
 
 Windows companion 與穩定 macOS client 同一個 repository 維護。目前 W3 範圍已完成：以
-DPAPI 保存 identity 的簽署配對、mDNS 探索、與 MacKVM 相同 v2 disconnect／heartbeat
+DPAPI 保存 identity 的簽署配對、mDNS 廣播、與 MacKVM 相同 v2 disconnect／heartbeat
 capability 的 authenticated Secure Connect、嚴格控制／輸入驗證、Windows `SendInput`
 與 release-all 清理、常駐 tray、Simple／Advanced UI、防火牆指引，以及 x64／ARM64
 建置 script。安裝 .NET 8 SDK 時，`scripts/ci.sh` 會執行 platform-neutral protocol 與
-desktop self-test。Raw Input 擷取與完整防火牆設定精靈仍是後續工作；目前流程由 MacKVM
-發起 Pair 與 Connect。
+desktop self-test。「僅使用本機 Windows 輸入」會跨重啟保存，常駐 UI 也保留有界的本機狀態
+log。Windows 端列出已信任的 Mac，並非以控制端身份瀏覽裝置；Pair 與 Connect 由 MacKVM
+發起。Raw Input 擷取與完整防火牆設定精靈仍是後續工作。
 
 ## F7 原生 DDC/CI — 已完成
 
@@ -161,9 +162,11 @@ arm64、x86_64 或 universal，輸出執行／編譯架構、Mac 與 macOS 身�
 ## P2 剩餘項目
 
 - F8 需要重新設計多 peer 仲裁與選單，不適合在雙 Mac MVP 前提下直接擴充。
-- F9 在公開散布前需要 Developer ID、hardened runtime 與 Apple notarization。
-- F10 執行期連線診斷仍待加入延遲、jitter 與有界事件紀錄；原生 DDC 診斷工具已能
-  提供系統／顯示器 transport 與 input mapping 證據。
+- 目前 macOS release 已使用 Developer ID 簽章並完成 notarization；尚未實作自動更新與更新
+  驗證機制，仍需手動下載與安裝。
+- F10 部分完成：原生 DDC 診斷 CLI 可提供系統／顯示器 transport 與 input mapping 證據，
+  Windows UI 也保留有界的本機狀態事件；macOS 還需要持久連線診斷，而兩個平台都還沒有
+  latency／jitter 統計。
 
 ## P3 研究項目
 

@@ -4,6 +4,29 @@
 
 ## Unreleased
 
+## 1.100.10 (build 91) — 2026-10-02
+
+### Fixed
+
+- Route ordinary keyboard/mouse control requests through the display-first
+  flow whenever automatic DDC/CI switching is enabled. A failed display
+  switch now leaves input local instead of transferring control to a Mac
+  whose monitor is still showing the other computer.
+- Verify VCP 0x60 readback after writing a monitor input selection before
+  reporting the route as switched. Retry the readback for a bounded interval
+  to allow the monitor to apply its input mux.
+
+## WindowsKVM 1.02.28 (build 109) — 2026-10-02
+
+### Fixed
+
+- Report listener, Secure Connect, and remote-input admission states truthfully
+  in Advanced setup instead of showing static macOS permission checks as green.
+- Persist the Local Windows input only preference across restarts and include
+  a bounded, code-redacted status log in copied support information.
+- Clarify that the Windows device list contains trusted Macs and that pairing
+  is initiated from the MacKVM side.
+
 ## 1.100.10 (build 90) — 2026-09-16
 
 ### Fixed

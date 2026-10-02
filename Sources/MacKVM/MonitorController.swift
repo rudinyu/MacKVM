@@ -614,8 +614,9 @@ final class MonitorController: ObservableObject {
             do {
                 // Read VCP 0x60 first so a route restore does not write the
                 // same value again and make the MA270U visibly re-negotiate
-                // its input. A monitor that does not implement Get-VCP still
-                // takes the normal write path.
+                // its input. If Get-VCP is unavailable, the write path is
+                // attempted, but the route is not reported as ready for
+                // keyboard hand-off unless the monitor can confirm the value.
                 let readValue: UInt32?
                 do {
                     readValue = try NativeDDCService.currentInputValue(
@@ -658,6 +659,12 @@ final class MonitorController: ObservableObject {
                         productID: effectiveProductID,
                         shouldWakeDisplayForKVMSwitch:
                             shouldWakeDisplayForKVMSwitch
+                    )
+                    try self.verifyInputSelection(
+                        displaySelector: nativeSelector,
+                        input: input,
+                        vendorID: effectiveVendorID,
+                        productID: effectiveProductID
                     )
                 } else {
                     MacKVMLogger.monitor.info(
@@ -767,6 +774,62 @@ final class MonitorController: ObservableObject {
                 productID: productID
             )
         }
+    }
+
+    /// A successful Set-VCP call only confirms that the transport accepted the
+    /// packet. Confirm the monitor's actual VCP 0x60 value before a guarded
+    /// keyboard hand-off is allowed to proceed. Some monitors briefly stop
+    /// answering while they switch inputs, so the readback is bounded and
+    /// retried rather than treated as an immediate failure.
+    private func verifyInputSelection(
+        displaySelector: String,
+        input: MonitorInputSource,
+        vendorID: UInt32?,
+        productID: UInt32?
+    ) throws {
+        let expected = MonitorInputMapping.rawValue(
+            for: input,
+            vendorID: vendorID,
+            productID: productID,
+            nativeSelector: displaySelector
+        )
+        let attempts = 6
+        var lastValue: UInt32?
+        var lastError: String?
+
+        for attempt in 1...attempts {
+            // Give the display time to apply the route before asking for its
+            // current input. The first delay is also useful for monitors that
+            // synchronously acknowledge Set-VCP before switching their mux.
+            Thread.sleep(forTimeInterval: 0.2)
+            do {
+                let current = try NativeDDCService.currentInputValue(
+                    displaySelector: displaySelector
+                )
+                lastValue = current
+                lastError = nil
+                MacKVMLogger.monitor.info(
+                    "phase=input.verify attempt=\(attempt, privacy: .public) current=\(current, privacy: .public) expected=\(expected, privacy: .public)"
+                )
+                if current == expected {
+                    return
+                }
+            } catch {
+                lastError = error.localizedDescription
+                MacKVMLogger.monitor.debug(
+                    "phase=input.verify.read-failed attempt=\(attempt, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+                )
+            }
+        }
+
+        if let lastValue {
+            throw NativeDDCServiceError(
+                message: "The monitor did not confirm the requested input (VCP 0x60 read back \(lastValue); expected \(expected))"
+            )
+        }
+        throw NativeDDCServiceError(
+            message: "The monitor accepted the input command, but VCP 0x60 could not be read back after \(attempts) attempts: \(lastError ?? "unknown readback error")"
+        )
     }
 
     /// Keeps the external display pipeline awake while a native DDC request

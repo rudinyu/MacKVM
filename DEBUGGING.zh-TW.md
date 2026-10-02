@@ -82,7 +82,9 @@ ifconfig
 
 ### 為何除錯時建議使用 console
 
-Windows UI 會顯示即時狀態與原生同意對話框，但啟動時會脫離 console。目前 Windows app 沒有持久化檔案 logger，也沒有 Event Viewer provider。除錯時請以 console 模式啟動同一個 receiver，以保留 pairing、mDNS、TCP、handshake 與 input 訊息。
+Windows UI 會顯示即時狀態與原生同意對話框，並將有界狀態 log 寫入
+`%LOCALAPPDATA%\MacKVM\logs\WindowsKVM.log`。**Copy support information** 會附上最近狀態事件，並遮蔽配對碼。
+如需完整 pairing、mDNS、TCP、handshake 與 input 訊息，請依下方步驟改用 console 模式。App 目前沒有 Event Viewer provider。
 
 切換到 console 模式前，先從系統匣選單選 **Quit WindowsKVM**；只關閉狀態視窗會讓 receiver
 繼續執行。UI 與 `--pairing-listen` 共用單一接收器保護，第二個 receiver 會顯示已在執行的訊息並退出，

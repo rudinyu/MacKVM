@@ -43,7 +43,7 @@
 <body>
   <main>
     <header>
-      <div class="badge">MacKVM 1.100.10 (build 87)</div>
+      <div class="badge">MacKVM 1.100.10 (build 91)</div>
       <h1>MacKVM User Manual</h1>
       <p class="lede">A macOS app with a KVM menu-bar entry and full control window for sharing one keyboard, mouse, and trackpad, plus an optional BenQ MA270U display, between two MacBook Pro computers.</p>
       <p><a href="USER_MANUAL.zh-TW.html" lang="zh-Hant">繁體中文版</a> · <a href="USER_MANUAL.md">Markdown version</a></p>
@@ -91,7 +91,7 @@
       </ol>
       <p>Build both versions on the M5 Pro when needed:</p>
       <pre><code>./scripts/build-app.sh --arch arm64
-./scripts/build-app.sh --arch x86_64</code></pre>
+./scripts/build-app.sh --arch x86_64 --no-clean</code></pre>
       <p>Create and verify a DMG:</p>
       <pre><code>./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
@@ -230,7 +230,7 @@
     </section>
 
     <footer>
-      <p>MacKVM User Manual · Version 1.100.10 (build 87) · Updated 2026-09-15</p>
+      <p>MacKVM User Manual · Version 1.100.10 (build 91) · Updated 2026-10-02</p>
     </footer>
   </main>
 </body>

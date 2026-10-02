@@ -8,7 +8,7 @@ authenticate a secure Connect session, and receive keyboard/mouse control over
 that encrypted session. A console mode remains available for automation and
 firewall diagnostics.
 
-## Current feature set — 1.02.27 (build 108)
+## Current feature set — 1.02.28 (build 109)
 
 The Windows host includes:
 
@@ -115,26 +115,30 @@ The full Advanced view contains:
 
 1. **Header** — WindowsKVM branding, this PC's friendly name, device ID, model,
    version/build, and public key fingerprint.
-2. **Set up this PC** — Local Network, Input Monitoring, Accessibility,
-   firewall settings, input readiness, control-request notifications, and a
-   refresh action.
+2. **Set up this PC** — active TCP listener ports, Secure Connect availability,
+   remote-input admission state, firewall guidance, consent-dialog status, and
+   a refresh action. Listener readiness does not claim that another Mac can
+   reach the PC through the current network/firewall.
 3. **Physical input path** — the keyboard/mouse/trackpad ownership summary and
    the Windows `SendInput` path. **Local Windows input only** disables remote
    control admission (and releases any active grant); switch back to the first
    option to allow a paired Mac to request control again.
    The dropdown opens with room for both options, even after scrolling or
    resizing. This setting does not enable Windows-to-Mac input forwarding.
-4. **Nearby devices** — pairing listener state and a selector containing every
-   trusted peer (including its short device ID); choose the peer before using
+4. **Paired Macs** — a selector containing trusted peers (including their short
+   device IDs); this is not a live mDNS browse list. Choose a peer before using
    **Forget paired Mac**. Pair and Connect are initiated from the MacKVM peer.
-5. **Keyboard, mouse, and trackpad** — permission state, current control state,
-   and the local-return hotkey.
+5. **Keyboard, mouse, and trackpad** — explains the Input Monitoring and
+   Accessibility requirements on the controlling Mac (which Windows cannot
+   inspect), current control state, and the local-return hotkey.
 6. **Monitor input** — explains that display switching is optional and remains
    controlled from MacKVM or the monitor OSD.
 7. **Paired device information** — the current Mac's public identity,
    **Forget paired Mac**, the **Automatically allow control from this paired
    Mac** setting, local identity details, and the public **Copy support
-   information** action.
+   information** action. The Local Windows input only choice is saved for the
+   next launch. A bounded UI status log is stored under
+   `%LOCALAPPDATA%\MacKVM\logs` and included in copied support information.
 
 Native Windows Allow/Deny dialogs are used for pairing-code consent and for control
 requests whose automatic approval was disabled. Peers from an interactive
@@ -280,7 +284,7 @@ native APIs do not replace these desktop checks.
    that the mode and pairing buttons do not overlap. Resize or
    move between monitors during a connection; changing the view must not
    reset pairing or control, and consent prompts must remain usable.
-8. Confirm `--version` reports **1.02.27 (build 108)**; the reported UI defects
+8. Confirm `--version` reports **1.02.28 (build 109)**; the reported UI defects
    were tested on **1.02.09 (build 89) Beta 3**, not this build. Quit the old
    tray receiver before starting the replacement. Check the title/heading say
    **WindowsKVM**. Scroll Advanced rapidly up/down and drag both scrollbars;

@@ -3,9 +3,9 @@
 [Architecture](ARCHITECTURE.md) · [Installation guide](INSTALL.md) ·
 [Security status](SECURITY.md) · [繁體中文](ROADMAP.zh-TW.md)
 
-This roadmap is written against the 1.100.04 source tree. Every gap below was
-confirmed in code rather than inferred from the documentation, and each item
-records the files a change would start from.
+This roadmap is written against the 1.100.10 (build 91) source tree. Every gap
+below was confirmed in code rather than inferred from the documentation, and
+each item records the files a change would start from.
 
 ## Where the project stands
 
@@ -42,8 +42,8 @@ path now covers keyboard, mouse, and the public Quartz trackpad event surface.
 | F6 | Keyboard layout remapping | Medium | Medium | **Done** |
 | F7 | Native DDC without external helper | Medium | Medium | **Done** |
 | F8 | Three or more Macs | Low | High | P2 |
-| F9 | Notarized release and updates | Low | Medium | P2 |
-| F10 | Connection diagnostics | Low | Low | P2 |
+| F9 | Automatic update delivery | Low | Medium | P2 |
+| F10 | Connection diagnostics and bounded status log | Low | Low | **Partial** |
 | F11 | High-level trackpad gestures | Medium | Unknown | P3 |
 | F12 | File transfer and drag and drop | Low | High | P3 |
 | F13 | Sleep/wake reconnect | Low | Low | **Done** |
@@ -55,14 +55,16 @@ other KVM software.
 
 The Windows companion is maintained in this repository alongside the stable
 macOS client. The current W3 scope is implemented: signed pairing with DPAPI
-identity storage, mDNS discovery, authenticated Secure Connect with the same
+identity storage, mDNS advertising, authenticated Secure Connect with the same
 v2 disconnect/heartbeat capability as MacKVM, strict control/input validation,
 Windows `SendInput` injection with release-all teardown, resident tray and
 compact/Advanced UI modes, firewall guidance, and x64/ARM64 publish scripts.
 The platform-neutral protocol and desktop self-tests run from
-`scripts/ci.sh` when a .NET 8 SDK is available. Raw Input capture and a
-polished firewall setup wizard remain future Windows work; the current flow
-expects MacKVM to initiate Pair and Connect.
+`scripts/ci.sh` when a .NET 8 SDK is available. The Local Windows input only
+preference persists across restarts, and the resident UI keeps a bounded local
+status log. Windows lists trusted Macs rather than browsing as a controller;
+MacKVM initiates Pair and Connect. Raw Input capture and a polished firewall
+setup wizard remain future Windows work.
 
 ## P0 — make it usable every day
 
@@ -286,18 +288,18 @@ compares two UUIDs. Supporting more Macs requires redesigning both arbitration
 (which Mac owns the keyboard) and the menu (which Mac to switch to). This is
 the largest item here and is not worth starting for a two-Mac setup.
 
-### F9. Notarized release and updates
+### F9. Automatic update delivery
 
-Already recorded as outstanding in `ARCHITECTURE.md`. Required before anyone
-else can install MacKVM without Finder's **Open** confirmation; deferrable
-indefinitely for personal use.
+The current macOS release is Developer ID signed and notarized. What remains
+is an automatic update-delivery and verification mechanism; releases are
+currently installed manually.
 
 ### F10. Runtime connection diagnostics
 
-The native DDC diagnostic CLI now covers system/display transport and input
-mapping evidence. The remaining runtime gap is session observability: beyond
-the static `SupportInformation` snapshot there are no latency, jitter, or
-bounded event-log indicators for diagnosing stuttering remote input.
+The native DDC diagnostic CLI covers system/display transport and input
+mapping evidence, and the Windows UI retains bounded local status events. The
+remaining runtime gap is macOS persistent session observability and latency /
+jitter metrics on both platforms.
 
 ## P3 — needs a spike first
 

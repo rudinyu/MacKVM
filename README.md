@@ -1,12 +1,11 @@
 [繁體中文](README.zh-TW.md)
 
-# RemoteMac self-hosted relay
+# MacKVM — keyboard, mouse, and trackpad sharing
 
-MacKVM is the native macOS client for the RemoteMac self-hosted relay.
-
-MacKVM is a native macOS app with both a menu-bar entry and a regular window
-for sharing a keyboard, mouse, and trackpad, with optional monitor switching, between two
-Macs on the same local network.
+MacKVM is a native macOS app for sharing a keyboard, mouse, and trackpad
+between two computers on the same local network. A Windows receiver companion
+is included in this repository. Monitor input switching is optional and uses
+native DDC/CI where the display supports it.
 
 The current MVP provides:
 
@@ -118,8 +117,11 @@ An Apple Silicon Mac can also cross-build both supported architectures:
 ./scripts/build-app.sh --arch arm64
 
 # 2019 Intel MacBook Pro
-./scripts/build-app.sh --arch x86_64
+./scripts/build-app.sh --arch x86_64 --no-clean
 ```
+
+Each normal build starts clean. Use `--no-clean` for later architectures in
+the same build batch so the earlier app slice remains in `dist/`.
 
 These commands produce `dist/arm64/MacKVM.app` and
 `dist/x86_64/MacKVM.app`. Copy the x86_64 app to the Intel Mac and the arm64

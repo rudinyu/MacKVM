@@ -6,7 +6,7 @@ WindowsKVM 是 MacKVM 的 Windows companion。目前 Windows 版包含原生 Win
 host，可在區域網路上與 MacKVM 配對、完成 secure Connect 驗證，並接收加密鍵盤／滑鼠控制；
 另外保留 console 模式供自動化與防火牆診斷。
 
-## 目前功能 — 1.02.27（build 108）
+## 目前功能 — 1.02.28（build 109）
 
 Windows host 已包含：
 
@@ -81,15 +81,16 @@ Windows 狀態視窗沿用 macOS MacKVM 面板的資訊順序，並提供兩種�
 完整 Advanced mode 的區段順序為：
 
 1. **標題區**：WindowsKVM 品牌、本機友善名稱、裝置 ID、型號、版本／build 與公開金鑰指紋。
-2. **設定這台 PC**：Local Network、Input Monitoring、Accessibility、防火牆設定、輸入就緒、
-   控制請求通知與重新整理。
+2. **設定這台 PC**：配對 listener、Secure Connect、遠端輸入、防火牆設定、輸入注入檢查、
+   控制請求通知與重新整理。Windows 無法檢查控制端 Mac 的 Input Monitoring 或 Accessibility 權限。
 3. **實體輸入路徑**：鍵盤／滑鼠／觸控板擁有者摘要與 Windows `SendInput` 路徑。
    選擇 **Local Windows input only** 會停用遠端控制請求（並釋放目前控制權）；切回第一個選項
    才允許已配對的 Mac 再次請求控制。
    下拉清單展開時可同時容納兩個選項，捲動或縮放後仍保留此高度。此設定不代表支援 Windows 向 Mac 傳送輸入。
 4. **附近裝置**：配對 listener 狀態與所有已信任 peer 的選擇器（包含短裝置 ID）；先選取
    peer 再使用 **Forget paired Mac**。Pair 與 Connect 仍由 MacKVM peer 發起。
-5. **鍵盤、滑鼠與觸控板**：權限狀態、目前控制狀態與本機交還快捷鍵。
+5. **鍵盤、滑鼠與觸控板**：說明控制端 Mac 必須授予 Input Monitoring 與 Accessibility
+   （Windows 無法檢查這些 macOS 權限）、目前控制狀態與本機交還快捷鍵。
 6. **螢幕輸入**：說明螢幕切換是選用功能，仍由 MacKVM 或螢幕 OSD 控制。
 7. **已配對裝置資訊**：目前 Mac 的公開 identity、**Forget paired Mac**、**Automatically allow
    control from this paired Mac**、本機 identity 詳細資料與公開的 **複製支援資訊**功能。
@@ -200,7 +201,7 @@ Windows control granted for ...
    開啟 Advanced 檢查隱藏的身分與 port 資訊；在窄視窗使用橫向捲動確認右側操作仍可使用。
    再切回 Simple，確認視窗縮小且橫向捲軸消失；拖曳至最小尺寸，確認模式與配對按鈕不重疊。連線時調整大小或移動到
    不同螢幕，切換版面不得重設配對或控制權，同意對話框也必須保持可操作。
-8. 確認 `--version` 為 **1.02.27（build 108）**；先前 UI 問題的測試版本為
+8. 確認 `--version` 為 **1.02.28（build 109）**；先前 UI 問題的測試版本為
    **1.02.09（build 89）Beta 3**，不是本版。啟動替換版前先退出舊的系統匣 receiver。
    確認視窗標題與主標題為 **WindowsKVM**，在 Advanced 快速上下捲動並拖動兩個捲軸，
    不應殘留舊文字。捲動／縮放前後展開 **Physical input path**，分別選取兩個選項；

@@ -27,7 +27,7 @@ Build on the M5 Pro, which can produce both architectures:
 
 ```sh
 ./scripts/build-app.sh --arch arm64
-./scripts/build-app.sh --arch x86_64
+./scripts/build-app.sh --arch x86_64 --no-clean
 ```
 
 Install `dist/arm64/MacKVM.app` on the M5 Pro and

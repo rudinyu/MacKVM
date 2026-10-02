@@ -20,7 +20,7 @@ MacKVM 是 macOS app，提供選單列入口與一般控制視窗，讓 14 吋 M
 
 ```sh
 ./scripts/build-app.sh --arch arm64
-./scripts/build-app.sh --arch x86_64
+./scripts/build-app.sh --arch x86_64 --no-clean
 ```
 
 MacKVM 使用原生 IOKit DDC/CI：Apple Silicon 走 `IOAVService`，Intel 走 `IOI2C`，

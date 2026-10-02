@@ -16,6 +16,7 @@ internal static class Program
             TestTrayLayoutPolicy();
             TestFingerprintFormatting();
             TestTrayNativeChildBounds();
+            TestDiagnosticStatusSanitization();
             TestListenerGuardIsCrossPlatformAndAsyncSafe();
             await TestConsentCancellationAndQueueAsync();
             await TestSecureSessionLifecycleAsync();
@@ -27,6 +28,23 @@ internal static class Program
             Console.Error.WriteLine($"WindowsKVM desktop self-test: FAIL\n{ex}");
             return 1;
         }
+    }
+
+    private static void TestDiagnosticStatusSanitization()
+    {
+        var status = WindowsKvmDiagnosticLog.SanitizeStatus(
+            "Verification code: 123456\nPairing code is 654321"
+        );
+        Assert(
+            !status.Contains("123456", StringComparison.Ordinal)
+                && !status.Contains("654321", StringComparison.Ordinal)
+                && status.Contains("[redacted]", StringComparison.Ordinal),
+            "diagnostic status must redact pairing and verification codes"
+        );
+        Assert(
+            !status.Contains('\n'),
+            "diagnostic status must not allow embedded lines to spoof log entries"
+        );
     }
 
     private static void TestInputBookkeepingAndMappings()

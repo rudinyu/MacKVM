@@ -1597,7 +1597,16 @@ private struct MacKVMMenuView: View {
                 }
             } else {
                 Button("Request keyboard, mouse, and trackpad control") {
-                    control.requestControl()
+                    // If automatic monitor routing is on, keep this action
+                    // consistent with Show other device and the O shortcut:
+                    // verify the external input first, then request input.
+                    // With DDC disabled, this remains a keyboard-only control
+                    // request for users who switch the monitor manually.
+                    if monitor.automationEnabled {
+                        _ = bootstrap.startCombinedControlRequest()
+                    } else {
+                        control.requestControl()
+                    }
                 }
                 .disabled(
                     !inputCapture.hasInputMonitoringPermission

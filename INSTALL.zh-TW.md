@@ -23,7 +23,7 @@ EDID mapping 使用 `19`／`0x13`；其他型號保留通用值，或先執行�
 
 ```sh
 ./scripts/build-app.sh --arch arm64
-./scripts/build-app.sh --arch x86_64
+./scripts/build-app.sh --arch x86_64 --no-clean
 ```
 
 把 `dist/arm64/MacKVM.app` 安裝到 M5 Pro，把 `dist/x86_64/MacKVM.app` 安裝到

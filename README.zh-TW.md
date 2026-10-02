@@ -1,10 +1,9 @@
 [English](README.md)
 
-# RemoteMac self-hosted relay
+# MacKVM — 鍵盤、滑鼠與觸控板共享
 
-MacKVM 是原生 macOS 應用程式，提供選單列入口與一般控制視窗，讓兩台位於同一本機
-網路的 Mac 共用鍵盤、滑鼠與觸控板，並可選擇切換 BenQ MA270U 螢幕。配對與控制都需要
-兩台 Mac 明確同意，控制資料會透過加密連線傳送。
+MacKVM 是原生 macOS 應用程式，可在同一本機網路上的兩台電腦間共享鍵盤、滑鼠與觸控板。
+此 repo 也包含 Windows 接收端。螢幕輸入切換是選用功能，並透過相容螢幕的原生 DDC/CI 控制。
 
 ## 功能
 
@@ -85,11 +84,14 @@ MA270U 的 USB-C 輸入使用 VCP 0x60 值 `19 (0x13)`；MacKVM 會依 EDID 套�
 ./scripts/build-app.sh --arch arm64
 
 # 2019 Intel Mac 可用的 Intel 版本
-./scripts/build-app.sh --arch x86_64
+./scripts/build-app.sh --arch x86_64 --no-clean
 
 # 同時支援兩種架構的 DMG
 ./scripts/package-dmg.sh --arch universal
 ```
+
+每次一般建置會先清除舊輸出。同一批要建置多個架構時，後續指令請加上
+`--no-clean`，以保留先前架構的 app。
 
 產物位於 `dist/`。本機測試使用 ad-hoc 簽章；要透過 GitHub 或其他方式提供給其他
 Mac 正式安裝，請使用獨立的 notarized release script，不需要上架 Mac App Store。

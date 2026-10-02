@@ -231,7 +231,8 @@ internal sealed class WindowsTrayApplication : IDisposable
     private string? pairedPeerID;
     private string? pairedPeerFullID;
     private string? pairedPeerFingerprint;
-    private int remoteInputEnabled = 1;
+    private int remoteInputEnabled = WindowsKvmPreferences.LoadRemoteInputEnabled() ? 1 : 0;
+    private int runtimeFailure;
     private readonly List<Guid> pairedPeerOptions = new();
     private bool updatingPeerSelector;
     private int controlActive;
@@ -300,7 +301,9 @@ internal sealed class WindowsTrayApplication : IDisposable
         runtime.PairingCompleted += OnPairingCompleted;
         runtime.ControlStateChanged += OnControlStateChanged;
         SetPairedPeer(runtime.TrustedPeers.FirstOrDefault());
-        runtime.SetRemoteInputEnabled(enabled: true);
+        runtime.SetRemoteInputEnabled(
+            enabled: Volatile.Read(ref remoteInputEnabled) != 0
+        );
     }
 
     public static int Run()
@@ -361,6 +364,7 @@ internal sealed class WindowsTrayApplication : IDisposable
         AddTrayIcon();
         SetWindowText(detailLabel, FormatHeaderDetails());
         runtime.Start();
+        RefreshSetupStateLabels();
         _ = MonitorRuntimeAsync();
         ShowWindow(window, ShowWindowDefault);
         UpdateWindow(window);
@@ -577,35 +581,35 @@ internal sealed class WindowsTrayApplication : IDisposable
         );
 
         CreateLabel("Set up this PC", AdvancedEdge, 230, AdvancedTextWidth, 32, sectionFont);
-        CreateLabel("Local Network", AdvancedEdge, 270, 470, 28, bodyFont);
+        CreateLabel("Pairing listener", AdvancedEdge, 270, 470, 28, bodyFont);
         localNetworkStatusLabel = CreateLabel(
-            "✓ Ready",
+            "Checking receiver…",
             AdvancedStatusX,
             270,
             AdvancedStatusWidth,
             28,
             bodyFont,
-            LabelColor.Green
+            LabelColor.Secondary
         );
-        CreateLabel("Input Monitoring", AdvancedEdge, 306, 470, 28, bodyFont);
+        CreateLabel("Secure Connect", AdvancedEdge, 306, 470, 28, bodyFont);
         inputMonitoringStatusLabel = CreateLabel(
-            "✓ Complete",
+            "Checking receiver…",
             AdvancedStatusX,
             306,
             AdvancedStatusWidth,
             28,
             bodyFont,
-            LabelColor.Green
+            LabelColor.Secondary
         );
-        CreateLabel("Accessibility", AdvancedEdge, 342, 470, 28, bodyFont);
+        CreateLabel("Remote input", AdvancedEdge, 342, 470, 28, bodyFont);
         accessibilityStatusLabel = CreateLabel(
-            "✓ Complete",
+            "Checking receiver…",
             AdvancedStatusX,
             342,
             AdvancedStatusWidth,
             28,
             bodyFont,
-            LabelColor.Green
+            LabelColor.Secondary
         );
         CreateLabel(
             "Windows does not use macOS privacy prompts. The receiver uses\r\n"
@@ -627,13 +631,13 @@ internal sealed class WindowsTrayApplication : IDisposable
             FirewallButtonID
         );
         inputReadyLabel = CreateLabel(
-            "✓ Input permissions ready",
+            "Input injection is checked when a Mac requests control",
             AdvancedEdge,
             488,
             500,
             28,
             bodyFont,
-            LabelColor.Green
+            LabelColor.Secondary
         );
         CreateLabel(
             "Control request notifications",
@@ -644,13 +648,13 @@ internal sealed class WindowsTrayApplication : IDisposable
             bodyFont
         );
         notificationsStatusLabel = CreateLabel(
-            "✓ Enabled",
+            "Consent dialogs available while this app is running",
             AdvancedStatusX,
             528,
             AdvancedStatusWidth,
             28,
             bodyFont,
-            LabelColor.Green
+            LabelColor.Secondary
         );
         CreateLabel(
             "Native Windows dialogs are shown when automatic control approval\r\n"
@@ -695,9 +699,9 @@ internal sealed class WindowsTrayApplication : IDisposable
             LabelColor.Secondary
         );
 
-        CreateLabel("Nearby devices", AdvancedEdge, 884, AdvancedTextWidth, 32, sectionFont);
+        CreateLabel("Paired Macs", AdvancedEdge, 884, AdvancedTextWidth, 32, sectionFont);
         nearbyStatusLabel = CreateLabel(
-            "Listening for MacKVM pairing requests on the local network…",
+            "Waiting for a Mac to start pairing; this list shows trusted Macs.",
             AdvancedEdge,
             926,
             AdvancedTextWidth,
@@ -748,26 +752,39 @@ internal sealed class WindowsTrayApplication : IDisposable
             32,
             sectionFont
         );
-        CreateLabel("Input Monitoring", AdvancedEdge, 1182, 470, 28, bodyFont);
-        CreateLabel("✓ Complete", AdvancedStatusX, 1182, AdvancedStatusWidth, 28, bodyFont, LabelColor.Green);
-        CreateLabel("Accessibility", AdvancedEdge, 1218, 470, 28, bodyFont);
-        CreateLabel("✓ Complete", AdvancedStatusX, 1218, AdvancedStatusWidth, 28, bodyFont, LabelColor.Green);
+        CreateLabel(
+            "Controller Mac requirements",
+            AdvancedEdge,
+            1182,
+            AdvancedTextWidth,
+            28,
+            bodyFont
+        );
+        CreateLabel(
+            "Input Monitoring and Accessibility must be granted on the controlling Mac.\r\n"
+                + "Windows cannot inspect or verify those macOS permissions.",
+            AdvancedEdge,
+            1218,
+            AdvancedTextWidth,
+            42,
+            captionFont,
+            LabelColor.Secondary
+        );
         controlStateLabel = CreateLabel(
             "Waiting for an authenticated Mac to request control.",
             AdvancedEdge,
-            1260,
+            1270,
             AdvancedTextWidth,
             30,
             bodyFont
         );
         CreateLabel(
-            "The controlling Mac must pass its own Input Monitoring and\r\n"
-                + "Accessibility checks. Windows only accepts authenticated,\r\n"
-                + "consented input and releases held keys when control ends.",
+            "Windows accepts only authenticated, consented input and releases\r\n"
+                + "held keys when control ends.",
             AdvancedEdge,
-            1300,
+            1310,
             AdvancedTextWidth,
-            58,
+            42,
             captionFont,
             LabelColor.Secondary
         );
@@ -2183,7 +2200,7 @@ internal sealed class WindowsTrayApplication : IDisposable
                 OpenFirewallSettings();
                 break;
             case RefreshButtonID:
-                OnRuntimeStatusChanged("Setup status refreshed; receiver is ready on the local network.");
+                RefreshSetupStatus();
                 break;
             case CopyButtonID:
                 CopySupportInformation();
@@ -2224,6 +2241,7 @@ internal sealed class WindowsTrayApplication : IDisposable
         ).ToInt64();
         var enabled = selection != 1;
         Volatile.Write(ref remoteInputEnabled, enabled ? 1 : 0);
+        WindowsKvmPreferences.SaveRemoteInputEnabled(enabled);
         runtime.SetRemoteInputEnabled(enabled);
         SyncInputPathSelectors();
         OnRuntimeStatusChanged(
@@ -2658,6 +2676,7 @@ internal sealed class WindowsTrayApplication : IDisposable
 
     private void OnRuntimeStatusChanged(string message)
     {
+        WindowsKvmDiagnosticLog.WriteStatus(message);
         Volatile.Write(ref lastStatus, message);
         Volatile.Write(ref statusDirty, 1);
         ScheduleStatusDrain();
@@ -2838,11 +2857,13 @@ internal sealed class WindowsTrayApplication : IDisposable
             await runtime.WaitForShutdownAsync(CancellationToken.None).ConfigureAwait(false);
             if (Volatile.Read(ref disposed) == 0)
             {
+                Volatile.Write(ref runtimeFailure, 1);
                 OnRuntimeStatusChanged("WindowsKVM receiver stopped.");
             }
         }
         catch (Exception ex) when (Volatile.Read(ref disposed) == 0)
         {
+            Volatile.Write(ref runtimeFailure, 1);
             OnRuntimeStatusChanged($"WindowsKVM receiver failed: {ex.Message}");
         }
     }
@@ -2869,6 +2890,8 @@ internal sealed class WindowsTrayApplication : IDisposable
                 SetWindowText(statusLabel, latestStatus);
             }
 
+            RefreshSetupStateLabels();
+
             if (latestPeer is not null)
             {
                 SetPairedPeer(latestPeer);
@@ -2884,7 +2907,7 @@ internal sealed class WindowsTrayApplication : IDisposable
             {
                 SetWindowText(
                     nearbyStatusLabel,
-                    "Listening for MacKVM pairing requests on the local network…"
+                    "Waiting for a Mac to start pairing; this list shows trusted Macs."
                 );
                 SetLabelColor(nearbyStatusLabel, LabelColor.Secondary);
                 SetWindowText(
@@ -3016,6 +3039,71 @@ internal sealed class WindowsTrayApplication : IDisposable
         }
     }
 
+    private void RefreshSetupStateLabels()
+    {
+        var runtimeHealthy = Volatile.Read(ref runtimeFailure) == 0 && runtime.IsStarted;
+        var pairingReady = runtimeHealthy && runtime.PairingPort > 0;
+        var secureReady = runtimeHealthy
+            && runtime.SecureConnectAvailable
+            && runtime.SecurePort > 0;
+        SetWindowText(localNetworkStatusLabel, pairingReady ? "Listening" : "Unavailable");
+        SetLabelColor(
+            localNetworkStatusLabel,
+            pairingReady ? LabelColor.Secondary : LabelColor.Orange
+        );
+
+        SetWindowText(
+            inputMonitoringStatusLabel,
+            secureReady ? "Available" : "Unavailable"
+        );
+        SetLabelColor(
+            inputMonitoringStatusLabel,
+            secureReady ? LabelColor.Secondary : LabelColor.Orange
+        );
+
+        var remoteInputIsEnabled = Volatile.Read(ref remoteInputEnabled) != 0;
+        SetWindowText(
+            accessibilityStatusLabel,
+            remoteInputIsEnabled ? "Enabled" : "Local-only"
+        );
+        SetLabelColor(
+            accessibilityStatusLabel,
+            remoteInputIsEnabled ? LabelColor.Secondary : LabelColor.Orange
+        );
+        SetWindowText(
+            inputReadyLabel,
+            remoteInputIsEnabled
+                ? "Remote input is enabled; Windows checks injection when control starts"
+                : "Local Windows input only; remote control requests are disabled"
+        );
+        SetLabelColor(
+            inputReadyLabel,
+            remoteInputIsEnabled ? LabelColor.Secondary : LabelColor.Orange
+        );
+        SetWindowText(
+            notificationsStatusLabel,
+            "Consent dialogs available while this app is running"
+        );
+        SetLabelColor(notificationsStatusLabel, LabelColor.Secondary);
+    }
+
+    private void RefreshSetupStatus()
+    {
+        RefreshSetupStateLabels();
+        var runtimeHealthy = Volatile.Read(ref runtimeFailure) == 0 && runtime.IsStarted;
+        var pairingReady = runtimeHealthy && runtime.PairingPort > 0;
+        var secureReady = runtimeHealthy
+            && runtime.SecureConnectAvailable
+            && runtime.SecurePort > 0;
+        OnRuntimeStatusChanged(
+            pairingReady && secureReady
+                ? "Setup refreshed: local listeners are active; confirm LAN access from MacKVM."
+                : pairingReady
+                    ? "Setup refreshed: Pairing is active; Secure Connect is unavailable on this Windows build."
+                    : "Setup refreshed: the Pairing listener is unavailable."
+        );
+    }
+
     private void ScheduleStatusDrain()
     {
         if (window == IntPtr.Zero
@@ -3044,7 +3132,10 @@ internal sealed class WindowsTrayApplication : IDisposable
             .AppendLine($"Model: {runtime.Model}")
             .AppendLine($"Pairing TCP: {runtime.PairingPort}")
             .AppendLine($"Secure TCP: {runtime.SecurePort}")
-            .AppendLine($"Last status: {lastStatus}")
+            .AppendLine($"Last status: {WindowsKvmDiagnosticLog.SanitizeStatus(lastStatus)}")
+            .AppendLine($"Diagnostic log: {WindowsKvmDiagnosticLog.FilePath}")
+            .AppendLine("Recent status events (verification codes are redacted):")
+            .AppendLine(WindowsKvmDiagnosticLog.ReadRecentStatuses())
             .ToString();
         if (SetClipboardText(text))
         {
