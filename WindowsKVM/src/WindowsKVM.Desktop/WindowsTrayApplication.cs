@@ -233,6 +233,8 @@ internal sealed class WindowsTrayApplication : IDisposable
     private string? pairedPeerFingerprint;
     private int remoteInputEnabled = WindowsKvmPreferences.LoadRemoteInputEnabled() ? 1 : 0;
     private int runtimeFailure;
+    private int pairingFailure;
+    private int secureConnectFailure;
     private readonly List<Guid> pairedPeerOptions = new();
     private bool updatingPeerSelector;
     private int controlActive;
@@ -2240,12 +2242,20 @@ internal sealed class WindowsTrayApplication : IDisposable
             IntPtr.Zero
         ).ToInt64();
         var enabled = selection != 1;
+        var preferenceSaved = WindowsKvmPreferences.SaveRemoteInputEnabled(enabled);
+        if (!preferenceSaved)
+        {
+            // A selection that cannot be remembered must not leave remote
+            // input enabled for this run after the user chose Local-only.
+            enabled = false;
+        }
         Volatile.Write(ref remoteInputEnabled, enabled ? 1 : 0);
-        WindowsKvmPreferences.SaveRemoteInputEnabled(enabled);
         runtime.SetRemoteInputEnabled(enabled);
         SyncInputPathSelectors();
         OnRuntimeStatusChanged(
-            enabled
+            !preferenceSaved
+                ? "Could not save this preference; remote input is disabled for this run only. Check Windows profile permissions."
+                : enabled
                 ? "Remote keyboard and mouse input enabled."
                 : "Local Windows input only; remote control requests are disabled."
         );
@@ -2861,6 +2871,19 @@ internal sealed class WindowsTrayApplication : IDisposable
                 OnRuntimeStatusChanged("WindowsKVM receiver stopped.");
             }
         }
+        catch (WindowsKvmEndpointException ex) when (Volatile.Read(ref disposed) == 0)
+        {
+            if (ex.Endpoint == WindowsKvmEndpoint.Pairing)
+            {
+                Volatile.Write(ref pairingFailure, 1);
+                OnRuntimeStatusChanged($"Pairing listener failed: {ex.Message}");
+            }
+            else
+            {
+                Volatile.Write(ref secureConnectFailure, 1);
+                OnRuntimeStatusChanged($"Secure Connect listener failed: {ex.Message}");
+            }
+        }
         catch (Exception ex) when (Volatile.Read(ref disposed) == 0)
         {
             Volatile.Write(ref runtimeFailure, 1);
@@ -3042,8 +3065,11 @@ internal sealed class WindowsTrayApplication : IDisposable
     private void RefreshSetupStateLabels()
     {
         var runtimeHealthy = Volatile.Read(ref runtimeFailure) == 0 && runtime.IsStarted;
-        var pairingReady = runtimeHealthy && runtime.PairingPort > 0;
+        var pairingReady = runtimeHealthy
+            && Volatile.Read(ref pairingFailure) == 0
+            && runtime.PairingPort > 0;
         var secureReady = runtimeHealthy
+            && Volatile.Read(ref secureConnectFailure) == 0
             && runtime.SecureConnectAvailable
             && runtime.SecurePort > 0;
         SetWindowText(localNetworkStatusLabel, pairingReady ? "Listening" : "Unavailable");
@@ -3091,8 +3117,11 @@ internal sealed class WindowsTrayApplication : IDisposable
     {
         RefreshSetupStateLabels();
         var runtimeHealthy = Volatile.Read(ref runtimeFailure) == 0 && runtime.IsStarted;
-        var pairingReady = runtimeHealthy && runtime.PairingPort > 0;
+        var pairingReady = runtimeHealthy
+            && Volatile.Read(ref pairingFailure) == 0
+            && runtime.PairingPort > 0;
         var secureReady = runtimeHealthy
+            && Volatile.Read(ref secureConnectFailure) == 0
             && runtime.SecureConnectAvailable
             && runtime.SecurePort > 0;
         OnRuntimeStatusChanged(

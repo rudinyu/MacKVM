@@ -372,6 +372,22 @@ final class MonitorControllerTests: XCTestCase {
         XCTAssertEqual(results, [true])
     }
 
+    func testDeferredDisplayFirstSwitchKeepsItsLocalRecoveryInput() {
+        var state = DeferredAutomaticSwitchState()
+        _ = state.deferSwitch(
+            input: .hdmi1,
+            description: "the other device",
+            intent: .normal,
+            completion: nil,
+            result: { _ in },
+            recoveryInputOnFailure: .usbC
+        )
+
+        let pending = state.takeDeferredSwitch()
+        XCTAssertEqual(pending?.input, .hdmi1)
+        XCTAssertEqual(pending?.recoveryInputOnFailure, .usbC)
+    }
+
     func testTerminationKeepsOnlyTheFinalLocalDeferredRoute() {
         var state = DeferredAutomaticSwitchState()
         var completed: [String] = []

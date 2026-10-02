@@ -17,39 +17,51 @@ internal static class WindowsKvmPreferences
         try
         {
             using var key = Registry.CurrentUser.OpenSubKey(RegistryPath);
-            return key?.GetValue(RemoteInputValue) switch
-            {
-                int value => value != 0,
-                _ => true
-            };
+            var value = key?.GetValue(RemoteInputValue);
+            return ResolveRemoteInputEnabled(value is not null, value);
         }
         catch (Exception ex) when (
             ex is IOException or UnauthorizedAccessException or SecurityException
         )
         {
-            // A preference-store failure must not prevent the receiver from
-            // starting. The first-run default remains the existing behavior.
-            return true;
+            // A failed read must never silently override a prior local-only
+            // decision by enabling remote input.
+            return false;
         }
     }
 
-    public static void SaveRemoteInputEnabled(bool enabled)
+    public static bool ResolveRemoteInputEnabled(bool hasValue, object? value)
+    {
+        if (!hasValue)
+        {
+            return true;
+        }
+
+        return value is int storedValue && storedValue != 0;
+    }
+
+    public static bool SaveRemoteInputEnabled(bool enabled)
     {
         try
         {
             using var key = Registry.CurrentUser.CreateSubKey(RegistryPath);
-            key?.SetValue(
+            if (key is null)
+            {
+                return false;
+            }
+            key.SetValue(
                 RemoteInputValue,
                 enabled ? 1 : 0,
                 RegistryValueKind.DWord
             );
+            return true;
         }
         catch (Exception ex) when (
             ex is IOException or UnauthorizedAccessException or SecurityException
         )
         {
-            // The live choice still takes effect. A later launch will use the
-            // safe first-run default if Windows could not persist it.
+            // Let the UI report that this choice will not survive restart.
+            return false;
         }
     }
 }

@@ -12,6 +12,8 @@
     <Compile Include="../../src/WindowsKVM.Desktop/ConsentRequestCoordinator.cs" Link="ConsentRequestCoordinator.cs" />
     <Compile Include="../../src/WindowsKVM.Desktop/WindowsControlReleaseHotKey.cs" Link="WindowsControlReleaseHotKey.cs" />
     <Compile Include="../../src/WindowsKVM.Desktop/WindowsInputSink.cs" Link="WindowsInputSink.cs" />
+    <Compile Include="../../src/WindowsKVM.Desktop/WindowsKvmPreferences.cs" Link="WindowsKvmPreferences.cs" />
+    <Compile Include="../../src/WindowsKVM.Desktop/PairingRevocationGate.cs" Link="PairingRevocationGate.cs" />
     <Compile Include="../../src/WindowsKVM.Desktop/WindowsKvmListenerGuard.cs" Link="WindowsKvmListenerGuard.cs" />
     <Compile Include="../../src/WindowsKVM.Desktop/WindowsTrayLayoutPolicy.cs" Link="WindowsTrayLayoutPolicy.cs" />
     <Compile Include="../../src/WindowsKVM.Desktop/WindowsKvmDiagnosticLog.cs" Link="WindowsKvmDiagnosticLog.cs" />

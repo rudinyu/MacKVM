@@ -4,6 +4,26 @@
 
 ## Unreleased
 
+## 1.100.10 (build 92) — 2026-10-02
+
+### Fixed
+
+- If DDC readback cannot confirm an input change, send a compensating command
+  for the saved local input and retain the verified display selector for
+  recovery. The keyboard hand-off remains blocked until the remote route is
+  confirmed.
+
+## WindowsKVM 1.02.29 (build 110) — 2026-10-02
+
+### Fixed
+
+- Fence in-flight pairing commits against Forget so a delayed signed pairing
+  completion cannot restore the removed trust pin or control approval.
+- Fail closed when the Local-only preference cannot be read; report write
+  failures and disable remote input for the current run.
+- Track held media keys so session teardown can send their key-up events.
+- Report Pairing and Secure Connect listener failures independently.
+
 ## 1.100.10 (build 91) — 2026-10-02
 
 ### Fixed

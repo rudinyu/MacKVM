@@ -36,6 +36,7 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
     private readonly Func<PeerIdentity, bool>? peerKeyChanged;
     private readonly Action<string>? status;
     private readonly bool enableConsoleInput;
+    private readonly PairingRevocationGate pairingRevocationGate;
     private TcpListener listener;
     // ECDsa signing is kept serialized, but a slow network write must never
     // block another connection's challenge or decision.
@@ -68,7 +69,8 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
         Func<PeerIdentity, string, bool, CancellationToken, Task<bool>>? pairingConsent = null,
         Func<PeerIdentity, bool>? peerKeyChanged = null,
         Action<string>? status = null,
-        bool enableConsoleInput = true
+        bool enableConsoleInput = true,
+        PairingRevocationGate? pairingRevocationGate = null
     )
     {
         this.credentials = credentials;
@@ -80,6 +82,8 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
         this.peerKeyChanged = peerKeyChanged;
         this.status = status;
         this.enableConsoleInput = enableConsoleInput;
+        this.pairingRevocationGate = pairingRevocationGate
+            ?? new PairingRevocationGate();
         this.signingLock = signingLock ?? new object();
         listener = CreateListener(requestedPort);
     }
@@ -256,6 +260,10 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
 
     private async Task HandleConnectionAsync(TcpClient client, CancellationToken serverToken)
     {
+        // Snapshot revocations before the remote peer identity is known. If
+        // Forget races this pairing while its signed exchange is in flight,
+        // the later commit will see the generation change for that peer.
+        var revocationSnapshot = pairingRevocationGate.CaptureSnapshot();
         using var ownedClient = client;
         await using var stream = client.GetStream();
         var remoteEndpoint = client.Client.RemoteEndPoint?.ToString() ?? "unknown endpoint";
@@ -363,7 +371,8 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
                         RecordPairingCompletion(
                             session,
                             allowKeyReplacement: localConsentAccepted,
-                            rememberControlApproval: localConsentAccepted
+                            rememberControlApproval: localConsentAccepted,
+                            revocationSnapshot: revocationSnapshot
                         );
                     }
 
@@ -389,7 +398,8 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
                             result.VerificationCode,
                             outputLock,
                             ResolveConsent,
-                            accepted => localConsentAccepted = accepted && !autoAccept
+                            accepted => localConsentAccepted = accepted && !autoAccept,
+                            revocationSnapshot
                         );
                     }
 
@@ -465,7 +475,8 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
         string code,
         SemaphoreSlim outputLock,
         Action<bool> resolveConsent,
-        Action<bool> setLocalConsent
+        Action<bool> setLocalConsent,
+        IReadOnlyDictionary<Guid, long> revocationSnapshot
     )
     {
         var peer = session.Peer;
@@ -561,7 +572,8 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
                 RecordPairingCompletion(
                     session,
                     allowKeyReplacement: accepted && !autoAccept,
-                    rememberControlApproval: accepted && !autoAccept
+                    rememberControlApproval: accepted && !autoAccept,
+                    revocationSnapshot: revocationSnapshot
                 );
             }
 
@@ -591,10 +603,12 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
     private void RecordPairingCompletion(
         PairingSession session,
         bool allowKeyReplacement,
-        bool rememberControlApproval
+        bool rememberControlApproval,
+        IReadOnlyDictionary<Guid, long> revocationSnapshot
     )
     {
-        if (session.Peer is not { } peer || pairingCompleted is null)
+        var completion = pairingCompleted;
+        if (session.Peer is not { } peer || completion is null)
         {
             return;
         }
@@ -602,7 +616,21 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
         // Let persistence failures abort the final completion path. The
         // caller will report the failure and the peer will not receive a
         // success frame that cannot be honored by the secure listener.
-        pairingCompleted(peer, allowKeyReplacement, rememberControlApproval);
+        var committed = pairingRevocationGate.TryCommit(
+            peer.Id,
+            revocationSnapshot,
+            () => completion(
+                peer,
+                allowKeyReplacement,
+                rememberControlApproval
+            )
+        );
+        if (!committed)
+        {
+            throw new InvalidOperationException(
+                "Pairing was cancelled because this peer was forgotten."
+            );
+        }
     }
 
     private void PublishStatus(string message)

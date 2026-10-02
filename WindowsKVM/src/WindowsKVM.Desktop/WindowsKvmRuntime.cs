@@ -11,8 +11,8 @@ namespace WindowsKVM;
 /// </summary>
 internal sealed class WindowsKvmRuntime : IAsyncDisposable
 {
-    public const string ApplicationVersion = "1.02.28";
-    public const string ApplicationBuild = "109";
+    public const string ApplicationVersion = "1.02.29";
+    public const string ApplicationBuild = "110";
 
     private readonly DeviceCredentials credentials;
     private readonly WindowsTrustStore trustStore;
@@ -20,6 +20,7 @@ internal sealed class WindowsKvmRuntime : IAsyncDisposable
     private readonly PairingTcpReceiver pairingReceiver;
     private readonly SecureSessionTcpReceiver? secureReceiver;
     private readonly object signingLock = new();
+    private readonly PairingRevocationGate pairingRevocationGate = new();
     private Task? pairingTask;
     private int started;
     private int disposed;
@@ -63,7 +64,8 @@ internal sealed class WindowsKvmRuntime : IAsyncDisposable
                 pairingConsent: pairingConsent,
                 peerKeyChanged: trustStore.HasDifferentKey,
                 status: PublishStatus,
-                enableConsoleInput: enableConsoleInput
+                enableConsoleInput: enableConsoleInput,
+                pairingRevocationGate: pairingRevocationGate
             );
 
             if (SecureSessionCapabilities.ChaCha20Poly1305Supported)
@@ -146,6 +148,10 @@ internal sealed class WindowsKvmRuntime : IAsyncDisposable
     /// </summary>
     public bool ForgetPeer(Guid peerID)
     {
+        // Fence in-flight signed pairings before removing the durable trust
+        // record. A completion from an older connection can no longer restore
+        // this pin or its remembered control approval.
+        pairingRevocationGate.Revoke(peerID);
         var removed = trustStore.Remove(peerID);
         if (!removed)
         {
@@ -191,8 +197,12 @@ internal sealed class WindowsKvmRuntime : IAsyncDisposable
             ?? throw new InvalidOperationException("The pairing listener did not start.");
         if (secureReceiver is null)
         {
-            await pairing.ConfigureAwait(false);
-            return;
+            await ObserveEndpointTaskAsync(pairing, WindowsKvmEndpoint.Pairing)
+                .ConfigureAwait(false);
+            throw new WindowsKvmEndpointException(
+                WindowsKvmEndpoint.Pairing,
+                "The Pairing listener stopped unexpectedly."
+            );
         }
 
         var cancellation = Task.Delay(Timeout.InfiniteTimeSpan, token);
@@ -203,12 +213,39 @@ internal sealed class WindowsKvmRuntime : IAsyncDisposable
             return;
         }
 
-        if (completed == secureReceiver.Failure)
+        if (completed == pairing)
         {
-            await secureReceiver.Failure.ConfigureAwait(false);
+            await ObserveEndpointTaskAsync(pairing, WindowsKvmEndpoint.Pairing)
+                .ConfigureAwait(false);
+            throw new WindowsKvmEndpointException(
+                WindowsKvmEndpoint.Pairing,
+                "The Pairing listener stopped unexpectedly."
+            );
         }
 
-        await pairing.ConfigureAwait(false);
+        await ObserveEndpointTaskAsync(
+            secureReceiver.Failure,
+            WindowsKvmEndpoint.SecureConnect
+        ).ConfigureAwait(false);
+        throw new WindowsKvmEndpointException(
+            WindowsKvmEndpoint.SecureConnect,
+            "The Secure Connect listener stopped unexpectedly."
+        );
+    }
+
+    private static async Task ObserveEndpointTaskAsync(
+        Task task,
+        WindowsKvmEndpoint endpoint
+    )
+    {
+        try
+        {
+            await task.ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            throw new WindowsKvmEndpointException(endpoint, ex.Message, ex);
+        }
     }
 
     public async ValueTask DisposeAsync()
@@ -315,4 +352,24 @@ internal sealed class WindowsKvmRuntime : IAsyncDisposable
     }
 
     private static string Short(Guid peerID) => peerID.ToString("N")[..8];
+}
+
+internal enum WindowsKvmEndpoint
+{
+    Pairing,
+    SecureConnect
+}
+
+internal sealed class WindowsKvmEndpointException : Exception
+{
+    public WindowsKvmEndpointException(
+        WindowsKvmEndpoint endpoint,
+        string message,
+        Exception? innerException = null
+    ) : base(message, innerException)
+    {
+        Endpoint = endpoint;
+    }
+
+    public WindowsKvmEndpoint Endpoint { get; }
 }

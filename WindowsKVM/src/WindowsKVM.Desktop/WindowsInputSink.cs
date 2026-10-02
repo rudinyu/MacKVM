@@ -58,6 +58,7 @@ internal sealed class WindowsInputSink : IDisposable
 
     private readonly object gate = new();
     private readonly Dictionary<ushort, InjectedKey> pressedKeys = [];
+    private readonly HashSet<ushort> pressedMediaKeys = [];
     private readonly HashSet<int> pressedMouseButtons = [];
     private readonly Func<IReadOnlyList<WindowsInputEvent>, uint> sendInputs;
     private readonly Func<int, int> getSystemMetrics;
@@ -308,13 +309,24 @@ internal sealed class WindowsInputSink : IDisposable
             return;
         }
 
+        var isPressed = input.IsPressed == true;
         SendInputs([
             KeyboardInput(
                 virtualKey,
                 0,
-                (KeyEventExtended | (input.IsPressed == true ? 0 : KeyEventKeyUp))
+                KeyEventExtended | (isPressed ? 0 : KeyEventKeyUp)
             )
         ]);
+        if (isPressed)
+        {
+            pressedMediaKeys.Add(virtualKey);
+        }
+        else
+        {
+            // Remove the held-state entry only after Windows accepts the
+            // release. If injection fails, End() can retry it during teardown.
+            pressedMediaKeys.Remove(virtualKey);
+        }
     }
 
     private static bool TryMapMediaKey(MediaKey mediaKey, out ushort virtualKey)
@@ -463,10 +475,20 @@ internal sealed class WindowsInputSink : IDisposable
 
     private bool ReleaseAllInputsLocked()
     {
-        var events = new List<WindowsInputEvent>(pressedKeys.Count + pressedMouseButtons.Count);
+        var events = new List<WindowsInputEvent>(
+            pressedKeys.Count + pressedMediaKeys.Count + pressedMouseButtons.Count
+        );
         foreach (var injected in pressedKeys.Values)
         {
             events.AddRange(injected.KeyUpInputs());
+        }
+        foreach (var virtualKey in pressedMediaKeys)
+        {
+            events.Add(KeyboardInput(
+                virtualKey,
+                0,
+                KeyEventExtended | KeyEventKeyUp
+            ));
         }
         foreach (var button in pressedMouseButtons)
         {
@@ -506,6 +528,7 @@ internal sealed class WindowsInputSink : IDisposable
         }
 
         pressedKeys.Clear();
+        pressedMediaKeys.Clear();
         pressedMouseButtons.Clear();
         verticalScrollRemainder = 0;
         horizontalScrollRemainder = 0;

@@ -17,6 +17,8 @@ internal static class Program
             TestFingerprintFormatting();
             TestTrayNativeChildBounds();
             TestDiagnosticStatusSanitization();
+            TestRemoteInputPreferenceFallback();
+            TestPairingRevocationGate();
             TestListenerGuardIsCrossPlatformAndAsyncSafe();
             await TestConsentCancellationAndQueueAsync();
             await TestSecureSessionLifecycleAsync();
@@ -45,6 +47,44 @@ internal static class Program
             !status.Contains('\n'),
             "diagnostic status must not allow embedded lines to spoof log entries"
         );
+    }
+
+    private static void TestRemoteInputPreferenceFallback()
+    {
+        Assert(
+            WindowsKvmPreferences.ResolveRemoteInputEnabled(false, null),
+            "a missing first-run preference should retain the existing default"
+        );
+        Assert(
+            !WindowsKvmPreferences.ResolveRemoteInputEnabled(true, 0),
+            "a stored Local-only preference must remain disabled"
+        );
+        Assert(
+            !WindowsKvmPreferences.ResolveRemoteInputEnabled(true, "invalid"),
+            "an invalid stored value must fail closed"
+        );
+    }
+
+    private static void TestPairingRevocationGate()
+    {
+        var gate = new PairingRevocationGate();
+        var peerID = Guid.NewGuid();
+        var requestSnapshot = gate.CaptureSnapshot();
+        var commits = 0;
+
+        gate.Revoke(peerID);
+        Assert(
+            !gate.TryCommit(peerID, requestSnapshot, () => commits++),
+            "a pairing started before Forget must not commit afterward"
+        );
+        Assert(commits == 0, "a revoked pairing must not persist trust");
+
+        var newPairingSnapshot = gate.CaptureSnapshot();
+        Assert(
+            gate.TryCommit(peerID, newPairingSnapshot, () => commits++),
+            "a new pairing started after Forget may commit with fresh consent"
+        );
+        Assert(commits == 1, "the fresh pairing must persist exactly once");
     }
 
     private static void TestInputBookkeepingAndMappings()
@@ -148,7 +188,50 @@ internal static class Program
             diagnostics.Count >= 3,
             "unsupported input must remain observable to the host"
         );
+        injected.Clear();
+        sink.Receive(new RemoteInputEvent(
+            RemoteInputKind.SystemDefined,
+            mediaKey: MediaKey.SoundUp,
+            isPressed: true
+        ));
         sink.End();
+        Assert(
+            injected.Any(input => input.VirtualKey == 0x00AF
+                && (input.Flags & 0x0002u) != 0),
+            "teardown must release a held media key"
+        );
+
+        var mediaReleaseAttempts = 0;
+        var mediaReleaseEvents = new List<WindowsInputEvent>();
+        using var mediaReleaseFailureSink = new WindowsInputSink(
+            inputs =>
+            {
+                mediaReleaseAttempts++;
+                mediaReleaseEvents.AddRange(inputs);
+                return mediaReleaseAttempts == 2 ? 0u : (uint)inputs.Count;
+            },
+            metric => metric == 78 ? 1920 : 1080
+        );
+        mediaReleaseFailureSink.Begin();
+        mediaReleaseFailureSink.Receive(new RemoteInputEvent(
+            RemoteInputKind.SystemDefined,
+            mediaKey: MediaKey.SoundUp,
+            isPressed: true
+        ));
+        AssertThrows<WindowsInputException>(
+            () => mediaReleaseFailureSink.Receive(new RemoteInputEvent(
+                RemoteInputKind.SystemDefined,
+                mediaKey: MediaKey.SoundUp,
+                isPressed: false
+            )),
+            "a failed media key-up must be surfaced"
+        );
+        mediaReleaseFailureSink.End();
+        Assert(
+            mediaReleaseAttempts >= 3
+                && (mediaReleaseEvents[^1].Flags & 0x0002u) != 0,
+            "teardown must retry a failed media key-up"
+        );
 
         var releaseAttempts = 0;
         var releaseEvents = new List<WindowsInputEvent>();

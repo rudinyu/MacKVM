@@ -94,7 +94,7 @@ reference graph 中的每個 project，避免 `net8.0` protocol library 與
 .\WindowsKVM.exe --version
 ```
 
-目前 UI 測試 build 應顯示 `WindowsKVM 1.02.28 (build 109)`。
+目前 UI 測試 build 應顯示 `WindowsKVM 1.02.29 (build 110)`。
 此版比回報捲動破圖與下拉清單問題時使用的 **1.02.09（build 89）Beta 3** 更新。
 替換前請先退出舊的系統匣 receiver；啟動後確認此版本及 **WindowsKVM** 視窗標題。
 

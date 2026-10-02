@@ -70,7 +70,7 @@ enum AutomaticDDCSwitchDecision: Equatable {
 private struct RoutePreservationAttempt {
     enum Status {
         case pending
-        case succeeded
+        case selectorPreserved
     }
 
     let id: UUID
@@ -261,7 +261,7 @@ final class MonitorController: ObservableObject {
         let shouldPreserveSelector = preserveVerifiedSelector
             && preservationAttemptID != nil
             && routePreservationAttempt?.id == preservationAttemptID
-            && routePreservationAttempt?.status == .succeeded
+            && routePreservationAttempt?.status == .selectorPreserved
             && routePreservationAttempt?.selector.caseInsensitiveCompare(
                 selectorAtStart
             ) == .orderedSame
@@ -349,6 +349,7 @@ final class MonitorController: ObservableObject {
 
     private func completeDisplayRouteSwitch(
         success: Bool,
+        preserveSelectorForRecovery: Bool = false,
         attemptID: UUID?
     ) {
         guard let attemptID else { return }
@@ -358,13 +359,13 @@ final class MonitorController: ObservableObject {
                   attempt.id == attemptID else {
                 return
             }
-            guard success else {
+            guard success || preserveSelectorForRecovery else {
                 // A topology refresh may still be in flight, but it carries
                 // this attempt ID and will now fail its success gate below.
                 routePreservationAttempt = nil
                 return
             }
-            attempt.status = .succeeded
+            attempt.status = .selectorPreserved
             // If no topology notification follows the DDC write, do not let
             // an unrelated unplug much later consume the preservation state.
             attempt.deadline = Date().addingTimeInterval(2)
@@ -474,6 +475,7 @@ final class MonitorController: ObservableObject {
             intent: .normal,
             completion: nil,
             result: completion,
+            recoveryInputOnFailure: localInput,
             shouldWakeDisplayForKVMSwitch: true
         )
     }
@@ -484,6 +486,7 @@ final class MonitorController: ObservableObject {
         intent: DeferredAutomaticSwitchIntent,
         completion: (() -> Void)?,
         result: ((Bool) -> Void)? = nil,
+        recoveryInputOnFailure: MonitorInputSource? = nil,
         shouldWakeDisplayForKVMSwitch: Bool = true
     ) {
         let reportResult: (Bool) -> Void = { success in
@@ -541,6 +544,7 @@ final class MonitorController: ObservableObject {
                 intent: intent,
                 completion: completion,
                 result: result,
+                recoveryInputOnFailure: recoveryInputOnFailure,
                 shouldWakeDisplayForKVMSwitch: shouldWakeDisplayForKVMSwitch
             )
             cancelledCompletions.forEach { $0() }
@@ -685,15 +689,40 @@ final class MonitorController: ObservableObject {
                 )
                 reportResult(true)
             } catch {
+                var recoveryCommandSent = false
+                if let recoveryInputOnFailure {
+                    do {
+                        try self.writeInputWithRetry(
+                            displaySelector: nativeSelector,
+                            input: recoveryInputOnFailure,
+                            vendorID: effectiveVendorID,
+                            productID: effectiveProductID,
+                            shouldWakeDisplayForKVMSwitch:
+                                shouldWakeDisplayForKVMSwitch
+                        )
+                        recoveryCommandSent = true
+                        MacKVMLogger.monitor.info(
+                            "phase=input.recovery-command.sent input=\(recoveryInputOnFailure.rawValue, privacy: .public)"
+                        )
+                    } catch {
+                        MacKVMLogger.monitor.error(
+                            "phase=input.recovery-command.failed input=\(recoveryInputOnFailure.rawValue, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+                        )
+                    }
+                }
                 self.completeDisplayRouteSwitch(
                     success: false,
+                    preserveSelectorForRecovery:
+                        recoveryInputOnFailure != nil,
                     attemptID: routePreservationAttemptID
                 )
                 MacKVMLogger.monitor.error(
                     "phase=input.switch.completed success=false input=\(input.rawValue, privacy: .public) description=\(description, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
                 )
                 self.publish(
-                    "Native DDC/CI switch failed; use the monitor OSD to select \(input.name)",
+                    recoveryCommandSent
+                        ? "DDC/CI could not confirm the switch; a command to restore \(recoveryInputOnFailure?.name ?? "this Mac") was sent"
+                        : "Native DDC/CI switch failed; use the monitor OSD to select \(recoveryInputOnFailure?.name ?? input.name)",
                     diagnostic: Self.diagnostic(from: error),
                     completion: completion
                 )
@@ -917,7 +946,7 @@ final class MonitorController: ObservableObject {
                 attemptID in
                 guard let attempt = self.routePreservationAttempt,
                       attempt.id == attemptID,
-                      attempt.status == .succeeded,
+                      attempt.status == .selectorPreserved,
                       attempt.deadline > Date(),
                       let preservedSelector,
                       self.displaySelector.trimmingCharacters(
@@ -990,6 +1019,8 @@ final class MonitorController: ObservableObject {
             intent: deferredAutomaticSwitch.intent,
             completion: deferredAutomaticSwitch.completeCompletions,
             result: deferredAutomaticSwitch.result,
+            recoveryInputOnFailure:
+                deferredAutomaticSwitch.recoveryInputOnFailure,
             shouldWakeDisplayForKVMSwitch:
                 deferredAutomaticSwitch.shouldWakeDisplayForKVMSwitch
         )
@@ -1177,6 +1208,7 @@ struct DeferredAutomaticSwitch {
     let description: String
     let intent: DeferredAutomaticSwitchIntent
     let shouldWakeDisplayForKVMSwitch: Bool
+    let recoveryInputOnFailure: MonitorInputSource?
     let completions: [() -> Void]
     let result: ((Bool) -> Void)?
 
@@ -1186,12 +1218,14 @@ struct DeferredAutomaticSwitch {
         intent: DeferredAutomaticSwitchIntent,
         completion: (() -> Void)?,
         result: ((Bool) -> Void)?,
+        recoveryInputOnFailure: MonitorInputSource? = nil,
         shouldWakeDisplayForKVMSwitch: Bool = true
     ) {
         self.input = input
         self.description = description
         self.intent = intent
         self.shouldWakeDisplayForKVMSwitch = shouldWakeDisplayForKVMSwitch
+        self.recoveryInputOnFailure = recoveryInputOnFailure
         completions = completion.map { [$0] } ?? []
         self.result = result
     }
@@ -1240,6 +1274,7 @@ struct DeferredAutomaticSwitchState {
         intent: DeferredAutomaticSwitchIntent,
         completion: (() -> Void)?,
         result: ((Bool) -> Void)? = nil,
+        recoveryInputOnFailure: MonitorInputSource? = nil,
         shouldWakeDisplayForKVMSwitch: Bool = true
     ) -> [() -> Void] {
         guard intent == .terminating || !isTerminating else {
@@ -1249,6 +1284,7 @@ struct DeferredAutomaticSwitchState {
                 intent: intent,
                 completion: completion,
                 result: result,
+                recoveryInputOnFailure: recoveryInputOnFailure,
                 shouldWakeDisplayForKVMSwitch: shouldWakeDisplayForKVMSwitch
             ).resolveCallbacks(success: false)
         }
@@ -1261,6 +1297,7 @@ struct DeferredAutomaticSwitchState {
             intent: intent,
             completion: completion,
             result: result,
+            recoveryInputOnFailure: recoveryInputOnFailure,
             shouldWakeDisplayForKVMSwitch: shouldWakeDisplayForKVMSwitch
         )
         return supersededCompletions
