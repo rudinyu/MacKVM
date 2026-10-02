@@ -4,6 +4,33 @@
 
 ## Unreleased
 
+## 1.100.11 (build 93) — 2026-10-02
+
+### Fixed
+
+- Release the persistent display-idle assertion when the selected display is
+  absent and its route is not confirmed remote. Keep the saved EDID metadata
+  and native return route available without treating their cache as presence.
+- Bind confirmed routes to the selected display and input configuration so an
+  old switch completion cannot re-enable a lease for a changed configuration.
+
+### Known limitation
+
+- A monitor showing the other device may disappear from CoreGraphics just as
+  an unplugged monitor does. A confirmed remote route still keeps the lease;
+  remote-route unplug and manual OSD changes need physical acceptance and are
+  not claimed as reliably detected. Disable automatic DDC/CI or quit to
+  release the assertion in that case.
+
+## WindowsKVM 1.02.30 (build 111) — 2026-10-02
+
+### Fixed
+
+- Return both pairing admission slots exactly once after setup failures,
+  consent-task faults, cancellation callback errors, or connection teardown.
+- Drain the accept loop and active pairing handlers before disposing listener
+  resources, including when shutdown and disposal happen concurrently.
+
 ## 1.100.10 (build 92) — 2026-10-02
 
 ### Fixed

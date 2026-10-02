@@ -67,6 +67,161 @@ enum AutomaticDDCSwitchDecision: Equatable {
     case useManualFallback
 }
 
+enum DisplayRouteRole: Equatable {
+    case local
+    case remote
+    case unknown
+}
+
+struct DisplayRouteConfiguration: Equatable {
+    let localInput: MonitorInputSource
+    let remoteInput: MonitorInputSource
+    let generation: UInt64
+}
+
+struct DisplayRouteSwitchRequest: Equatable {
+    let role: DisplayRouteRole
+    let selector: String
+    let input: MonitorInputSource
+    let configuration: DisplayRouteConfiguration
+}
+
+struct ConfirmedDisplayRoute: Equatable {
+    let role: DisplayRouteRole
+    let selector: String
+    let input: MonitorInputSource?
+    let configurationGeneration: UInt64
+}
+
+enum DisplayRouteConfirmationOutcome: Equatable {
+    case confirmed
+    case unknown
+}
+
+/// Tracks the last native route outcome without treating a process-local
+/// selector cache as proof that the monitor is still physically present.
+/// Input preferences are part of the request identity: changing either one
+/// invalidates every in-flight completion from the previous configuration.
+struct DisplayRouteState: Equatable {
+    private(set) var configuration: DisplayRouteConfiguration
+    private(set) var confirmedRoute: ConfirmedDisplayRoute?
+    private(set) var pendingRequest: DisplayRouteSwitchRequest?
+
+    init(
+        localInput: MonitorInputSource = .usbC,
+        remoteInput: MonitorInputSource = .hdmi1
+    ) {
+        configuration = DisplayRouteConfiguration(
+            localInput: localInput,
+            remoteInput: remoteInput,
+            generation: 0
+        )
+        confirmedRoute = nil
+        pendingRequest = nil
+    }
+
+    mutating func configurationDidChange(
+        localInput: MonitorInputSource,
+        remoteInput: MonitorInputSource
+    ) {
+        configuration = DisplayRouteConfiguration(
+            localInput: localInput,
+            remoteInput: remoteInput,
+            generation: configuration.generation &+ 1
+        )
+        confirmedRoute = nil
+        pendingRequest = nil
+    }
+
+    /// Invalidate the route for lifecycle or selector changes. Advancing the
+    /// generation also makes a completion queued before the change stale even
+    /// if the user later switches back to the same input values.
+    mutating func invalidate() {
+        configuration = DisplayRouteConfiguration(
+            localInput: configuration.localInput,
+            remoteInput: configuration.remoteInput,
+            generation: configuration.generation &+ 1
+        )
+        confirmedRoute = nil
+        pendingRequest = nil
+    }
+
+    /// Records the request identity before native DDC work is enqueued. A
+    /// later local/remote request supersedes the previous one, even when both
+    /// logical roles happen to use the same VCP value.
+    @discardableResult
+    mutating func enqueue(_ request: DisplayRouteSwitchRequest) -> Bool {
+        guard request.configuration == configuration else { return false }
+        switch request.role {
+        case .local:
+            guard request.input == configuration.localInput else {
+                return false
+            }
+        case .remote:
+            guard request.input == configuration.remoteInput else {
+                return false
+            }
+        case .unknown:
+            return false
+        }
+        pendingRequest = request
+        return true
+    }
+
+    /// Applies only a current request. A selector comparison is intentionally
+    /// case-insensitive because native display identity matching is too.
+    @discardableResult
+    mutating func apply(
+        request: DisplayRouteSwitchRequest,
+        outcome: DisplayRouteConfirmationOutcome,
+        currentSelector: String
+    ) -> Bool {
+        let normalizedCurrentSelector = currentSelector.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard request.configuration == configuration,
+              request.selector.caseInsensitiveCompare(
+                  normalizedCurrentSelector
+              ) == .orderedSame,
+              pendingRequest == request else {
+            return false
+        }
+        switch request.role {
+        case .local:
+            guard request.input == configuration.localInput else {
+                return false
+            }
+        case .remote:
+            guard request.input == configuration.remoteInput else {
+                return false
+            }
+        case .unknown:
+            return false
+        }
+
+        switch outcome {
+        case .confirmed:
+            confirmedRoute = ConfirmedDisplayRoute(
+                role: request.role,
+                selector: request.selector,
+                input: request.input,
+                configurationGeneration: configuration.generation
+            )
+        case .unknown:
+            confirmedRoute = ConfirmedDisplayRoute(
+                role: .unknown,
+                selector: request.selector,
+                input: nil,
+                configurationGeneration: configuration.generation
+            )
+        }
+        if pendingRequest == request {
+            pendingRequest = nil
+        }
+        return true
+    }
+}
+
 private struct RoutePreservationAttempt {
     enum Status {
         case pending
@@ -74,7 +229,7 @@ private struct RoutePreservationAttempt {
     }
 
     let id: UUID
-    let selector: String
+    let request: DisplayRouteSwitchRequest
     /// Keep the display identity alongside the selector. CoreGraphics can
     /// temporarily report no displays after an input switch, but the return
     /// route still needs the EDID model IDs for model-specific VCP values.
@@ -83,6 +238,8 @@ private struct RoutePreservationAttempt {
     var status: Status = .pending
     var topologyRefreshStarted = false
     var refreshAfterCurrentDiscovery = false
+
+    var selector: String { request.selector }
 }
 
 /// Keeps the external display pipeline awake while automatic DDC/CI routing
@@ -152,18 +309,37 @@ final class MonitorController: ObservableObject {
     @Published var automationEnabled: Bool {
         didSet {
             defaults.set(automationEnabled, forKey: Keys.automationEnabled)
+            if oldValue != automationEnabled {
+                invalidateDisplayRouteState()
+            }
             scheduleDisplaySleepLease()
         }
     }
     @Published var localInput: MonitorInputSource {
-        didSet { defaults.set(localInput.rawValue, forKey: Keys.localInput) }
+        didSet {
+            defaults.set(localInput.rawValue, forKey: Keys.localInput)
+            if oldValue != localInput {
+                invalidateDisplayRouteState(configurationChanged: true)
+            }
+            scheduleDisplaySleepLease()
+        }
     }
     @Published var remoteInput: MonitorInputSource {
-        didSet { defaults.set(remoteInput.rawValue, forKey: Keys.remoteInput) }
+        didSet {
+            defaults.set(remoteInput.rawValue, forKey: Keys.remoteInput)
+            if oldValue != remoteInput {
+                invalidateDisplayRouteState(configurationChanged: true)
+            }
+            scheduleDisplaySleepLease()
+        }
     }
     @Published var displaySelector: String {
         didSet {
             defaults.set(displaySelector, forKey: Keys.displaySelector)
+            if oldValue.caseInsensitiveCompare(displaySelector)
+                    != .orderedSame {
+                invalidateDisplayRouteState()
+            }
             updateSelectorVerification()
             scheduleDisplaySleepLease()
         }
@@ -188,12 +364,14 @@ final class MonitorController: ObservableObject {
     /// reconcile the input switch, and the return route still needs the
     /// model-specific VCP mapping.
     private var lastVerifiedDisplay: DDCDisplay?
+    private var displayRouteState = DisplayRouteState()
     private var deferredAutomaticSwitchState = DeferredAutomaticSwitchState()
     /// IOPMAssertionDeclareUserActivity returns an expiring activity token.
     /// Reuse the latest token when rapid incoming switches report activity
     /// again, as required by the IOKit API contract.
     private var displayWakeActivityID = IOPMAssertionID(kIOPMNullAssertionID)
     private let displaySleepAssertionLease = DisplaySleepAssertionLease()
+    private var displaySleepLeaseGraceWorkItem: DispatchWorkItem?
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -214,6 +392,10 @@ final class MonitorController: ObservableObject {
         displaySelector = defaults.string(
             forKey: Keys.displaySelector
         ) ?? ""
+        displayRouteState = DisplayRouteState(
+            localInput: localInput,
+            remoteInput: remoteInput
+        )
         displayConfigurationObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil,
@@ -229,6 +411,7 @@ final class MonitorController: ObservableObject {
     }
 
     deinit {
+        displaySleepLeaseGraceWorkItem?.cancel()
         if let displayConfigurationObserver {
             NotificationCenter.default.removeObserver(
                 displayConfigurationObserver
@@ -350,37 +533,79 @@ final class MonitorController: ObservableObject {
     private func completeDisplayRouteSwitch(
         success: Bool,
         preserveSelectorForRecovery: Bool = false,
-        attemptID: UUID?
+        request: DisplayRouteSwitchRequest,
+        attemptID: UUID?,
+        completion: @escaping (Bool) -> Void
     ) {
-        guard let attemptID else { return }
         DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            guard var attempt = routePreservationAttempt,
+            guard let self else {
+                completion(false)
+                return
+            }
+            guard self.isCurrentRouteRequest(request),
+                  attemptID == nil
+                    || self.routePreservationAttempt?.id == attemptID else {
+                MacKVMLogger.monitor.debug(
+                    "phase=input.switch.completion-ignored stale=true"
+                )
+                completion(false)
+                return
+            }
+            guard !self.deferredAutomaticSwitchState.isTerminating else {
+                self.invalidateDisplayRouteState()
+                self.scheduleDisplaySleepLease()
+                completion(false)
+                return
+            }
+
+            let applied = self.displayRouteState.apply(
+                request: request,
+                outcome: success ? .confirmed : .unknown,
+                currentSelector: self.currentCanonicalSelector()
+            )
+            guard applied else {
+                completion(false)
+                return
+            }
+
+            guard let attemptID else {
+                self.scheduleDisplaySleepLease()
+                completion(true)
+                return
+            }
+            guard var attempt = self.routePreservationAttempt,
                   attempt.id == attemptID else {
+                completion(false)
                 return
             }
             guard success || preserveSelectorForRecovery else {
                 // A topology refresh may still be in flight, but it carries
                 // this attempt ID and will now fail its success gate below.
-                routePreservationAttempt = nil
+                self.routePreservationAttempt = nil
+                self.scheduleDisplaySleepLease()
+                completion(true)
                 return
             }
             attempt.status = .selectorPreserved
             // If no topology notification follows the DDC write, do not let
             // an unrelated unplug much later consume the preservation state.
             attempt.deadline = Date().addingTimeInterval(2)
-            if attempt.topologyRefreshStarted && isDiscoveringDisplays {
+            if attempt.topologyRefreshStarted && self.isDiscoveringDisplays {
                 attempt.refreshAfterCurrentDiscovery = true
-                routePreservationAttempt = attempt
+                self.routePreservationAttempt = attempt
+                self.scheduleDisplaySleepLease()
+                completion(true)
                 return
             }
-            routePreservationAttempt = attempt
+            self.routePreservationAttempt = attempt
             if attempt.topologyRefreshStarted {
-                refreshDetectedDisplays(
+                self.refreshDetectedDisplays(
                     preserveVerifiedSelector: true,
                     preservationAttemptID: attempt.id
                 )
             }
+            self.scheduleDisplaySleepLease()
+            completion(true)
         }
     }
 
@@ -390,7 +615,10 @@ final class MonitorController: ObservableObject {
     /// prevents a cancelled monitor route from making that teardown look idle
     /// before it can suppress a second input release.
     func beginTermination() -> [() -> Void] {
-        deferredAutomaticSwitchState.beginTermination()
+        let callbacks = deferredAutomaticSwitchState.beginTermination()
+        invalidateDisplayRouteState()
+        scheduleDisplaySleepLease()
+        return callbacks
     }
 
     func selectDisplay(_ display: DDCDisplay) {
@@ -411,6 +639,7 @@ final class MonitorController: ObservableObject {
         switchInput(
             localInput,
             description: "this Mac",
+            role: .local,
             intent: .normal,
             completion: completion,
             shouldWakeDisplayForKVMSwitch: wakeDisplayForKVMSwitch
@@ -421,6 +650,7 @@ final class MonitorController: ObservableObject {
         switchInput(
             localInput,
             description: "this Mac",
+            role: .local,
             intent: .terminating,
             completion: completion,
             shouldWakeDisplayForKVMSwitch: true
@@ -431,6 +661,7 @@ final class MonitorController: ObservableObject {
         switchInput(
             remoteInput,
             description: "the other device",
+            role: .remote,
             intent: .normal,
             completion: completion,
             shouldWakeDisplayForKVMSwitch: true
@@ -466,12 +697,17 @@ final class MonitorController: ObservableObject {
                   isDisplaySelectorVerified: isDisplaySelectorVerified,
                   hasCompletedDisplayDiscovery: hasCompletedDisplayDiscovery
               ) != .useManualFallback else {
+            if automationEnabled {
+                invalidateDisplayRouteState()
+                scheduleDisplaySleepLease()
+            }
             completion(false)
             return
         }
         switchInput(
             remoteInput,
             description: "the other device",
+            role: .remote,
             intent: .normal,
             completion: nil,
             result: completion,
@@ -483,11 +719,13 @@ final class MonitorController: ObservableObject {
     private func switchInput(
         _ input: MonitorInputSource,
         description: String,
+        role: DisplayRouteRole,
         intent: DeferredAutomaticSwitchIntent,
         completion: (() -> Void)?,
         result: ((Bool) -> Void)? = nil,
         recoveryInputOnFailure: MonitorInputSource? = nil,
-        shouldWakeDisplayForKVMSwitch: Bool = true
+        shouldWakeDisplayForKVMSwitch: Bool = true,
+        requestSnapshot: DisplayRouteSwitchRequest? = nil
     ) {
         let reportResult: (Bool) -> Void = { success in
             guard let result else { return }
@@ -513,6 +751,21 @@ final class MonitorController: ObservableObject {
         let currentlyDetectedDisplay = detectedDisplays.first {
             $0.matches(selector: selector)
         }
+        let resolvedRouteDisplay = currentlyDetectedDisplay
+            ?? lastVerifiedDisplay.flatMap {
+                $0.matches(selector: selector) ? $0 : nil
+            }
+        let routeRequest = requestSnapshot ?? DisplayRouteSwitchRequest(
+            role: role,
+            selector: resolvedRouteDisplay?.selector ?? selector,
+            input: input,
+            configuration: displayRouteState.configuration
+        )
+        guard isCurrentRouteRequest(routeRequest) else {
+            completion?()
+            reportResult(false)
+            return
+        }
         var routePreservationAttemptID: UUID?
         switch Self.automaticSwitchDecision(
             displaySelector: selector,
@@ -520,6 +773,11 @@ final class MonitorController: ObservableObject {
             hasCompletedDisplayDiscovery: hasCompletedDisplayDiscovery
         ) {
         case .switchNow:
+            guard displayRouteState.enqueue(routeRequest) else {
+                completion?()
+                reportResult(false)
+                return
+            }
             // The monitor may briefly disappear from CoreGraphics while the
             // DDC input change is applied. Allow exactly the next topology
             // refresh (within a short bounded window) to retain the verified
@@ -532,12 +790,18 @@ final class MonitorController: ObservableObject {
                 }
             routePreservationAttempt = RoutePreservationAttempt(
                 id: attemptID,
-                selector: selector,
+                request: routeRequest,
                 display: currentlyDetectedDisplay ?? previousDisplay,
                 deadline: Date().addingTimeInterval(10)
             )
+            scheduleDisplaySleepLease()
             break
         case .waitForVerification:
+            guard displayRouteState.enqueue(routeRequest) else {
+                completion?()
+                reportResult(false)
+                return
+            }
             let cancelledCompletions = deferredAutomaticSwitchState.deferSwitch(
                 input: input,
                 description: description,
@@ -545,7 +809,9 @@ final class MonitorController: ObservableObject {
                 completion: completion,
                 result: result,
                 recoveryInputOnFailure: recoveryInputOnFailure,
-                shouldWakeDisplayForKVMSwitch: shouldWakeDisplayForKVMSwitch
+                shouldWakeDisplayForKVMSwitch: shouldWakeDisplayForKVMSwitch,
+                role: role,
+                routeRequest: routeRequest
             )
             cancelledCompletions.forEach { $0() }
             status = "Verifying the saved DDC display before switching…"
@@ -554,6 +820,8 @@ final class MonitorController: ObservableObject {
             }
             return
         case .useManualFallback:
+            invalidateDisplayRouteState()
+            scheduleDisplaySleepLease()
             status = selector.isEmpty
                 ? "Detect and select a DDC-capable display before automatic switching"
                 : "The selected DDC display is not currently available; detect it again"
@@ -563,15 +831,12 @@ final class MonitorController: ObservableObject {
         }
 
         let routeDisplay = routePreservationAttempt?.display
-            ?? currentlyDetectedDisplay
-            ?? lastVerifiedDisplay.flatMap {
-                $0.matches(selector: selector) ? $0 : nil
-            }
+            ?? resolvedRouteDisplay
         let displayName = routeDisplay?.name ?? "display"
         // Use the canonical selector returned by discovery. This keeps the
         // editable field case-insensitive without passing a user-edited
         // spelling to the native C bridge.
-        let nativeSelector = routeDisplay?.selector ?? selector
+        let nativeSelector = routeDisplay?.selector ?? routeRequest.selector
         let selectorIdentity = MonitorInputMapping.displayIdentity(
             fromNativeSelector: nativeSelector
         )
@@ -677,17 +942,31 @@ final class MonitorController: ObservableObject {
                 }
                 self.completeDisplayRouteSwitch(
                     success: true,
+                    request: routeRequest,
                     attemptID: routePreservationAttemptID
-                )
-                let action = alreadySelected ? "is already showing" : "switched to"
-                MacKVMLogger.monitor.info(
-                    "phase=input.switch.completed success=true input=\(input.rawValue, privacy: .public) description=\(description, privacy: .public)"
-                )
-                self.publish(
-                    "\(displayName) \(action) \(input.name) for \(description)",
-                    completion: completion
-                )
-                reportResult(true)
+                ) { accepted in
+                    guard accepted else {
+                        MacKVMLogger.monitor.error(
+                            "phase=input.switch.completed success=false stale=true input=\(input.rawValue, privacy: .public) description=\(description, privacy: .public)"
+                        )
+                        self.publish(
+                            "The DDC/CI result was ignored because the monitor configuration changed",
+                            completion: completion
+                        )
+                        reportResult(false)
+                        return
+                    }
+                    let action = alreadySelected
+                        ? "is already showing" : "switched to"
+                    MacKVMLogger.monitor.info(
+                        "phase=input.switch.completed success=true input=\(input.rawValue, privacy: .public) description=\(description, privacy: .public)"
+                    )
+                    self.publish(
+                        "\(displayName) \(action) \(input.name) for \(description)",
+                        completion: completion
+                    )
+                    reportResult(true)
+                }
             } catch {
                 var recoveryCommandSent = false
                 if let recoveryInputOnFailure {
@@ -714,19 +993,21 @@ final class MonitorController: ObservableObject {
                     success: false,
                     preserveSelectorForRecovery:
                         recoveryInputOnFailure != nil,
+                    request: routeRequest,
                     attemptID: routePreservationAttemptID
-                )
-                MacKVMLogger.monitor.error(
-                    "phase=input.switch.completed success=false input=\(input.rawValue, privacy: .public) description=\(description, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
-                )
-                self.publish(
-                    recoveryCommandSent
-                        ? "DDC/CI could not confirm the switch; a command to restore \(recoveryInputOnFailure?.name ?? "this Mac") was sent"
-                        : "Native DDC/CI switch failed; use the monitor OSD to select \(recoveryInputOnFailure?.name ?? input.name)",
-                    diagnostic: Self.diagnostic(from: error),
-                    completion: completion
-                )
-                reportResult(false)
+                ) { _ in
+                    MacKVMLogger.monitor.error(
+                        "phase=input.switch.completed success=false input=\(input.rawValue, privacy: .public) description=\(description, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+                    )
+                    self.publish(
+                        recoveryCommandSent
+                            ? "DDC/CI could not confirm the switch; a command to restore \(recoveryInputOnFailure?.name ?? "this Mac") was sent"
+                            : "Native DDC/CI switch failed; use the monitor OSD to select \(recoveryInputOnFailure?.name ?? input.name)",
+                        diagnostic: Self.diagnostic(from: error),
+                        completion: completion
+                    )
+                    reportResult(false)
+                }
             }
         }
     }
@@ -1013,16 +1294,26 @@ final class MonitorController: ObservableObject {
             deferredAutomaticSwitchState.takeDeferredSwitch() else {
             return
         }
+        let resumedRequest = deferredAutomaticSwitch.routeRequest.map {
+            DisplayRouteSwitchRequest(
+                role: $0.role,
+                selector: currentCanonicalSelector(),
+                input: $0.input,
+                configuration: $0.configuration
+            )
+        }
         switchInput(
             deferredAutomaticSwitch.input,
             description: deferredAutomaticSwitch.description,
+            role: deferredAutomaticSwitch.role,
             intent: deferredAutomaticSwitch.intent,
             completion: deferredAutomaticSwitch.completeCompletions,
             result: deferredAutomaticSwitch.result,
             recoveryInputOnFailure:
                 deferredAutomaticSwitch.recoveryInputOnFailure,
             shouldWakeDisplayForKVMSwitch:
-                deferredAutomaticSwitch.shouldWakeDisplayForKVMSwitch
+                deferredAutomaticSwitch.shouldWakeDisplayForKVMSwitch,
+            requestSnapshot: resumedRequest
         )
     }
 
@@ -1036,39 +1327,148 @@ final class MonitorController: ObservableObject {
             }
     }
 
+    private func currentCanonicalSelector() -> String {
+        let selector = displaySelector.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        if let detectedDisplay = detectedDisplays.first(where: {
+            $0.matches(selector: selector)
+        }) {
+            return detectedDisplay.selector
+        }
+        if let cachedDisplay = lastVerifiedDisplay,
+           cachedDisplay.matches(selector: selector) {
+            return cachedDisplay.selector
+        }
+        return selector
+    }
+
+    private func isCurrentRouteRequest(
+        _ request: DisplayRouteSwitchRequest
+    ) -> Bool {
+        guard request.configuration == displayRouteState.configuration,
+              request.selector.caseInsensitiveCompare(
+                  currentCanonicalSelector()
+              ) == .orderedSame else {
+            return false
+        }
+        switch request.role {
+        case .local:
+            return request.input == localInput
+        case .remote:
+            return request.input == remoteInput
+        case .unknown:
+            return false
+        }
+    }
+
+    private func invalidateDisplayRouteState(
+        configurationChanged: Bool = false
+    ) {
+        if configurationChanged {
+            displayRouteState.configurationDidChange(
+                localInput: localInput,
+                remoteInput: remoteInput
+            )
+        } else {
+            displayRouteState.invalidate()
+        }
+        routePreservationAttempt = nil
+    }
+
     static func shouldKeepDisplayAwake(
         automationEnabled: Bool,
         displaySelector: String,
-        isDisplaySelectorVerified: Bool,
-        hasVerifiedDisplayForSelector: Bool
+        detectedDisplays: [DDCDisplay],
+        confirmedRoute: ConfirmedDisplayRoute?,
+        configurationGeneration: UInt64,
+        transitionGraceActive: Bool
     ) -> Bool {
         let selector = displaySelector.trimmingCharacters(
             in: .whitespacesAndNewlines
         )
-        return automationEnabled
-            && !selector.isEmpty
-            && (isDisplaySelectorVerified || hasVerifiedDisplayForSelector)
+        guard automationEnabled,
+              hasStableDisplaySelector(selector) else {
+            return false
+        }
+
+        // The discovery list is the only physical-presence signal used by
+        // the persistent lease. `isDisplaySelectorVerified` may intentionally
+        // stay true during the short input-switch reconciliation window.
+        if detectedDisplays.contains(where: {
+            $0.isDDCCapable && $0.matches(selector: selector)
+        }) {
+            return true
+        }
+
+        guard let confirmedRoute,
+              confirmedRoute.configurationGeneration == configurationGeneration,
+              confirmedRoute.selector.caseInsensitiveCompare(selector)
+                  == .orderedSame else {
+            return transitionGraceActive
+        }
+        switch confirmedRoute.role {
+        case .remote:
+            // CoreGraphics can omit the inactive monitor input while the
+            // remote route is active. A VCP-confirmed remote route is the
+            // bounded-cache exception needed for Intel between-switch use.
+            return true
+        case .local, .unknown:
+            return transitionGraceActive
+        }
     }
 
     /// Schedules the persistent display-sleep lease on the same serial queue
     /// as native DDC transactions. This keeps assertion creation/release
     /// ordered with a switch and avoids touching IOPM from SwiftUI callbacks.
     private func scheduleDisplaySleepLease() {
+        displaySleepLeaseGraceWorkItem?.cancel()
+        displaySleepLeaseGraceWorkItem = nil
         let selector = displaySelector.trimmingCharacters(
             in: .whitespacesAndNewlines
         )
-        let hasVerifiedDisplayForSelector = lastVerifiedDisplay?.matches(
-            selector: selector
-        ) == true
+        let now = Date()
+        let transitionGraceDeadline = routePreservationAttempt?.deadline
+        let transitionGraceActive = transitionGraceDeadline.map {
+            $0 > now
+        } ?? false
+        let isTerminating = deferredAutomaticSwitchState.isTerminating
         let shouldKeepDisplayAwake = Self.shouldKeepDisplayAwake(
-            automationEnabled: automationEnabled,
+            automationEnabled: automationEnabled && !isTerminating,
             displaySelector: selector,
-            isDisplaySelectorVerified: isDisplaySelectorVerified,
-            hasVerifiedDisplayForSelector: hasVerifiedDisplayForSelector
+            detectedDisplays: detectedDisplays,
+            confirmedRoute: displayRouteState.confirmedRoute,
+            configurationGeneration: displayRouteState.configuration.generation,
+            transitionGraceActive: !isTerminating && transitionGraceActive
         )
         queue.async { [weak self] in
             self?.displaySleepAssertionLease.setEnabled(shouldKeepDisplayAwake)
         }
+        guard !isTerminating,
+              let transitionGraceDeadline,
+              transitionGraceActive else {
+            return
+        }
+        let delay = max(0, transitionGraceDeadline.timeIntervalSinceNow)
+        let attemptID = routePreservationAttempt?.id
+        let configurationGeneration = displayRouteState.configuration.generation
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self,
+                  self.routePreservationAttempt?.id == attemptID,
+                  self.routePreservationAttempt?.deadline
+                      == transitionGraceDeadline,
+                  self.displayRouteState.configuration.generation
+                      == configurationGeneration else {
+                return
+            }
+            self.displaySleepLeaseGraceWorkItem = nil
+            self.scheduleDisplaySleepLease()
+        }
+        displaySleepLeaseGraceWorkItem = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + delay,
+            execute: workItem
+        )
     }
 
     static func canUseAutomaticDDCSwitching(
@@ -1207,6 +1607,8 @@ struct DeferredAutomaticSwitch {
     let input: MonitorInputSource
     let description: String
     let intent: DeferredAutomaticSwitchIntent
+    let role: DisplayRouteRole
+    let routeRequest: DisplayRouteSwitchRequest?
     let shouldWakeDisplayForKVMSwitch: Bool
     let recoveryInputOnFailure: MonitorInputSource?
     let completions: [() -> Void]
@@ -1219,11 +1621,15 @@ struct DeferredAutomaticSwitch {
         completion: (() -> Void)?,
         result: ((Bool) -> Void)?,
         recoveryInputOnFailure: MonitorInputSource? = nil,
-        shouldWakeDisplayForKVMSwitch: Bool = true
+        shouldWakeDisplayForKVMSwitch: Bool = true,
+        role: DisplayRouteRole = .unknown,
+        routeRequest: DisplayRouteSwitchRequest? = nil
     ) {
         self.input = input
         self.description = description
         self.intent = intent
+        self.role = role
+        self.routeRequest = routeRequest
         self.shouldWakeDisplayForKVMSwitch = shouldWakeDisplayForKVMSwitch
         self.recoveryInputOnFailure = recoveryInputOnFailure
         completions = completion.map { [$0] } ?? []
@@ -1275,7 +1681,9 @@ struct DeferredAutomaticSwitchState {
         completion: (() -> Void)?,
         result: ((Bool) -> Void)? = nil,
         recoveryInputOnFailure: MonitorInputSource? = nil,
-        shouldWakeDisplayForKVMSwitch: Bool = true
+        shouldWakeDisplayForKVMSwitch: Bool = true,
+        role: DisplayRouteRole = .unknown,
+        routeRequest: DisplayRouteSwitchRequest? = nil
     ) -> [() -> Void] {
         guard intent == .terminating || !isTerminating else {
             return DeferredAutomaticSwitch(
@@ -1285,7 +1693,9 @@ struct DeferredAutomaticSwitchState {
                 completion: completion,
                 result: result,
                 recoveryInputOnFailure: recoveryInputOnFailure,
-                shouldWakeDisplayForKVMSwitch: shouldWakeDisplayForKVMSwitch
+                shouldWakeDisplayForKVMSwitch: shouldWakeDisplayForKVMSwitch,
+                role: role,
+                routeRequest: routeRequest
             ).resolveCallbacks(success: false)
         }
         let supersededCompletions = deferredAutomaticSwitch?.resolveCallbacks(
@@ -1298,7 +1708,9 @@ struct DeferredAutomaticSwitchState {
             completion: completion,
             result: result,
             recoveryInputOnFailure: recoveryInputOnFailure,
-            shouldWakeDisplayForKVMSwitch: shouldWakeDisplayForKVMSwitch
+            shouldWakeDisplayForKVMSwitch: shouldWakeDisplayForKVMSwitch,
+            role: role,
+            routeRequest: routeRequest
         )
         return supersededCompletions
     }

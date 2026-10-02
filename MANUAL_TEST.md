@@ -33,7 +33,7 @@ Release check (from the M5 Pro) is also available:
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.100.10-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.100.11-universal.dmg.sha256)
 ```
 
 Expected: the app reports both `arm64` and `x86_64`, and an ad-hoc signature
@@ -514,6 +514,28 @@ or macOS privacy prompts.
    action, the emergency shortcut, a network unplug/reconnect, and a quit.
    Confirm the local keyboard, mouse, and trackpad route returns and no key,
    mouse button, or trackpad gesture state remains stuck.
+
+## 12. Display-idle lease and pairing cleanup regressions
+
+1. With automatic DDC/CI enabled and the selected monitor detected, run
+   `pmset -g assertions` and confirm **MacKVM automatic DDC/CI** is present.
+2. Use **Show other device** and confirm the assertion remains while the
+   monitor shows the remote input. Leave it longer than the configured display
+   idle timeout, then return; test both Intel HDMI and M5 USB-C directions.
+3. Return locally, unplug the monitor, and choose **Detect DDC-capable
+   displays**. Confirm the assertion disappears; reconnect and detect again to
+   restore it. Changing selector/input settings must not let an old switch
+   completion restore the previous configuration's assertion.
+4. Confirm K still changes keyboard/mouse control without DDC and O still
+   switches the monitor together with keyboard/mouse control.
+5. Also record remote-route unplug and manual OSD results. These are known
+   ambiguous states, not an automated physical-presence guarantee. If the
+   assertion remains, disable automatic DDC/CI or quit and confirm it releases.
+6. Run the Windows desktop self-test through local CI. Injected consent,
+   initialization, and cancellation failures must restore both admission slot
+   counts; a subsequent pairing must still be admitted. On Windows, cancel a
+   consent dialog and retry pairing, then quit while another request is pending
+   and confirm the application exits without hanging.
 
 ## Acceptance record
 

@@ -2,6 +2,8 @@
 
 # MacKVM user manual
 
+Version: **1.100.11 (build 93)**.
+
 MacKVM is a macOS app with a menu-bar entry and a full control window for
 sharing one keyboard, mouse, and trackpad, plus an optional BenQ MA270U display, between a
 14-inch M5 Pro MacBook Pro and a 2019 Intel MacBook Pro.
@@ -56,6 +58,12 @@ If a permission was previously denied, use the matching **Settings** button.
 
 An external display is not required for pairing or remote input. It is only
 needed for automatic DDC input switching and cross-display pointer mapping.
+
+Automatic DDC/CI keeps the display pipeline awake while the selected monitor
+is detected or its route is confirmed remote. If it is absent without a
+confirmed remote route, the idle-sleep assertion is released. Unplugging while
+the monitor is on the remote input and manual OSD changes cannot yet be
+reliably distinguished; turn off automatic DDC/CI or quit to release the lease.
 When started by Login Items, the full window stays hidden so startup does not
 steal focus; use the menu-bar icon or activate MacKVM from the Dock to reopen it.
 

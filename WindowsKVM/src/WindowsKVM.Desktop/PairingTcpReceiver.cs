@@ -53,11 +53,15 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
     private readonly Queue<long> recentConnectionAttempts = [];
     private readonly TaskCompletionSource<bool> stopRequested =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly object lifecycleLock = new();
     private TaskCompletionSource<string?>? pendingAcceptance;
     private Task? consoleInputTask;
     private MdnsAdvertiser? advertiser;
     private Task? advertiserTask;
     private Task? advertiserMonitorTask;
+    private Task? acceptTask;
+    private Task? stopTask;
+    private Task? disposeTask;
 
     public PairingTcpReceiver(
         DeviceCredentials credentials,
@@ -122,16 +126,35 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
 
     public async Task RunAsync()
     {
-        StartListenerWithIPv4Fallback();
-        Port = ((IPEndPoint)listener.LocalEndpoint).Port;
-        advertiser = new MdnsAdvertiser(
-            credentials.Identity,
-            model,
-            Port,
-            enableIPv6: listener.Server.AddressFamily == AddressFamily.InterNetworkV6
-        );
-        advertiserTask = advertiser.RunAsync();
-        advertiserMonitorTask = MonitorAdvertiserAsync(advertiserTask);
+        Task currentAcceptTask;
+        lock (lifecycleLock)
+        {
+            if (acceptTask is not null || stopTask is not null || disposeTask is not null)
+            {
+                throw new InvalidOperationException("The pairing receiver has already started or stopped.");
+            }
+
+            StartListenerWithIPv4Fallback();
+            Port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            advertiser = new MdnsAdvertiser(
+                credentials.Identity,
+                model,
+                Port,
+                enableIPv6: listener.Server.AddressFamily == AddressFamily.InterNetworkV6
+            );
+            advertiserTask = advertiser.RunAsync();
+            advertiserMonitorTask = MonitorAdvertiserAsync(advertiserTask);
+            if (enableConsoleInput)
+            {
+                Console.CancelKeyPress += OnCancelKeyPress;
+                consoleInputTask = ConsoleInputLoopAsync(cancellation.Token);
+            }
+            acceptTask = AcceptLoopAsync(cancellation.Token);
+            currentAcceptTask = acceptTask;
+        }
+
+        // Publish readiness only after acceptTask is visible to StopCoreAsync.
+        // A status observer is allowed to request disposal synchronously.
         Console.WriteLine($"Pairing listener ready on TCP {Port}.");
         PublishStatus($"Pairing listener ready on TCP {Port}.");
         Console.WriteLine($"Device: {credentials.Identity.Name} ({credentials.Identity.Id:D})");
@@ -141,15 +164,9 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
             : "When an incoming request appears, compare the verification code and type y/yes to accept.");
         Console.WriteLine("Press Ctrl-C or Enter to stop.");
 
-        if (enableConsoleInput)
-        {
-            Console.CancelKeyPress += OnCancelKeyPress;
-            consoleInputTask = ConsoleInputLoopAsync(cancellation.Token);
-        }
-        var acceptTask = AcceptLoopAsync(cancellation.Token);
-        await Task.WhenAny(acceptTask, stopRequested.Task, advertiserMonitorTask);
+        await Task.WhenAny(currentAcceptTask, stopRequested.Task, advertiserMonitorTask);
         await StopAsync();
-        await acceptTask.ConfigureAwait(false);
+        await currentAcceptTask.ConfigureAwait(false);
     }
 
     private void StartListenerWithIPv4Fallback()
@@ -184,12 +201,48 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
         }
     }
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
-        await StopAsync();
-        connectionSlots.Dispose();
-        unpairedConnectionSlots.Dispose();
-        cancellation.Dispose();
+        Task dispose;
+        TaskCompletionSource<bool>? starter = null;
+        lock (lifecycleLock)
+        {
+            if (disposeTask is null)
+            {
+                starter = new TaskCompletionSource<bool>(
+                    TaskCreationOptions.RunContinuationsAsynchronously
+                );
+                disposeTask = starter.Task;
+            }
+
+            dispose = disposeTask;
+        }
+
+        if (starter is not null)
+        {
+            _ = CompleteDisposeAsync(starter);
+        }
+
+        return new ValueTask(dispose);
+    }
+
+    private async Task CompleteDisposeAsync(TaskCompletionSource<bool> completion)
+    {
+        try
+        {
+            await StopAsync().ConfigureAwait(false);
+            completion.TrySetResult(true);
+        }
+        catch (Exception ex)
+        {
+            completion.TrySetException(ex);
+        }
+        finally
+        {
+            connectionSlots.Dispose();
+            unpairedConnectionSlots.Dispose();
+            cancellation.Dispose();
+        }
     }
 
     private async Task AcceptLoopAsync(CancellationToken token)
@@ -260,61 +313,91 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
 
     private async Task HandleConnectionAsync(TcpClient client, CancellationToken serverToken)
     {
-        // Snapshot revocations before the remote peer identity is known. If
-        // Forget races this pairing while its signed exchange is in flight,
-        // the later commit will see the generation change for that peer.
-        var revocationSnapshot = pairingRevocationGate.CaptureSnapshot();
-        using var ownedClient = client;
-        await using var stream = client.GetStream();
-        var remoteEndpoint = client.Client.RemoteEndPoint?.ToString() ?? "unknown endpoint";
-        Console.WriteLine($"Incoming pairing connection from {remoteEndpoint}.");
-        PublishStatus($"Incoming pairing request from {remoteEndpoint}.");
-        using var handshakeCancellation = CancellationTokenSource.CreateLinkedTokenSource(
-            serverToken
-        );
-        handshakeCancellation.CancelAfter(PreAuthenticationTimeout);
-        var token = handshakeCancellation.Token;
-        var session = new PairingSession(
-            PairingSessionRole.Responder,
-            credentials.Identity,
-            credentials.PrivateKey,
-            localModel: model
-        );
-        var gate = new object();
-        var promptStarted = 0;
+        var connectionSlotReleased = 0;
         var unpairedSlotReleased = 0;
+        var consentResolved = 0;
         Task? promptTask = null;
-        using var outputLock = new SemaphoreSlim(1, 1);
-        var buffer = new List<byte>();
-        var readBuffer = new byte[16 * 1024];
-        var localConsentAccepted = false;
+        CancellationTokenSource? handshakeCancellation = null;
+        NetworkStream? stream = null;
+        SemaphoreSlim? outputLock = null;
 
-        void ResolveConsent(bool accepted)
-        {
-            if (Interlocked.Exchange(ref unpairedSlotReleased, 1) != 0)
-            {
-                return;
-            }
-
-            if (accepted)
-            {
-                // The user has now approved the code. Give the completion
-                // exchange its longer window; before this point the short
-                // admission timeout remains in force.
-                handshakeCancellation.CancelAfter(PairingHandshakeTimeout);
-            }
-            else
-            {
-                // A rejection is terminal for this connection. Cancel only
-                // this linked handshake token after the decision is queued.
-                handshakeCancellation.Cancel();
-            }
-
-            unpairedConnectionSlots.Release();
-        }
-
+        // Keep ownership of the accepted socket before any setup can fail. In
+        // particular, GetStream and the revocation snapshot are both allowed
+        // to throw; neither may strand the two admission slots.
         try
         {
+            using var ownedClient = client;
+            // Snapshot revocations before the remote peer identity is known.
+            // If Forget races this pairing while its signed exchange is in
+            // flight, the later commit sees the generation change for that
+            // peer.
+            var revocationSnapshot = pairingRevocationGate.CaptureSnapshot();
+            stream = client.GetStream();
+            var remoteEndpoint = client.Client.RemoteEndPoint?.ToString() ?? "unknown endpoint";
+            Console.WriteLine($"Incoming pairing connection from {remoteEndpoint}.");
+            PublishStatus($"Incoming pairing request from {remoteEndpoint}.");
+            handshakeCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                serverToken
+            );
+            handshakeCancellation.CancelAfter(PreAuthenticationTimeout);
+            var token = handshakeCancellation.Token;
+            var session = new PairingSession(
+                PairingSessionRole.Responder,
+                credentials.Identity,
+                credentials.PrivateKey,
+                localModel: model
+            );
+            var gate = new object();
+            var promptStarted = 0;
+            outputLock = new SemaphoreSlim(1, 1);
+            var buffer = new List<byte>();
+            var readBuffer = new byte[16 * 1024];
+            var localConsentAccepted = false;
+
+            void ReleaseUnpairedSlot()
+            {
+                ReleaseSemaphoreNonThrowing(
+                    unpairedConnectionSlots,
+                    ref unpairedSlotReleased,
+                    "unpaired connection"
+                );
+            }
+
+            void ResolveConsent(bool accepted)
+            {
+                if (Interlocked.Exchange(ref consentResolved, 1) != 0)
+                {
+                    return;
+                }
+
+                if (accepted)
+                {
+                    // The user has now approved the code. Give the completion
+                    // exchange its longer window; before this point the short
+                    // admission timeout remains in force.
+                    try
+                    {
+                        handshakeCancellation.CancelAfter(PairingHandshakeTimeout);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.Error.WriteLine(
+                            $"Pairing cleanup could not extend the handshake timeout: {ex.Message}"
+                        );
+                    }
+                }
+                else
+                {
+                    // A rejection is terminal for this connection. Cancel
+                    // only this linked handshake token after the decision is
+                    // queued. A cancellation callback is untrusted cleanup
+                    // code and must not prevent slot release.
+                    CancelNonThrowing(handshakeCancellation, "pairing consent");
+                }
+
+                ReleaseUnpairedSlot();
+            }
+
             // TcpClient.Connected is only a snapshot of the last socket
             // operation and can be false during a valid accepted connection,
             // especially for IPv4-mapped IPv6 peers. Let ReadAsync be the
@@ -446,28 +529,104 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
         }
         finally
         {
-            // A peer can disconnect while the responder is waiting for local
-            // console input. Cancel that prompt before returning so its waiter
-            // cannot reserve the console for all later pairing attempts.
-            handshakeCancellation.Cancel();
-            ResolveConsent(false);
-            if (promptTask is not null)
+            try
+            {
+                // A peer can disconnect while the responder is waiting for
+                // local console input. Cancel that prompt before returning so
+                // its waiter cannot reserve the console for later attempts.
+                CancelNonThrowing(handshakeCancellation, "pairing connection cleanup");
+                if (promptTask is not null)
+                {
+                    try
+                    {
+                        await promptTask.ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        LogCleanupFailure(
+                            $"Pairing consent task ended during cleanup ({ex.GetType().Name}): {ex.Message}"
+                        );
+                    }
+                }
+
+                // Resolve the decision after the prompt has drained. The
+                // consent and slot guards are intentionally separate: a
+                // faulting callback or a late prompt completion must not make
+                // either release twice.
+                if (handshakeCancellation is not null
+                    && Interlocked.Exchange(ref consentResolved, 1) == 0)
+                {
+                    CancelNonThrowing(handshakeCancellation, "pairing consent cleanup");
+                }
+            }
+            finally
             {
                 try
                 {
-                    await promptTask.ConfigureAwait(false);
+                    ReleaseSemaphoreNonThrowing(
+                        unpairedConnectionSlots,
+                        ref unpairedSlotReleased,
+                        "unpaired connection"
+                    );
                 }
-                catch (OperationCanceledException) when (token.IsCancellationRequested)
+                finally
                 {
+                    try
+                    {
+                        SafeDispose(outputLock, "pairing output lock");
+                        SafeDispose(handshakeCancellation, "pairing handshake cancellation");
+                    }
+                    finally
+                    {
+                        ReleaseSemaphoreNonThrowing(
+                            connectionSlots,
+                            ref connectionSlotReleased,
+                            "connection"
+                        );
+                    }
                 }
             }
-
-            client.Close();
-            connectionSlots.Release();
         }
     }
 
     private async Task PromptForAcceptanceAsync(
+        NetworkStream stream,
+        PairingSession session,
+        object gate,
+        CancellationToken token,
+        string code,
+        SemaphoreSlim outputLock,
+        Action<bool> resolveConsent,
+        Action<bool> setLocalConsent,
+        IReadOnlyDictionary<Guid, long> revocationSnapshot
+    )
+    {
+        try
+        {
+            await PromptForAcceptanceCoreAsync(
+                stream,
+                session,
+                gate,
+                token,
+                code,
+                outputLock,
+                resolveConsent,
+                setLocalConsent,
+                revocationSnapshot
+            ).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException
+            || !token.IsCancellationRequested)
+        {
+            Console.Error.WriteLine(
+                $"Pairing consent task failed ({ex.GetType().Name}): {ex.Message}"
+            );
+            resolveConsent(false);
+            throw;
+        }
+    }
+
+    private async Task PromptForAcceptanceCoreAsync(
         NetworkStream stream,
         PairingSession session,
         object gate,
@@ -777,6 +936,86 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
         }
     }
 
+    private static void CancelNonThrowing(
+        CancellationTokenSource? source,
+        string operation
+    )
+    {
+        if (source is null)
+        {
+            return;
+        }
+
+        try
+        {
+            source.Cancel();
+        }
+        catch (Exception ex)
+        {
+            LogCleanupFailure(
+                $"Pairing {operation} cancellation callback failed "
+                    + $"({ex.GetType().Name}): {ex.Message}"
+            );
+        }
+    }
+
+    private static void ReleaseSemaphoreNonThrowing(
+        SemaphoreSlim semaphore,
+        ref int released,
+        string name
+    )
+    {
+        if (Interlocked.Exchange(ref released, 1) != 0)
+        {
+            return;
+        }
+
+        try
+        {
+            semaphore.Release();
+        }
+        catch (Exception ex)
+        {
+            LogCleanupFailure(
+                $"Pairing cleanup could not release {name} slot "
+                    + $"({ex.GetType().Name}): {ex.Message}"
+            );
+        }
+    }
+
+    private static void SafeDispose(IDisposable? resource, string name)
+    {
+        if (resource is null)
+        {
+            return;
+        }
+
+        try
+        {
+            resource.Dispose();
+        }
+        catch (Exception ex)
+        {
+            LogCleanupFailure(
+                $"Pairing cleanup could not dispose {name} "
+                    + $"({ex.GetType().Name}): {ex.Message}"
+            );
+        }
+    }
+
+    private static void LogCleanupFailure(string message)
+    {
+        try
+        {
+            Console.Error.WriteLine(message);
+        }
+        catch
+        {
+            // Cleanup diagnostics must not supersede the slot ownership
+            // finally blocks that protect subsequent admissions.
+        }
+    }
+
     private bool TryAdmitConnectionAttempt()
     {
         var now = Environment.TickCount64;
@@ -819,38 +1058,118 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
         }
     }
 
-    private async Task StopAsync()
+    private Task StopAsync()
     {
-        if (cancellation.IsCancellationRequested)
+        Task stop;
+        TaskCompletionSource<bool>? starter = null;
+        lock (lifecycleLock)
         {
-            return;
+            if (stopTask is null)
+            {
+                starter = new TaskCompletionSource<bool>(
+                    TaskCreationOptions.RunContinuationsAsynchronously
+                );
+                stopTask = starter.Task;
+            }
+
+            stop = stopTask;
         }
 
-        cancellation.Cancel();
+        if (starter is not null)
+        {
+            _ = CompleteStopAsync(starter);
+        }
+
+        return stop;
+    }
+
+    private async Task CompleteStopAsync(TaskCompletionSource<bool> completion)
+    {
+        try
+        {
+            await StopCoreAsync().ConfigureAwait(false);
+            completion.TrySetResult(true);
+        }
+        catch (Exception ex)
+        {
+            completion.TrySetException(ex);
+        }
+    }
+
+    private async Task StopCoreAsync()
+    {
+        CancelNonThrowing(cancellation, "receiver stop");
         Console.CancelKeyPress -= OnCancelKeyPress;
-        listener.Stop();
+        try
+        {
+            listener.Stop();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(
+                $"Pairing listener stop failed ({ex.GetType().Name}): {ex.Message}"
+            );
+        }
+
+        // Stop accepting before taking the connection snapshot. Otherwise an
+        // accept already in flight can add a new handler after the snapshot,
+        // and DisposeAsync could race its finally block and the semaphores.
+        var accepted = acceptTask;
+        if (accepted is not null)
+        {
+            try
+            {
+                await accepted.ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine(
+                    $"Pairing accept loop ended during stop "
+                        + $"({ex.GetType().Name}): {ex.Message}"
+                );
+            }
+        }
+
         if (advertiser is not null)
         {
             var advertisingTask = advertiserTask;
-            await advertiser.DisposeAsync();
+            try
+            {
+                await advertiser.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine(
+                    $"Pairing advertiser stop failed ({ex.GetType().Name}): {ex.Message}"
+                );
+            }
+
             if (advertisingTask is not null)
             {
                 try
                 {
-                    await advertisingTask;
+                    await advertisingTask.ConfigureAwait(false);
                 }
-                catch (Exception) when (cancellation.IsCancellationRequested)
+                catch (Exception ex)
                 {
+                    Console.Error.WriteLine(
+                        $"Pairing advertiser ended during stop "
+                            + $"({ex.GetType().Name}): {ex.Message}"
+                    );
                 }
             }
             if (advertiserMonitorTask is not null)
             {
                 try
                 {
-                    await advertiserMonitorTask;
+                    await advertiserMonitorTask.ConfigureAwait(false);
                 }
-                catch (Exception) when (cancellation.IsCancellationRequested)
+                catch (Exception ex)
                 {
+                    Console.Error.WriteLine(
+                        $"Pairing advertiser monitor ended during stop "
+                            + $"({ex.GetType().Name}): {ex.Message}"
+                    );
                 }
             }
         }
@@ -863,10 +1182,14 @@ internal sealed class PairingTcpReceiver : IAsyncDisposable
 
         try
         {
-            await Task.WhenAll(pending);
+            await Task.WhenAll(pending).ConfigureAwait(false);
         }
-        catch (Exception) when (cancellation.IsCancellationRequested)
+        catch (Exception ex)
         {
+            Console.Error.WriteLine(
+                $"Pairing connections ended during stop "
+                    + $"({ex.GetType().Name}): {ex.Message}"
+            );
         }
     }
 

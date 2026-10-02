@@ -44,42 +44,219 @@ final class MonitorControllerTests: XCTestCase {
             MonitorController.shouldKeepDisplayAwake(
                 automationEnabled: true,
                 displaySelector: "",
-                isDisplaySelectorVerified: false,
-                hasVerifiedDisplayForSelector: false
+                detectedDisplays: [],
+                confirmedRoute: nil,
+                configurationGeneration: 0,
+                transitionGraceActive: false
             )
         )
         XCTAssertFalse(
             MonitorController.shouldKeepDisplayAwake(
                 automationEnabled: true,
                 displaySelector: "native-ddc:1:2:3",
-                isDisplaySelectorVerified: false,
-                hasVerifiedDisplayForSelector: false
+                detectedDisplays: [],
+                confirmedRoute: nil,
+                configurationGeneration: 0,
+                transitionGraceActive: false
             )
         )
         XCTAssertTrue(
             MonitorController.shouldKeepDisplayAwake(
                 automationEnabled: true,
                 displaySelector: "native-ddc:1:2:3",
-                isDisplaySelectorVerified: true,
-                hasVerifiedDisplayForSelector: false
+                detectedDisplays: [testDisplay()],
+                confirmedRoute: nil,
+                configurationGeneration: 0,
+                transitionGraceActive: false
             )
         )
         XCTAssertTrue(
             MonitorController.shouldKeepDisplayAwake(
                 automationEnabled: true,
                 displaySelector: "NATIVE-DDC:1:2:3",
-                isDisplaySelectorVerified: false,
-                hasVerifiedDisplayForSelector: true
+                detectedDisplays: [],
+                confirmedRoute: ConfirmedDisplayRoute(
+                    role: .remote,
+                    selector: "native-ddc:1:2:3",
+                    input: .hdmi1,
+                    configurationGeneration: 0
+                ),
+                configurationGeneration: 0,
+                transitionGraceActive: false
+            )
+        )
+        XCTAssertFalse(
+            MonitorController.shouldKeepDisplayAwake(
+                automationEnabled: true,
+                displaySelector: "native-ddc:1:2:3",
+                detectedDisplays: [],
+                confirmedRoute: ConfirmedDisplayRoute(
+                    role: .local,
+                    selector: "native-ddc:1:2:3",
+                    input: .usbC,
+                    configurationGeneration: 0
+                ),
+                configurationGeneration: 0,
+                transitionGraceActive: false
+            )
+        )
+        XCTAssertFalse(
+            MonitorController.shouldKeepDisplayAwake(
+                automationEnabled: true,
+                displaySelector: "native-ddc:1:2:3",
+                detectedDisplays: [],
+                confirmedRoute: ConfirmedDisplayRoute(
+                    role: .unknown,
+                    selector: "native-ddc:1:2:3",
+                    input: nil,
+                    configurationGeneration: 0
+                ),
+                configurationGeneration: 0,
+                transitionGraceActive: false
+            )
+        )
+        XCTAssertFalse(
+            MonitorController.shouldKeepDisplayAwake(
+                automationEnabled: true,
+                displaySelector: "native-ddc:1:2:3",
+                detectedDisplays: [],
+                confirmedRoute: ConfirmedDisplayRoute(
+                    role: .remote,
+                    selector: "native-ddc:1:2:3",
+                    input: .hdmi1,
+                    configurationGeneration: 1
+                ),
+                configurationGeneration: 0,
+                transitionGraceActive: false
             )
         )
         XCTAssertFalse(
             MonitorController.shouldKeepDisplayAwake(
                 automationEnabled: false,
                 displaySelector: "native-ddc:1:2:3",
-                isDisplaySelectorVerified: true,
-                hasVerifiedDisplayForSelector: true
+                detectedDisplays: [testDisplay()],
+                confirmedRoute: nil,
+                configurationGeneration: 0,
+                transitionGraceActive: false
             )
         )
+    }
+
+    func testPreservedVerifiedFlagDoesNotKeepLeaseWithoutPhysicalDisplay() {
+        XCTAssertFalse(
+            MonitorController.shouldKeepDisplayAwake(
+                automationEnabled: true,
+                displaySelector: "native-ddc:1:2:3",
+                detectedDisplays: [],
+                confirmedRoute: nil,
+                configurationGeneration: 0,
+                transitionGraceActive: false
+            )
+        )
+    }
+
+    func testDisplayRouteStateConfirmsNoOpAndMarksReadbackFailureUnknown() {
+        var state = DisplayRouteState(localInput: .usbC, remoteInput: .hdmi1)
+        let request = DisplayRouteSwitchRequest(
+            role: .remote,
+            selector: "native-ddc:1:2:3",
+            input: .hdmi1,
+            configuration: state.configuration
+        )
+        XCTAssertTrue(state.enqueue(request))
+
+        XCTAssertTrue(
+            state.apply(
+                request: request,
+                outcome: .confirmed,
+                currentSelector: request.selector
+            )
+        )
+        XCTAssertEqual(state.confirmedRoute?.role, .remote)
+
+        XCTAssertTrue(state.enqueue(request))
+        XCTAssertTrue(
+            state.apply(
+                request: request,
+                outcome: .unknown,
+                currentSelector: request.selector
+            )
+        )
+        XCTAssertEqual(state.confirmedRoute?.role, .unknown)
+    }
+
+    func testDisplayRouteStateIgnoresStaleCompletionAfterRoleChange() {
+        var state = DisplayRouteState(localInput: .usbC, remoteInput: .hdmi1)
+        let remoteRequest = DisplayRouteSwitchRequest(
+            role: .remote,
+            selector: "native-ddc:1:2:3",
+            input: .hdmi1,
+            configuration: state.configuration
+        )
+        let localRequest = DisplayRouteSwitchRequest(
+            role: .local,
+            selector: "native-ddc:1:2:3",
+            input: .usbC,
+            configuration: state.configuration
+        )
+
+        XCTAssertTrue(state.enqueue(remoteRequest))
+        XCTAssertTrue(state.enqueue(localRequest))
+        XCTAssertFalse(
+            state.apply(
+                request: remoteRequest,
+                outcome: .confirmed,
+                currentSelector: remoteRequest.selector
+            )
+        )
+        XCTAssertTrue(
+            state.apply(
+                request: localRequest,
+                outcome: .confirmed,
+                currentSelector: localRequest.selector
+            )
+        )
+        XCTAssertEqual(state.confirmedRoute?.role, .local)
+    }
+
+    func testDisplayRouteStateIgnoresStaleCompletionAfterConfigurationChange() {
+        var state = DisplayRouteState(localInput: .usbC, remoteInput: .hdmi1)
+        let request = DisplayRouteSwitchRequest(
+            role: .remote,
+            selector: "native-ddc:1:2:3",
+            input: .hdmi1,
+            configuration: state.configuration
+        )
+
+        state.configurationDidChange(localInput: .hdmi1, remoteInput: .usbC)
+
+        XCTAssertFalse(
+            state.apply(
+                request: request,
+                outcome: .confirmed,
+                currentSelector: request.selector
+            )
+        )
+        XCTAssertNil(state.confirmedRoute)
+    }
+
+    func testDisplayRouteStateIgnoresStaleCompletionAfterSelectorChange() {
+        var state = DisplayRouteState(localInput: .usbC, remoteInput: .hdmi1)
+        let request = DisplayRouteSwitchRequest(
+            role: .remote,
+            selector: "native-ddc:1:2:3",
+            input: .hdmi1,
+            configuration: state.configuration
+        )
+
+        XCTAssertFalse(
+            state.apply(
+                request: request,
+                outcome: .confirmed,
+                currentSelector: "native-ddc:9:9:9"
+            )
+        )
+        XCTAssertNil(state.confirmedRoute)
     }
 
     func testAutomaticSwitchingRequiresAVerifiedDDCSelection() {
@@ -486,5 +663,13 @@ final class MonitorControllerTests: XCTestCase {
             defaults.removePersistentDomain(forName: suiteName)
         }
         body(defaults)
+    }
+
+    private func testDisplay() -> DDCDisplay {
+        DDCDisplay(
+            index: 1,
+            name: "Test display",
+            stableIdentifier: "native-ddc:1:2:3"
+        )
     }
 }

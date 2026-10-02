@@ -8,10 +8,13 @@ authenticate a secure Connect session, and receive keyboard/mouse control over
 that encrypted session. A console mode remains available for automation and
 firewall diagnostics.
 
-## Current feature set — 1.02.29 (build 110)
+## Current feature set — 1.02.30 (build 111)
 
 The Windows host includes:
 
+- pairing admission cleanup that returns both slots after setup, consent, or
+  cancellation failures; shutdown drains the accept loop and active handlers
+  before disposing their resources;
 - MacKVM 1.00.00 is not supported by this Windows release candidate; use a MacKVM build with the
   signed `disconnectSignalVersion` capability (introduced in MacKVM
   1.100.00/build 75) for pairing and authenticated secure Connect;
@@ -284,7 +287,7 @@ native APIs do not replace these desktop checks.
    that the mode and pairing buttons do not overlap. Resize or
    move between monitors during a connection; changing the view must not
    reset pairing or control, and consent prompts must remain usable.
-8. Confirm `--version` reports **1.02.29 (build 110)**; the reported UI defects
+8. Confirm `--version` reports **1.02.30 (build 111)**; the reported UI defects
    were tested on **1.02.09 (build 89) Beta 3**, not this build. Quit the old
    tray receiver before starting the replacement. Check the title/heading say
    **WindowsKVM**. Scroll Advanced rapidly up/down and drag both scrollbars;

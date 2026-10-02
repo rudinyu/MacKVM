@@ -43,7 +43,7 @@
 <body>
   <main>
     <header>
-      <div class="badge">MacKVM 1.100.10 (build 92)</div>
+      <div class="badge">MacKVM 1.100.11 (build 93)</div>
       <h1>MacKVM User Manual</h1>
       <p class="lede">A macOS app with a KVM menu-bar entry and full control window for sharing one keyboard, mouse, and trackpad, plus an optional BenQ MA270U display, between two MacBook Pro computers.</p>
       <p><a href="USER_MANUAL.zh-TW.html" lang="zh-Hant">繁體中文版</a> · <a href="USER_MANUAL.md">Markdown version</a></p>
@@ -77,7 +77,8 @@
         <li>Install and run MacKVM on both Macs.</li>
         <li>An external display is optional for pairing and remote input; it is needed only for DDC switching and cross-display pointer mapping.</li>
       </ul>
-      <div class="notice"><strong>First launch:</strong> local builds use an ad-hoc signature rather than an Apple Developer ID notarized signature. If macOS blocks the app, right-click <code>MacKVM.app</code> in Finder, choose <strong>Open</strong>, and confirm.</div>
+      <div class="notice"><strong>First launch:</strong> local builds without a signing identity use an ad-hoc signature; distribution DMGs use Developer ID signing and Apple notarization. If macOS blocks a local test build, right-click <code>MacKVM.app</code> in Finder, choose <strong>Open</strong>, and confirm.</div>
+      <p>Automatic DDC/CI keeps the selected display pipeline awake while the monitor is detected or its route is confirmed remote. An absent monitor without a confirmed remote route releases the idle-sleep assertion. Remote-route unplug and manual OSD changes are still ambiguous; disable automatic DDC/CI or quit to release the lease.</p>
     </section>
 
     <section id="install">
@@ -95,7 +96,7 @@
       <p>Create and verify a DMG:</p>
       <pre><code>./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist &amp;&amp; shasum -a 256 -c MacKVM-1.100.10-universal.dmg.sha256)</code></pre>
+(cd dist &amp;&amp; shasum -a 256 -c MacKVM-1.100.11-universal.dmg.sha256)</code></pre>
       <p>The DMG is built from a clean staging directory and produces a portable SHA-256 sidecar. Ad-hoc signing is for local testing; distribution requires Developer ID, hardened runtime, and Apple notarization.</p>
       <p>For direct distribution outside the Mac App Store, create a notarytool Keychain profile once, then use the separate release script:</p>
       <pre><code>xcrun notarytool store-credentials "mackvm-notary" \
@@ -230,7 +231,7 @@
     </section>
 
     <footer>
-      <p>MacKVM User Manual · Version 1.100.10 (build 92) · Updated 2026-10-02</p>
+      <p>MacKVM User Manual · Version 1.100.11 (build 93) · Updated 2026-10-02</p>
     </footer>
   </main>
 </body>

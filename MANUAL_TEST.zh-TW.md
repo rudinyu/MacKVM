@@ -31,7 +31,7 @@ Intel Mac 的 `/Applications`，再開啟各自架構的 app。
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.100.10-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.100.11-universal.dmg.sha256)
 ```
 
 本機 ad-hoc 簽章只能用於測試；正式散布必須使用 Developer ID、hardened runtime
@@ -239,6 +239,22 @@ US 控制、德文接收為例，那會是「y」）；步驟 10 確認寄送端
 金鑰不可再次連線。正式 DMG 另外確認 Developer ID、hardened runtime、checksum
 與 Apple notarization；實體 USB switch 與 MA270U OSD 結果填回英文驗收文件的
 Acceptance record。
+
+## 9. 螢幕保活與配對清理回歸測試
+
+1. 啟用自動 DDC/CI 且已偵測選定螢幕後，執行 `pmset -g assertions`，確認存在
+   **MacKVM automatic DDC/CI**。
+2. 按 **Show other device**，確認遠端輸入顯示期間 assertion 仍存在。等待超過系統的
+   螢幕閒置時間後再返回，分別測 Intel HDMI 與 M5 USB-C 兩個方向。
+3. 返回本機後拔線，再按 **Detect DDC-capable displays**，確認 assertion 消失；重新
+   接線並偵測後恢復。切換途中修改 selector 或輸入設定，舊工作的結果不能恢復舊設定的
+   assertion。
+4. 確認 K 仍只切換鍵鼠控制、不操作 DDC；O 仍同時切換螢幕與鍵鼠。
+5. 另記錄「切到遠端後拔線」與手動 OSD 的結果。這些狀態目前仍有歧義，不是自動實體
+   存在偵測的保證；若 assertion 留住，關閉自動 DDC/CI 或退出 App，確認它會釋放。
+6. 透過本機 CI 執行 Windows desktop self-test；注入配對同意、初始化與取消失敗後，
+   兩種名額都須恢復，後續配對仍可進入。在 Windows 實機取消同意視窗後重新配對，並在
+   另一個請求尚未完成時退出，確認 App 不會卡住。
 
 ## 驗收紀錄
 

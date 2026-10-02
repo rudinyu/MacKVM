@@ -19,6 +19,7 @@ internal static class Program
             TestDiagnosticStatusSanitization();
             TestRemoteInputPreferenceFallback();
             TestPairingRevocationGate();
+            await PairingHarness.RunSlotCleanupTestsAsync();
             TestListenerGuardIsCrossPlatformAndAsyncSafe();
             await TestConsentCancellationAndQueueAsync();
             await TestSecureSessionLifecycleAsync();

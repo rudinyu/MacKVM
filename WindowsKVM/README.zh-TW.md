@@ -6,10 +6,12 @@ WindowsKVM 是 MacKVM 的 Windows companion。目前 Windows 版包含原生 Win
 host，可在區域網路上與 MacKVM 配對、完成 secure Connect 驗證，並接收加密鍵盤／滑鼠控制；
 另外保留 console 模式供自動化與防火牆診斷。
 
-## 目前功能 — 1.02.29（build 110）
+## 目前功能 — 1.02.30（build 111）
 
 Windows host 已包含：
 
+- 連線初始化、配對同意或取消失敗時精確歸還兩種名額；關閉時先等待 accept loop 與
+  活躍連線完成清理，再釋放資源；
 - 此 Windows release candidate 不支援 MacKVM 1.00.00；配對與 authenticated secure Connect 都必須使用包含簽名
   `disconnectSignalVersion` capability 的 MacKVM build（MacKVM 1.100.00／build 75 加入）；
 - authenticated secure Connect 會驗證簽名的 `disconnectSignalVersion` capability，並交換
@@ -201,7 +203,7 @@ Windows control granted for ...
    開啟 Advanced 檢查隱藏的身分與 port 資訊；在窄視窗使用橫向捲動確認右側操作仍可使用。
    再切回 Simple，確認視窗縮小且橫向捲軸消失；拖曳至最小尺寸，確認模式與配對按鈕不重疊。連線時調整大小或移動到
    不同螢幕，切換版面不得重設配對或控制權，同意對話框也必須保持可操作。
-8. 確認 `--version` 為 **1.02.29（build 110）**；先前 UI 問題的測試版本為
+8. 確認 `--version` 為 **1.02.30（build 111）**；先前 UI 問題的測試版本為
    **1.02.09（build 89）Beta 3**，不是本版。啟動替換版前先退出舊的系統匣 receiver。
    確認視窗標題與主標題為 **WindowsKVM**，在 Advanced 快速上下捲動並拖動兩個捲軸，
    不應殘留舊文字。捲動／縮放前後展開 **Physical input path**，分別選取兩個選項；
