@@ -191,6 +191,11 @@ Windows control granted for ...
 重設後刻意重新配對，Windows 會顯示明確的取代警告，只有驗證碼確認後才會更新 pin。若 identity
 檔案無法解密或驗證失敗，receiver 會 fail closed；重設方式請依照[Windows 建置手冊](../WINDOWS_BUILD.zh-TW.md)。
 
+[macOS 清除工具](../INSTALL.zh-TW.md#移除-mackvm-與保存的資料)不會移除 WindowsKVM、
+`%LOCALAPPDATA%\MacKVM` 或 Windows 端信任。明確清除並重裝 MacKVM 後，請在 Windows
+Forget 舊 Mac，再配對新的身分。這只是 macOS 移除工具更新；WindowsKVM 的
+1.02.31（build 112）版本與通訊協定都不變。
+
 ## Windows 回歸驗收
 
 請在 Windows x64 與 ARM64，搭配相容的 MacKVM 各執行一次。輸入測試請使用可丟棄的文字文件；

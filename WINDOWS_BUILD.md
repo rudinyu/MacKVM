@@ -248,6 +248,14 @@ old Windows peer on every Mac that trusted it, then remove the corrupt file
 again to create a new identity. This prevents an implicit key/UUID rotation
 from silently stranding existing pairings.
 
+For deliberate Mac-side removal, see the
+[macOS purge guide](INSTALL.md#remove-mackvm-and-saved-data). That script removes
+only the selected Mac app and its current account's data; it does not uninstall
+WindowsKVM or change `%LOCALAPPDATA%\MacKVM` or Windows-side trust. After a
+successful Mac purge and reinstall, use **Forget paired Mac** for the old Mac
+on Windows, then Pair its newly generated identity again. WindowsKVM remains
+1.02.31 (build 112); this tooling update does not change the wire protocol.
+
 The protocol and desktop regression self-tests can be run on a development
 host with:
 

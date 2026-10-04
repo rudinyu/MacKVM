@@ -5,6 +5,9 @@
 MacKVM 是原生 macOS 應用程式，可在同一本機網路上的兩台電腦間共享鍵盤、滑鼠與觸控板。
 此 repo 也包含 Windows 接收端。螢幕輸入切換是選用功能，並透過相容螢幕的原生 DDC/CI 控制。
 
+目前 macOS 原始碼版本：**1.101.00（build 95）**。此次新增完整移除工具，未發布新版 DMG；
+既有 build 94 DMG 仍是僅移除 App 的舊 script。WindowsKVM 版本與通訊協定不變。
+
 ## 功能
 
 - 選單列常駐 KVM／雙螢幕圖示，並提供 Dock 與一般控制視窗；有待處理的控制請求時
@@ -21,6 +24,8 @@ MacKVM 是原生 macOS 應用程式，可在同一本機網路上的兩台電腦
   支援界線請見[觸控板支援範圍](#觸控板支援範圍)。
 - Local Network、Input Monitoring、Accessibility 的循序設定檢查。
 - Launch MacKVM at Login、通知 Allow／Deny／Review、斷線安全返回，以及睡眠／喚醒時的自動重連。
+- 明確選用的完整移除 script，包含預覽、確認、單一使用者資料清理與 App 專屬權限重設；
+  [macOS 的限制與手動步驟](INSTALL.zh-TW.md#移除-mackvm-與保存的資料)另有說明。
 - 記錄外接 USB 實體路徑的拓撲模式；每台 Mac 都可使用自己的鍵盤、滑鼠與觸控板發起
   軟體控制，不受 CPU 架構或 HDMI 接線限制。
 - 透過 IOKit 原生 DDC/CI 在 Apple Silicon 與 Intel 切換螢幕輸入、探索支援 DDC 的
@@ -135,9 +140,12 @@ SHA-256。既有的 `scripts/package-dmg.sh` 維持為本機 ad-hoc 測試流程
 
 產生的 DMG 也會包含 `Install MacKVM.command`、`Uninstall MacKVM.command` 與安裝指南。
 在 Finder 雙擊安裝 command 後，script 會驗證 app 並以原子方式將 MacKVM.app 安裝到
-`/Applications`；升級前請先結束正在執行的 MacKVM。解除安裝 command 只會移除 app bundle，
-不會刪除配對資料、私密金鑰、偏好設定或 macOS 隱私權限。若曾啟用 **Launch MacKVM at Login**，
-請在解除安裝前或後到 **系統設定 > 一般 > 登入項目** 移除 MacKVM。合法簽署的 installer
+`/Applications`；升級前請先結束正在執行的 MacKVM。解除安裝 command 預設只移除 app bundle；
+更新後的原始碼 script 另提供明確選用的 `--purge`，清除目前使用者的配對資料、身分私密金鑰、
+偏好設定，並重設此 App 可重設的 macOS 隱私權限。先用
+`./scripts/uninstall-app.sh --purge --dry-run` 預覽；執行前請閱讀
+[完整移除與權限限制](INSTALL.zh-TW.md#移除-mackvm-與保存的資料)。既有 build 94 DMG
+仍附上僅移除 App 的舊版 script。合法簽署的 installer
 package 需要另外的 Developer ID Installer 憑證，因此目前發行流程使用 notarized DMG 與這兩個
 script，不產生未簽署的 PKG。
 

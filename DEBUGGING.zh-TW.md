@@ -78,6 +78,19 @@ ifconfig
 
 確認兩台 Mac 在同一個可信任網路、MacKVM 已獲 Local Network 權限，且 MA270U 線材路徑使用正確的 USB-C 或 HDMI 輸入。DDC 寫入成功不代表螢幕真的接受該輸入，請以讀回／scan 報告確認。
 
+### 診斷明確的清理操作
+
+移除 App 前先保存支援報告與匯出的 log。若要明確解除安裝，依照
+[移除指南](INSTALL.zh-TW.md#移除-mackvm-與保存的資料)，先用
+`./scripts/uninstall-app.sh --purge --dry-run` 預覽。清除模式會刪除已保存的配對與身分資料，
+一般重連不需要此操作。請以資料所屬帳號執行，不要對整個 script 使用 `sudo`。
+
+逐項查看結果與退出狀態：非零結果可能表示部分獨立項目已移除，但整體清理仍未完成。
+Keychain 刪除失敗時會保留相符的身分偏好。使用者匯出到 Desktop 的 log 與系統共用
+unified log 都會保留。本機網路、通知、登入項目與防火牆可能仍需手動確認。
+選用的 `--remove-firewall-rule` 要求 App 仍存在且通過驗證；若 App 已刪除，請在系統設定
+處理該規則。成功清除並重新安裝後，在其他 peer 忘記舊 Mac，再重新配對。
+
 ## Windows
 
 ### 為何除錯時建議使用 console

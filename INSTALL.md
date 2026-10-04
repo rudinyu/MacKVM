@@ -6,6 +6,10 @@ This guide installs MacKVM on the target two-Mac setup: a 14-inch Apple
 Silicon M5 Pro MacBook Pro connected to a BenQ MA270U over USB-C, and a 2019
 16-inch Intel MacBook Pro connected over HDMI.
 
+Source version: **1.101.00 (build 95)**. Packaging commands below describe
+building this source, not an already published installer. Existing build 94
+DMGs do not include the new `--purge` mode; use the current repository script.
+
 ## Requirements
 
 - macOS 13 or later on both Macs.
@@ -107,7 +111,7 @@ Create and verify a universal DMG for local testing:
 ./scripts/verify-release.sh \
   --app dist/universal/MacKVM.app \
   --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.100.12-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.101.00-universal.dmg.sha256)
 ```
 
 Ad-hoc signing is suitable only for local testing. For direct distribution
@@ -145,9 +149,9 @@ the `/Applications` shortcut in the DMG.
 To uninstall, quit MacKVM and double-click `Uninstall MacKVM.command`. It
 removes only `/Applications/MacKVM.app`. If **Launch MacKVM at Login** was
 enabled, remove MacKVM from **System Settings > General > Login Items**. The
-script intentionally leaves user data and permissions intact; use MacKVM's
-identity reset or the relevant System Settings pages when those need to be
-reset separately. A signed PKG is not part of this release path because it
+default intentionally leaves user data and permissions intact; see
+[Remove MacKVM and saved data](#remove-mackvm-and-saved-data) for the explicit
+purge option and remaining manual steps. A signed PKG is not part of this release path because it
 requires a Developer ID Installer certificate in addition to the app signing
 certificate.
 
@@ -170,6 +174,68 @@ cross-display pointer mapping are optional monitor features.
 When launched by Login Items, MacKVM keeps the full window hidden so startup
 does not steal focus; open it from the menu-bar icon or activate it from the
 Dock when needed.
+
+## Remove MacKVM and saved data
+
+The updated `scripts/uninstall-app.sh` can remove MacKVM and this macOS user's
+saved data. Existing build 94 DMGs contain an app-only script; use the
+updated repository script until a new DMG is published. This does not uninstall
+WindowsKVM or erase another user's data.
+
+1. Turn off **Launch MacKVM at Login**, if enabled, and quit every running copy
+   of MacKVM. The script refuses to purge while MacKVM is running.
+2. In Terminal, from the repository root, preview the exact actions:
+
+   ```sh
+   ./scripts/uninstall-app.sh --purge --dry-run
+   ```
+
+3. Run the removal and read its confirmation prompt:
+
+   ```sh
+   ./scripts/uninstall-app.sh --purge
+   ```
+
+   `--yes` skips the destructive confirmation for unattended use. Add
+   `--target-dir "$HOME/Applications"` only if that is where you installed the
+   app. Do **not** run the whole script with `sudo`: preferences, Keychain and
+   permissions belong to the signed-in user. A narrowly scoped administrator
+   prompt may be needed to remove the app from `/Applications`.
+
+Purge removes the app, preferences in `app.mackvm.MacKVM` and
+`app.mackvm.device-identity`, and the single Keychain identity item with service
+`app.mackvm.device-identity` and account `p256-signing-key`. It asks `tccutil` to
+reset permissions for **only** `app.mackvm.MacKVM`, including Accessibility and
+Input Monitoring. If present, only `~/Library/Caches/app.mackvm.MacKVM` and
+`~/Library/Saved Application State/app.mackvm.MacKVM.savedState` are removed
+as app-owned cache and window-state data. It also works when the app has
+already been deleted. Check the result of every step: an error does not mean
+that cleanup finished. If the identity key cannot be deleted, its identity
+preferences are retained to avoid leaving a mismatched identity.
+
+**Deleting the identity key and pairing data cannot be undone by this script.**
+After reinstalling, remove the old pairing with **Forget** on the other devices
+and pair again. Downloaded installers, repository/build files, other apps and
+user-exported debug logs are not removed.
+
+Some system entries still need manual attention:
+
+- **Local Network:** turn off MacKVM in **System Settings > Privacy & Security >
+  Local Network** if listed. Apple documents that macOS cannot reset this
+  permission to the undetermined state; `tccutil` does not provide a complete
+  reset. See [Apple's Local Network privacy guidance](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy).
+- **Login Items:** remove or disable any remaining MacKVM entry in **System
+  Settings > General > Login Items**. The script does not reset the shared
+  background-item database.
+- **Notifications:** turn off any remaining MacKVM entry in **System Settings >
+  Notifications**. Historical shared system logs are retained.
+- **Firewall:** optionally run the purge with `--remove-firewall-rule` to request
+  removal of the Apple application-firewall rule for the exact installed app
+  path. This option requires the app to still be present and validated; on
+  failure the script keeps the app and data for retry. It may require an
+  administrator password. Otherwise remove that
+  app's rule manually; third-party rules such as Little Snitch are always a
+  manual step. No global firewall settings are changed.
 
 ## Configure the monitor and input path
 

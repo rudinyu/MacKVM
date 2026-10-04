@@ -264,6 +264,12 @@ the verification code is accepted. If the identity file cannot be decrypted
 or validated, the receiver fails closed; follow the reset procedure in the
 [Windows build guide](../WINDOWS_BUILD.md).
 
+The [macOS purge uninstaller](../INSTALL.md#remove-mackvm-and-saved-data) does
+not remove WindowsKVM, `%LOCALAPPDATA%\MacKVM`, or Windows-side trust. After
+deliberately purging and reinstalling MacKVM, Forget the old Mac on Windows
+and Pair its new identity again. This is macOS removal tooling only;
+WindowsKVM's 1.02.31 (build 112) version and wire protocol are unchanged.
+
 ## Windows regression acceptance
 
 Run these checks on both Windows x64 and ARM64 using a compatible MacKVM peer.

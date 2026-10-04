@@ -83,6 +83,25 @@ another device. This can briefly interrupt an unrelated handshake, but it
 prevents a revoked peer from winning an attribution race and is immediately
 recoverable by reconnecting.
 
+## Deliberate removal and privacy limits
+
+App-only uninstall preserves local trust, the identity key, preferences, and
+privacy permissions. The source script's explicit `--purge` permanently
+removes the current account's local trust/preferences and exact identity
+Keychain item; reinstalling then creates a new identity. Other devices still
+retain their old pins: use **Forget** there and pair again. This is a deliberate
+identity reset, not automatic key rotation or remote trust revocation.
+
+Purge requests `tccutil reset All app.mackvm.MacKVM` for this user, but does not
+promise to erase every permission entry. Local Network, Notifications,
+`SMAppService` login registration, and firewall rules can require manual
+follow-up; Apple firewall rule removal is a separate opt-in for the validated
+installed app path. Shared system logs and user-exported diagnostics are
+retained. Partial failures are reported as incomplete cleanup, and a failed
+identity-key deletion preserves matching identity metadata. Run as the account
+owner, not by running the whole script with `sudo`. See the
+[complete removal guide](INSTALL.md#remove-mackvm-and-saved-data).
+
 ## Native DDC diagnostic tool
 
 The repository's `Tools/DDCDiagnostic` program is a local, standalone tool. It

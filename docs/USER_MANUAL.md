@@ -2,7 +2,8 @@
 
 # MacKVM user manual
 
-Version: **1.100.12 (build 94)**. Distribution installers must pass Developer ID
+Source version: **1.101.00 (build 95)**; no new DMG is published by this update.
+Existing build 94 DMGs lack the new purge mode. Distribution installers must pass Developer ID
 signature and Apple notarization verification; local test builds are separate.
 
 MacKVM is a macOS app with a menu-bar entry and a full control window for
@@ -196,6 +197,29 @@ display when that session was started with K.
 Select **Copy support information** for a support report. It contains public
 version, OS, device, UUID, fingerprint, and connection status data; it excludes
 private keys, passwords, credentials, and network endpoints.
+
+## Uninstall and reset permissions
+
+Quit MacKVM first. The updated repository script has a preview and an explicit
+purge mode (older DMGs may still contain the app-only version):
+
+```sh
+./scripts/uninstall-app.sh --purge --dry-run
+./scripts/uninstall-app.sh --purge
+```
+
+Run these from the repository root as the signed-in user, not with `sudo`.
+Purge deletes this user's pairing data, identity key, and preferences, removes
+the app, and requests an app-scoped reset of resettable privacy permissions
+including Accessibility and Input Monitoring. You must pair again after
+reinstalling; use **Forget** for the old identity on the other devices.
+
+Local Network cannot be fully reset by a macOS command. Check the remaining
+Local Network, Login Items, Notifications and firewall entries manually;
+user-exported debug logs are kept. The script reports failures rather than
+claiming all permissions are cleared. See the
+[complete removal guide](../INSTALL.md#remove-mackvm-and-saved-data), including
+the optional app-specific Apple firewall-rule removal.
 
 ## More documentation
 

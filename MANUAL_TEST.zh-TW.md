@@ -31,8 +31,11 @@ Intel Mac 的 `/Applications`，再開啟各自架構的 app。
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.100.12-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.101.00-universal.dmg.sha256)
 ```
+
+這些指令是在本機封裝 1.101.00（build 95）原始碼；此次原始碼更新沒有發布新版 DMG。
+既有 build 94 DMG 仍使用僅移除 App 的 script，清除模式驗收請用目前 repository 的版本。
 
 本機 ad-hoc 簽章只能用於測試；正式散布必須使用 Developer ID、hardened runtime
 、secure timestamp 與 Apple notarization。正式 release 應使用獨立流程：
@@ -259,6 +262,33 @@ Acceptance record。
    兩種名額都須恢復，後續配對仍可進入。在 Windows 實機取消同意視窗後重新配對，並在
    另一個請求尚未完成時退出，確認 App 不會卡住。
 
+## 10. 解除安裝與清除模式驗收
+
+破壞性檢查只在可丟棄的 macOS 帳號與測試 peer 配對上進行。在該帳號的 `Applications`
+資料夾安裝測試副本，每次解除安裝指令都加上 `--target-dir "$HOME/Applications"`。
+不要刪除真正使用者的身分或配對來測試。本機 17 個移除回歸案例模擬 Keychain、TCC 與
+防火牆呼叫，不能取代以下系統層驗收。
+
+1. 記下測試帳號的 UUID／指紋、配對／profile 與螢幕設定，保存一份使用者匯出的診斷報告。
+   關閉 **Launch MacKVM at Login**，再結束所有 MacKVM 程序。
+2. 用 `./scripts/uninstall-app.sh --purge --dry-run` 加上上述目標選項預覽。確認只列出測試
+   App、兩個 MacKVM 偏好 domain、指定身分 Keychain 項目、App 快取／保存狀態與 App
+   範圍的 TCC 重設，App／資料／權限都不變。App 執行時另確認 script 拒絕清理且不變更資料。
+3. 不加 `--purge` 只移除 App，再安裝同一測試 build。UUID／指紋、配對／設定與先前授予的
+   權限須保留。繼續前再次退出 App。
+4. 啟動互動清除但拒絕 `DELETE` 確認，確認沒有變更；再明確確認一次清除。`--yes` 只用於
+   受控的無人值守測試。逐項查看結果，確認存在時的指定偏好／金鑰／快取／保存狀態已移除，
+   而其他資料與匯出的報告保留。
+5. 記錄實際 TCC 結果，完成[移除指南](INSTALL.zh-TW.md#移除-mackvm-與保存的資料)的本機
+   網路、通知與登入項目手動清單。Apple 防火牆規則預設手動處理；選用
+   `--remove-firewall-rule` 時 App 必須仍存在且通過驗證，第三方防火牆規則不得變更。
+   操作失敗時必須是非零且清理未完成；Keychain 失敗須保留相符身分偏好，選用的防火牆
+   清理失敗須保留 App／資料以供重試。解決失敗後重試，也測試 App 已刪除的情況；已不存在
+   的項目須如實回報，不得把失敗的權限重設說成成功。
+6. 成功清除後重裝，確認是新身分且沒有已保存的本機配對／設定。其他測試 peer 仍保留舊
+   信任，必須明確 Forget 舊 Mac，再比對驗證碼重新配對。Repository／build 檔案、安裝檔
+   與系統共用 unified log 都應保留。
+
 ## 驗收紀錄
 
 | 項目 | M5 Pro | Intel 2019 | 結果／備註 |
@@ -267,6 +297,7 @@ Acceptance record。
 | 選單列鍵盤圖示 |  |  |  |
 | macOS 權限 |  |  |  |
 | 啟動時登入 |  |  |  |
+| 僅移除 App／明確清除／手動後續步驟 |  |  |  |
 | 探索／配對 |  |  |  |
 | 裝置資料／支援複製 |  |  |  |
 | 安全重連 |  |  |  |

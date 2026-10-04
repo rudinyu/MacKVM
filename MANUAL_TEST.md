@@ -33,8 +33,12 @@ Release check (from the M5 Pro) is also available:
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.100.12-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.101.00-universal.dmg.sha256)
 ```
+
+These commands package the 1.101.00 (build 95) source locally; this source
+update does not publish a new DMG. Existing build 94 DMGs retain the app-only
+uninstaller, so use the current repository script for purge acceptance.
 
 Expected: the app reports both `arm64` and `x86_64`, and an ad-hoc signature
 is explicitly labelled as local-testing-only. The checksum command reports
@@ -543,6 +547,47 @@ or macOS privacy prompts.
    consent dialog and retry pairing, then quit while another request is pending
    and confirm the application exits without hanging.
 
+## 13. Uninstall and purge acceptance
+
+Run destructive checks only in a disposable macOS account with disposable
+peer pairings. Install a test copy in that account's `Applications` folder and
+pass `--target-dir "$HOME/Applications"` to each uninstaller command. Do not
+test by deleting the real user's identity or pairings. System Keychain, TCC,
+and firewall calls are mocked by the 17 local uninstaller regression cases;
+those tests do not replace this OS-level acceptance.
+
+1. Record the test account's UUID/fingerprint, pairing/profile, and monitor
+   settings. Save a user-exported diagnostic report. Disable **Launch MacKVM
+   at Login**, then quit every MacKVM process before cleanup.
+2. Preview with `./scripts/uninstall-app.sh --purge --dry-run` and the target
+   option above. Confirm only the test app, two MacKVM preference domains,
+   exact identity Keychain item, app cache/saved-state directories, and
+   app-scoped TCC reset are listed. App, data, and permissions must not change.
+   With MacKVM running, confirm the script refuses cleanup without mutation.
+3. Run app-only uninstall without `--purge`, then reinstall the same test
+   build. Confirm the UUID/fingerprint, saved pairings/settings, and previously
+   granted permissions are preserved. Quit again before continuing.
+4. Start an interactive purge and decline the `DELETE` confirmation; confirm
+   nothing changed. Then deliberately confirm the purge. Use `--yes` only for
+   a controlled unattended test. Check every reported result and verify the
+   exact local preference/key/cache/saved-state targets were removed when
+   present, while unrelated data and the exported report remain intact.
+5. Record actual TCC results and complete the Local Network, Notifications,
+   and Login Items manual checklist in the
+   [removal guide](INSTALL.md#remove-mackvm-and-saved-data). Apple firewall rule
+   removal is manual unless explicitly selected; `--remove-firewall-rule`
+   requires the app still be present and validated. Third-party firewall rules
+   must not be changed. Where an operation fails, expect a nonzero incomplete
+   result; Keychain failure must retain matching identity preferences, and
+   optional firewall failure must retain the app/data for retry. Rerun after
+   resolving the failure, including after the app has already been removed,
+   and confirm absent items are reported accurately rather than claiming a
+   failed permission reset succeeded.
+6. Reinstall after successful purge. Confirm a new identity and no saved local
+   pairings/settings. Other disposable peers must retain their old trust until
+   explicitly forgotten; Forget the old Mac there and pair again with matching
+   codes. Repository/build files, installers, and shared unified logs remain.
+
 ## Acceptance record
 
 Record the macOS version and result for each item:
@@ -553,6 +598,7 @@ Record the macOS version and result for each item:
 | App/menu-bar icon |  |  |  |
 | Permissions |  |  |  |
 | Launch at login |  |  |  |
+| App-only uninstall / explicit purge / manual follow-up |  |  |  |
 | Discovery/pairing |  |  |  |
 | Paired profile / support copy |  |  |  |
 | Secure reconnect |  |  |  |

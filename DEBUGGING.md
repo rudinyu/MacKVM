@@ -100,6 +100,24 @@ Network permission, and the MA270U cable path exposes the expected USB-C or
 HDMI input. A successful DDC write alone is not proof that the monitor
 accepted the selected input; use the readback/scanning report.
 
+### Diagnose deliberate cleanup
+
+Save any support report and log exports before removing the app. For a
+deliberate uninstall, follow the
+[removal guide](INSTALL.md#remove-mackvm-and-saved-data) and first preview with
+`./scripts/uninstall-app.sh --purge --dry-run`. Purge destroys saved pairing and
+identity data; it is not required for an ordinary reconnect attempt. Run it as
+the account owner, without `sudo` for the whole script.
+
+Read each result and the exit status: a nonzero result can mean that some
+independent items were removed but cleanup is incomplete. If Keychain deletion
+fails, matching identity preferences are kept. User-exported Desktop logs and
+shared unified logs remain available. Local Network, Notifications, Login
+Items, and firewall entries can need manual follow-up. Optional
+`--remove-firewall-rule` requires a present, validated app; if the app is
+already absent, handle that rule in System Settings. After a successful purge
+and reinstall, Forget the old Mac on its other peers and pair again.
+
 ## Windows
 
 ### Why the console mode is preferred for debugging

@@ -99,6 +99,20 @@ UserDefaults JSON 資料。配對時保存簽署身份的友善名稱與 Bonjour
 資訊只包含這類公開診斷資料、版本、作業系統與連線狀態，不包含私密金鑰、憑證、密碼
 或網路 endpoint。
 
+## 本機保存資料與移除
+
+App 的配對／profile、螢幕與設定引導偏好保存於 `app.mackvm.MacKVM` defaults domain；
+本機 UUID／公開身份保存於 `app.mackvm.device-identity`。私密簽署金鑰是 Keychain 的單一
+generic-password 項目，service 為 `app.mackvm.device-identity`、account 為
+`p256-signing-key`，不是 repository 或 Application Support 裡的檔案。
+
+原始碼的解除安裝 script 預設只移除通過驗證的 App bundle。明確使用 `--purge` 才會另行
+移除目前帳號的兩個偏好 domain、指定身分金鑰，以及存在時的 App 專屬快取／視窗保存狀態，
+並要求 App 範圍的 TCC 重設。金鑰刪除失敗時會保留對應身分偏好，並回報清理未完成。
+此操作不會移除其他裝置保存的信任、匯出的報告或系統共用資料庫。登入時啟動使用
+`SMAppService.mainApp`，不是 LaunchAgent；剩餘登入／隱私／防火牆項目仍需依文件手動確認。
+請參閱[移除範圍與權限限制](INSTALL.zh-TW.md#移除-mackvm-與保存的資料)。
+
 ## 目標硬體資料流
 
 ```mermaid

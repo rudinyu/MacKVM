@@ -2,7 +2,8 @@
 
 # MacKVM 使用手冊
 
-版本：**1.100.12（build 94）**。正式散布的安裝檔須通過 Developer ID 簽章與 Apple 公證驗證；本機測試建置另計。
+原始碼版本：**1.101.00（build 95）**；此次未發布新版 DMG，既有 build 94 DMG 尚未包含
+新的清除模式。正式散布的安裝檔須通過 Developer ID 簽章與 Apple 公證驗證；本機測試建置另計。
 
 MacKVM 是 macOS app，提供選單列入口與一般控制視窗，讓 14 吋 M5 Pro MacBook Pro
 與 2019 Intel MacBook Pro 共用一組鍵盤、滑鼠與觸控板，並可選擇切換 BenQ MA270U 螢幕。
@@ -158,6 +159,26 @@ mapping 原始碼。按下 Ctrl-C 或收到 SIGTERM 時會停止候選值迴圈�
 
 遇到問題時按 **Copy support information**。報告包含公開的版本、OS、裝置、UUID、
 指紋與連線狀態，不包含私密金鑰、密碼、憑證或網路端點。
+
+## 解除安裝與重設權限
+
+請先結束 MacKVM。更新後的 repository script 提供預覽與明確選用的清除模式；
+舊 DMG 可能仍附上僅移除 App 的版本：
+
+```sh
+./scripts/uninstall-app.sh --purge --dry-run
+./scripts/uninstall-app.sh --purge
+```
+
+請在 repository 根目錄以目前登入的使用者執行，不要對整個 script 使用 `sudo`。
+清除模式會刪除此使用者的配對資料、身分私密金鑰與偏好設定、移除 App，並要求
+只重設此 App 可重設的隱私權限，包含輔助使用與輸入監控。重新安裝後必須重新配對，
+其他裝置也要對舊身分按 **Forget**。
+
+macOS 無法透過指令完整重設本機網路權限；剩餘的本機網路、登入項目、通知與防火牆
+項目仍需手動確認。使用者匯出的 debug log 會保留。script 會回報失敗，不會宣稱所有
+權限均已清除。完整步驟與可選用的 Apple App 防火牆規則移除功能，請見
+[完整移除指南](../INSTALL.zh-TW.md#移除-mackvm-與保存的資料)。
 
 ## 其他文件
 

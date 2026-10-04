@@ -28,6 +28,7 @@ swift test --disable-sandbox
 # Exercise the checked-in installer and uninstaller against the arm64 bundle
 # without touching /Applications or the user's preferences.
 installer_test_dir="$(mktemp -d "${TMPDIR:-/tmp}/mackvm-installer.XXXXXX")"
+installer_test_dir="$(CDPATH= cd -P -- "$installer_test_dir" && pwd -P)"
 cleanup_installer_test() {
   rm -rf -- "$installer_test_dir"
 }
@@ -46,6 +47,8 @@ trap cleanup_installer_test EXIT
 }
 cleanup_installer_test
 trap - EXIT
+
+./scripts/test-uninstall-app.sh
 
 ./scripts/build-ddc-diagnostic.sh --arch arm64 --no-clean
 ./scripts/build-ddc-diagnostic.sh --arch x86_64 --no-clean
@@ -143,7 +146,7 @@ assert_build_app_rejected "Invalid architecture" --arch invalid
 assert_build_app_rejected "Invalid equals-form architecture" --arch=invalid
 assert_build_app_rejected "Missing architecture value" --arch
 
-bash -n scripts/install-app.sh scripts/uninstall-app.sh
+bash -n scripts/install-app.sh scripts/uninstall-app.sh scripts/test-uninstall-app.sh
 ./scripts/install-app.sh --help >/dev/null
 ./scripts/uninstall-app.sh --help >/dev/null
 

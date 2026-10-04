@@ -7,6 +7,10 @@ between two computers on the same local network. A Windows receiver companion
 is included in this repository. Monitor input switching is optional and uses
 native DDC/CI where the display supports it.
 
+Current macOS source: **1.101.00 (build 95)**. This update adds complete removal
+tooling; it does not publish a new DMG. Existing build 94 DMGs contain the old
+app-only uninstaller. WindowsKVM's version and wire protocol are unchanged.
+
 The current MVP provides:
 
 - a native high-resolution app icon, a KVM/display-sharing icon in the macOS
@@ -35,6 +39,9 @@ The current MVP provides:
   checklist that prevents overlapping macOS permission prompts and refreshes
   when MacKVM becomes active again;
 - an optional **Launch MacKVM at Login** setting;
+- an opt-in complete-removal script with preview, explicit confirmation,
+  per-user data cleanup and app-scoped permission reset, with documented
+  [macOS limitations](INSTALL.md#remove-mackvm-and-saved-data);
 - injected-event marking that prevents input feedback loops;
 - explicit Allow/Deny control consent on the receiving Mac, deterministic
   collision handling, and a receiver-side stop action;
@@ -181,7 +188,7 @@ The package is built from a fresh staging directory and writes a portable
 SHA-256 sidecar next to the DMG. Verify the pair from the `dist` directory:
 
 ```sh
-(cd dist && shasum -a 256 -c MacKVM-1.100.12-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.101.00-universal.dmg.sha256)
 ```
 
 For direct distribution outside the Mac App Store, use the separate notarized
@@ -211,11 +218,14 @@ repository.
 The generated DMG also contains `Install MacKVM.command` and
 `Uninstall MacKVM.command`, plus the installation guides. Double-click the
 install command to validate and copy MacKVM.app atomically into `/Applications`;
-quit MacKVM first when upgrading. The uninstall command removes only the app
-bundle and leaves pairing data, private keys, preferences, and macOS privacy
-permissions untouched. If **Launch MacKVM at Login** was enabled, remove the
-login item from **System Settings > General > Login Items** before or after
-uninstalling. A signed installer package would require a separate Developer ID
+quit MacKVM first when upgrading. By default the uninstall command removes only
+the app bundle. The updated source script also supports an explicit `--purge`
+mode to remove this user's pairing data, identity key, and preferences, and
+reset the app's resettable macOS privacy permissions. Preview with
+`./scripts/uninstall-app.sh --purge --dry-run`; see
+[complete removal and permission limits](INSTALL.md#remove-mackvm-and-saved-data)
+before running it. Existing build 94 DMGs contain an app-only uninstaller.
+A signed installer package would require a separate Developer ID
 Installer certificate, so the current release path intentionally uses the
 notarized DMG and its scripts.
 

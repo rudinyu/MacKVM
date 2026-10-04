@@ -3,7 +3,7 @@
 [Architecture](ARCHITECTURE.md) · [Installation guide](INSTALL.md) ·
 [Security status](SECURITY.md) · [繁體中文](ROADMAP.zh-TW.md)
 
-This roadmap is written against the 1.100.12 (build 94) source tree. Every gap
+This roadmap is written against the 1.101.00 (build 95) source tree. Every gap
 below was confirmed in code rather than inferred from the documentation, and
 each item records the files a change would start from.
 
@@ -29,6 +29,10 @@ path now covers keyboard, mouse, and the public Quartz trackpad event surface.
 | Peer count | One peer at a time, arbitrated by UUID comparison | [`PeerArbitration.swift:4`](Sources/MacKVMCore/PeerArbitration.swift:4) |
 | Monitor switching | Native DDC/CI through IOAVService (Apple Silicon) or IOI2C (Intel); OSD fallback when unavailable | [`Sources/MacKVM/NativeDDCService.swift`](Sources/MacKVM/NativeDDCService.swift) |
 | DDC diagnostics | Cross-architecture CLI reports system/EDID/transport/VCP data and can scan VCP 0x60 mappings with readback and restore | [`Tools/DDCDiagnostic/README.md`](Tools/DDCDiagnostic/README.md) |
+| Removal | App-only by default; explicit per-user purge of saved data/identity with preview, failure reporting, and manual OS follow-up | [`INSTALL.md`](INSTALL.md#remove-mackvm-and-saved-data) |
+
+The purge tooling is a source update, not a newly published DMG. Existing
+build 94 DMGs contain the app-only uninstaller; WindowsKVM is unchanged.
 
 ## Priorities
 

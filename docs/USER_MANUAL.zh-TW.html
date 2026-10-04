@@ -43,8 +43,9 @@
 <body>
   <main>
     <header>
-      <div class="badge">MacKVM 1.100.12（build 94）</div>
+      <div class="badge">MacKVM 1.101.00（build 95）</div>
       <h1>MacKVM 使用手冊</h1>
+      <p>本手冊以目前原始碼為準。此次未發布新版 DMG；既有 build 94 DMG 尚未包含新的清除模式。</p>
       <p class="lede">提供選單列入口與一般控制視窗，讓兩台 MacBook Pro 共用一組鍵盤、滑鼠與觸控板，並可選擇切換 BenQ MA270U 螢幕的 macOS app。</p>
       <p><a href="USER_MANUAL.html" lang="en">English Version</a> · <a href="USER_MANUAL.zh-TW.md">Markdown 版本</a></p>
     </header>
@@ -63,6 +64,7 @@
         <li><a href="#daily">日常操作與安全返回</a></li>
         <li><a href="#hardware">P2 實機驗收</a></li>
         <li><a href="#troubleshooting">常見問題</a></li>
+        <li><a href="#uninstall">解除安裝與重設權限</a></li>
       </ol>
     </nav>
 
@@ -99,7 +101,7 @@
       <p>要建立 DMG，可使用：</p>
       <pre><code>./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist &amp;&amp; shasum -a 256 -c MacKVM-1.100.12-universal.dmg.sha256)</code></pre>
+(cd dist &amp;&amp; shasum -a 256 -c MacKVM-1.101.00-universal.dmg.sha256)</code></pre>
       <p>DMG 會從乾淨的暫存目錄建立，並在旁邊產生可攜式 SHA-256 檔案；驗證結果應顯示 <strong>OK</strong>。</p>
       <p>未提供 Developer ID 時是 ad-hoc 簽章，只適合本機測試；跨電腦散布前請用
         <code>--sign "Developer ID Application: …" --require-developer-id</code>，
@@ -266,8 +268,19 @@
         與 pairings；退出並重新開啟後，必須在兩台 Mac 重新配對。</p>
     </section>
 
+    <section id="uninstall">
+      <h2>12. 解除安裝與重設權限</h2>
+      <p>請先結束 MacKVM，在 repository 根目錄以目前登入的使用者執行更新後的 script，不要對整個 script 使用 <code>sudo</code>。舊 DMG 可能仍附上僅移除 App 的版本。</p>
+      <pre><code>./scripts/uninstall-app.sh --purge --dry-run
+./scripts/uninstall-app.sh --purge</code></pre>
+      <p>第一行只預覽；第二行會要求確認，再刪除 App、目前使用者的偏好設定、配對資料與身分私密金鑰，並要求只重設此 App 可重設的隱私權限，包含輔助使用與輸入監控。</p>
+      <div class="notice"><strong>身分移除無法復原：</strong>重新安裝後，請在其他裝置對舊配對按 <strong>Forget</strong>，再重新配對。</div>
+      <p>macOS 無法透過指令完整重設本機網路權限。剩餘的本機網路、登入項目、通知與防火牆項目仍需手動確認；使用者匯出的 debug log 會保留。script 會回報失敗，不會宣稱所有權限均已清除。</p>
+      <p>完整步驟與可選用的 Apple App 防火牆規則移除功能，請見<a href="../INSTALL.zh-TW.md#移除-mackvm-與保存的資料">完整移除指南</a>。</p>
+    </section>
+
     <footer>
-      <p>MacKVM 使用手冊 · 版本 1.100.12（build 94）· 最後更新 2026-10-04 · 正式散布的安裝檔須通過 Developer ID 簽章與 Apple 公證驗證。</p>
+      <p>MacKVM 使用手冊 · 原始碼版本 1.101.00（build 95）· 最後更新 2026-10-04 · 正式散布的安裝檔須通過 Developer ID 簽章與 Apple 公證驗證。</p>
     </footer>
   </main>
 </body>

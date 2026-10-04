@@ -4,6 +4,23 @@
 
 ## Unreleased
 
+### MacKVM 1.101.00 (build 95) — complete removal tooling
+
+- Add an explicit per-user purge mode with a no-change preview and destructive
+  confirmation. Remove saved trust, the exact identity Keychain item and
+  preferences, and reset only MacKVM's resettable TCC permissions.
+- Keep app-only removal as the default. Report failures and the manual Local
+  Network, Login Items, Notifications and third-party firewall cleanup steps;
+  optional Apple firewall cleanup targets only the installed app path.
+- Remove only the app's exact cache and saved-window-state directories. Refuse
+  unsafe paths and a running app; retain identity metadata if key deletion
+  fails, and retain the app if explicitly requested firewall cleanup fails.
+- Add 17 isolated uninstaller regression cases to local CI. System permission
+  and Keychain calls are mocked; real cleanup requires user-run acceptance.
+- Synchronize the English and Traditional Chinese documentation. No new DMG
+  is published by this source update; the existing build 94 DMG still contains
+  the app-only uninstaller.
+
 ### MacKVM 1.100.12 (build 94)
 
 - Permit a local display-return attempt through a matching, previously verified

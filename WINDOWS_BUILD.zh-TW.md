@@ -199,6 +199,12 @@ identity。請先在所有曾信任這台 Windows 的 Mac 忘記舊 peer，再�
 `%LOCALAPPDATA%\MacKVM\identity.json`，然後重新啟動 receiver 產生新的 identity。
 這可避免 key／UUID 未通知就輪換，導致原有配對無聲失效。
 
+若要明確移除 Mac 端 App 與資料，請見[macOS 清除指南](INSTALL.zh-TW.md#移除-mackvm-與保存的資料)。
+該 script 只移除指定的 Mac App 與目前帳號的資料，不會解除安裝 WindowsKVM，也不會修改
+`%LOCALAPPDATA%\MacKVM` 或 Windows 端信任。Mac 成功清除並重裝後，請在 Windows 對
+舊 Mac 按 **Forget paired Mac**，再配對它新產生的身分。WindowsKVM 仍是
+1.02.31（build 112），此次工具更新不改變通訊協定。
+
 在開發主機可執行 protocol 與 desktop regression self-test：
 
 ```powershell

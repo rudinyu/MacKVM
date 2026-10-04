@@ -43,9 +43,10 @@
 <body>
   <main>
     <header>
-      <div class="badge">MacKVM 1.100.12 (build 94)</div>
+      <div class="badge">MacKVM 1.101.00 (build 95)</div>
       <h1>MacKVM User Manual</h1>
       <p class="lede">A macOS app with a KVM menu-bar entry and full control window for sharing one keyboard, mouse, and trackpad, plus an optional BenQ MA270U display, between two MacBook Pro computers.</p>
+      <p>This manual describes the current source. No new DMG is published by this update; existing build 94 DMGs lack the new purge mode.</p>
       <p><a href="USER_MANUAL.zh-TW.html" lang="zh-Hant">繁體中文版</a> · <a href="USER_MANUAL.md">Markdown version</a></p>
     </header>
 
@@ -63,6 +64,7 @@
         <li><a href="#daily">Daily operation and safe return</a></li>
         <li><a href="#hardware">P2 hardware acceptance</a></li>
         <li><a href="#troubleshooting">Troubleshooting</a></li>
+        <li><a href="#uninstall">Uninstall and reset permissions</a></li>
       </ol>
     </nav>
 
@@ -96,7 +98,7 @@
       <p>Create and verify a DMG:</p>
       <pre><code>./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist &amp;&amp; shasum -a 256 -c MacKVM-1.100.12-universal.dmg.sha256)</code></pre>
+(cd dist &amp;&amp; shasum -a 256 -c MacKVM-1.101.00-universal.dmg.sha256)</code></pre>
       <p>The DMG is built from a clean staging directory and produces a portable SHA-256 sidecar. Ad-hoc signing is for local testing; distribution requires Developer ID, hardened runtime, and Apple notarization.</p>
       <p>For direct distribution outside the Mac App Store, create a notarytool Keychain profile once, then use the separate release script:</p>
       <pre><code>xcrun notarytool store-credentials "mackvm-notary" \
@@ -231,8 +233,19 @@
       <p>Use <strong>Reset this Mac identity</strong> only when the old identity should be discarded. It removes local pairings; after relaunch both Macs must be paired again.</p>
     </section>
 
+    <section id="uninstall">
+      <h2>12. Uninstall and reset permissions</h2>
+      <p>Quit MacKVM first. From the repository root, run the updated script as the signed-in user, not with <code>sudo</code>. Older DMGs may still contain an app-only uninstaller.</p>
+      <pre><code>./scripts/uninstall-app.sh --purge --dry-run
+./scripts/uninstall-app.sh --purge</code></pre>
+      <p>The first command only previews. The second asks for confirmation before deleting the app, this user's preferences, pairing data and identity key, and requesting an app-scoped reset of resettable privacy permissions, including Accessibility and Input Monitoring.</p>
+      <div class="notice"><strong>Irreversible identity removal:</strong> after reinstalling, use <strong>Forget</strong> for the old pairing on the other devices and pair again.</div>
+      <p>Local Network cannot be fully reset by a macOS command. Check remaining Local Network, Login Items, Notifications and firewall entries manually. User-exported debug logs are retained. The script reports failed steps rather than claiming all permissions are cleared.</p>
+      <p>See the <a href="../INSTALL.md#remove-mackvm-and-saved-data">complete removal guide</a> for details and optional app-specific Apple firewall-rule removal.</p>
+    </section>
+
     <footer>
-      <p>MacKVM User Manual · Version 1.100.12 (build 94) · Updated 2026-10-04 · Distribution installers require Developer ID signature and Apple notarization verification.</p>
+      <p>MacKVM User Manual · Source version 1.101.00 (build 95) · Updated 2026-10-04 · Distribution installers require Developer ID signature and Apple notarization verification.</p>
     </footer>
   </main>
 </body>

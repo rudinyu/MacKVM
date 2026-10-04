@@ -5,6 +5,9 @@
 本指南適用於目標雙 Mac 配置：14 吋 Apple Silicon M5 Pro MacBook Pro 以 USB-C
 連接 BenQ MA270U，以及 2019 16 吋 Intel MacBook Pro 以 HDMI 連接螢幕。
 
+原始碼版本：**1.101.00（build 95）**。下方封裝指令是建置此原始碼的範例，不代表安裝檔
+已發布。既有 build 94 DMG 尚未包含 `--purge`，請使用目前 repository 的 script。
+
 ## 需求
 
 - 兩台 Mac 都使用 macOS 13 或更新版本。
@@ -94,7 +97,7 @@ transport 與 VCP `0x60` 輸入狀態。唯讀報告可保存為：
 ./scripts/verify-release.sh \
   --app dist/universal/MacKVM.app \
   --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.100.12-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.101.00-universal.dmg.sha256)
 ```
 
 ad-hoc 簽章只適合本機測試。要在 Mac App Store 以外正式散布，請使用獨立的 notarized
@@ -127,8 +130,8 @@ DMG 內的 `/Applications` 捷徑。
 
 要解除安裝，先結束 MacKVM，再雙擊 `Uninstall MacKVM.command`；它只會移除
 `/Applications/MacKVM.app`。若曾啟用 **Launch MacKVM at Login**，請到
-**系統設定 > 一般 > 登入項目** 移除 MacKVM。script 刻意保留使用者資料與權限；若需要重設，
-請使用 MacKVM 的 identity reset 或對應的系統設定頁面。合法簽署的 PKG 需要除了 app signing
+**系統設定 > 一般 > 登入項目** 移除 MacKVM。預設保留使用者資料與權限；明確選用的清除模式
+與剩餘手動步驟請見[移除 MacKVM 與保存的資料](#移除-mackvm-與保存的資料)。合法簽署的 PKG 需要除了 app signing
 certificate 之外的 Developer ID Installer 憑證，因此目前發行流程不產生 PKG。
 
 安裝後，從 `/Applications` 開啟 MacKVM。
@@ -146,6 +149,57 @@ MacKVM 會以 KVM／雙螢幕圖示常駐在選單列，也會顯示在 Dock 並
 才需要螢幕。
 若由登入項目自動啟動，MacKVM 會隱藏完整視窗以免登入時搶走焦點；需要時可從選單列
 KVM 圖示或 Dock 重新開啟。
+
+## 移除 MacKVM 與保存的資料
+
+更新後的 `scripts/uninstall-app.sh` 可移除 MacKVM 與目前 macOS 使用者的保存資料。
+既有 build 94 DMG 仍附上僅移除 App 的 script；新版 DMG 發布前，請使用更新後的 repository
+script。此功能不會解除安裝 WindowsKVM，也不會清除其他使用者的資料。
+
+1. 若有開啟 **Launch MacKVM at Login**，先關閉它，再結束所有正在執行的 MacKVM。
+   App 尚在執行時，script 會拒絕清除資料。
+2. 在 Terminal 切到 repository 根目錄，先預覽動作：
+
+   ```sh
+   ./scripts/uninstall-app.sh --purge --dry-run
+   ```
+
+3. 執行移除，並閱讀確認提示：
+
+   ```sh
+   ./scripts/uninstall-app.sh --purge
+   ```
+
+   無人值守操作可加上 `--yes` 略過破壞性操作確認。只有 App 安裝在使用者的 Applications
+   資料夾時才加上 `--target-dir "$HOME/Applications"`。**不要對整個 script 使用 `sudo`**：
+   偏好設定、Keychain 與權限都屬於目前登入的使用者。移除 `/Applications` 裡的 App 時，
+   可能會另行要求管理員密碼，但只授權該項動作。
+
+清除模式會移除 App、`app.mackvm.MacKVM` 與 `app.mackvm.device-identity` 的偏好設定，
+以及 Keychain 中 service 為 `app.mackvm.device-identity`、account 為 `p256-signing-key`
+的單一身分金鑰，並要求 `tccutil` **只重設 `app.mackvm.MacKVM`** 的權限，包含輔助使用
+與輸入監控。若仍存在，快取與視窗保存狀態只清理
+`~/Library/Caches/app.mackvm.MacKVM` 與
+`~/Library/Saved Application State/app.mackvm.MacKVM.savedState` 這兩個專屬資料夾。
+即使 App 已經刪除，仍可清理殘留資料。請逐項查看結果；出現錯誤不代表已清除成功。
+若身分私密金鑰無法刪除，會保留對應身分偏好設定，避免留下不相符的身分資料。
+
+**這個 script 無法復原已刪除的身分私密金鑰與配對資料。** 重新安裝後，請在其他裝置對舊配對
+按 **Forget**，再重新配對。下載的安裝檔、repository／build 檔案、其他 App 與使用者匯出的
+debug log 都會保留。
+
+部分系統項目仍需手動確認：
+
+- **本機網路**：若仍有 MacKVM，請在 **系統設定 > 隱私權與安全性 > 本機網路** 關閉它。
+  Apple 明確說明 macOS 無法將此權限重設回尚未決定的狀態，`tccutil` 不能完整重設。
+  參閱 [Apple 本機網路隱私權說明](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy)。
+- **登入項目**：在 **系統設定 > 一般 > 登入項目** 移除或停用剩餘的 MacKVM 項目；script
+  不會重設共用的背景項目資料庫。
+- **通知**：在 **系統設定 > 通知** 關閉剩餘的 MacKVM 項目。系統共用的歷史 log 不會刪除。
+- **防火牆**：清除時可選擇加上 `--remove-firewall-rule`，要求只移除指定 App 路徑的 Apple
+  應用程式防火牆規則；此選項要求 App 仍存在並通過驗證，失敗時會保留 App 與資料以供
+  重試，可能需要管理員密碼。否則請手動移除該 App 的規則；Little Snitch 等
+  第三方規則一律需手動處理。不會更動整體防火牆設定。
 
 ## 設定螢幕與實體輸入路徑
 

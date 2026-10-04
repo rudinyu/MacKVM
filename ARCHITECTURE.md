@@ -397,6 +397,24 @@ view exposes an explicit reset operation. It deletes the Keychain key and
 stored identity together, clears local pairings, and requires a relaunch and
 new pairing. It never rotates identity automatically.
 
+### Local storage and removal
+
+The app stores pairing/profile, monitor, and setup preferences in the
+`app.mackvm.MacKVM` defaults domain, and the local UUID/public identity in
+`app.mackvm.device-identity`. The private signing key is a single Keychain
+generic-password item with service `app.mackvm.device-identity` and account
+`p256-signing-key`; it is not a repository or Application Support file.
+
+The source uninstaller removes only the validated app bundle by default.
+Explicit `--purge` also removes this account's two preference domains, the
+exact identity key, and the app's cache/saved-window-state directories if
+present, and requests an app-scoped TCC reset. Key deletion failure preserves
+the matching identity preferences and reports incomplete cleanup. Purge does
+not remove trust saved on other devices, exported reports, or shared system
+databases. Launch at login uses `SMAppService.mainApp`, not a LaunchAgent;
+remaining login/privacy/firewall entries need the documented manual follow-up.
+See [removal scope and permission limits](INSTALL.md#remove-mackvm-and-saved-data).
+
 ### Runtime safety boundaries
 
 The network and input layers use explicit bounded queues and buffers rather than
