@@ -13,12 +13,14 @@ internal static class Program
         try
         {
             TestInputBookkeepingAndMappings();
+            WindowsReviewRegressionTests.Run();
             TestTrayLayoutPolicy();
             TestFingerprintFormatting();
             TestTrayNativeChildBounds();
             TestDiagnosticStatusSanitization();
             TestRemoteInputPreferenceFallback();
             TestPairingRevocationGate();
+            PairingHarness.TestCoalescedReadBuffer();
             await PairingHarness.RunSlotCleanupTestsAsync();
             TestListenerGuardIsCrossPlatformAndAsyncSafe();
             await TestConsentCancellationAndQueueAsync();

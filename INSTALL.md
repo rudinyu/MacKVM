@@ -107,7 +107,7 @@ Create and verify a universal DMG for local testing:
 ./scripts/verify-release.sh \
   --app dist/universal/MacKVM.app \
   --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.100.11-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.100.12-universal.dmg.sha256)
 ```
 
 Ad-hoc signing is suitable only for local testing. For direct distribution

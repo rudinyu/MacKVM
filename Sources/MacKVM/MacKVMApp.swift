@@ -506,7 +506,8 @@ private final class AppBootstrap: ObservableObject {
             monitor.switchToRemote()
         } else if control.isReceivingControl {
             control.endReceivingControl(
-                reason: "Returned input to the other device"
+                reason: "Returned input to the other device",
+                forceDisplayRouteRestoration: true
             )
         } else if control.state == .controlling || control.state == .suspended {
             // A second press while already controlling (or while a direct
@@ -515,7 +516,8 @@ private final class AppBootstrap: ObservableObject {
             // request case is handled above and intentionally keeps its
             // existing remote-route behavior.
             control.stopControl(
-                reason: "Returned display and input to this Mac"
+                reason: "Returned display and input to this Mac",
+                returnDisplayLocally: true
             )
         } else if hadCombinedRequest {
             // A second press while the display-first request is resolving
@@ -636,7 +638,13 @@ private final class AppBootstrap: ObservableObject {
         guard canResetIdentity else { return }
         do {
             try DeviceCredentialsStore.reset()
-            PairingRegistry().removeAll()
+            guard PairingRegistry().removeAllWithPersistenceResult() else {
+                recoveryMessage = NSLocalizedString(
+                    "Local identity reset, but saved pairings could not be cleared. Retry Reset identity before relaunching.",
+                    comment: "Failed identity-recovery trust removal"
+                )
+                return
+            }
             recoveryMessage = "Local identity reset. Quit and relaunch MacKVM, then pair both Macs again."
         } catch {
             recoveryMessage = "Identity reset failed: \(error.localizedDescription)"
@@ -1332,6 +1340,23 @@ private struct MacKVMMenuView: View {
                             }
                         }
                         Button("Forget", role: .destructive) {
+                            bootstrap.forget(peerID: peerID)
+                        }
+                    }
+                }
+            }
+            if !discovery.failedForgetPeerIDs.isEmpty {
+                Text("Saved pairing removal needs another attempt")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.red)
+                ForEach(discovery.failedForgetPeerIDs.sorted {
+                    $0.uuidString < $1.uuidString
+                }, id: \.self) { peerID in
+                    HStack {
+                        Text("Device \(peerID.uuidString.prefix(8))")
+                            .font(.caption.monospaced())
+                        Spacer()
+                        Button("Retry Forget", role: .destructive) {
                             bootstrap.forget(peerID: peerID)
                         }
                     }

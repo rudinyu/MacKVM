@@ -8,7 +8,7 @@ authenticate a secure Connect session, and receive keyboard/mouse control over
 that encrypted session. A console mode remains available for automation and
 firewall diagnostics.
 
-## Current feature set — 1.02.30 (build 111)
+## Current feature set — 1.02.31 (build 112)
 
 The Windows host includes:
 
@@ -87,6 +87,21 @@ the window or tray menu stops mDNS, TCP listeners, and input injection. The
  it off in **Paired device information** when every request should prompt.
 Windows Raw Input capture and a polished firewall setup wizard remain later
 work.
+
+Layout-dependent text uses the validated source character instead of an ANSI
+physical-key guess. Ctrl/Command shortcuts resolve a logical virtual key with
+the foreground Windows thread's keyboard layout and preserve held modifiers;
+if that layout cannot map the character, the physical-key fallback remains.
+Repeat and release keep the original mapping. Unicode text injection is not
+supported by every IME/raw-input-only application, and foreground/layout
+changes during native injection still require real Windows acceptance.
+
+Simple and Advanced share a live readiness summary: Local-only, starting,
+listener failures, and unavailable Secure Connect do not show remote control
+as ready. Active local listeners are not proof of LAN/firewall reachability.
+After Explorer recreates the taskbar, WindowsKVM restores the existing tray
+entry without restarting listeners or control; if restoration fails, its
+existing window is shown so the receiver remains accessible.
 
 ### UI layout
 
@@ -287,7 +302,7 @@ native APIs do not replace these desktop checks.
    that the mode and pairing buttons do not overlap. Resize or
    move between monitors during a connection; changing the view must not
    reset pairing or control, and consent prompts must remain usable.
-8. Confirm `--version` reports **1.02.30 (build 111)**; the reported UI defects
+8. Confirm `--version` reports **1.02.31 (build 112)**; the reported UI defects
    were tested on **1.02.09 (build 89) Beta 3**, not this build. Quit the old
    tray receiver before starting the replacement. Check the title/heading say
    **WindowsKVM**. Scroll Advanced rapidly up/down and drag both scrollbars;
@@ -295,6 +310,18 @@ native APIs do not replace these desktop checks.
    scrolling/resizing and select each of the two options. Repeat in Simple
    mode and check that both selectors reflect the same choice. Restore remote
    input and request fresh control from the Mac to verify it still works.
+9. Use different Mac/Windows layouts (for example German Mac and US Windows):
+   verify y/z, accented/Option/Shift text, Ctrl/Command shortcuts, repeat, and
+   key-up after changing the target layout while a key is held. Check both a
+   normal editor and any IME/raw-input application you rely on; text support
+   is application-dependent.
+10. Check Simple and Advanced readiness while selecting Local-only and on a
+    Windows build without Secure Connect. Local listener readiness must not
+    imply verified network access. Resolve the advertised host's A/AAAA name
+    from a Mac after cached records expire, including across query transports.
+11. Hide the window and restart Windows Explorer from Task Manager. The tray
+    entry must return and reopen the same receiver; a paired control session
+    must not restart. Repeat the restart and confirm there is no duplicate icon.
 
 ## Compatibility
 

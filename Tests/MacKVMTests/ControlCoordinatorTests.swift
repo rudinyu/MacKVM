@@ -242,6 +242,24 @@ final class ControlCoordinatorTests: XCTestCase {
         )
     }
 
+    func testInputOnlyRequestOwnershipSkipsRoutesWithoutPreRoutedDisplayFlag() {
+        let fixture = makeFixture()
+        var displayRoutes = 0
+        fixture.coordinator.onControllingStarted = { displayRoutes += 1 }
+        fixture.coordinator.onControllingStopped = { displayRoutes += 1 }
+
+        XCTAssertTrue(fixture.coordinator.requestControl(managesDisplayRoute: false))
+        let requestID = fixture.transport.sentMessages.last!.requestID!
+        fixture.transport.deliver(controlMessage(.controlGranted, requestID))
+        drainMainQueue()
+        fixture.coordinator.stopControl()
+        XCTAssertEqual(displayRoutes, 0)
+
+        XCTAssertTrue(fixture.coordinator.requestControl(managesDisplayRoute: false))
+        fixture.coordinator.stopControl()
+        XCTAssertEqual(displayRoutes, 0)
+    }
+
     func testPeerEndingManualMonitorSessionKeepsTheMonitorRoute() {
         let fixture = makeFixture()
         var routeRestoreCount = 0
@@ -288,6 +306,135 @@ final class ControlCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(fixture.coordinator.state, .disconnected)
         XCTAssertEqual(routeRestoreCount, 0)
+    }
+
+    func testPairedManualMonitorHotKeyStartAndStopNeverRoutesEitherDisplay() throws {
+        let pair = makePairedFixtures()
+        var displayRoutes: [String] = []
+        pair.controller.coordinator.onControllingStarted = {
+            displayRoutes.append("controller-start")
+        }
+        pair.controller.coordinator.onControllingStopped = {
+            displayRoutes.append("controller-stop")
+        }
+        pair.receiver.coordinator.onReceivingStarted = {
+            displayRoutes.append("receiver-start")
+        }
+        pair.receiver.coordinator.onReceivingStopped = { completion in
+            displayRoutes.append("receiver-stop")
+            completion()
+        }
+
+        let requestID = try startManualControl(pair)
+        XCTAssertEqual(pair.controller.transport.sentMessages.first?.managesDisplayRoute, false)
+        XCTAssertTrue(pair.controller.capture.isCapturing)
+        XCTAssertEqual(pair.receiver.sink.beginCount, 1)
+
+        pair.controller.capture.onSwitchControl?()
+        let ended = try XCTUnwrap(pair.controller.transport.sentMessages.last)
+        XCTAssertEqual(ended, controlMessage(.endControl, requestID))
+        pair.receiver.transport.deliver(ended)
+        drainMainQueue()
+
+        XCTAssertEqual(pair.controller.coordinator.state, .connected)
+        XCTAssertFalse(pair.controller.capture.isCapturing)
+        XCTAssertFalse(pair.receiver.coordinator.isReceivingControl)
+        XCTAssertFalse(pair.receiver.coordinator.isRemoteInputTearingDown)
+        XCTAssertEqual(pair.receiver.sink.endCount, 1)
+        XCTAssertEqual(displayRoutes, [])
+    }
+
+    func testPairedReceiverManualHotKeyReturnsInputWithoutDisplayRoutes() throws {
+        let pair = makePairedFixtures()
+        var receiverRoutes = 0
+        var controllerRoutes = 0
+        pair.controller.coordinator.onControllingStopped = { controllerRoutes += 1 }
+        pair.receiver.coordinator.onReceivingStarted = { receiverRoutes += 1 }
+        pair.receiver.coordinator.onReceivingStopped = { completion in
+            receiverRoutes += 1
+            completion()
+        }
+        _ = try startManualControl(pair)
+
+        pair.receiver.capture.onSwitchControl?()
+        pair.controller.transport.deliver(try XCTUnwrap(pair.receiver.transport.sentMessages.last))
+        drainMainQueue()
+
+        XCTAssertEqual(pair.controller.coordinator.state, .connected)
+        XCTAssertFalse(pair.receiver.coordinator.isReceivingControl)
+        XCTAssertEqual(receiverRoutes, 0)
+        XCTAssertEqual(controllerRoutes, 0)
+    }
+
+    func testExplicitControllerDisplayReturnAfterManualSessionDoesNotDependOnPeerDDC() throws {
+        let pair = makePairedFixtures()
+        var localDisplayReturns = 0
+        var receiverDisplayRoutes = 0
+        pair.controller.coordinator.onControllingStopped = { localDisplayReturns += 1 }
+        // These callbacks stand in for a peer with automatic DDC disabled.
+        // The explicit controller-side O return must not rely on either one.
+        pair.receiver.coordinator.onReceivingStarted = { receiverDisplayRoutes += 1 }
+        pair.receiver.coordinator.onReceivingStopped = { completion in
+            receiverDisplayRoutes += 1
+            completion()
+        }
+        _ = try startManualControl(pair)
+
+        pair.controller.coordinator.stopControl(
+            reason: "Returned display and input to this Mac",
+            returnDisplayLocally: true
+        )
+        pair.receiver.transport.deliver(try XCTUnwrap(pair.controller.transport.sentMessages.last))
+        drainMainQueue()
+
+        XCTAssertEqual(pair.controller.coordinator.state, .connected)
+        XCTAssertFalse(pair.controller.capture.isCapturing)
+        XCTAssertFalse(pair.receiver.coordinator.isReceivingControl)
+        XCTAssertEqual(localDisplayReturns, 1)
+        XCTAssertEqual(receiverDisplayRoutes, 0)
+    }
+
+    func testExplicitReceiverDisplayReturnAfterManualSessionWaitsForInputRelease() throws {
+        let pair = makePairedFixtures()
+        var order: [String] = []
+        pair.receiver.sink.onEndRequested = { order.append("release") }
+        pair.receiver.sink.completesEndImmediately = false
+        var completeDisplayRoute: (() -> Void)?
+        pair.receiver.coordinator.onReceivingStopped = { completion in
+            order.append("display")
+            completeDisplayRoute = completion
+        }
+        let requestID = try startManualControl(pair)
+
+        pair.receiver.coordinator.endReceivingControl(
+            forceDisplayRouteRestoration: true
+        )
+        XCTAssertEqual(order, ["release"])
+        XCTAssertEqual(pair.receiver.transport.sentMessages.last?.kind, .controlGranted)
+        pair.receiver.sink.completeNextEnd()
+        XCTAssertEqual(order, ["release", "display"])
+        XCTAssertTrue(pair.receiver.coordinator.isRemoteInputTearingDown)
+        XCTAssertEqual(pair.receiver.transport.sentMessages.last?.kind, .controlGranted)
+
+        completeDisplayRoute?()
+        XCTAssertFalse(pair.receiver.coordinator.isRemoteInputTearingDown)
+        XCTAssertEqual(pair.receiver.transport.sentMessages.last, controlMessage(.endControl, requestID))
+    }
+
+    func testLegacyIncomingRequestStillRoutesDisplayAtStartAndEnd() {
+        let fixture = makeFixture(seamlessControlAuthorized: true)
+        var displayRoutes: [String] = []
+        fixture.coordinator.onReceivingStarted = { displayRoutes.append("local") }
+        fixture.coordinator.onReceivingStopped = { completion in
+            displayRoutes.append("remote")
+            completion()
+        }
+        fixture.transport.deliver(controlMessage(.requestControl, UUID()))
+        drainMainQueue()
+
+        fixture.coordinator.endReceivingControl()
+
+        XCTAssertEqual(displayRoutes, ["local", "remote"])
     }
 
     func testSwitchHotKeyReturnsControlLocally() {
@@ -1028,6 +1175,37 @@ final class ControlCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(outcomes, [false])
         XCTAssertEqual(fixture.coordinator.state, .connected)
+    }
+
+    private func makePairedFixtures() -> (controller: Fixture, receiver: Fixture) {
+        let controllerID = UUID()
+        let receiverID = UUID()
+        return (
+            makeFixture(localID: controllerID, remoteID: receiverID),
+            makeFixture(
+                localID: receiverID,
+                remoteID: controllerID,
+                seamlessControlAuthorized: true
+            )
+        )
+    }
+
+    private func startManualControl(
+        _ pair: (controller: Fixture, receiver: Fixture),
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws -> UUID {
+        pair.controller.capture.onSwitchControl?()
+        let request = try XCTUnwrap(pair.controller.transport.sentMessages.last, file: file, line: line)
+        pair.receiver.transport.deliver(request)
+        drainMainQueue(file: file, line: line)
+        XCTAssertTrue(pair.receiver.coordinator.isReceivingControl, file: file, line: line)
+        let grant = try XCTUnwrap(pair.receiver.transport.sentMessages.last, file: file, line: line)
+        XCTAssertEqual(grant.kind, .controlGranted, file: file, line: line)
+        pair.controller.transport.deliver(grant)
+        drainMainQueue(file: file, line: line)
+        XCTAssertEqual(pair.controller.coordinator.state, .controlling, file: file, line: line)
+        return try XCTUnwrap(request.requestID, file: file, line: line)
     }
 
     private func makeFixture(

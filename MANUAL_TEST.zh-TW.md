@@ -13,7 +13,7 @@ macOS 隱私權提示，因此仍需在兩台實機執行以下步驟。
 ```sh
 ./scripts/ci.sh
 ./scripts/build-app.sh --arch arm64
-./scripts/build-app.sh --arch x86_64
+./scripts/build-app.sh --arch x86_64 --no-clean
 ```
 
 將 `dist/arm64/MacKVM.app` 複製到 M5 Pro，將 `dist/x86_64/MacKVM.app` 複製到
@@ -31,7 +31,7 @@ Intel Mac 的 `/Applications`，再開啟各自架構的 app。
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.100.11-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.100.12-universal.dmg.sha256)
 ```
 
 本機 ad-hoc 簽章只能用於測試；正式散布必須使用 Developer ID、hardened runtime
@@ -134,8 +134,9 @@ HDMI 1 使用 VCP 17（`0x11`）。其他型號使用自己的 mapping；螢幕�
    自動顯示斷線，不需要手動按 **Disconnect**。
 6. 喚醒 M5 Pro，等待安全工作階段重新連線；不先在 Intel Mac 按 **Disconnect**，直接測試
    鍵盤／滑鼠／觸控板 Hotkey。
-7. 對已配對的 peer 按 **Forget**。確認配對列立即移除或變成未配對，**Quit** 旁的狀態立即
-   變成 **Pairing forgotten**；不可繼續顯示舊 peer 名稱，也不應需要重開 MacKVM。
+7. 對已配對的 peer 按 **Forget**。確認配對列立即移除或變成未配對；成功移除儲存資料後，
+   **Quit** 旁才顯示 **Pairing forgotten**，不需要重開 MacKVM。若移除失敗，輸入仍須停止，
+   且 **Retry Forget** 必須保持可用。退出前先重試，再重新啟動確認該配對已移除。
 
 預期結果：網路中斷立即停止遠端輸入並釋放按鍵／滑鼠按鈕；重連不需要重新配對，
 即使沒有本機鍵盤／滑鼠的 peer 也會偵測非預期的控制端斷線、清除 stale session，
@@ -143,8 +144,8 @@ HDMI 1 使用 VCP 17（`0x11`）。其他型號使用自己的 mapping；螢幕�
 已啟用無縫控制的 peer 也不需要再次按 **Allow**。手動 Disconnect、Forget 或 Quit
 不會再次自動連線。系統休眠會先關閉舊傳輸，喚醒後從本機輸入狀態重新連回先前選取的
 peer。
-- Forget 不只會移除儲存的信任，也會立即清除 UI 狀態；舊的 **Paired with …** 不會殘留，
-  不需要重開 app。
+- Forget 會立即撤銷執行期間的信任並清除舊的 **Paired with …** 狀態；儲存失敗時，
+  必須顯示警告與重試，不能宣稱已永久移除。
 
 ## 6. 鍵盤、滑鼠、觸控板與控制同意
 
@@ -197,7 +198,9 @@ peer。
     觸發任何 DDC 切換**。再用 `Control-Option-Command-Escape` 重複返回測試，也用
     **Return keyboard, mouse, and trackpad to this Mac** 結束控制；接收端 Intel Mac 按
     **Return keyboard, mouse, and trackpad to [M5 Mac]** 返回——這三種結束方式都不可
-    動到手動路由的螢幕。
+    動到手動路由的螢幕。兩台 Mac 都需使用 build 94 或之後版本。另開始新的 K session，
+    分別從控制端、接收端按 O 結束（各測一次）：O 必須返回螢幕與輸入，且不留下卡住的遠端按鍵。
+    接收端操作須先完成注入輸入的釋放，再執行 DDC 返回。
 21. 若使用雙向 USB switch，在接收端手動切好螢幕後按 `Control-Option-Command-K`，確認
     控制權切換到另一端，再按一次返回。
 

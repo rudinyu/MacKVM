@@ -46,6 +46,11 @@
 "Disconnect" = "Disconnect";
 "Connect" = "Connect";
 "Forget" = "Forget";
+"Retry Forget" = "Retry Forget";
+"Saved pairing removal needs another attempt" = "Saved pairing removal needs another attempt";
+"Trust is revoked for this run, but could not be removed from storage. Retry Forget before quitting; the old pairing may return after relaunch." = "Trust is revoked for this run, but could not be removed from storage. Retry Forget before quitting; the old pairing may return after relaunch.";
+"Trust revoked for this run, but storage removal failed; retry Forget before quitting." = "Trust revoked for this run, but storage removal failed; retry Forget before quitting.";
+"Local identity reset, but saved pairings could not be cleared. Retry Reset identity before relaunching." = "Local identity reset, but saved pairings could not be cleared. Retry Reset identity before relaunching.";
 "Key changed" = "Key changed";
 "Forget old key" = "Forget old key";
 "Pair" = "Pair";

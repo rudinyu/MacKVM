@@ -2,7 +2,8 @@
 
 # MacKVM user manual
 
-Version: **1.100.11 (build 93)**.
+Version: **1.100.12 (build 94)**. Distribution installers must pass Developer ID
+signature and Apple notarization verification; local test builds are separate.
 
 MacKVM is a macOS app with a menu-bar entry and a full control window for
 sharing one keyboard, mouse, and trackpad, plus an optional BenQ MA270U display, between a
@@ -180,9 +181,17 @@ SHA-256 fingerprint of the pinned public key. New pairings enable seamless
 control automatically; use the per-peer toggle to require Allow for every
 request.
 
-To remove a paired Mac, select **Forget**. The pairing row and the status beside
-**Quit** update immediately to **Pairing forgotten**; the forgotten peer name
-does not remain visible, and restarting MacKVM is not required.
+To remove a paired Mac, select **Forget**. Control and in-memory trust are
+revoked immediately. **Pairing forgotten** appears only after the saved trust
+is removed successfully. If storage fails, use **Retry Forget** before quitting;
+otherwise the old saved pairing may return after relaunch. The retry remains
+available even when the paired-device row has disappeared.
+
+**Control–Option–Command–K** changes input control only, for use after manually
+selecting the monitor input. Both Macs need build 94 or later for the receiver
+to honor this input-only mode. **Control–Option–Command–O** changes monitor and
+input control together; pressing O during an active session also returns the
+display when that session was started with K.
 
 Select **Copy support information** for a support report. It contains public
 version, OS, device, UUID, fingerprint, and connection status data; it excludes

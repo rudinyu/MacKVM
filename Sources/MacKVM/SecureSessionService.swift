@@ -790,9 +790,8 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         // a new inbound handshake with the old pinned key. The app-level
         // Forget entry point performs that synchronous revoke once, then
         // passes trustAlreadyRevoked to this cleanup path.
-        if !trustAlreadyRevoked {
-            registry.revoke(peerID)
-        }
+        let removalResult = trustAlreadyRevoked
+            ? nil : registry.revokeWithPersistenceResult(peerID)
         queue.async { [weak self] in
             guard let self else { return }
             logSecurePhase("trust.revoke.cleanup.begin", peerID: peerID)
@@ -820,7 +819,14 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                 $0.connection.cancel()
                 self.remove($0)
             }
-            if removedActiveContext {
+            if removalResult?.persisted == false {
+                publishStatus(
+                    NSLocalizedString(
+                        "Trust revoked for this run, but storage removal failed; retry Forget before quitting.",
+                        comment: "Failed durable trust removal"
+                    )
+                )
+            } else if removedActiveContext {
                 // remove(_:) already published the generation-tagged nil
                 // event; update only its status to keep the event associated
                 // with the revoked session.

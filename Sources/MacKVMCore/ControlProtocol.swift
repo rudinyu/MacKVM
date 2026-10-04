@@ -26,6 +26,10 @@ public struct ControlMessage: Codable, Equatable, Sendable {
     public let protocolVersion: Int?
     public let minimumProtocolVersion: Int?
     public let keyboardLayoutIdentifier: String?
+    /// Display routing belongs to the control session only when requested.
+    /// Missing values retain the released automatic-routing behavior; false
+    /// marks the manual-monitor keyboard/mouse-only shortcut on both peers.
+    public let managesDisplayRoute: Bool?
 
     public init(
         version: Int = currentVersion,
@@ -34,7 +38,8 @@ public struct ControlMessage: Codable, Equatable, Sendable {
         input: RemoteInputEvent? = nil,
         protocolVersion: Int? = nil,
         minimumProtocolVersion: Int? = nil,
-        keyboardLayoutIdentifier: String? = nil
+        keyboardLayoutIdentifier: String? = nil,
+        managesDisplayRoute: Bool? = nil
     ) {
         self.version = version
         self.kind = kind
@@ -43,6 +48,7 @@ public struct ControlMessage: Codable, Equatable, Sendable {
         self.protocolVersion = protocolVersion
         self.minimumProtocolVersion = minimumProtocolVersion
         self.keyboardLayoutIdentifier = keyboardLayoutIdentifier
+        self.managesDisplayRoute = managesDisplayRoute
     }
 
     public static func input(
@@ -58,14 +64,16 @@ public struct ControlMessage: Codable, Equatable, Sendable {
 
     public static func requestControl(
         requestID: UUID,
-        keyboardLayoutIdentifier: String? = nil
+        keyboardLayoutIdentifier: String? = nil,
+        managesDisplayRoute: Bool? = nil
     ) -> ControlMessage {
         ControlMessage(
             kind: .requestControl,
             requestID: requestID,
             protocolVersion: currentProtocolVersion,
             minimumProtocolVersion: minimumCompatibleProtocolVersion,
-            keyboardLayoutIdentifier: keyboardLayoutIdentifier
+            keyboardLayoutIdentifier: keyboardLayoutIdentifier,
+            managesDisplayRoute: managesDisplayRoute
         )
     }
 
@@ -79,7 +87,8 @@ public struct ControlMessage: Codable, Equatable, Sendable {
                   let input,
                   protocolVersion == nil,
                   minimumProtocolVersion == nil,
-                  keyboardLayoutIdentifier == nil else {
+                  keyboardLayoutIdentifier == nil,
+                  managesDisplayRoute == nil else {
                 throw ControlProtocolError.invalidFields
             }
             _ = try input.validated()
@@ -94,7 +103,8 @@ public struct ControlMessage: Codable, Equatable, Sendable {
                   input == nil,
                   protocolVersion == nil,
                   minimumProtocolVersion == nil,
-                  keyboardLayoutIdentifier == nil else {
+                  keyboardLayoutIdentifier == nil,
+                  managesDisplayRoute == nil else {
                 throw ControlProtocolError.invalidFields
             }
         }

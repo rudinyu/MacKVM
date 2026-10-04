@@ -10,6 +10,11 @@ import Foundation
 /// background without synchronously re-entering SwiftUI's preferences
 /// observer.
 public final class PairingRegistry {
+    public struct RevocationResult: Equatable, Sendable {
+        public let generation: UInt64
+        public let persisted: Bool
+    }
+
     private struct PersistenceSnapshot: Sendable {
         let peers: [UUID: Data]
         let profiles: [String: PairedPeerProfile]
@@ -65,6 +70,7 @@ public final class PairingRegistry {
     }
 
     private let allowTestPersistenceFallback: Bool
+    private let shouldFailPersistenceForTesting: (() -> Bool)?
     private let persistenceDomain: PersistenceDomain
     private let lock = NSLock()
     private var cachedPeers: [UUID: Data]
@@ -110,7 +116,8 @@ public final class PairingRegistry {
     internal convenience init(
         testDefaults defaults: UserDefaults,
         storageKey: String,
-        persistenceApplicationID: String
+        persistenceApplicationID: String,
+        shouldFailPersistence: (() -> Bool)? = nil
     ) {
         precondition(defaults !== UserDefaults.standard)
         precondition(!persistenceApplicationID.isEmpty)
@@ -118,7 +125,8 @@ public final class PairingRegistry {
             defaults: defaults,
             storageKey: storageKey,
             persistenceDomain: .application(persistenceApplicationID),
-            allowTestPersistenceFallback: true
+            allowTestPersistenceFallback: true,
+            shouldFailPersistenceForTesting: shouldFailPersistence
         )
     }
 
@@ -126,12 +134,14 @@ public final class PairingRegistry {
         defaults: UserDefaults,
         storageKey: String,
         persistenceDomain: PersistenceDomain,
-        allowTestPersistenceFallback: Bool
+        allowTestPersistenceFallback: Bool,
+        shouldFailPersistenceForTesting: (() -> Bool)? = nil
     ) {
         self.defaults = defaults
         self.storageKey = storageKey
         self.persistenceDomain = persistenceDomain
         self.allowTestPersistenceFallback = allowTestPersistenceFallback
+        self.shouldFailPersistenceForTesting = shouldFailPersistenceForTesting
         persistenceQueue = DispatchQueue(
             label: "app.mackvm.pairing-registry.persistence",
             qos: .utility
@@ -368,11 +378,41 @@ public final class PairingRegistry {
         return revocationGenerations[peerID, default: 0]
     }
 
-    /// Atomically advances a peer's in-memory trust generation and removes
-    /// its persisted key, preventing stale completions from re-adding it.
+    /// Advances runtime trust generation even if durable removal fails.
+    /// Callers that report removal success must use the result-returning API.
     @discardableResult
     public func revoke(_ peerID: UUID) -> UInt64 {
+        revokeWithPersistenceResult(peerID).generation
+    }
+
+    /// Never restores runtime trust on failure. A false result means callers
+    /// must offer another removal attempt before claiming durable revocation.
+    @discardableResult
+    public func revokeWithPersistenceResult(_ peerID: UUID) -> RevocationResult {
         lock.lock()
+        return revokeLockedWithPersistenceResult(peerID)
+    }
+
+    /// A cancelled completion may remove only the exact trust generation and
+    /// key it wrote. Check and revoke under one lock so Forget/new pairing
+    /// cannot be overtaken by a stale rollback.
+    @discardableResult
+    public func revokeWithPersistenceResult(
+        _ peerID: UUID,
+        ifGeneration generation: UInt64,
+        publicKey: Data
+    ) -> RevocationResult? {
+        lock.lock()
+        guard revocationGenerations[peerID, default: 0] == generation,
+              cachedPeers[peerID] == publicKey else {
+            lock.unlock()
+            return nil
+        }
+        return revokeLockedWithPersistenceResult(peerID)
+    }
+
+    /// The caller holds the registry lock; this releases it before waiting.
+    private func revokeLockedWithPersistenceResult(_ peerID: UUID) -> RevocationResult {
         let nextGeneration = revocationGenerations[peerID, default: 0] &+ 1
         revocationGenerations[peerID] = nextGeneration
         cachedPeers.removeValue(forKey: peerID)
@@ -384,22 +424,34 @@ public final class PairingRegistry {
         // notification on the main thread.
         let persistence = enqueuePersistenceLocked(immediately: true)
         lock.unlock()
-        _ = waitForPersistence(persistence)
-        return nextGeneration
+        return RevocationResult(
+            generation: nextGeneration,
+            persisted: waitForPersistence(persistence)
+        )
     }
 
     public func remove(_ peerID: UUID) {
+        _ = removeWithPersistenceResult(peerID)
+    }
+
+    @discardableResult
+    public func removeWithPersistenceResult(_ peerID: UUID) -> Bool {
         lock.lock()
         cachedPeers.removeValue(forKey: peerID)
         cachedProfiles.removeValue(forKey: peerID)
         let persistence = enqueuePersistenceLocked(immediately: true)
         lock.unlock()
-        _ = waitForPersistence(persistence)
+        return waitForPersistence(persistence)
     }
 
     /// Clears every locally trusted peer. This is used only by the explicit
     /// identity-recovery flow, which requires pairing again after relaunch.
     public func removeAll() {
+        _ = removeAllWithPersistenceResult()
+    }
+
+    @discardableResult
+    public func removeAllWithPersistenceResult() -> Bool {
         lock.lock()
         revocationGenerations.removeAll()
         cachedPeers.removeAll()
@@ -410,7 +462,7 @@ public final class PairingRegistry {
         // writer for UserDefaults. Wait only after releasing the lock.
         let persistence = enqueuePersistenceLocked(immediately: true)
         lock.unlock()
-        _ = waitForPersistence(persistence)
+        return waitForPersistence(persistence)
     }
 
     private func addLocked(_ peer: PeerIdentity, model: String?) {
@@ -455,8 +507,12 @@ public final class PairingRegistry {
         let profileStorageKey = self.profileStorageKey
         let persistenceDomain = self.persistenceDomain
         let allowTestPersistenceFallback = self.allowTestPersistenceFallback
+        let shouldFailPersistenceForTesting = self.shouldFailPersistenceForTesting
         let work = PersistenceWork {
-            Self.persist(
+            guard shouldFailPersistenceForTesting?() != true else {
+                return false
+            }
+            return Self.persist(
                 snapshot,
                 storageKey: storageKey,
                 profileStorageKey: profileStorageKey,

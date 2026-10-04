@@ -93,6 +93,43 @@ final class ControlProtocolTests: XCTestCase {
         )
     }
 
+    func testDisplayRouteOwnershipRoundTripsAndDefaultsToLegacyWhenAbsent() throws {
+        for ownership in [nil, true, false] as [Bool?] {
+            let message = ControlMessage.requestControl(
+                requestID: UUID(),
+                managesDisplayRoute: ownership
+            )
+            let decoded = try ControlMessageCodec.decode(
+                ControlMessageCodec.encode(message)
+            )
+
+            XCTAssertEqual(decoded.managesDisplayRoute, ownership)
+        }
+
+        let legacy = ControlMessage(kind: .requestControl, requestID: UUID())
+        XCTAssertNil(
+            try ControlMessageCodec.decode(
+                ControlMessageCodec.encode(legacy)
+            ).managesDisplayRoute
+        )
+    }
+
+    func testDisplayRouteOwnershipIsRequestOnly() {
+        for kind in [ControlMessageKind.input, .controlGranted, .controlDenied, .endControl] {
+            let message = ControlMessage(
+                kind: kind,
+                requestID: UUID(),
+                input: kind == .input
+                    ? RemoteInputEvent(kind: .keyUp, keyCode: 12) : nil,
+                managesDisplayRoute: false
+            )
+
+            XCTAssertThrowsError(try message.validated()) { error in
+                XCTAssertEqual(error as? ControlProtocolError, .invalidFields)
+            }
+        }
+    }
+
     func testRequestRejectsAnUnboundedKeyboardLayoutIdentifier() {
         let message = ControlMessage(
             kind: .requestControl,

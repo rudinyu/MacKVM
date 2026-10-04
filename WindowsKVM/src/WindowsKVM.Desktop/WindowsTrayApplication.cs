@@ -70,6 +70,7 @@ internal sealed class WindowsTrayApplication : IDisposable
     private const uint TrackPopupMenuRightButton = 0x00000002;
     private const uint TrackPopupMenuReturnCommand = 0x00000100;
     private const uint TrayAdd = 0x00000000;
+    private const uint TrayModify = 0x00000001;
     private const uint TrayDelete = 0x00000002;
     private const uint TrayFlagMessage = 0x00000001;
     private const uint TrayFlagIcon = 0x00000002;
@@ -201,6 +202,7 @@ internal sealed class WindowsTrayApplication : IDisposable
     private IntPtr supportPeerLabel;
     private IntPtr supportFingerprintLabel;
     private IntPtr trayIcon;
+    private uint taskbarCreatedMessage;
     private IntPtr titleFont;
     private IntPtr sectionFont;
     private IntPtr bodyFont;
@@ -332,6 +334,13 @@ internal sealed class WindowsTrayApplication : IDisposable
         _ = FreeConsole();
         CreateFonts();
         CreateBrushes();
+        taskbarCreatedMessage = RegisterWindowMessage("TaskbarCreated");
+        if (taskbarCreatedMessage == 0)
+        {
+            throw new InvalidOperationException(
+                $"TaskbarCreated registration failed with Win32 error {Marshal.GetLastWin32Error()}."
+            );
+        }
         RegisterWindowClass();
         var initialWindowSize = WindowsTrayLayoutPolicy.ForSimple(
             GetWorkAreaWidth(),
@@ -881,7 +890,7 @@ internal sealed class WindowsTrayApplication : IDisposable
         );
         CreateButton("Quit", AdvancedQuitX, 1904, AdvancedQuitWidth, 36, QuitButtonID);
         CreateLabel(
-            "Ready on the local network. Closing this window hides WindowsKVM to the system tray.",
+            "Closing this window hides WindowsKVM to the system tray; LAN access must be confirmed from MacKVM.",
             AdvancedEdge,
             1960,
             AdvancedTextWidth,
@@ -951,13 +960,13 @@ internal sealed class WindowsTrayApplication : IDisposable
         );
         simpleReadinessLabel = RegisterSimpleControl(
             CreateLabel(
-                "✓ Network ready • input ready • notifications on",
+                "Starting receiver • remote control not ready",
                 24,
                 158,
                 472,
                 28,
                 bodyFont,
-                LabelColor.Green
+                LabelColor.Orange
             )
         );
 
@@ -2031,9 +2040,14 @@ internal sealed class WindowsTrayApplication : IDisposable
 
     private void AddTrayIcon()
     {
-        trayIcon = LoadIcon(IntPtr.Zero, (IntPtr)IconApplication);
+        if (trayIcon == IntPtr.Zero)
+        {
+            trayIcon = LoadIcon(IntPtr.Zero, (IntPtr)IconApplication);
+        }
         var data = MakeTrayData(TrayFlagMessage | TrayFlagIcon | TrayFlagTip);
-        if (!ShellNotifyIcon(TrayAdd, ref data))
+        if (!WindowsTrayRuntimePolicy.EnsureTrayIcon(
+            () => ShellNotifyIcon(TrayAdd, ref data),
+            () => ShellNotifyIcon(TrayModify, ref data)))
         {
             throw new InvalidOperationException(
                 $"Shell_NotifyIcon failed with Win32 error {Marshal.GetLastWin32Error()}."
@@ -2091,6 +2105,27 @@ internal sealed class WindowsTrayApplication : IDisposable
         if (target != window)
         {
             return DefWindowProcedure(target, message, wParam, lParam);
+        }
+
+        if (WindowsTrayRuntimePolicy.ShouldRestoreTray(
+            message, taskbarCreatedMessage, target == window,
+            Volatile.Read(ref disposed) != 0))
+        {
+            try
+            {
+                // Explorer recreated its notification area. Restore only
+                // the existing HWND/ID entry; do not restart TCP listeners,
+                // trust, or an authenticated control session.
+                AddTrayIcon();
+            }
+            catch (Exception ex)
+            {
+                OnRuntimeStatusChanged($"System tray recovery failed: {ex.Message}");
+                // A failed re-add must not strand a hidden receiver. Bring
+                // its existing window back without changing runtime state.
+                ShowWindow(window, ShowWindowShow);
+            }
+            return IntPtr.Zero;
         }
 
         switch (message)
@@ -3088,6 +3123,16 @@ internal sealed class WindowsTrayApplication : IDisposable
         );
 
         var remoteInputIsEnabled = Volatile.Read(ref remoteInputEnabled) != 0;
+        var readiness = WindowsTrayRuntimePolicy.Readiness(
+            remoteInputIsEnabled,
+            runtime.IsStarted,
+            Volatile.Read(ref runtimeFailure) != 0,
+            pairingReady,
+            secureReady
+        );
+        SetWindowText(simpleReadinessLabel, readiness.Summary);
+        SetLabelColor(simpleReadinessLabel,
+            readiness.IsReady ? LabelColor.Secondary : LabelColor.Orange);
         SetWindowText(
             accessibilityStatusLabel,
             remoteInputIsEnabled ? "Enabled" : "Local-only"
@@ -3098,13 +3143,11 @@ internal sealed class WindowsTrayApplication : IDisposable
         );
         SetWindowText(
             inputReadyLabel,
-            remoteInputIsEnabled
-                ? "Remote input is enabled; Windows checks injection when control starts"
-                : "Local Windows input only; remote control requests are disabled"
+            readiness.Summary
         );
         SetLabelColor(
             inputReadyLabel,
-            remoteInputIsEnabled ? LabelColor.Secondary : LabelColor.Orange
+            readiness.IsReady ? LabelColor.Secondary : LabelColor.Orange
         );
         SetWindowText(
             notificationsStatusLabel,
@@ -3437,6 +3480,9 @@ internal sealed class WindowsTrayApplication : IDisposable
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     private static extern IntPtr GetModuleHandle(string? moduleName);
+
+    [DllImport("user32.dll", EntryPoint = "RegisterWindowMessageW", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern uint RegisterWindowMessage(string message);
 
     [DllImport("user32.dll", EntryPoint = "RegisterClassExW", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern ushort RegisterClass(ref WindowClass windowClass);

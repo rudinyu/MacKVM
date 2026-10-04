@@ -15,6 +15,43 @@ namespace WindowsKVM.Desktop.SelfTest;
 /// </summary>
 internal sealed class PairingHarness : IAsyncDisposable
 {
+    private sealed class PairingReadBuffer
+    {
+        public List<byte> Bytes { get; } = [];
+        private readonly Queue<PairingEnvelope> messages = new();
+
+        public PairingEnvelope? Take()
+        {
+            if (messages.Count == 0)
+            {
+                foreach (var message in PairingWireCodec.DecodeAvailableFrames(Bytes))
+                {
+                    messages.Enqueue(message);
+                }
+            }
+            return messages.TryDequeue(out var next) ? next : null;
+        }
+    }
+
+    internal static void TestCoalescedReadBuffer()
+    {
+        using var sender = DeviceCredentials.Create("CoalescedHarness");
+        var firstID = Guid.NewGuid();
+        var secondID = Guid.NewGuid();
+        var first = PairingWireCodec.Encode(PairingEnvelope.Request(sender.Identity,
+            firstID, PairingVerificationCode.MakeContribution()), sender.PrivateKey);
+        var second = PairingWireCodec.Encode(PairingEnvelope.Request(sender.Identity,
+            secondID, PairingVerificationCode.MakeContribution()), sender.PrivateKey);
+        var buffer = new PairingReadBuffer();
+        buffer.Bytes.AddRange(first.Concat(second).Concat(first.Take(3)));
+        Assert(buffer.Take()?.RequestID == firstID, "coalesced buffer lost the first frame");
+        Assert(buffer.Take()?.RequestID == secondID, "coalesced buffer lost/reordered the second frame");
+        Assert(buffer.Take() is null && buffer.Bytes.Count == 3,
+            "coalesced buffer must retain the incomplete next frame");
+        buffer.Bytes.AddRange(first.Skip(3));
+        Assert(buffer.Take()?.RequestID == firstID && buffer.Take() is null,
+            "fragment completion must produce exactly the remaining frame");
+    }
     private readonly DeviceCredentials mac;
     private readonly DeviceCredentials windows;
     private readonly PairingTcpReceiver receiver;
@@ -254,7 +291,7 @@ internal sealed class PairingHarness : IAsyncDisposable
                 mac.PrivateKey,
                 localModel: "PairingHarnessMac"
             );
-            var buffer = new List<byte>();
+            var buffer = new PairingReadBuffer();
             await SendAsync(stream, session.Start(), mac.PrivateKey, cancellation.Token)
                 .ConfigureAwait(false);
             var challenge = await ReadAsync(stream, buffer, cancellation.Token)
@@ -311,7 +348,7 @@ internal sealed class PairingHarness : IAsyncDisposable
                 expectedPeer: windows.Identity,
                 localModel: "PairingHarnessMac"
             );
-            var buffer = new List<byte>();
+            var buffer = new PairingReadBuffer();
             await SendAsync(stream, session.Start(), mac.PrivateKey, timeout.Token)
                 .ConfigureAwait(false);
             var challenge = await ReadAsync(stream, buffer, timeout.Token)
@@ -465,48 +502,47 @@ internal sealed class PairingHarness : IAsyncDisposable
 
     private static async Task<PairingEnvelope> ReadAsync(
         NetworkStream stream,
-        List<byte> buffer,
+        PairingReadBuffer buffer,
         CancellationToken token
     )
     {
         while (true)
         {
-            var decoded = PairingWireCodec.DecodeAvailableFrames(buffer);
-            if (decoded.Count > 0)
+            var decoded = buffer.Take();
+            if (decoded is not null)
             {
-                Assert(decoded.Count == 1, "pairing harness received multiple frames");
-                return decoded[0];
+                return decoded;
             }
 
             var bytes = new byte[16 * 1024];
             var count = await stream.ReadAsync(bytes, token).ConfigureAwait(false);
             Assert(count > 0, "pairing harness received an unexpected EOF");
-            buffer.AddRange(bytes.AsSpan(0, count).ToArray());
+            buffer.Bytes.AddRange(bytes.AsSpan(0, count).ToArray());
         }
     }
 
     private static async Task<PairingEnvelope?> ReadNextOrEofAsync(
         NetworkStream stream,
-        List<byte> buffer,
+        PairingReadBuffer buffer,
         CancellationToken token
     )
     {
         while (true)
         {
-            var decoded = PairingWireCodec.DecodeAvailableFrames(buffer);
-            if (decoded.Count > 0)
+            var decoded = buffer.Take();
+            if (decoded is not null)
             {
-                Assert(decoded.Count == 1, "pairing harness received multiple frames");
-                return decoded[0];
+                return decoded;
             }
 
             var bytes = new byte[16 * 1024];
             var count = await stream.ReadAsync(bytes, token).ConfigureAwait(false);
             if (count == 0)
             {
+                Assert(buffer.Bytes.Count == 0, "pairing harness received a truncated frame at EOF");
                 return null;
             }
-            buffer.AddRange(bytes.AsSpan(0, count).ToArray());
+            buffer.Bytes.AddRange(bytes.AsSpan(0, count).ToArray());
         }
     }
 

@@ -485,6 +485,32 @@ internal static class Program
             "control request ID changed during round-trip");
         Assert(decoded.ProtocolVersion == ControlProtocolCompatibility.CurrentVersion,
             "control protocol version changed during round-trip");
+        Assert(decoded.ManagesDisplayRoute is null
+            && !json.Contains("managesDisplayRoute", StringComparison.Ordinal),
+            "legacy route mode must remain absent, not change released wire messages");
+        foreach (var mode in new[] { false, true })
+        {
+            var routeRequest = ControlMessage.RequestControl(requestID,
+                managesDisplayRoute: mode);
+            Assert(ControlMessageCodec.Decode(ControlMessageCodec.Encode(routeRequest))
+                .ManagesDisplayRoute == mode, "explicit route mode must round-trip");
+        }
+        var invalidRoute = false;
+        try
+        {
+            ControlMessageCodec.Encode(new ControlMessage(ControlMessageKind.ControlGranted,
+                requestID, managesDisplayRoute: false));
+        }
+        catch (ControlMessageException) { invalidRoute = true; }
+        Assert(invalidRoute, "route mode is valid only on requestControl");
+        var malformedRoute = false;
+        try
+        {
+            ControlMessageCodec.Decode(Encoding.UTF8.GetBytes(
+                $"{{\"version\":1,\"kind\":\"requestControl\",\"requestID\":\"{requestID}\",\"managesDisplayRoute\":\"false\"}}"));
+        }
+        catch (ControlMessageException) { malformedRoute = true; }
+        Assert(malformedRoute, "route mode must be a boolean, not a truthy string");
 
         var input = new RemoteInputEvent(
             RemoteInputKind.KeyDown,

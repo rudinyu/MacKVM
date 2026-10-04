@@ -35,8 +35,14 @@ public enum PairingRequestPolicy {
         activeRequestCount: Int,
         maximumPendingRequests: Int,
         activeUnpairedRequestCount: Int = 0,
-        maximumUnpairedPendingRequests: Int = 1
+        maximumUnpairedPendingRequests: Int = 1,
+        selectedOutboundPeer: PeerIdentity? = nil
     ) -> PairingRequestDecision {
+        if let selectedOutboundPeer,
+           selectedOutboundPeer.id == request.sender.id,
+           selectedOutboundPeer.signingPublicKey != request.sender.signingPublicKey {
+            return .rejectChangedKey
+        }
         if let pinnedPublicKey,
            pinnedPublicKey != request.sender.signingPublicKey {
             return .rejectChangedKey

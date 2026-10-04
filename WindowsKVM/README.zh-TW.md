@@ -6,7 +6,7 @@ WindowsKVM 是 MacKVM 的 Windows companion。目前 Windows 版包含原生 Win
 host，可在區域網路上與 MacKVM 配對、完成 secure Connect 驗證，並接收加密鍵盤／滑鼠控制；
 另外保留 console 模式供自動化與防火牆診斷。
 
-## 目前功能 — 1.02.30（build 111）
+## 目前功能 — 1.02.31（build 112）
 
 Windows host 已包含：
 
@@ -62,6 +62,16 @@ UI 會在啟動時開始 receiver 並常駐在 Windows 系統匣；關閉狀態�
 控制。互動式配對完成後，這個本機自動控制決定會預設綁定目前釘選的公開金鑰並保存；測試專用的
 `--yes` 配對不會保存。若要每次控制都重新確認，可在 **Paired device information** 關閉它。Windows Raw Input 擷取與完整的防火牆
 設定精靈留待後續工作。
+
+與鍵盤配置有關的文字以已驗證的來源字元注入，不再優先猜測 ANSI 實體鍵。Ctrl／Command
+快捷鍵依前景 Windows 執行緒的鍵盤配置查找邏輯 virtual key，並保留按住的修飾鍵；無法對應時
+維持實體鍵 fallback。長按重複與放開沿用首次映射。部分 IME／只接受 Raw Input 的應用程式
+不支援 Unicode 文字注入；原生注入期間的前景／配置切換仍須在 Windows 實機驗收。
+
+Simple 與 Advanced 共用即時就緒摘要：Local-only、啟動中、listener 失敗或 Secure Connect
+不可用時，不會顯示遠端控制已就緒。本機 listener 正常不代表已驗證 LAN／防火牆可達性。
+Explorer 重建工作列後會恢復原本的系統匣入口，不重啟 listener 或控制 session；若恢復失敗，
+會顯示既有視窗，避免隱藏的 receiver 無法操作。
 
 ### UI 版面
 
@@ -203,11 +213,19 @@ Windows control granted for ...
    開啟 Advanced 檢查隱藏的身分與 port 資訊；在窄視窗使用橫向捲動確認右側操作仍可使用。
    再切回 Simple，確認視窗縮小且橫向捲軸消失；拖曳至最小尺寸，確認模式與配對按鈕不重疊。連線時調整大小或移動到
    不同螢幕，切換版面不得重設配對或控制權，同意對話框也必須保持可操作。
-8. 確認 `--version` 為 **1.02.30（build 111）**；先前 UI 問題的測試版本為
+8. 確認 `--version` 為 **1.02.31（build 112）**；先前 UI 問題的測試版本為
    **1.02.09（build 89）Beta 3**，不是本版。啟動替換版前先退出舊的系統匣 receiver。
    確認視窗標題與主標題為 **WindowsKVM**，在 Advanced 快速上下捲動並拖動兩個捲軸，
    不應殘留舊文字。捲動／縮放前後展開 **Physical input path**，分別選取兩個選項；
    在 Simple 重複操作，確認兩種模式的選擇一致。恢復遠端輸入後，從 Mac 發起新的控制請求驗證功能。
+9. 使用不同的 Mac／Windows 鍵盤配置（例如德文 Mac 與美式 Windows），確認 y／z、重音／Option／Shift
+   文字、Ctrl／Command 快捷鍵，以及長按期間切換 Windows 配置後的重複與放開。一般文字編輯器與
+   常用 IME／Raw Input 應用程式都要驗收；文字注入是否支援取決於應用程式。
+10. 在 Simple／Advanced 檢查 Local-only 與不支援 Secure Connect 的 Windows build 的就緒摘要；
+    本機 listener 就緒不能宣稱已驗證網路可達。從 Mac 在快取過期後解析廣播 host 的 A／AAAA，
+    並包含不同查詢傳輸的情況。
+11. 隱藏視窗後，在工作管理員重新啟動 Windows Explorer；系統匣入口應恢復且能開啟同一個 receiver，
+    已配對的控制 session 不得重啟。再次重啟，確認不會出現重複圖示。
 
 ## 相容性
 

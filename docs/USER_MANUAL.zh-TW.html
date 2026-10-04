@@ -43,7 +43,7 @@
 <body>
   <main>
     <header>
-      <div class="badge">MacKVM 1.100.11（build 93）</div>
+      <div class="badge">MacKVM 1.100.12（build 94）</div>
       <h1>MacKVM 使用手冊</h1>
       <p class="lede">提供選單列入口與一般控制視窗，讓兩台 MacBook Pro 共用一組鍵盤、滑鼠與觸控板，並可選擇切換 BenQ MA270U 螢幕的 macOS app。</p>
       <p><a href="USER_MANUAL.html" lang="en">English Version</a> · <a href="USER_MANUAL.zh-TW.md">Markdown 版本</a></p>
@@ -99,7 +99,7 @@
       <p>要建立 DMG，可使用：</p>
       <pre><code>./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist &amp;&amp; shasum -a 256 -c MacKVM-1.100.11-universal.dmg.sha256)</code></pre>
+(cd dist &amp;&amp; shasum -a 256 -c MacKVM-1.100.12-universal.dmg.sha256)</code></pre>
       <p>DMG 會從乾淨的暫存目錄建立，並在旁邊產生可攜式 SHA-256 檔案；驗證結果應顯示 <strong>OK</strong>。</p>
       <p>未提供 Developer ID 時是 ad-hoc 簽章，只適合本機測試；跨電腦散布前請用
         <code>--sign "Developer ID Application: …" --require-developer-id</code>，
@@ -199,8 +199,7 @@
       <p>配對後，MacKVM 會在本機保存每台裝置的友善名稱、Bonjour 提供的 Mac
         型號、最後一次成功完成加密連線的時間，以及固定的 SHA-256 公開金鑰指紋。新配對
         的 Mac 預設會啟用無縫控制，也可在每台配對裝置旁關閉。</p>
-      <p>選擇 <strong>Forget</strong> 可撤銷已配對的 Mac。配對列與 <strong>Quit</strong> 旁的狀態會立即更新為
-        <strong>Pairing forgotten</strong>；不可繼續顯示舊 peer 名稱，也不需要重開 MacKVM。</p>
+      <p>選擇 <strong>Forget</strong> 會立即撤銷控制權與記憶體中的信任，只有成功移除已儲存的信任後才顯示 <strong>Pairing forgotten</strong>。若儲存失敗，請在退出前按 <strong>Retry Forget</strong>，否則舊配對可能在重新啟動後再次出現。即使配對裝置列已消失，重試按鈕仍會保留。</p>
       <ol>
         <li>在選單的 <strong>已配對裝置資訊</strong> 查看裝置資料。</li>
         <li>可在 <strong>Friendly name</strong> 欄位輸入容易辨識的名稱並按
@@ -215,6 +214,7 @@
 
     <section id="daily">
       <h2>9. 日常操作與安全返回</h2>
+      <p><strong>Control-Option-Command-K</strong> 只切換輸入控制，供手動選好螢幕輸入後使用。兩台 Mac 都需更新至 build 94 或之後版本，接收端才會遵守此模式。<strong>Control-Option-Command-O</strong> 同時切換螢幕與輸入控制；控制期間按 O，也會返回原先以 K 開始的控制所對應的畫面。</p>
       <ul>
         <li>控制另一台裝置時，本機鍵盤、滑鼠與觸控板輸入會被轉送；除非該已釘選裝置已啟用無縫控制，否則接收端按 Allow 前不會開始抑制本機輸入。</li>
         <li>通知中的按鈕會帶著該次請求的識別碼與一次性的本機 nonce；請求逾時、取消或連線中斷後，舊通知的按鈕不會重新啟動控制。</li>
@@ -267,7 +267,7 @@
     </section>
 
     <footer>
-      <p>MacKVM 使用手冊 · 對應版本 1.100.11（build 93）· 最後更新 2026-10-02</p>
+      <p>MacKVM 使用手冊 · 版本 1.100.12（build 94）· 最後更新 2026-10-04 · 正式散布的安裝檔須通過 Developer ID 簽章與 Apple 公證驗證。</p>
     </footer>
   </main>
 </body>

@@ -5,6 +5,13 @@ import MacKVMCore
 struct IncomingControlRequest: Identifiable, Equatable {
     let id: UUID
     let peerID: UUID
+    let managesDisplayRoute: Bool
+
+    init(id: UUID, peerID: UUID, managesDisplayRoute: Bool = true) {
+        self.id = id
+        self.peerID = peerID
+        self.managesDisplayRoute = managesDisplayRoute
+    }
 }
 
 enum ControlInputFailure {
@@ -279,7 +286,8 @@ final class ControlCoordinator: ObservableObject {
             send(
                 ControlMessage.requestControl(
                     requestID: requestID,
-                    keyboardLayoutIdentifier: keyboardLayoutIdentifier()
+                    keyboardLayoutIdentifier: keyboardLayoutIdentifier(),
+                    managesDisplayRoute: managesDisplayRoute
                 )
             )
             scheduleRequestTimeout()
@@ -331,7 +339,12 @@ final class ControlCoordinator: ObservableObject {
         completion(succeeded)
     }
 
-    func stopControl(reason: String = "Control returned locally") {
+    /// Normal termination honors the session's display ownership. O is an
+    /// explicit display-and-input return even if K started the session.
+    func stopControl(
+        reason: String = "Control returned locally",
+        returnDisplayLocally: Bool = false
+    ) {
         if isReceivingControl {
             endReceivingControl(reason: reason)
             return
@@ -381,8 +394,10 @@ final class ControlCoordinator: ObservableObject {
         // A live manual-monitor (K) session must end input without touching
         // the display the user routed by hand; the plain and combined routes
         // still restore the local display here.
-        if (wasControlling && sessionManagedDisplayRoute)
-            || (wasWaitingForControlGrant && !displayWasAlreadyRemote) {
+        if (wasControlling && (sessionManagedDisplayRoute || returnDisplayLocally))
+            || (wasWaitingForControlGrant
+                && ((sessionManagedDisplayRoute && !displayWasAlreadyRemote)
+                    || returnDisplayLocally)) {
             onControllingStopped?()
         }
         status = reason
@@ -448,6 +463,7 @@ final class ControlCoordinator: ObservableObject {
     func endReceivingControl(
         reason: String = "Remote control ended locally",
         restoreMonitor: Bool = true,
+        forceDisplayRouteRestoration: Bool = false,
         completion: (() -> Void)? = nil
     ) {
         guard !isStoppingForQuit else { return }
@@ -461,6 +477,7 @@ final class ControlCoordinator: ObservableObject {
             reason: reason,
             notifyPeer: true,
             restoreMonitor: restoreMonitor,
+            forceDisplayRouteRestoration: forceDisplayRouteRestoration,
             completion: completion
         )
     }
@@ -726,7 +743,11 @@ final class ControlCoordinator: ObservableObject {
             status = "Ignored a control request without a secure session"
             return
         }
-        let request = IncomingControlRequest(id: requestID, peerID: peerID)
+        let request = IncomingControlRequest(
+            id: requestID,
+            peerID: peerID,
+            managesDisplayRoute: message.managesDisplayRoute ?? true
+        )
         guard ControlProtocolCompatibility.isCompatible(
             remoteVersion: message.protocolVersion,
             remoteMinimumVersion: message.minimumProtocolVersion
@@ -846,7 +867,9 @@ final class ControlCoordinator: ObservableObject {
 
         activeInboundControlRequest = request
         isReceivingControl = true
-        onReceivingStarted?()
+        if request.managesDisplayRoute {
+            onReceivingStarted?()
+        }
         sendResponse(kind: .controlGranted, for: request)
         status = "Remote control granted to the other device"
     }
@@ -879,7 +902,7 @@ final class ControlCoordinator: ObservableObject {
             }
             let displayAlreadyRemote = activeControlDisplayAlreadyRemote
             activeControlDisplayAlreadyRemote = false
-            if !displayAlreadyRemote {
+            if !displayAlreadyRemote && activeControlManagesDisplayRoute {
                 onControllingStarted?()
             }
             completeActiveControlRequest(true)
@@ -1106,6 +1129,7 @@ final class ControlCoordinator: ObservableObject {
         reason: String,
         notifyPeer: Bool,
         restoreMonitor: Bool = true,
+        forceDisplayRouteRestoration: Bool = false,
         completion: (() -> Void)? = nil
     ) {
         guard isReceivingControl,
@@ -1119,7 +1143,8 @@ final class ControlCoordinator: ObservableObject {
             request: request,
             phase: .releasingInput,
             notifyPeer: notifyPeer,
-            restoreMonitor: restoreMonitor,
+            restoreMonitor: restoreMonitor
+                && (request.managesDisplayRoute || forceDisplayRouteRestoration),
             completions: completion.map { [$0] } ?? []
         )
         inputSink.endRemoteControl { [weak self] in

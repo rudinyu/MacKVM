@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import MacKVMCore
 import XCTest
@@ -147,6 +148,113 @@ final class MonitorControllerTests: XCTestCase {
             MonitorController.shouldKeepDisplayAwake(
                 automationEnabled: true,
                 displaySelector: "native-ddc:1:2:3",
+                detectedDisplays: [],
+                confirmedRoute: nil,
+                configurationGeneration: 0,
+                transitionGraceActive: false
+            )
+        )
+    }
+
+    func testEmptyRoutineDiscoveryAfterRemoteRouteStillAllowsCachedLocalReturnOnly() {
+        withDefaults { defaults in
+            let ddc = FakeMonitorDDC(displays: [testDisplay()], currentInputValue: 17)
+            let monitor = MonitorController(defaults: defaults, ddcOperations: ddc.operations)
+            monitor.localInput = .usbC
+            monitor.remoteInput = .hdmi1
+            monitor.automationEnabled = true
+            defer { monitor.automationEnabled = false }
+            refreshAndWaitForDiscovery(monitor)
+            XCTAssertTrue(monitor.isDisplaySelectorVerified)
+
+            let remoteRoute = expectation(description: "Confirmed remote monitor route")
+            monitor.switchToRemote(wakeDisplayForKVMSwitch: false) {
+                remoteRoute.fulfill()
+            }
+            wait(for: [remoteRoute], timeout: 5)
+
+            // A normal menu refresh has no preservation token, just as a
+            // refresh after the short topology grace has expired does not.
+            ddc.displays = []
+            refreshAndWaitForDiscovery(monitor)
+            XCTAssertEqual(monitor.detectedDisplays, [])
+            XCTAssertFalse(monitor.isDisplaySelectorVerified)
+            XCTAssertFalse(monitor.canStartAutomaticRemoteSwitching())
+
+            let localRoute = expectation(description: "Cached native local return")
+            monitor.switchToLocal(wakeDisplayForKVMSwitch: false) {
+                localRoute.fulfill()
+            }
+            wait(for: [localRoute], timeout: 5)
+
+            XCTAssertEqual(ddc.writeAttempts.map(\.input), [.usbC])
+            XCTAssertEqual(ddc.writeAttempts.map(\.selector), [testDisplay().selector])
+            XCTAssertTrue(monitor.status.contains("switched to"))
+            XCTAssertFalse(monitor.isDisplaySelectorVerified)
+            XCTAssertFalse(monitor.canStartAutomaticRemoteSwitching())
+
+            let readsBeforeRemoteAttempt = ddc.readSelectors.count
+            var remoteCompleted = false
+            monitor.switchToRemote(wakeDisplayForKVMSwitch: false) {
+                remoteCompleted = true
+            }
+            XCTAssertTrue(remoteCompleted)
+            XCTAssertEqual(ddc.readSelectors.count, readsBeforeRemoteAttempt)
+            XCTAssertEqual(ddc.writeAttempts.map(\.input), [.usbC])
+        }
+    }
+
+    func testCachedLocalReturnFailsClosedWhenNativeDisplayHasReallyDisconnected() {
+        withDefaults { defaults in
+            let ddc = FakeMonitorDDC(displays: [testDisplay()], currentInputValue: 17)
+            let monitor = MonitorController(defaults: defaults, ddcOperations: ddc.operations)
+            monitor.automationEnabled = true
+            defer { monitor.automationEnabled = false }
+            refreshAndWaitForDiscovery(monitor)
+            ddc.displays = []
+            ddc.nativeDisplayUnavailable = true
+            refreshAndWaitForDiscovery(monitor)
+
+            let returned = expectation(description: "Disconnected local return resolves safely")
+            monitor.switchToLocal(wakeDisplayForKVMSwitch: false) {
+                returned.fulfill()
+            }
+            wait(for: [returned], timeout: 5)
+
+            XCTAssertEqual(ddc.readSelectors, [testDisplay().selector])
+            XCTAssertEqual(ddc.writeAttempts.map(\.selector), [testDisplay().selector])
+            XCTAssertFalse(monitor.isDisplaySelectorVerified)
+            XCTAssertFalse(monitor.canStartAutomaticRemoteSwitching())
+            XCTAssertTrue(monitor.status.contains("Native DDC/CI switch failed"))
+            XCTAssertNotNil(monitor.diagnostic)
+        }
+    }
+
+    func testCachedIdentityCannotAuthorizeAnotherSelectorOrCreatePresenceLease() {
+        XCTAssertEqual(
+            MonitorController.automaticSwitchDecision(
+                displaySelector: "native-ddc:9:9:9",
+                isDisplaySelectorVerified: false,
+                hasCompletedDisplayDiscovery: true,
+                role: .local,
+                cachedDisplay: testDisplay()
+            ),
+            .useManualFallback
+        )
+        XCTAssertEqual(
+            MonitorController.automaticSwitchDecision(
+                displaySelector: testDisplay().selector,
+                isDisplaySelectorVerified: false,
+                hasCompletedDisplayDiscovery: true,
+                role: .remote,
+                cachedDisplay: testDisplay()
+            ),
+            .useManualFallback
+        )
+        XCTAssertFalse(
+            MonitorController.shouldKeepDisplayAwake(
+                automationEnabled: true,
+                displaySelector: testDisplay().selector,
                 detectedDisplays: [],
                 confirmedRoute: nil,
                 configurationGeneration: 0,
@@ -654,6 +762,22 @@ final class MonitorControllerTests: XCTestCase {
         }
     }
 
+    private func refreshAndWaitForDiscovery(
+        _ monitor: MonitorController,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let discovered = expectation(description: "Native display discovery publication")
+        let observation = monitor.$status
+            .dropFirst()
+            .filter { $0.hasPrefix("Detected ") || $0.hasPrefix("No DDC-capable") }
+            .prefix(1)
+            .sink { _ in discovered.fulfill() }
+        monitor.refreshDetectedDisplays()
+        wait(for: [discovered], timeout: 5)
+        withExtendedLifetime(observation) {}
+    }
+
     private func withDefaults(
         _ body: (UserDefaults) -> Void
     ) {
@@ -671,5 +795,72 @@ final class MonitorControllerTests: XCTestCase {
             name: "Test display",
             stableIdentifier: "native-ddc:1:2:3"
         )
+    }
+}
+
+private final class FakeMonitorDDC {
+    struct WriteAttempt {
+        let selector: String
+        let input: MonitorInputSource
+    }
+
+    private let lock = NSLock()
+    private var discoveredDisplays: [DDCDisplay]
+    private var inputValue: UInt32
+    private var unavailable = false
+    private var reads: [String] = []
+    private var writes: [WriteAttempt] = []
+
+    init(displays: [DDCDisplay], currentInputValue: UInt32) {
+        discoveredDisplays = displays
+        inputValue = currentInputValue
+    }
+
+    var displays: [DDCDisplay] {
+        get { locked { discoveredDisplays } }
+        set { locked { discoveredDisplays = newValue } }
+    }
+
+    var nativeDisplayUnavailable: Bool {
+        get { locked { unavailable } }
+        set { locked { unavailable = newValue } }
+    }
+
+    var readSelectors: [String] { locked { reads } }
+    var writeAttempts: [WriteAttempt] { locked { writes } }
+
+    var operations: MonitorDDCOperations {
+        MonitorDDCOperations(
+            discover: { self.displays },
+            currentInputValue: { selector in
+                try self.locked {
+                    self.reads.append(selector)
+                    if self.unavailable {
+                        throw NativeDDCServiceError(message: "Test native display disconnected")
+                    }
+                    return self.inputValue
+                }
+            },
+            switchInput: { selector, input, vendorID, productID in
+                try self.locked {
+                    self.writes.append(WriteAttempt(selector: selector, input: input))
+                    if self.unavailable {
+                        throw NativeDDCServiceError(message: "Test native display disconnected")
+                    }
+                    self.inputValue = UInt32(MonitorInputMapping.rawValue(
+                        for: input,
+                        vendorID: vendorID,
+                        productID: productID,
+                        nativeSelector: selector
+                    ))
+                }
+            }
+        )
+    }
+
+    private func locked<T>(_ body: () throws -> T) rethrows -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return try body()
     }
 }

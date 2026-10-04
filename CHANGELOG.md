@@ -4,6 +4,37 @@
 
 ## Unreleased
 
+### MacKVM 1.100.12 (build 94)
+
+- Permit a local display-return attempt through a matching, previously verified
+  native selector when the inactive monitor disappears from discovery. Cached
+  metadata does not authorize a new remote route or prove physical presence.
+- Carry manual display-route ownership to the receiving peer so K changes input
+  only on both ends. O explicitly restores display and input after a K session.
+  Missing request fields preserve legacy automatic-routing behavior.
+- Validate the selected peer key, pairing admission, and commitment before
+  resolving simultaneous pairing requests; an invalid request cannot cancel
+  the user's active outbound pairing. A colliding incoming request stays
+  provisional until local Accept, so replayed signed messages cannot retire
+  the selected outgoing request by themselves.
+- Report failed durable trust removal instead of claiming Forget succeeded,
+  keep the peer revoked for the current run, and offer a persistence retry.
+
+### WindowsKVM 1.02.31 (build 112)
+
+- Deliver validated printable characters as Unicode, and resolve shortcut
+  keys against the target keyboard layout while preserving modifiers and the
+  held-key mapping across repeats and key-up. IME and Raw Input applications
+  still need native Windows acceptance testing.
+- Answer mDNS address questions for the advertised hostname, with exact owned
+  names and bounded question parsing instead of a service-name substring.
+- Derive Simple and Advanced readiness from the same runtime state, including
+  Local-only mode and unavailable listeners.
+- Recreate the resident tray icon after Explorer recreates the taskbar without
+  restarting listeners or clearing paired-device trust.
+- Accept and validate the optional display-route ownership request field used
+  by the updated macOS client without changing the receiver-only role.
+
 ## 1.100.11 (build 93) — 2026-10-02
 
 ### Fixed

@@ -175,7 +175,7 @@ internal sealed class MdnsAdvertiser : IAsyncDisposable
             try
             {
                 var result = await socket.ReceiveAsync(cancellation.Token);
-                if (ContainsPairingQuery(result.Buffer))
+                if (ContainsOwnedQuery(result.Buffer, serviceType, serviceName, hostName))
                 {
                     await SendAnnouncementAsync(family, result.RemoteEndPoint);
                 }
@@ -243,15 +243,13 @@ internal sealed class MdnsAdvertiser : IAsyncDisposable
         );
         try
         {
-            var ipv4Addresses = family == AddressFamily.InterNetwork
-                ? GetIPv4AddressesSafely()
-                : [];
-            var ipv6Interfaces = family == AddressFamily.InterNetworkV6
-                ? GetIPv6InterfacesSafely()
-                : [];
-            var addresses = family == AddressFamily.InterNetwork
-                ? ipv4Addresses
-                : ipv6Interfaces.Select(entry => entry.Address).ToArray();
+            var ipv4Addresses = GetIPv4AddressesSafely();
+            var ipv6Interfaces = GetIPv6InterfacesSafely();
+            // DNS record type is independent of the query's transport.
+            // Bonjour may ask for AAAA over IPv4 (or A over IPv6); include
+            // both local address families in the owned host's response.
+            var addresses = ipv4Addresses
+                .Concat(ipv6Interfaces.Select(entry => entry.Address)).ToArray();
             EnsureMulticastMembership(family, socket, ipv4Addresses, ipv6Interfaces);
             var packet = MdnsPacket.Build(
                 serviceType,
@@ -566,13 +564,18 @@ internal sealed class MdnsAdvertiser : IAsyncDisposable
             or IOException
             or InvalidOperationException;
 
-    private static bool ContainsPairingQuery(byte[] buffer)
+    internal static bool ContainsOwnedQuery(
+        byte[] buffer,
+        string serviceType,
+        string serviceName,
+        string hostName
+    )
     {
         // A response contains the same service text as a query. Reply only to
         // a DNS question (QR=0) so two receivers cannot answer one another's
         // announcements forever on a multicast loopback.
         if (buffer.Length < 12
-            || (BinaryPrimitives.ReadUInt16BigEndian(buffer.AsSpan(2, 2)) & 0x8000) != 0)
+            || (BinaryPrimitives.ReadUInt16BigEndian(buffer.AsSpan(2, 2)) & 0xF800) != 0)
         {
             return false;
         }
@@ -584,6 +587,7 @@ internal sealed class MdnsAdvertiser : IAsyncDisposable
         }
 
         var offset = 12;
+        var ownedQuestion = false;
         for (var index = 0; index < questionCount; index++)
         {
             if (!TryReadDnsName(buffer, ref offset, out var name)
@@ -592,17 +596,24 @@ internal sealed class MdnsAdvertiser : IAsyncDisposable
                 return false;
             }
 
-            // QTYPE and QCLASS are intentionally accepted broadly: Bonjour
-            // browsers use PTR, SRV, TXT, and ANY at different stages.
+            var type = BinaryPrimitives.ReadUInt16BigEndian(buffer.AsSpan(offset, 2));
+            // The high bit is mDNS's unicast-response request, not a class.
+            var recordClass = BinaryPrimitives.ReadUInt16BigEndian(
+                buffer.AsSpan(offset + 2, 2)) & 0x7FFF;
             offset += 4;
-            if (name.Contains("_mackvm", StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
+            ownedQuestion |= recordClass == 1
+                && ((NameEquals(name, serviceType) && type is 12 or 255)
+                    || (NameEquals(name, serviceName) && type is 16 or 33 or 255)
+                    || (NameEquals(name, hostName) && type is 1 or 28 or 255));
         }
 
-        return false;
+        // Validate every declared question before replying, including those
+        // after an owned question. Never amplify malformed/unrelated packets.
+        return ownedQuestion;
     }
+
+    private static bool NameEquals(string question, string owned)
+        => question.Equals(owned.TrimEnd('.'), StringComparison.OrdinalIgnoreCase);
 
     private static bool TryReadDnsName(
         byte[] buffer,
@@ -614,6 +625,7 @@ internal sealed class MdnsAdvertiser : IAsyncDisposable
         var cursor = offset;
         var nextOffset = offset;
         var jumped = false;
+        var expandedLength = 1;
         for (var steps = 0; steps < buffer.Length; steps++)
         {
             if (cursor >= buffer.Length)
@@ -644,7 +656,9 @@ internal sealed class MdnsAdvertiser : IAsyncDisposable
                 }
 
                 var pointer = ((length & 0x3F) << 8) | buffer[cursor++];
-                if (pointer >= buffer.Length)
+                // DNS compression refers back to a previously encoded name.
+                // Reject header/forward/self pointers as well as cycles.
+                if (pointer < 12 || pointer >= cursor - 2)
                 {
                     name = string.Empty;
                     return false;
@@ -666,7 +680,13 @@ internal sealed class MdnsAdvertiser : IAsyncDisposable
                 return false;
             }
 
-            labels.Add(Encoding.ASCII.GetString(buffer, cursor, length));
+            expandedLength += length + 1;
+            if (expandedLength > 255)
+            {
+                name = string.Empty;
+                return false;
+            }
+            labels.Add(Encoding.UTF8.GetString(buffer, cursor, length));
             cursor += length;
             if (!jumped)
             {

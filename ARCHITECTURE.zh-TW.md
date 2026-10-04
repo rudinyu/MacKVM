@@ -199,10 +199,13 @@ stateDiagram-v2
 **Share keyboard, mouse, and trackpad with [other device]** 是明確的等效操作。要從 Intel Mac 返回 M5 Pro，接收端按
 **Return keyboard, mouse, and trackpad to [M5 Mac]**，控制端也可按
 **Return keyboard, mouse, and trackpad to this Mac** 交還控制權；在手動選好螢幕輸入後，使用
-`Control-Option-Command-K` 可在閒置／控制中切換鍵盤／滑鼠／觸控板控制，或用
-`Control-Option-Command-Escape` 緊急中斷。獨立的
+`Control-Option-Command-K` 可在閒置／控制中切換鍵盤／滑鼠／觸控板控制，不改變兩端的
+螢幕輸入。請求會攜帶選用的 `managesDisplayRoute: false` 欄位；欄位缺省時保留舊版自動
+切換行為。兩台 macOS 都需更新至 build 94 或之後版本，才有完整的兩端 input-only 行為；
+舊版接收端會忽略新欄位。可用 `Control-Option-Command-Escape` 緊急中斷。獨立的
 `Control-Option-Command-O` 沿用 **Show other device** 的受保護流程，先切換螢幕再請求
-鍵盤／滑鼠／觸控板控制；如果本機正在接收控制，則結束接收並把螢幕與輸入還給控制端。
+鍵盤／滑鼠／觸控板控制；結束控制時會明確返回畫面與輸入，包括原先用 K 開始的控制。
+接收端會先釋放注入的輸入，再要求控制端返回螢幕。
 
 公開 Quartz 事件路徑會轉送觸控板移動、點按、拖曳、次要點按、精準雙軸捲動與捲動相位／
 慣性。擷取用的 event tap 只訂閱 keyboard、mouse、scroll-wheel 與 NSSystemDefined 型別，

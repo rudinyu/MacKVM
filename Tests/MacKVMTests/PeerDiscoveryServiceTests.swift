@@ -20,7 +20,7 @@ final class PeerDiscoveryServiceTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let registry = PairingRegistry(
-            defaults: defaults,
+            testDefaults: defaults,
             storageKey: "pairedPeers",
             persistenceApplicationID: suiteName
         )

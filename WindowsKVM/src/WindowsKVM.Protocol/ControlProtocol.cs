@@ -108,6 +108,10 @@ public sealed class ControlMessage
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? KeyboardLayoutIdentifier { get; }
 
+    [JsonPropertyName("managesDisplayRoute")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? ManagesDisplayRoute { get; }
+
     [JsonConstructor]
     public ControlMessage(
         int version,
@@ -116,7 +120,8 @@ public sealed class ControlMessage
         RemoteInputEvent? input,
         int? protocolVersion,
         int? minimumProtocolVersion,
-        string? keyboardLayoutIdentifier
+        string? keyboardLayoutIdentifier,
+        bool? managesDisplayRoute = null
     )
     {
         Version = version;
@@ -126,6 +131,7 @@ public sealed class ControlMessage
         ProtocolVersion = protocolVersion;
         MinimumProtocolVersion = minimumProtocolVersion;
         KeyboardLayoutIdentifier = keyboardLayoutIdentifier;
+        ManagesDisplayRoute = managesDisplayRoute;
     }
 
     public ControlMessage(
@@ -135,7 +141,8 @@ public sealed class ControlMessage
         int? protocolVersion = null,
         int? minimumProtocolVersion = null,
         string? keyboardLayoutIdentifier = null,
-        int version = CurrentVersion
+        int version = CurrentVersion,
+        bool? managesDisplayRoute = null
     ) : this(
         version,
         kind,
@@ -143,20 +150,23 @@ public sealed class ControlMessage
         input,
         protocolVersion,
         minimumProtocolVersion,
-        keyboardLayoutIdentifier
+        keyboardLayoutIdentifier,
+        managesDisplayRoute
     )
     {
     }
 
     public static ControlMessage RequestControl(
         Guid requestID,
-        string? keyboardLayoutIdentifier = null
+        string? keyboardLayoutIdentifier = null,
+        bool? managesDisplayRoute = null
     ) => new(
         ControlMessageKind.RequestControl,
         requestID,
         protocolVersion: ControlProtocolCompatibility.CurrentVersion,
         minimumProtocolVersion: ControlProtocolCompatibility.MinimumCompatibleVersion,
-        keyboardLayoutIdentifier: keyboardLayoutIdentifier
+        keyboardLayoutIdentifier: keyboardLayoutIdentifier,
+        managesDisplayRoute: managesDisplayRoute
     );
 
     public static ControlMessage InputMessage(
@@ -183,6 +193,7 @@ public sealed class ControlMessage
                         && ProtocolVersion is null
                         && MinimumProtocolVersion is null
                         && KeyboardLayoutIdentifier is null
+                        && ManagesDisplayRoute is null
                 );
                 Input!.Validated();
                 break;
@@ -202,6 +213,7 @@ public sealed class ControlMessage
                         && ProtocolVersion is null
                         && MinimumProtocolVersion is null
                         && KeyboardLayoutIdentifier is null
+                        && ManagesDisplayRoute is null
                 );
                 break;
             default:

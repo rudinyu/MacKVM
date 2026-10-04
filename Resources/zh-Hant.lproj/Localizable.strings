@@ -46,6 +46,11 @@
 "Disconnect" = "中斷連線";
 "Connect" = "連線";
 "Forget" = "忘記此裝置";
+"Retry Forget" = "重試忘記配對";
+"Saved pairing removal needs another attempt" = "需要再次嘗試移除已儲存的配對";
+"Trust is revoked for this run, but could not be removed from storage. Retry Forget before quitting; the old pairing may return after relaunch." = "目前執行期間已撤銷信任，但無法移除已儲存的配對。結束程式前請重試忘記配對；重新啟動後舊配對可能恢復。";
+"Trust revoked for this run, but storage removal failed; retry Forget before quitting." = "目前執行期間已撤銷信任，但移除已儲存配對失敗；結束程式前請重試忘記配對。";
+"Local identity reset, but saved pairings could not be cleared. Retry Reset identity before relaunching." = "已重設本機身分，但無法清除已儲存的配對。重新啟動前請再次重設本機身分。";
 "Key changed" = "金鑰已變更";
 "Forget old key" = "忘記舊金鑰";
 "Pair" = "配對";

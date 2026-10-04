@@ -118,6 +118,19 @@ private struct PairingStatusContext {
     let peerID: UUID
     let expectedGeneration: UInt64
     let expectedSigningPublicKey: Data?
+    let suppressesStatus: Bool
+
+    init(
+        peerID: UUID,
+        expectedGeneration: UInt64,
+        expectedSigningPublicKey: Data?,
+        suppressesStatus: Bool = false
+    ) {
+        self.peerID = peerID
+        self.expectedGeneration = expectedGeneration
+        self.expectedSigningPublicKey = expectedSigningPublicKey
+        self.suppressesStatus = suppressesStatus
+    }
 }
 
 enum PairingStatusPublicationPolicy {
@@ -184,6 +197,7 @@ final class PeerDiscoveryService: ObservableObject {
     @Published private(set) var peers: [DiscoveredPeer] = []
     @Published private(set) var pendingRequests: [PendingPairingRequest] = []
     @Published private(set) var pairedPeerIDs: Set<UUID>
+    @Published private(set) var failedForgetPeerIDs: Set<UUID> = []
     @Published private(set) var status = "Starting…"
     @Published private(set) var activeVerificationCode: String?
     @Published private(set) var pendingPairingConfirmation:
@@ -301,6 +315,13 @@ final class PeerDiscoveryService: ObservableObject {
     // leaving it tracked until the 60-second timeout.
     private var peerFinishedSendingRequestIDs: Set<UUID> = []
     private var activeOutboundRequestID: UUID?
+    // A signed request/reveal can be replayed. Preserve the selected outbound
+    // until the user explicitly accepts the incoming collision's fresh code.
+    // Admission allows only one such candidate for the selected peer.
+    private var provisionalCollisionOutboundRequestIDs: [UUID: UUID] = [:]
+    #if DEBUG
+    private var beforeTrustRollbackForTesting: (() -> Void)?
+    #endif
     // Retry only after the previous TCP pairing transport has reported its
     // cancellation. Network.framework can deliver that callback after the
     // user taps Retry, while the receiver still has the old sender admission
@@ -336,6 +357,124 @@ final class PeerDiscoveryService: ObservableObject {
     var pairedPeerProfiles: [UUID: PairedPeerProfile] {
         registry.pairedPeerProfiles
     }
+
+    #if DEBUG
+    // Install protocol state without starting Bonjour or TCP and exercise the
+    // same handler used by decoded, signed network messages.
+    func prepareOutboundPairingForTesting(
+        with peer: PeerIdentity,
+        requestID: UUID,
+        pendingRequests: [PairingEnvelope] = []
+    ) {
+        queue.sync {
+            let connection = NWConnection(host: "127.0.0.1", port: 9, using: .tcp)
+            activeOutboundRequestID = requestID
+            requestConnections[requestID] = connection
+            requestTargets[requestID] = peer
+            requestMessages[requestID] = .request(
+                from: identity,
+                requestID: requestID,
+                commitment: Data(repeating: 1, count: SHA256.Digest.byteCount)
+            )
+            requestForgetGenerations.set(
+                registry.generation(for: peer.id), for: requestID
+            )
+            pendingPairingConfirmationRequestID = requestID
+            for pending in pendingRequests {
+                requestMessages[pending.requestID] = pending
+            }
+        }
+        activeVerificationCode = "123456"
+        pendingPairingConfirmation = PendingPairingConfirmation(
+            id: requestID, peer: peer, verificationCode: "123456"
+        )
+        pairingActivity = .awaitingConfirmation(peerID: peer.id, peerName: peer.name)
+        status = "Waiting for code confirmation"
+    }
+
+    func handleIncomingPairingRequestForTesting(
+        _ message: PairingEnvelope
+    ) -> (outboundRequestID: UUID?, trackedRequestIDs: Set<UUID>) {
+        queue.sync {
+            let connection = message.kind == .request
+                ? NWConnection(host: "127.0.0.1", port: 9, using: .tcp)
+                : requestConnections[message.requestID]
+                    ?? NWConnection(host: "127.0.0.1", port: 9, using: .tcp)
+            if message.kind == .request || requestConnections[message.requestID] == nil {
+                unauthenticatedConnections[ObjectIdentifier(connection)] = connection
+            }
+            handle(message, on: connection)
+            return (activeOutboundRequestID, Set(requestMessages.keys))
+        }
+    }
+
+    func handleIncomingPairingFramesForTesting(
+        _ frames: Data
+    ) -> (outboundRequestID: UUID?, trackedRequestIDs: Set<UUID>) {
+        queue.sync {
+            let connection = NWConnection(host: "127.0.0.1", port: 9, using: .tcp)
+            let connectionID = ObjectIdentifier(connection)
+            unauthenticatedConnections[connectionID] = connection
+            receiveBuffers[connectionID] = frames
+            drainBufferedFrames(
+                on: connection, connectionEnded: false,
+                remainingMessageBudget: Self.maximumPairingMessagesPerReceive
+            )
+            return (activeOutboundRequestID, Set(requestMessages.keys))
+        }
+    }
+
+    func waitForQueuedWorkForTesting() {
+        queue.sync {}
+    }
+
+    func pairingRequestStateForTesting() -> (outboundRequestID: UUID?, trackedRequestIDs: Set<UUID>) {
+        queue.sync { (activeOutboundRequestID, Set(requestMessages.keys)) }
+    }
+
+    func finishPairingTransportForTesting(requestID: UUID) {
+        queue.sync {
+            if let connection = requestConnections[requestID] {
+                handlePeerFinishedSending(connection)
+            }
+        }
+    }
+
+    func expirePairingRequestForTesting(requestID: UUID) {
+        queue.sync {
+            if let connection = requestConnections[requestID] {
+                connection.cancel()
+                removeConnection(connection)
+            }
+        }
+    }
+
+    func rollbackCancelledPairingPersistenceForTesting(
+        peer: PeerIdentity,
+        deferredRetryFailure: Bool,
+        forgetBeforeRollback: Bool = false
+    ) {
+        queue.sync {
+            let job = PairingPersistenceJob(
+                requestID: UUID(), peer: peer,
+                expectedRegistryGeneration: registry.generation(for: peer.id),
+                model: nil, lifecycleEpoch: currentLifecycleEpoch()
+            )
+            pairingPersistenceJobs[job.requestID] = job
+            latestPairingPersistenceRequestIDsByPeer[peer.id] = job.requestID
+            if deferredRetryFailure {
+                cancelledPersistenceTrustJobsByPeer[peer.id] = [job]
+            } else {
+                markPersistenceCancellation(for: job.requestID)
+            }
+            if forgetBeforeRollback {
+                beforeTrustRollbackForTesting = { [weak self] in self?.forget(peer.id) }
+            }
+            handlePairingPersistenceResult(job, saved: !deferredRetryFailure)
+            beforeTrustRollbackForTesting = nil
+        }
+    }
+    #endif
 
     func pairedPublicKey(for peerID: UUID) -> Data? {
         registry.publicKey(for: peerID)
@@ -425,6 +564,7 @@ final class PeerDiscoveryService: ObservableObject {
             self.unauthenticatedConnections.removeAll()
             self.requestMessages.removeAll()
             self.requestTargets.removeAll()
+            self.provisionalCollisionOutboundRequestIDs.removeAll()
             self.requestPeerModels.removeAll()
             self.requestForgetGenerations.removeAll()
             self.localContributions.removeAll()
@@ -890,6 +1030,46 @@ final class PeerDiscoveryService: ObservableObject {
             removePendingRequest(id: pending.id)
             return
         }
+        if accepted,
+           let outboundRequestID = provisionalCollisionOutboundRequestIDs[pending.id] {
+            let currentGeneration = registry.generation(for: pending.peer.id)
+            guard request.sender.id == pending.peer.id,
+                  request.sender.signingPublicKey == pending.peer.signingPublicKey,
+                  let peerContribution = peerContributions[pending.id],
+                  let localContribution = localContributions[pending.id],
+                  pending.verificationCode == PairingVerificationCode.make(
+                      requestID: pending.id,
+                      initiatorPublicKey: request.sender.signingPublicKey,
+                      responderPublicKey: identity.signingPublicKey,
+                      initiatorContribution: peerContribution,
+                      responderContribution: localContribution
+                  ),
+                  requestForgetGenerations.current(for: pending.id) == currentGeneration,
+                  PairingRequestPolicy.acceptsDiscoveredPeer(
+                      request.sender,
+                      pinnedPublicKey: registry.publicKey(for: pending.peer.id)
+                  ) else {
+                finish(requestID: pending.id)
+                return
+            }
+            if activeOutboundRequestID == outboundRequestID {
+                guard requestTargets[outboundRequestID]?.id == pending.peer.id,
+                      requestTargets[outboundRequestID]?.signingPublicKey
+                        == pending.peer.signingPublicKey,
+                      requestForgetGenerations.current(for: outboundRequestID)
+                        == currentGeneration else {
+                    finish(requestID: pending.id)
+                    return
+                }
+                // Only local consent can retire this specific selected request.
+                // A later outbound request must never be cancelled by an old
+                // provisional prompt, even when it targets the same peer.
+                provisionalCollisionOutboundRequestIDs.removeValue(forKey: pending.id)
+                finish(requestID: outboundRequestID, userCancelledPersistence: true)
+            } else {
+                provisionalCollisionOutboundRequestIDs.removeValue(forKey: pending.id)
+            }
+        }
         let statusContext = pairingStatusContext(for: pending.id)
 
         logPairingPhase(
@@ -953,12 +1133,25 @@ final class PeerDiscoveryService: ObservableObject {
         )
     }
 
-    func forget(_ peerID: UUID) {
+    @discardableResult
+    func forget(_ peerID: UUID) -> Bool {
         // Keep trust removal synchronous with the user action. The secure
         // listener runs on another queue and must not authenticate this peer
         // while the queued discovery cleanup is waiting to run.
-        registry.revoke(peerID)
-        publishStatus("Pairing forgotten")
+        let result = registry.revokeWithPersistenceResult(peerID)
+        publishPairingMain(context: PairingStatusContext(
+            peerID: peerID,
+            expectedGeneration: result.generation,
+            expectedSigningPublicKey: nil
+        )) { service in
+            if result.persisted {
+                service.failedForgetPeerIDs.remove(peerID)
+                service.status = "Pairing forgotten"
+            } else {
+                service.failedForgetPeerIDs.insert(peerID)
+                service.status = Self.trustRemovalFailureMessage
+            }
+        }
         queue.async { [weak self] in
             guard let self else { return }
             self.cancelledPersistenceTrustJobsByPeer.removeValue(
@@ -981,6 +1174,26 @@ final class PeerDiscoveryService: ObservableObject {
                 $0.pairedPeerIDs.remove(peerID)
                 $0.pendingRequests.removeAll { $0.peer.id == peerID }
             }
+        }
+        return result.persisted
+    }
+
+    private static let trustRemovalFailureMessage = NSLocalizedString(
+        "Trust is revoked for this run, but could not be removed from storage. Retry Forget before quitting; the old pairing may return after relaunch.",
+        comment: "Failed durable trust removal"
+    )
+
+    private func publishTrustRemovalFailure(
+        for peerID: UUID,
+        generation: UInt64
+    ) {
+        publishPairingMain(context: PairingStatusContext(
+            peerID: peerID,
+            expectedGeneration: generation,
+            expectedSigningPublicKey: nil
+        )) { service in
+            service.failedForgetPeerIDs.insert(peerID)
+            service.status = Self.trustRemovalFailureMessage
         }
     }
 
@@ -1322,39 +1535,44 @@ final class PeerDiscoveryService: ObservableObject {
                 connection.cancel()
                 return
             }
-            if let outboundRequestID = activeOutboundRequestID,
-               requestTargets[outboundRequestID]?.id == message.sender.id {
-                if PairingRequestPolicy.keepOutboundDuringCollision(
+            let collisionRequestID = activeOutboundRequestID.flatMap { requestID in
+                requestTargets[requestID]?.id == message.sender.id ? requestID : nil
+            }
+            let selectedOutboundPeer = collisionRequestID.flatMap { requestTargets[$0] }
+            let replacesOutbound = selectedOutboundPeer?.signingPublicKey
+                    == message.sender.signingPublicKey
+                && !PairingRequestPolicy.keepOutboundDuringCollision(
                     localID: identity.id,
                     remoteID: message.sender.id
-                ) {
-                    publishStatus(
-                        "Kept the outgoing pairing request after a simultaneous request",
-                        context: pairingStatusContext(for: outboundRequestID)
-                    )
-                    connection.cancel()
-                    return
-                }
-                finish(requestID: outboundRequestID)
+                )
+            // Admission describes the prospective state, but duplicate IDs
+            // still include the selected outbound ID. An incoming request may
+            // reserve one replacement slot after identity/protocol checks.
+            // Until local consent, the protected outbound is the only allowed
+            // extra physical slot (maximumPendingRequests + 1); unrelated
+            // admission counts both requests and cannot grow this reservation.
+            let prospectiveRequests = requestMessages.filter {
+                !replacesOutbound || $0.key != collisionRequestID
             }
             let decision = PairingRequestPolicy.evaluate(
                 request: message,
                 pinnedPublicKey: registry.publicKey(for: message.sender.id),
                 activeRequestIDs: Set(requestMessages.keys),
                 pendingSenderIDs: Set(
-                    requestMessages.values
+                    prospectiveRequests.values
                         .filter { $0.kind == .request }
                         .map(\.sender.id)
                 ),
-                activeRequestCount: requestMessages.count,
+                activeRequestCount: prospectiveRequests.count,
                 maximumPendingRequests: Self.maximumPendingRequests,
-                activeUnpairedRequestCount: requestMessages.values.filter {
+                activeUnpairedRequestCount: prospectiveRequests.values.filter {
                     $0.kind == .request
                         && $0.sender.id != identity.id
                         && registry.publicKey(for: $0.sender.id) == nil
                 }.count,
                 maximumUnpairedPendingRequests:
-                    Self.maximumUnpairedPendingRequests
+                    Self.maximumUnpairedPendingRequests,
+                selectedOutboundPeer: selectedOutboundPeer
             )
             guard decision == .allow else {
                 logPairingPhase(
@@ -1363,27 +1581,54 @@ final class PeerDiscoveryService: ObservableObject {
                     peerID: message.sender.id,
                     detail: "reason=\(statusMessage(for: decision))"
                 )
-                publishStatus(
-                    statusMessage(for: decision),
-                    context: pairingStatusContext(
-                        for: message.sender.id,
-                        signingPublicKey: registry.publicKey(for: message.sender.id)
+                if activeOutboundRequestID == nil {
+                    publishStatus(
+                        statusMessage(for: decision),
+                        context: pairingStatusContext(
+                            for: message.sender.id,
+                            signingPublicKey: registry.publicKey(for: message.sender.id)
+                        )
                     )
-                )
+                }
                 connection.cancel()
                 return
             }
             guard let peerCommitment = message.verificationCommitment,
                   peerCommitment.count == SHA256.Digest.byteCount else {
-                publishStatus(
-                    "Rejected an invalid pairing commitment",
-                    context: pairingStatusContext(
-                        for: message.sender.id,
-                        signingPublicKey: registry.publicKey(for: message.sender.id)
-                    )
+                logPairingPhase(
+                    "request.rejected",
+                    requestID: message.requestID,
+                    peerID: message.sender.id,
+                    detail: "reason=invalid-commitment"
                 )
+                if activeOutboundRequestID == nil {
+                    publishStatus(
+                        "Rejected an invalid pairing commitment",
+                        context: pairingStatusContext(
+                            for: message.sender.id,
+                            signingPublicKey: registry.publicKey(for: message.sender.id)
+                        )
+                    )
+                }
                 connection.cancel()
                 return
+            }
+            if let outboundRequestID = collisionRequestID {
+                if !replacesOutbound {
+                    logPairingPhase(
+                        "request.collision.kept-outbound",
+                        requestID: outboundRequestID,
+                        peerID: message.sender.id
+                    )
+                    connection.cancel()
+                    return
+                }
+                guard !provisionalCollisionOutboundRequestIDs.values.contains(outboundRequestID)
+                else {
+                    connection.cancel()
+                    return
+                }
+                provisionalCollisionOutboundRequestIDs[message.requestID] = outboundRequestID
             }
             let localContribution = PairingVerificationCode.makeContribution()
             unauthenticatedConnections.removeValue(
@@ -1531,7 +1776,9 @@ final class PeerDiscoveryService: ObservableObject {
                         )
                     )
                 }
-                service.status = "\(message.sender.name) wants to pair"
+                if statusContext?.suppressesStatus != true {
+                    service.status = "\(message.sender.name) wants to pair"
+                }
             }
             let confirmation = PairingEnvelope.confirmation(
                 to: request,
@@ -1863,7 +2110,9 @@ final class PeerDiscoveryService: ObservableObject {
     /// discovery queue, so the registry check and cleanup decision are
     /// serialized with every retry result.
     @discardableResult
-    private func revokeCancelledPersistenceTrust(for peerID: UUID) -> UInt64? {
+    private func revokeCancelledPersistenceTrust(
+        for peerID: UUID
+    ) -> PairingRegistry.RevocationResult? {
         guard latestSuccessfulPersistenceRequestIDsByPeer[peerID] == nil else {
             cancelledPersistenceTrustJobsByPeer.removeValue(forKey: peerID)
             return nil
@@ -1880,16 +2129,26 @@ final class PeerDiscoveryService: ObservableObject {
             cancelledPersistenceTrustJobsByPeer.removeValue(forKey: peerID)
             return nil
         }
-        let nextGeneration = registry.revoke(peerID)
+        #if DEBUG
+        beforeTrustRollbackForTesting?()
+        #endif
+        guard let result = registry.revokeWithPersistenceResult(
+            peerID,
+            ifGeneration: matchingJob.expectedRegistryGeneration,
+            publicKey: matchingJob.peer.signingPublicKey
+        ) else {
+            cancelledPersistenceTrustJobsByPeer.removeValue(forKey: peerID)
+            return nil
+        }
         cancelledPersistenceTrustJobsByPeer.removeValue(forKey: peerID)
         latestSuccessfulPersistenceRequestIDsByPeer.removeValue(forKey: peerID)
         logPairingPhase(
             "pairing.persist.rollback",
             requestID: matchingJob.requestID,
             peerID: peerID,
-            detail: "cancelled-retry-failed"
+            detail: "cancelled-retry-failed persisted=\(result.persisted)"
         )
-        return nextGeneration
+        return result
     }
 
     private func handlePairingPersistenceResult(
@@ -1920,6 +2179,7 @@ final class PeerDiscoveryService: ObservableObject {
             // Never revoke a newer retry's record: its persistence request has
             // a different token even when the peer uses the same signing key.
             var cancellationStatusGeneration = job.expectedRegistryGeneration
+            var removalPersistenceFailed = false
             if saved,
                registry.generation(for: job.peer.id)
                     == job.expectedRegistryGeneration,
@@ -1936,13 +2196,22 @@ final class PeerDiscoveryService: ObservableObject {
                 } else if latestSuccessfulPersistenceRequestIDsByPeer[
                     job.peer.id
                 ] == nil {
-                    let nextGeneration = registry.revoke(job.peer.id)
+                    #if DEBUG
+                    beforeTrustRollbackForTesting?()
+                    #endif
+                    let result = registry.revokeWithPersistenceResult(
+                        job.peer.id,
+                        ifGeneration: job.expectedRegistryGeneration,
+                        publicKey: job.peer.signingPublicKey
+                    )
+                    let nextGeneration = result?.generation
+                    removalPersistenceFailed = result?.persisted == false
                     // Accept only the generation immediately produced by this
                     // rollback. A jump means Forget (or another revocation)
                     // raced the cleanup, so its terminal status must remain
                     // authoritative and the late cancellation is stale.
-                    if nextGeneration
-                        == job.expectedRegistryGeneration &+ 1 {
+                    if let nextGeneration,
+                       nextGeneration == job.expectedRegistryGeneration &+ 1 {
                         cancellationStatusGeneration = nextGeneration
                     }
                     cancelledPersistenceTrustJobsByPeer.removeValue(
@@ -1950,10 +2219,13 @@ final class PeerDiscoveryService: ObservableObject {
                     )
                 }
             } else if isLatestPersistenceJob {
-                if let nextGeneration = revokeCancelledPersistenceTrust(
+                if let result = revokeCancelledPersistenceTrust(
                     for: job.peer.id
-                ), nextGeneration == job.expectedRegistryGeneration &+ 1 {
-                    cancellationStatusGeneration = nextGeneration
+                ) {
+                    removalPersistenceFailed = !result.persisted
+                    if result.generation == job.expectedRegistryGeneration &+ 1 {
+                        cancellationStatusGeneration = result.generation
+                    }
                 }
             }
             logPairingPhase(
@@ -1962,18 +2234,22 @@ final class PeerDiscoveryService: ObservableObject {
                 peerID: job.peer.id,
                 detail: "user-cancelled"
             )
-            publishStatus(
-                "Pairing with \(job.peer.name) canceled",
-                // A successful write may have been rolled back above, which
-                // advances the registry generation. Capture the context only
-                // after that rollback so the terminal cancellation status is
-                // not discarded as stale work.
-                context: PairingStatusContext(
-                    peerID: job.peer.id,
-                    expectedGeneration: cancellationStatusGeneration,
-                    expectedSigningPublicKey: nil
+            if removalPersistenceFailed {
+                publishTrustRemovalFailure(
+                    for: job.peer.id,
+                    generation: cancellationStatusGeneration
                 )
-            )
+            } else {
+                publishStatus(
+                    "Pairing with \(job.peer.name) canceled",
+                    // Capture after rollback so cancellation is not stale.
+                    context: PairingStatusContext(
+                        peerID: job.peer.id,
+                        expectedGeneration: cancellationStatusGeneration,
+                        expectedSigningPublicKey: nil
+                    )
+                )
+            }
             return
         }
         logPairingPhase(
@@ -1997,27 +2273,37 @@ final class PeerDiscoveryService: ObservableObject {
                 "phase=pairing.persist.failed request=\(MacKVMLogger.short(job.requestID), privacy: .public) peer=\(MacKVMLogger.short(job.peer.id), privacy: .public)"
             )
             var failureStatusGeneration = job.expectedRegistryGeneration
+            var removalPersistenceFailed = false
             if isLatestPersistenceJob
                 && latestSuccessfulPersistenceRequestIDsByPeer[job.peer.id]
                     == nil,
-               let nextGeneration = revokeCancelledPersistenceTrust(
+               let result = revokeCancelledPersistenceTrust(
                    for: job.peer.id
-               ),
-               nextGeneration == job.expectedRegistryGeneration &+ 1 {
+               ) {
+                removalPersistenceFailed = !result.persisted
                 // The rollback belongs to this pairing attempt's generation.
                 // Publish the failure after it so the user sees why Retry is
                 // needed, while a larger jump still suppresses stale status
                 // after a concurrent Forget/revocation.
-                failureStatusGeneration = nextGeneration
+                if result.generation == job.expectedRegistryGeneration &+ 1 {
+                    failureStatusGeneration = result.generation
+                }
             }
-            publishStatus(
-                "Could not save pairing with \(job.peer.name); try Pair again",
-                context: PairingStatusContext(
-                    peerID: job.peer.id,
-                    expectedGeneration: failureStatusGeneration,
-                    expectedSigningPublicKey: nil
+            if removalPersistenceFailed {
+                publishTrustRemovalFailure(
+                    for: job.peer.id,
+                    generation: failureStatusGeneration
                 )
-            )
+            } else {
+                publishStatus(
+                    "Could not save pairing with \(job.peer.name); try Pair again",
+                    context: PairingStatusContext(
+                        peerID: job.peer.id,
+                        expectedGeneration: failureStatusGeneration,
+                        expectedSigningPublicKey: nil
+                    )
+                )
+            }
             // A failed durable write is terminal for this pairing attempt. Do
             // not leave the connection/request tracked until the 60-second
             // timeout, otherwise the UI appears stuck and the next attempt is
@@ -2071,6 +2357,7 @@ final class PeerDiscoveryService: ObservableObject {
                 return
             }
             service.pairedPeerIDs.insert(peerID)
+            service.failedForgetPeerIDs.remove(peerID)
             if service.pairingActivity.peerID == peerID {
                 service.activeVerificationCode = nil
                 service.pendingPairingConfirmation = nil
@@ -2133,6 +2420,13 @@ final class PeerDiscoveryService: ObservableObject {
         cancelConnection: Bool = true,
         userCancelledPersistence: Bool = false
     ) {
+        if userCancelledPersistence {
+            let provisionalRequestIDs = provisionalCollisionOutboundRequestIDs
+                .filter { $0.value == requestID }.map(\.key)
+            provisionalRequestIDs.forEach {
+                finish(requestID: $0, userCancelledPersistence: true)
+            }
+        }
         if userCancelledPersistence,
            pairingPersistenceJobs[requestID] != nil,
            !pairingPersistenceRecordedRequestIDs.contains(requestID) {
@@ -2181,6 +2475,7 @@ final class PeerDiscoveryService: ObservableObject {
         requestMessages.removeValue(forKey: requestID)
         requestPeerDescriptors.removeValue(forKey: requestID)
         requestTargets.removeValue(forKey: requestID)
+        provisionalCollisionOutboundRequestIDs.removeValue(forKey: requestID)
         requestPeerModels.removeValue(forKey: requestID)
         localContributions.removeValue(forKey: requestID)
         requestForgetGenerations.remove(for: requestID)
@@ -2398,7 +2693,8 @@ final class PeerDiscoveryService: ObservableObject {
             expectedGeneration: requestForgetGenerations.current(
                 for: requestID
             ),
-            expectedSigningPublicKey: nil
+            expectedSigningPublicKey: nil,
+            suppressesStatus: provisionalCollisionOutboundRequestIDs[requestID] != nil
         )
     }
 
@@ -2429,6 +2725,7 @@ final class PeerDiscoveryService: ObservableObject {
         _ message: String,
         context: PairingStatusContext? = nil
     ) {
+        guard context?.suppressesStatus != true else { return }
         publishPairingMain(context: context) { service in
             service.status = message
         }
@@ -3019,10 +3316,19 @@ final class PeerDiscoveryService: ObservableObject {
         _ message: PairingEnvelope,
         on connection: NWConnection
     ) {
-        publishStatus(
-            "Rejected an unexpected pairing message",
-            context: pairingStatusContext(for: message.requestID)
+        logPairingPhase(
+            "message.rejected-unexpected",
+            requestID: message.requestID,
+            peerID: message.sender.id
         )
+        if activeOutboundRequestID == nil
+            || (activeOutboundRequestID == message.requestID
+                && requestConnections[message.requestID] === connection) {
+            publishStatus(
+                "Rejected an unexpected pairing message",
+                context: pairingStatusContext(for: message.requestID)
+            )
+        }
         connection.cancel()
         if requestConnections[message.requestID] === connection {
             finish(requestID: message.requestID)

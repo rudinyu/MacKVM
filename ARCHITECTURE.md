@@ -325,12 +325,17 @@ forwarded remotely.
 The controller can press **Control–Option–Command–Escape** to interrupt sharing,
 while the receiver can use **Return keyboard, mouse, and trackpad to [M5 Mac]** to release
 injected input and return control to the controller.
-The global **Control–Option–Command–K** shortcut toggles the same route: it
-starts a normal control request while idle and returns input when either side
-is actively controlling or receiving. The independent
+The global **Control–Option–Command–K** shortcut toggles keyboard, mouse, and
+trackpad control without changing monitor input at either upgraded endpoint.
+Its control request carries the optional `managesDisplayRoute: false` field;
+an absent field preserves the legacy automatic-routing behavior. Both macOS
+peers must run build 94 or later for this two-sided input-only behavior; an
+older receiver ignores the new field. The independent
 **Control–Option–Command–O** shortcut shares the guarded **Show other device**
-route: it changes the monitor input before requesting keyboard, mouse, and trackpad control,
-and ends receiving to restore the controller's display and input.
+route: it changes the monitor input before requesting input control and
+explicitly returns the display and input when ending a session, including one
+started with K. A receiving endpoint releases injected input before requesting
+the controller's display return.
 
 The public Quartz event path preserves trackpad movement, clicks, drags,
 secondary clicks, precise two-axis scrolling, and scroll phase and momentum.

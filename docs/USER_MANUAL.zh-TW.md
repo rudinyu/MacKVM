@@ -2,7 +2,7 @@
 
 # MacKVM 使用手冊
 
-版本：**1.100.11（build 93）**。
+版本：**1.100.12（build 94）**。正式散布的安裝檔須通過 Developer ID 簽章與 Apple 公證驗證；本機測試建置另計。
 
 MacKVM 是 macOS app，提供選單列入口與一般控制視窗，讓 14 吋 M5 Pro MacBook Pro
 與 2019 Intel MacBook Pro 共用一組鍵盤、滑鼠與觸控板，並可選擇切換 BenQ MA270U 螢幕。
@@ -146,8 +146,15 @@ mapping 原始碼。按下 Ctrl-C 或收到 SIGTERM 時會停止候選值迴圈�
 最後成功完成驗證連線的時間，以及已釘選公開金鑰的 SHA-256 指紋。新配對的 Mac 預設
 會啟用無縫控制；可在每台配對裝置旁關閉此授權。
 
-要移除已配對的 Mac，請選擇 **Forget**。配對列與 **Quit** 旁的狀態會立即更新為
-**Pairing forgotten**；被忘記的 peer 名稱不會繼續顯示，也不需要重開 MacKVM。
+要移除已配對的 Mac，請選擇 **Forget**。控制權與記憶體中的信任會立即撤銷，只有成功
+移除已儲存的信任後才會顯示 **Pairing forgotten**。若儲存失敗，請在退出前按
+**Retry Forget**，否則舊配對可能在重新啟動後再次出現。即使配對裝置列已消失，重試
+按鈕仍會保留。
+
+**Control-Option-Command-K** 只切換輸入控制，供手動選好螢幕輸入後使用。兩台 Mac
+都需更新至 build 94 或之後版本，接收端才會遵守此 input-only 模式。
+**Control-Option-Command-O** 同時切換螢幕與輸入控制；控制期間按 O，也會返回原先
+以 K 開始的控制所對應的畫面。
 
 遇到問題時按 **Copy support information**。報告包含公開的版本、OS、裝置、UUID、
 指紋與連線狀態，不包含私密金鑰、密碼、憑證或網路端點。

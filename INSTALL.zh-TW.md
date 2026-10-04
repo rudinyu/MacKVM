@@ -94,7 +94,7 @@ transport 與 VCP `0x60` 輸入狀態。唯讀報告可保存為：
 ./scripts/verify-release.sh \
   --app dist/universal/MacKVM.app \
   --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.100.11-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.100.12-universal.dmg.sha256)
 ```
 
 ad-hoc 簽章只適合本機測試。要在 Mac App Store 以外正式散布，請使用獨立的 notarized

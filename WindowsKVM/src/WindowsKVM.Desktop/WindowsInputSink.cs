@@ -62,6 +62,8 @@ internal sealed class WindowsInputSink : IDisposable
     private readonly HashSet<int> pressedMouseButtons = [];
     private readonly Func<IReadOnlyList<WindowsInputEvent>, uint> sendInputs;
     private readonly Func<int, int> getSystemMetrics;
+    private readonly Func<IntPtr> getTargetKeyboardLayout;
+    private readonly Func<char, IntPtr, short> scanCharacter;
     private readonly Action<string>? reportUnsupported;
     private double verticalScrollRemainder;
     private double horizontalScrollRemainder;
@@ -71,12 +73,16 @@ internal sealed class WindowsInputSink : IDisposable
     public WindowsInputSink(
         Func<IReadOnlyList<WindowsInputEvent>, uint>? sendInputs = null,
         Func<int, int>? getSystemMetrics = null,
-        Action<string>? reportUnsupported = null
+        Action<string>? reportUnsupported = null,
+        Func<IntPtr>? getTargetKeyboardLayout = null,
+        Func<char, IntPtr, short>? scanCharacter = null
     )
     {
         this.sendInputs = sendInputs ?? SendNativeInputs;
         this.getSystemMetrics = getSystemMetrics ?? GetSystemMetrics;
         this.reportUnsupported = reportUnsupported;
+        this.getTargetKeyboardLayout = getTargetKeyboardLayout ?? GetForegroundKeyboardLayout;
+        this.scanCharacter = scanCharacter ?? VkKeyScanEx;
     }
 
     public bool IsActive
@@ -193,23 +199,41 @@ internal sealed class WindowsInputSink : IDisposable
             // macOS sends another key-down for auto-repeat. Reuse the first
             // mapping (including Unicode units) so a changed character field
             // cannot make a held key release incorrectly later.
-            SendInputs(held.KeyDownInputs());
+            SendKeyInputs(held, keyUp: false);
             return;
         }
 
         InjectedKey injected;
-        var events = new List<WindowsInputEvent>();
-        if (TryMapMacKey(keyCode, out var virtualKey, out var extended))
+        var isLogicalKey = IsLayoutDependentKey(keyCode)
+            && !string.IsNullOrEmpty(input.Character);
+        var isShortcut = (input.ModifierFlags & (MacControlFlag | MacCommandFlag)) != 0
+            || pressedKeys.Values.Any(key => !key.IsUnicode
+                && key.VirtualKey is VkLControl or VkRControl or VkLWin or VkRWin);
+        if (isLogicalKey && !isShortcut)
+        {
+            // Character was validated before this method. Text is delivered as
+            // Unicode, independent of the target layout, Caps Lock, and AltGr.
+            // Keep navigation/keypad events virtual and never turn shortcuts
+            // into VK_PACKET text. IME/raw-input-only applications may not
+            // consume Unicode injection; no universal text injection exists.
+            injected = InjectedKey.Unicode(input.Character!.ToCharArray());
+        }
+        else if (isLogicalKey && isShortcut
+            && TryMapLogicalShortcut(input.Character!, out var logicalVirtualKey))
+        {
+            // The sender supplies an unmodified logical character for Ctrl /
+            // Command shortcuts. Resolve only its target VK; preserve actual
+            // held Shift/Ctrl/Alt/Win state rather than synthesizing text mods.
+            injected = InjectedKey.Virtual(logicalVirtualKey, false);
+        }
+        else if (TryMapMacKey(keyCode, out var virtualKey, out var extended))
         {
             injected = InjectedKey.Virtual(virtualKey, extended);
-            events.Add(KeyboardInput(virtualKey, 0, extended ? KeyEventExtended : 0));
         }
-        else if (!string.IsNullOrEmpty(input.Character))
+        else if (!isShortcut && !string.IsNullOrEmpty(input.Character))
         {
             var units = input.Character!.ToCharArray();
             injected = InjectedKey.Unicode(units);
-            events.AddRange(units.Select(unit =>
-                KeyboardInput(0, unit, KeyEventUnicode)));
         }
         else
         {
@@ -221,7 +245,7 @@ internal sealed class WindowsInputSink : IDisposable
         pressedKeys[keyCode] = injected;
         try
         {
-            SendInputs(events);
+            SendKeyInputs(injected, keyUp: false);
         }
         catch
         {
@@ -252,10 +276,70 @@ internal sealed class WindowsInputSink : IDisposable
             return;
         }
 
-        SendInputs(injected.KeyUpInputs());
+        SendKeyInputs(injected, keyUp: true);
         // Do not lose teardown bookkeeping until the native release has
         // succeeded. A transient SendInput failure must be retried by End().
         pressedKeys.Remove(keyCode);
+    }
+
+    private void SendKeyInputs(InjectedKey key, bool keyUp)
+    {
+        var events = keyUp ? key.KeyUpInputs() : key.KeyDownInputs();
+        if (!key.IsUnicode)
+        {
+            SendInputs(events);
+            return;
+        }
+
+        // Mac Option is a text modifier but Windows Alt is an application
+        // shortcut modifier. Neutralize only modifiers this receiver holds
+        // while delivering text, then restore them in the same SendInput
+        // batch. Re-evaluate on every edge/repeat so releasing Shift/Option
+        // while a text key is held cannot resurrect it. Held-state entries
+        // remain intact if any part of this batch fails, for End() cleanup.
+        var textModifiers = pressedKeys.Values.Where(held => !held.IsUnicode
+            && held.VirtualKey is VkLShift or VkRShift or VkLMenu or VkRMenu)
+            .ToArray();
+        SendInputs(textModifiers.SelectMany(modifier => modifier.KeyUpInputs())
+            .Concat(events)
+            .Concat(textModifiers.SelectMany(modifier => modifier.KeyDownInputs()))
+            .ToArray());
+    }
+
+    private bool TryMapLogicalShortcut(string character, out ushort virtualKey)
+    {
+        virtualKey = 0;
+        if (character.Length != 1)
+        {
+            return false;
+        }
+
+        var layout = getTargetKeyboardLayout();
+        if (layout == IntPtr.Zero)
+        {
+            return false;
+        }
+        var mapping = scanCharacter(character[0], layout);
+        if (mapping == -1 || (mapping & 0xFF) is 0 or 255 || ((mapping >> 8) & ~7) != 0)
+        {
+            return false;
+        }
+        virtualKey = (ushort)(mapping & 0xFF);
+        return true;
+    }
+
+    private static bool IsLayoutDependentKey(ushort keyCode)
+        => keyCode <= 35 || keyCode is >= 37 and <= 47 or 50;
+
+    private static IntPtr GetForegroundKeyboardLayout()
+    {
+        var foreground = GetForegroundWindow();
+        if (foreground == IntPtr.Zero)
+        {
+            return IntPtr.Zero;
+        }
+        var thread = GetWindowThreadProcessId(foreground, out _);
+        return thread == 0 ? IntPtr.Zero : GetKeyboardLayout(thread);
     }
 
     private void ChangeModifier(RemoteInputEvent input)
@@ -793,6 +877,18 @@ internal sealed class WindowsInputSink : IDisposable
     [DllImport("user32.dll")]
     private static extern int GetSystemMetrics(int index);
 
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processID);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetKeyboardLayout(uint threadID);
+
+    [DllImport("user32.dll", EntryPoint = "VkKeyScanExW", CharSet = CharSet.Unicode)]
+    private static extern short VkKeyScanEx(char character, IntPtr layout);
+
     [StructLayout(LayoutKind.Sequential)]
     private struct INPUT
     {
@@ -829,6 +925,8 @@ internal sealed class WindowsInputSink : IDisposable
     }
 
     private const ushort VkLShift = 0xA0;
+    private const ulong MacControlFlag = 1UL << 18;
+    private const ulong MacCommandFlag = 1UL << 20;
     private const ushort VkRShift = 0xA1;
     private const ushort VkLControl = 0xA2;
     private const ushort VkRControl = 0xA3;

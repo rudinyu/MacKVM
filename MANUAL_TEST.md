@@ -33,7 +33,7 @@ Release check (from the M5 Pro) is also available:
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.100.11-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.100.12-universal.dmg.sha256)
 ```
 
 Expected: the app reports both `arm64` and `x86_64`, and an ad-hoc signature
@@ -217,9 +217,10 @@ Expected:
 7. Wake the M5 Pro and wait for the secure session to reconnect. Confirm the
   keyboard, mouse, and trackpad Hotkeys work without first disconnecting from the Intel Mac.
 8. Select **Forget** for the paired peer. Confirm the paired row is removed or
-   becomes unpaired and the status beside **Quit** immediately changes to
-   **Pairing forgotten**; the old peer name must not remain and restarting
-   MacKVM must not be required.
+   becomes unpaired. After successful storage removal, the status beside
+   **Quit** changes to **Pairing forgotten**; restarting MacKVM is not required.
+   If removal fails, input must still stop and **Retry Forget** must remain
+   available. Retry before quitting, then relaunch to verify the peer is absent.
 
 Expected:
 
@@ -233,8 +234,9 @@ Expected:
   resume control without another Allow prompt.
 - A system sleep closes the old transport before networking suspends; wake
   reconnects the previously selected peer and starts from local input.
-- Forget immediately revokes the pairing in the UI as well as in storage; the
-  stale **Paired with …** status is cleared without requiring an app restart.
+- Forget immediately revokes runtime trust and clears stale **Paired with …**
+  state. A storage failure must show a warning and retry instead of reporting
+  durable success.
 
 ## 6. Keyboard, mouse, and trackpad control
 
@@ -405,6 +407,10 @@ Expected:
    ends**; repeat the return check with **Control-Option-Command-Escape** and
    with the receiver's **Return keyboard, mouse, and trackpad to [M5 Mac]**
    action, confirming the manually routed monitor is untouched in all three.
+   Both Macs must use build 94 or later. Also start a new K session and end it
+   with O, first on the controller and then on the receiver in a separate run:
+   O must return both display and input without leaving remote keys held. The
+   receiver-side action must finish releasing injected input before DDC return.
 6. Repeat using **Return keyboard, mouse, and trackpad to this Mac**.
 7. From the receiving Intel Mac, select **Return keyboard, mouse, and trackpad to [M5 Mac]** while a key and a
    mouse button are held by the controlling Mac.

@@ -67,6 +67,27 @@ enum AutomaticDDCSwitchDecision: Equatable {
     case useManualFallback
 }
 
+/// Inject only native DDC operations so route/discovery regression tests can
+/// exercise the controller without sending commands to a physical monitor.
+struct MonitorDDCOperations {
+    var discover: () throws -> [DDCDisplay]
+    var currentInputValue: (String) throws -> UInt32
+    var switchInput: (String, MonitorInputSource, UInt32?, UInt32?) throws -> Void
+
+    static let native = MonitorDDCOperations(
+        discover: NativeDDCService.discover,
+        currentInputValue: { try NativeDDCService.currentInputValue(displaySelector: $0) },
+        switchInput: {
+            try NativeDDCService.switchInput(
+                displaySelector: $0,
+                input: $1,
+                vendorID: $2,
+                productID: $3
+            )
+        }
+    )
+}
+
 enum DisplayRouteRole: Equatable {
     case local
     case remote
@@ -353,6 +374,7 @@ final class MonitorController: ObservableObject {
     var supportsAutomaticDDCSwitching: Bool { true }
 
     private let defaults: UserDefaults
+    private let ddcOperations: MonitorDDCOperations
     private let queue = DispatchQueue(label: "app.mackvm.monitor-control")
     private var displayConfigurationObserver: NSObjectProtocol?
     private var isDiscoveringDisplays = false
@@ -373,8 +395,12 @@ final class MonitorController: ObservableObject {
     private let displaySleepAssertionLease = DisplaySleepAssertionLease()
     private var displaySleepLeaseGraceWorkItem: DispatchWorkItem?
 
-    init(defaults: UserDefaults = .standard) {
+    init(
+        defaults: UserDefaults = .standard,
+        ddcOperations: MonitorDDCOperations = .native
+    ) {
         self.defaults = defaults
+        self.ddcOperations = ddcOperations
         automationEnabled = defaults.object(
             forKey: Keys.automationEnabled
         ) as? Bool ?? false
@@ -449,18 +475,9 @@ final class MonitorController: ObservableObject {
                 selectorAtStart
             ) == .orderedSame
             && !selectorAtStart.isEmpty
-        // A successful remote route can outlive the short topology-notification
-        // window above. Keep the last verified selector usable during routine
-        // menu-triggered discovery; CoreGraphics may briefly report an empty
-        // display list while the monitor is showing the other input. The
-        // native bridge still re-resolves the selector and fails closed if the
-        // display is genuinely gone.
-        let hasCachedVerifiedSelector = lastVerifiedDisplay?.matches(
-            selector: selectorAtStart
-        ) == true
         isDiscoveringDisplays = true
         hasCompletedDisplayDiscovery = false
-        if !shouldPreserveSelector && !hasCachedVerifiedSelector {
+        if !shouldPreserveSelector {
             detectedDisplays = []
             isDisplaySelectorVerified = false
         }
@@ -468,7 +485,7 @@ final class MonitorController: ObservableObject {
         queue.async { [weak self] in
             guard let self else { return }
             do {
-                let displays = try NativeDDCService.discover()
+                let displays = try self.ddcOperations.discover()
                 let message = displays.count == 1
                     ? "Detected 1 DDC-capable external display"
                     : "Detected \(displays.count) DDC-capable external displays"
@@ -476,18 +493,14 @@ final class MonitorController: ObservableObject {
                     displays: displays,
                     message: message,
                     diagnostic: nil,
-                    preservationAttemptID: preservationAttemptID,
-                    preservedSelector: preservationAttemptID == nil
-                        ? nil : selectorAtStart
+                    preservationAttemptID: preservationAttemptID
                 )
             } catch {
                 self.publishDiscovery(
                     displays: [],
                     message: "No DDC-capable external display was detected; check the cable and DDC/CI setting",
                     diagnostic: Self.diagnostic(from: error),
-                    preservationAttemptID: preservationAttemptID,
-                    preservedSelector: preservationAttemptID == nil
-                        ? nil : selectorAtStart
+                    preservationAttemptID: preservationAttemptID
                 )
             }
         }
@@ -657,14 +670,17 @@ final class MonitorController: ObservableObject {
         )
     }
 
-    func switchToRemote(completion: (() -> Void)? = nil) {
+    func switchToRemote(
+        wakeDisplayForKVMSwitch: Bool = true,
+        completion: (() -> Void)? = nil
+    ) {
         switchInput(
             remoteInput,
             description: "the other device",
             role: .remote,
             intent: .normal,
             completion: completion,
-            shouldWakeDisplayForKVMSwitch: true
+            shouldWakeDisplayForKVMSwitch: wakeDisplayForKVMSwitch
         )
     }
 
@@ -770,7 +786,9 @@ final class MonitorController: ObservableObject {
         switch Self.automaticSwitchDecision(
             displaySelector: selector,
             isDisplaySelectorVerified: isDisplaySelectorVerified,
-            hasCompletedDisplayDiscovery: hasCompletedDisplayDiscovery
+            hasCompletedDisplayDiscovery: hasCompletedDisplayDiscovery,
+            role: role,
+            cachedDisplay: lastVerifiedDisplay
         ) {
         case .switchNow:
             guard displayRouteState.enqueue(routeRequest) else {
@@ -888,9 +906,7 @@ final class MonitorController: ObservableObject {
                 // keyboard hand-off unless the monitor can confirm the value.
                 let readValue: UInt32?
                 do {
-                    readValue = try NativeDDCService.currentInputValue(
-                        displaySelector: nativeSelector
-                    )
+                    readValue = try self.ddcOperations.currentInputValue(nativeSelector)
                 } catch {
                     readValue = nil
                     MacKVMLogger.monitor.debug(
@@ -1064,12 +1080,7 @@ final class MonitorController: ObservableObject {
         shouldWakeDisplayForKVMSwitch: Bool
     ) throws {
         do {
-            try NativeDDCService.switchInput(
-                displaySelector: displaySelector,
-                input: input,
-                vendorID: vendorID,
-                productID: productID
-            )
+            try ddcOperations.switchInput(displaySelector, input, vendorID, productID)
         } catch {
             guard shouldWakeDisplayForKVMSwitch else { throw error }
             MacKVMLogger.monitor.info(
@@ -1077,12 +1088,7 @@ final class MonitorController: ObservableObject {
             )
             wakeDisplayForKVMSwitch()
             waitForDisplayWake()
-            try NativeDDCService.switchInput(
-                displaySelector: displaySelector,
-                input: input,
-                vendorID: vendorID,
-                productID: productID
-            )
+            try ddcOperations.switchInput(displaySelector, input, vendorID, productID)
         }
     }
 
@@ -1113,9 +1119,7 @@ final class MonitorController: ObservableObject {
             // synchronously acknowledge Set-VCP before switching their mux.
             Thread.sleep(forTimeInterval: 0.2)
             do {
-                let current = try NativeDDCService.currentInputValue(
-                    displaySelector: displaySelector
-                )
+                let current = try ddcOperations.currentInputValue(displaySelector)
                 lastValue = current
                 lastError = nil
                 MacKVMLogger.monitor.info(
@@ -1196,8 +1200,7 @@ final class MonitorController: ObservableObject {
         displays: [DDCDisplay],
         message: String,
         diagnostic: String?,
-        preservationAttemptID: UUID?,
-        preservedSelector: String? = nil
+        preservationAttemptID: UUID?
     ) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
@@ -1223,35 +1226,10 @@ final class MonitorController: ObservableObject {
                 }
             }
             self.diagnostic = diagnostic
-            let canPreserveSelector: String? = preservationAttemptID.flatMap {
-                attemptID in
-                guard let attempt = self.routePreservationAttempt,
-                      attempt.id == attemptID,
-                      attempt.status == .selectorPreserved,
-                      attempt.deadline > Date(),
-                      let preservedSelector,
-                      self.displaySelector.trimmingCharacters(
-                          in: .whitespacesAndNewlines
-                      ).caseInsensitiveCompare(preservedSelector)
-                          == .orderedSame else {
-                    return nil
-                }
-                return preservedSelector
-            }
-            if let canPreserveSelector,
-               displaySelector.trimmingCharacters(
-                   in: .whitespacesAndNewlines
-               ).caseInsensitiveCompare(canPreserveSelector) == .orderedSame,
-               !displays.contains(where: {
-                   $0.matches(selector: canPreserveSelector)
-               }) {
-                // CoreGraphics can report no external displays while the
-                // monitor is showing the other input. The saved selector is
-                // still the only safe route for restoring the local input.
-                isDisplaySelectorVerified = true
-            } else {
-                updateSelectorVerification()
-            }
+            // Cached EDID metadata permits a native local-return attempt,
+            // not proof of presence or permission for a fresh remote route.
+            // Keep discovery verification truthful even inside switch grace.
+            updateSelectorVerification()
             self.scheduleDisplaySleepLease()
 
             // Legacy m1ddc selectors were numeric indexes. Native CoreGraphics
@@ -1490,7 +1468,9 @@ final class MonitorController: ObservableObject {
     static func automaticSwitchDecision(
         displaySelector: String,
         isDisplaySelectorVerified: Bool,
-        hasCompletedDisplayDiscovery: Bool
+        hasCompletedDisplayDiscovery: Bool,
+        role: DisplayRouteRole = .remote,
+        cachedDisplay: DDCDisplay? = nil
     ) -> AutomaticDDCSwitchDecision {
         let selector = displaySelector.trimmingCharacters(
             in: .whitespacesAndNewlines
@@ -1503,6 +1483,16 @@ final class MonitorController: ObservableObject {
                 ? .useManualFallback : .waitForVerification
         }
         if isDisplaySelectorVerified {
+            return .switchNow
+        }
+        // CoreGraphics can omit the inactive input for an entire remote
+        // session. Returning locally may use the matching previously verified
+        // native identity: IOKit re-resolves it and still fails closed when
+        // disconnected. A cache never authorizes switching away from local.
+        if role == .local,
+           let cachedDisplay,
+           cachedDisplay.isDDCCapable,
+           cachedDisplay.matches(selector: selector) {
             return .switchNow
         }
         return hasCompletedDisplayDiscovery

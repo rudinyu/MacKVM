@@ -3,7 +3,7 @@
 [Architecture](ARCHITECTURE.md) · [Installation guide](INSTALL.md) ·
 [Security status](SECURITY.md) · [繁體中文](ROADMAP.zh-TW.md)
 
-This roadmap is written against the 1.100.10 (build 91) source tree. Every gap
+This roadmap is written against the 1.100.12 (build 94) source tree. Every gap
 below was confirmed in code rather than inferred from the documentation, and
 each item records the files a change would start from.
 

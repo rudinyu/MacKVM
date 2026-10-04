@@ -16,6 +16,7 @@
     <Compile Include="../../src/WindowsKVM.Desktop/PairingRevocationGate.cs" Link="PairingRevocationGate.cs" />
     <Compile Include="../../src/WindowsKVM.Desktop/WindowsKvmListenerGuard.cs" Link="WindowsKvmListenerGuard.cs" />
     <Compile Include="../../src/WindowsKVM.Desktop/WindowsTrayLayoutPolicy.cs" Link="WindowsTrayLayoutPolicy.cs" />
+    <Compile Include="../../src/WindowsKVM.Desktop/WindowsTrayRuntimePolicy.cs" Link="WindowsTrayRuntimePolicy.cs" />
     <Compile Include="../../src/WindowsKVM.Desktop/WindowsKvmDiagnosticLog.cs" Link="WindowsKvmDiagnosticLog.cs" />
     <Compile Include="../../src/WindowsKVM.Desktop/WindowsTrustStore.cs" Link="WindowsTrustStore.cs" />
     <Compile Include="../../src/WindowsKVM.Desktop/MdnsAdvertiser.cs" Link="MdnsAdvertiser.cs" />
