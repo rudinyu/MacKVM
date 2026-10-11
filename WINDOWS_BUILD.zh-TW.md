@@ -94,9 +94,11 @@ reference graph 中的每個 project，避免 `net8.0` protocol library 與
 .\WindowsKVM.exe --version
 ```
 
-目前 UI 測試 build 應顯示 `WindowsKVM 1.02.31 (build 112)`。
-此版比回報捲動破圖與下拉清單問題時使用的 **1.02.09（build 89）Beta 3** 更新。
-替換前請先退出舊的系統匣 receiver；啟動後確認此版本及 **WindowsKVM** 視窗標題。
+目前 UI 測試 build 應顯示 `WindowsKVM 1.02.32 (build 113)`，使用 RC3 測試通道；RC3 是通道標記，
+不屬於語意版本。回報捲動破圖與下拉清單問題時使用的是歷史版本 **1.02.09（build 89）Beta 3**。
+Advanced 通知與 Physical input 標籤分別為 **Available** 與 **Remote input to this PC**；選擇行為不變。
+實體 Windows 與 HiDPI 視覺驗收仍待完成。替換前請先退出舊的系統匣 receiver；啟動後確認此版本及
+**WindowsKVM** 視窗標題。
 
 在 Windows publish 後啟動常駐 UI：
 
@@ -203,7 +205,7 @@ identity。請先在所有曾信任這台 Windows 的 Mac 忘記舊 peer，再�
 該 script 只移除指定的 Mac App 與目前帳號的資料，不會解除安裝 WindowsKVM，也不會修改
 `%LOCALAPPDATA%\MacKVM` 或 Windows 端信任。Mac 成功清除並重裝後，請在 Windows 對
 舊 Mac 按 **Forget paired Mac**，再配對它新產生的身分。WindowsKVM 仍是
-1.02.31（build 112），此次工具更新不改變通訊協定。
+原始碼版本 1.02.32（build 113，RC3 測試通道）；此次 macOS 工具更新不改變 WindowsKVM 通訊協定。
 
 在開發主機可執行 protocol 與 desktop regression self-test：
 

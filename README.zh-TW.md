@@ -9,7 +9,8 @@ MacKVM 是原生 macOS 應用程式，可在同一本機網路上的兩台電腦
 MacKVM 會開啟對應的「隱私權與安全性」頁面；設定與控制狀態文字也已提供英文及繁體中文。
 Developer ID 簽章與 Apple 公證的 universal DMG 已在本機產生於
 `dist/MacKVM-1.101.01-universal.dmg`，但尚未上傳至 GitHub Release。既有 build 94 DMG
-仍使用僅移除 App 的舊 script。WindowsKVM 版本與通訊協定不變。
+仍使用僅移除 App 的舊 script。WindowsKVM 目前原始碼版本為 **1.02.32（build 113；RC3 測試通道）**，
+通訊協定不變。
 
 ## 功能
 

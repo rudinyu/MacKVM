@@ -13,7 +13,8 @@ is still missing, and setup/control status text is localized in English and
 Traditional Chinese. A Developer ID-signed, notarized universal DMG is built
 locally at `dist/MacKVM-1.101.01-universal.dmg`; it has not been uploaded to a
 GitHub Release. Existing build 94 DMGs contain the old app-only uninstaller.
-WindowsKVM's version and wire protocol are unchanged.
+The current WindowsKVM source is **1.02.32 (build 113; RC3 testing channel)**;
+its wire protocol is unchanged.
 
 The current MVP provides:
 

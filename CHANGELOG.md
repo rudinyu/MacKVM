@@ -13,6 +13,14 @@
 - Localize the setup, permission, and control-status text in English and
   Traditional Chinese to avoid mixed-language UI in those sections.
 
+### WindowsKVM 1.02.32 (build 113) — RC3 testing channel
+
+- Shorten the Advanced control-notification status to “Available” and the
+  Physical input path option to “Remote input to this PC”. These are display
+  labels only; selection and remote-input behavior are unchanged.
+- Physical Windows and HiDPI visual acceptance of the updated labels is still
+  pending.
+
 ### MacKVM 1.101.00 (build 95) — complete removal tooling
 
 - Add an explicit per-user purge mode with a no-change preview and destructive

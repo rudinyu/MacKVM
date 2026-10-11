@@ -105,10 +105,15 @@ Confirm the executable before starting a test:
 .\WindowsKVM.exe --version
 ```
 
-The current UI test build reports `WindowsKVM 1.02.31 (build 112)`.
-This is newer than **1.02.09 (build 89) Beta 3** used in the reported scrolling
-and dropdown tests. Quit the previous tray receiver before replacing it;
-check this version label and the **WindowsKVM** window title after startup.
+The current UI test build reports `WindowsKVM 1.02.32 (build 113)` and is in
+the RC3 testing channel; RC3 is channel metadata, not part of the semantic
+version. This is newer than the historical **1.02.09 (build 89) Beta 3** used
+in the reported scrolling and dropdown tests. In Advanced mode, the
+control-notification status is **Available** and the Physical input choice is
+**Remote input to this PC**; selection behavior is unchanged. Physical Windows
+and HiDPI visual acceptance is still pending. Quit the previous tray receiver
+before replacing it; check this version label and the **WindowsKVM** window
+title after startup.
 
 After publishing on Windows, start the resident UI:
 
@@ -254,7 +259,8 @@ only the selected Mac app and its current account's data; it does not uninstall
 WindowsKVM or change `%LOCALAPPDATA%\MacKVM` or Windows-side trust. After a
 successful Mac purge and reinstall, use **Forget paired Mac** for the old Mac
 on Windows, then Pair its newly generated identity again. WindowsKVM remains
-1.02.31 (build 112); this tooling update does not change the wire protocol.
+at source version 1.02.32 (build 113, RC3 testing channel); this macOS tooling
+update does not change the WindowsKVM wire protocol.
 
 The protocol and desktop regression self-tests can be run on a development
 host with:

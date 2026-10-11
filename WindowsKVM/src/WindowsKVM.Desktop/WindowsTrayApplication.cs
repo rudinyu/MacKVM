@@ -659,7 +659,7 @@ internal sealed class WindowsTrayApplication : IDisposable
             bodyFont
         );
         notificationsStatusLabel = CreateLabel(
-            "Consent dialogs available while this app is running",
+            "Available",
             AdvancedStatusX,
             528,
             AdvancedStatusWidth,
@@ -694,7 +694,7 @@ internal sealed class WindowsTrayApplication : IDisposable
             AdvancedInputComboWidth,
             34,
             [
-                "This Windows PC receives remote input",
+                "Remote input to this PC",
                 "Local Windows input only"
             ]
         );
@@ -3151,7 +3151,7 @@ internal sealed class WindowsTrayApplication : IDisposable
         );
         SetWindowText(
             notificationsStatusLabel,
-            "Consent dialogs available while this app is running"
+            "Available"
         );
         SetLabelColor(notificationsStatusLabel, LabelColor.Secondary);
     }

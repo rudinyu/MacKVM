@@ -6,7 +6,7 @@ WindowsKVM 是 MacKVM 的 Windows companion。目前 Windows 版包含原生 Win
 host，可在區域網路上與 MacKVM 配對、完成 secure Connect 驗證，並接收加密鍵盤／滑鼠控制；
 另外保留 console 模式供自動化與防火牆診斷。
 
-## 目前功能 — 1.02.31（build 112）
+## 目前功能 — 1.02.32（build 113；RC3 測試通道）
 
 Windows host 已包含：
 
@@ -193,13 +193,14 @@ Windows control granted for ...
 
 [macOS 清除工具](../INSTALL.zh-TW.md#移除-mackvm-與保存的資料)不會移除 WindowsKVM、
 `%LOCALAPPDATA%\MacKVM` 或 Windows 端信任。明確清除並重裝 MacKVM 後，請在 Windows
-Forget 舊 Mac，再配對新的身分。這只是 macOS 移除工具更新；WindowsKVM 的
-1.02.31（build 112）版本與通訊協定都不變。
+Forget 舊 Mac，再配對新的身分。這只是 macOS 移除工具更新；WindowsKVM 目前原始碼版本為
+1.02.32（build 113，RC3 測試通道），通訊協定不變。
 
 ## Windows 回歸驗收
 
 請在 Windows x64 與 ARM64，搭配相容的 MacKVM 各執行一次。輸入測試請使用可丟棄的文字文件；
-模擬 native API 的自動測試不能取代這些桌面操作檢查。
+模擬 native API 的自動測試不能取代這些桌面操作檢查。build 113 縮短標籤在實體 Windows 與
+HiDPI 環境的視覺驗收仍待完成。
 
 1. 分別長按字母、Backspace 與方向鍵，確認持續重複、放開即停止。按住 Ctrl 或滑鼠按鈕時結束控制，
    確認之後可正常使用本機輸入，不會留下按住的修飾鍵。
@@ -218,11 +219,14 @@ Forget 舊 Mac，再配對新的身分。這只是 macOS 移除工具更新；Wi
    開啟 Advanced 檢查隱藏的身分與 port 資訊；在窄視窗使用橫向捲動確認右側操作仍可使用。
    再切回 Simple，確認視窗縮小且橫向捲軸消失；拖曳至最小尺寸，確認模式與配對按鈕不重疊。連線時調整大小或移動到
    不同螢幕，切換版面不得重設配對或控制權，同意對話框也必須保持可操作。
-8. 確認 `--version` 為 **1.02.31（build 112）**；先前 UI 問題的測試版本為
-   **1.02.09（build 89）Beta 3**，不是本版。啟動替換版前先退出舊的系統匣 receiver。
-   確認視窗標題與主標題為 **WindowsKVM**，在 Advanced 快速上下捲動並拖動兩個捲軸，
-   不應殘留舊文字。捲動／縮放前後展開 **Physical input path**，分別選取兩個選項；
+8. 確認 `--version` 為 **1.02.32（build 113）**；RC3 是測試通道，不是語意版本後綴。
+   先前 UI 問題的測試版本為 **1.02.09（build 89）Beta 3**，保留為歷史背景。
+   啟動替換版前先退出舊的系統匣 receiver。確認視窗標題與主標題為 **WindowsKVM**，
+   在 Advanced 快速上下捲動並拖動兩個捲軸，不應殘留舊文字。控制通知狀態應為
+   **Available**。捲動／縮放前後展開 **Physical input path**，確認選項為
+   **Remote input to this PC** 與 **Local Windows input only**，分別選取後確認選擇與遠端輸入行為不變。
    在 Simple 重複操作，確認兩種模式的選擇一致。恢復遠端輸入後，從 Mac 發起新的控制請求驗證功能。
+   實體 Windows 與 HiDPI 視覺驗收仍待完成。
 9. 使用不同的 Mac／Windows 鍵盤配置（例如德文 Mac 與美式 Windows），確認 y／z、重音／Option／Shift
    文字、Ctrl／Command 快捷鍵，以及長按期間切換 Windows 配置後的重複與放開。一般文字編輯器與
    常用 IME／Raw Input 應用程式都要驗收；文字注入是否支援取決於應用程式。
