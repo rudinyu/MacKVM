@@ -14,10 +14,10 @@ usage() {
 Usage: scripts/install-app.sh [--source PATH] [--target-dir PATH]
        [--launch] [--dry-run]
 
-Installs a validated MacKVM.app into /Applications by default. The same
-script is placed in the release DMG as "Install MacKVM.command" so it can be
-double-clicked from Finder. Existing app data, pairing keys, and macOS
-privacy permissions are not changed.
+Installs a validated MacKVM.app into /Applications by default. This is a
+repository/CLI helper and is not shipped in the release DMG. Regular release
+installs use MacKVM.pkg. Existing app data, pairing keys, and macOS privacy
+permissions are not changed.
 EOF
 }
 

@@ -28,7 +28,7 @@ Expected:
 - MacKVM appears only in the menu bar with a visible keyboard icon.
 - macOS asks for local-network access when needed.
 
-Release check (from the M5 Pro) is also available:
+Local packaging check (from the M5 Pro) is also available:
 
 ```sh
 ./scripts/package-dmg.sh --arch universal
@@ -37,22 +37,43 @@ Release check (from the M5 Pro) is also available:
 ```
 
 The first two commands build and verify the 1.101.01 (build 96) source locally;
-the checksum command verifies the matching 1.101.01 DMG produced in `dist`.
-The Developer ID-signed and notarized build 96 DMG is available locally, but
-has not been uploaded to a GitHub Release. Existing build 94 DMGs retain the
-app-only uninstaller, so use the current repository script for purge acceptance.
+the checksum command verifies the local-testing DMG produced in `dist`. This
+packaging-only update has not generated or published a release artifact.
+The local PKG is unsigned and not for distribution.
 
 Expected: the app reports both `arm64` and `x86_64`, and an ad-hoc signature
 is explicitly labelled as local-testing-only. The checksum command reports
-`OK`, and `dist/.staging` is absent after packaging. A release build must
-provide a Developer ID Application identity, report the hardened runtime and a
-secure timestamp, and complete Apple notarization. The separate release path
-uses `MACOS_SIGNING_IDENTITY` and notary authentication from the shared Codex
-settings file; `--sign` and `--keychain-profile` can override them. It is:
+`OK`, and `dist/.staging` is absent after packaging. A release build must provide
+Developer ID Application and Developer ID Installer identities, report the
+hardened runtime and secure timestamps, and complete two Apple notarization
+submissions. The installer identity is derived from the app identity by
+default; `--installer-sign` can override it. Shared Codex settings provide the
+app signing identity and notary authentication; `--sign` and
+`--keychain-profile` can override them. The release path is:
 
 ```sh
 ./scripts/package-notarized-dmg.sh --arch universal
 ```
+
+The standalone `dist/MacKVM-1.101.01-universal.pkg` must be accepted, stapled,
+and verified before the DMG is composed. Check the final release artifacts:
+
+```sh
+pkgutil --check-signature dist/MacKVM-1.101.01-universal.pkg
+spctl --assess --type install --verbose=4 dist/MacKVM-1.101.01-universal.pkg
+xcrun stapler validate dist/MacKVM-1.101.01-universal.pkg
+xcrun stapler validate dist/MacKVM-1.101.01-universal.dmg
+(cd dist && shasum -a 256 -c MacKVM-1.101.01-universal.pkg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.101.01-universal.dmg.sha256)
+```
+
+Mount the release DMG in Finder. Confirm it contains `MacKVM.pkg`, `INSTALL.md`,
+and `INSTALL.zh-TW.md`, with no `.command` files and no duplicate loose app.
+Install by double-clicking `MacKVM.pkg`; verify MacKVM appears in
+`/Applications` and launches normally. To test ordinary uninstall, quit
+MacKVM, move the app from Applications to the Trash in Finder, and remove its
+Login Item if present. Confirm user data and permissions remain. Do not use the
+CLI purge tool on a real account.
 
 ### 1.1 Build and exercise the DDC diagnostic tool
 
@@ -552,9 +573,11 @@ or macOS privacy prompts.
 ## 13. Uninstall and purge acceptance
 
 Run destructive checks only in a disposable macOS account with disposable
-peer pairings. Install a test copy in that account's `Applications` folder and
-pass `--target-dir "$HOME/Applications"` to each uninstaller command. Do not
-test by deleting the real user's identity or pairings. System Keychain, TCC,
+peer pairings. Install a test copy in that account's `Applications` folder.
+Test normal uninstall with Finder as documented above; run the repository/CLI
+advanced purge tool only for the explicit purge cases below. Pass
+`--target-dir "$HOME/Applications"` to its uninstaller commands. Do not test by
+deleting the real user's identity or pairings. System Keychain, TCC,
 and firewall calls are mocked by the 17 local uninstaller regression cases;
 those tests do not replace this OS-level acceptance.
 

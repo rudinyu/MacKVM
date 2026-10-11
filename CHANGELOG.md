@@ -4,7 +4,24 @@
 
 ## Unreleased
 
-### MacKVM 1.101.01 (build 96) — Input Monitoring permission recovery
+### MacKVM 1.101.01 (build 96) — Packaging and permission updates
+
+#### Signed installer distribution
+
+- Replace Finder-double-click shell files with a Developer ID Installer-signed
+  `MacKVM.pkg` and bilingual installation guides in the release DMG. The DMG
+  contains the package rather than a duplicate loose app bundle.
+- Submit, staple, and verify the standalone package before embedding it in the
+  separately signed and notarized DMG; keep independent checksums and submission
+  metadata for both artifacts.
+- Document manual Finder-based uninstall steps in English and Traditional
+  Chinese. Keep `scripts/uninstall-app.sh` as a repository/CLI advanced tool;
+  do not ship it as a Finder-executable command.
+- Add mocked release checks for Installer identity signing, package signature
+  and ticket verification, notarization order, and a DMG layout without
+  `.command` files.
+
+#### Input Monitoring permission recovery
 
 - After a Request Input Monitoring action, open the matching Privacy & Security
   pane when access remains ungranted; skip the fallback when permission is

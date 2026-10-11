@@ -7,10 +7,9 @@ MacKVM 是原生 macOS 應用程式，可在同一本機網路上的兩台電腦
 
 目前 macOS 原始碼版本：**1.101.01（build 96）**。按下輸入監控權限請求後，若權限仍未授予，
 MacKVM 會開啟對應的「隱私權與安全性」頁面；設定與控制狀態文字也已提供英文及繁體中文。
-Developer ID 簽章與 Apple 公證的 universal DMG 已在本機產生於
-`dist/MacKVM-1.101.01-universal.dmg`，但尚未上傳至 GitHub Release。既有 build 94 DMG
-仍使用僅移除 App 的舊 script。WindowsKVM 目前原始碼版本為 **1.02.32（build 113；RC3 測試通道）**，
-通訊協定不變。
+新的發行流程會產生獨立的 Developer ID Installer 簽章 PKG，並將已公證與 staple 的套件放入
+另一個獨立公證的 DMG。此次僅調整封裝流程，未產生或發布新的發行產物。WindowsKVM
+目前原始碼版本為 **1.02.32（build 113；RC3 測試通道）**，通訊協定不變。
 
 ## 功能
 
@@ -137,21 +136,27 @@ xcrun notarytool store-credentials "mackvm-notary" \
 ./scripts/package-notarized-dmg.sh --arch universal
 ```
 
-此 script 會先透過共用 helper 簽署 app，再由專案流程簽署 DMG，並向 Apple 提交一次。
-收到 Accepted 後會 staple 並驗證 ticket，最後產生 SHA-256。取得 submission log
-屬於選用步驟，失敗時仍會繼續 staple。既有的 `scripts/package-dmg.sh` 維持為本機
-ad-hoc 測試流程；repository 不應保存 signing 或 notarization 憑證。
+本機測試用 app 使用 ad-hoc 簽章，PKG 未簽署。DMG 內含 `MacKVM.pkg` 與中英文安裝指南，
+不含 Finder 可執行的 `.command` script，也不重複附上獨立 app。套件與 DMG 各自產生 SHA-256
+sidecar；從 `dist` 驗證 DMG：
 
-產生的 DMG 也會包含 `Install MacKVM.command`、`Uninstall MacKVM.command` 與安裝指南。
-在 Finder 雙擊安裝 command 後，script 會驗證 app 並以原子方式將 MacKVM.app 安裝到
-`/Applications`；升級前請先結束正在執行的 MacKVM。解除安裝 command 預設只移除 app bundle；
-更新後的原始碼 script 另提供明確選用的 `--purge`，清除目前使用者的配對資料、身分私密金鑰、
-偏好設定，並重設此 App 可重設的 macOS 隱私權限。先用
-`./scripts/uninstall-app.sh --purge --dry-run` 預覽；執行前請閱讀
-[完整移除與權限限制](INSTALL.zh-TW.md#移除-mackvm-與保存的資料)。既有 build 94 DMG
-仍附上僅移除 App 的舊版 script。合法簽署的 installer
-package 需要另外的 Developer ID Installer 憑證，因此目前發行流程使用 notarized DMG 與這兩個
-script，不產生未簽署的 PKG。
+```sh
+(cd dist && shasum -a 256 -c MacKVM-1.101.01-universal.dmg.sha256)
+```
+
+正式發行 script 會用 Developer ID Application 簽署 app，並以 Developer ID Installer 簽署套件
+（預設依 app 身分推導，也可用 `--installer-sign` 覆寫）。它先提交獨立 PKG，staple 後驗證
+套件簽章、Gatekeeper 安裝評估與 ticket，再產生 PKG checksum；接著才把同一份已 staple 套件放進
+DMG，另行簽署、提交、staple 並驗證 DMG。兩種產物各自有 checksum 與 submission metadata；
+`--timeout` 會限制兩次等待 Apple 的時間，選用的 submission log 不會阻擋 staple。
+
+一般安裝時，在 Finder 開啟 DMG 並雙擊 `MacKVM.pkg`，macOS Installer 會把 app 安裝到
+`/Applications`。手動解除安裝時，先結束 MacKVM，再在 Finder 將「應用程式」中的 `MacKVM.app`
+移到垃圾桶；若曾啟用登入時啟動，請到**系統設定 > 一般 > 登入項目**移除 MacKVM。預設保留
+使用者資料與隱私權限。DMG 內的中英文安裝指南提供非執行檔的手動步驟；
+`scripts/uninstall-app.sh` 僅供 repository／CLI 進階使用，不會放入 DMG。此工具另提供選用的
+`--purge`，清除目前使用者的配對資料、身分私密金鑰與偏好設定，並要求重設此 App 可重設的
+macOS 隱私權限。執行前請閱讀[完整移除與權限限制](INSTALL.zh-TW.md#移除-mackvm-與保存的資料)。
 
 ### 原生 DDC 診斷工具
 

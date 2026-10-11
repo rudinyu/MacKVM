@@ -5,10 +5,8 @@
 本指南適用於目標雙 Mac 配置：14 吋 Apple Silicon M5 Pro MacBook Pro 以 USB-C
 連接 BenQ MA270U，以及 2019 16 吋 Intel MacBook Pro 以 HDMI 連接螢幕。
 
-原始碼版本：**1.101.01（build 96）**。下方封裝指令是建置此原始碼的範例，不代表已發布到
-GitHub 的安裝檔。Developer ID 簽章與 Apple 公證的 universal DMG 已在本機產生於
-`dist/MacKVM-1.101.01-universal.dmg`，但尚未上傳至 GitHub Release。既有 build 94 DMG
-尚未包含 `--purge`，請使用目前 repository 的 script。
+原始碼版本：**1.101.01（build 96）**。此次僅調整封裝流程，不變更 app 版本。下方封裝指令
+是建置此原始碼的範例，不代表已發布到 GitHub 的安裝檔；目前尚未產生或發布正式發行產物。
 
 ## 需求
 
@@ -92,22 +90,23 @@ transport 與 VCP `0x60` 輸入狀態。唯讀報告可保存為：
 與[原始碼](Tools/DDCDiagnostic/ddc-diagnostic.m)。按下 Ctrl-C 或收到 SIGTERM 時會停止
 候選值迴圈，仍嘗試還原開始前的輸入。
 
-建立並驗證本機測試用 universal DMG：
+建立並驗證本機測試用 universal PKG 與 DMG：
 
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh \
   --app dist/universal/MacKVM.app \
   --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.101.00-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.101.01-universal.dmg.sha256)
 ```
 
-ad-hoc 簽章只適合本機測試。要在 Mac App Store 以外正式散布，請使用獨立的 notarized
-release script。第一次使用時先建立 notarytool Keychain profile；指令會安全提示輸入
+ad-hoc 簽章與未簽署套件只適合本機測試。要在 Mac App Store 以外正式散布，請使用獨立的
+notarized release script。第一次使用時先建立 notarytool Keychain profile；指令會安全提示輸入
 app-specific password。正式封裝流程預設讀取共用 Codex 設定檔
-`~/.config/codex/notarization.env` 中的 `MACOS_SIGNING_IDENTITY` 與
-`MACOS_NOTARY_PROFILE`，檔案權限須為 `0600`；完整的 API key 設定也可使用。
-`--sign`、`--keychain-profile` 與 `--auth` 可明確覆寫這些設定。
+`~/.config/codex/notarization.env` 中的 `MACOS_SIGNING_IDENTITY` 與 `MACOS_NOTARY_PROFILE`，
+檔案權限須為 `0600`；完整的 API key 設定也可使用。預設會依 app identity 推導相符的
+Developer ID Installer 身分；若需改用其他有效憑證，可指定 `--installer-sign`。
+`--sign`、`--keychain-profile` 與 `--auth` 可明確覆寫其他設定。
 
 ```sh
 xcrun notarytool store-credentials "mackvm-notary" \
@@ -117,24 +116,25 @@ xcrun notarytool store-credentials "mackvm-notary" \
 ./scripts/package-notarized-dmg.sh --arch universal
 ```
 
-此 script 會先透過共用 helper 簽署 app，再由專案流程簽署 DMG，並向 Apple 提交一次。
-收到 Accepted 後會 staple 並驗證 ticket，最後重新產生 SHA-256。取得 submission log
-屬於選用步驟，失敗時仍會繼續 staple。既有的 `scripts/package-dmg.sh` 維持本機
-ad-hoc 測試流程；本 repository 不應存放 signing、notarization 或 Keychain 憑證。
+此 script 會簽署 app 並建立 Developer ID Installer 簽章的 PKG，先將獨立 PKG 提交至 Apple，
+staple 後驗證套件簽章、Gatekeeper 安裝評估與 ticket，再產生 PKG checksum。接著才將同一份
+已 staple 套件放入 DMG，另行簽署 DMG 並獨立提交、staple、驗證。兩種產物各自有 checksum
+與 submission metadata；取得 log 是選用步驟，不會阻擋 staple。本 repository 不應存放
+signing、notarization 或 Keychain 憑證。
 
 ## 安裝並授予權限
 
-發行用 DMG 內含 `Install MacKVM.command`、`Uninstall MacKVM.command` 與中英文安裝指南。
-在 Finder 開啟 DMG 後，雙擊 `Install MacKVM.command`；script 會驗證 app 的簽章與 bundle
-identifier，再將 app 原子方式安裝到 `/Applications`。升級前請先結束正在執行的 MacKVM；
-安裝不會修改配對資料、私密金鑰、偏好設定或 macOS 隱私權限。也可以把 `MacKVM.app` 拖到
-DMG 內的 `/Applications` 捷徑。
+發行用 DMG 內含 `MacKVM.pkg` 與中英文安裝指南，不含 Finder 可執行的 `.command` 檔案，
+也不重複附上獨立 app bundle。在 Finder 開啟 DMG 後，雙擊 `MacKVM.pkg`，macOS Installer
+會將 MacKVM.app 安裝到 `/Applications`。PKG 有獨立簽章、公證與 stapled ticket；外層 DMG
+也有自己的簽章與 ticket。安裝或升級不會修改配對資料、私密金鑰、偏好設定或 macOS 隱私權限；
+升級前請先結束正在執行的 MacKVM。
 
-要解除安裝，先結束 MacKVM，再雙擊 `Uninstall MacKVM.command`；它只會移除
-`/Applications/MacKVM.app`。若曾啟用 **Launch MacKVM at Login**，請到
-**系統設定 > 一般 > 登入項目** 移除 MacKVM。預設保留使用者資料與權限；明確選用的清除模式
-與剩餘手動步驟請見[移除 MacKVM 與保存的資料](#移除-mackvm-與保存的資料)。合法簽署的 PKG 需要除了 app signing
-certificate 之外的 Developer ID Installer 憑證，因此目前發行流程不產生 PKG。
+一般手動解除安裝時，先結束 MacKVM，在 Finder 開啟「應用程式」，將 `MacKVM.app` 移到垃圾桶；
+若曾啟用 **Launch MacKVM at Login**，再到**系統設定 > 一般 > 登入項目**移除 MacKVM。
+這些雙語指南提供非執行檔的手動步驟，預設保留使用者資料、配對金鑰、偏好設定與隱私權限。
+`scripts/uninstall-app.sh` 僅供 repository／CLI 進階使用，不會放進 DMG。選用的清除模式與
+其他手動步驟請見[移除 MacKVM 與保存的資料](#移除-mackvm-與保存的資料)。
 
 安裝後，從 `/Applications` 開啟 MacKVM。
 
@@ -154,9 +154,9 @@ KVM 圖示或 Dock 重新開啟。
 
 ## 移除 MacKVM 與保存的資料
 
-更新後的 `scripts/uninstall-app.sh` 可移除 MacKVM 與目前 macOS 使用者的保存資料。
-既有 build 94 DMG 仍附上僅移除 App 的 script；新版 DMG 發布前，請使用更新後的 repository
-script。此功能不會解除安裝 WindowsKVM，也不會清除其他使用者的資料。
+`scripts/uninstall-app.sh` 是 repository／CLI 進階工具，可移除 MacKVM 與目前 macOS 使用者的
+保存資料；發行用 DMG 不會附上此 script，僅提供上方的 Finder 手動解除安裝步驟。歷史 build 94
+DMG 曾附上僅移除 App 的 helper。此功能不會解除安裝 WindowsKVM，也不會清除其他使用者的資料。
 
 1. 若有開啟 **Launch MacKVM at Login**，先關閉它，再結束所有正在執行的 MacKVM。
    App 尚在執行時，script 會拒絕清除資料。

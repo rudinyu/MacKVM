@@ -4,7 +4,20 @@
 
 ## 尚未發布
 
-### MacKVM 1.101.01（build 96）— 輸入監控權限復原
+### MacKVM 1.101.01（build 96）— 封裝與權限更新
+
+#### 簽署安裝程式散布
+
+- 以 Developer ID Installer 簽署的 `MacKVM.pkg` 和中英文安裝指南，取代 Finder 雙擊執行的
+  shell 檔案；發行用 DMG 內放置安裝套件，不重複附上獨立 app bundle。
+- 先獨立提交、staple 並驗證 PKG，再將同一份套件放入另行簽署及公證的 DMG；兩種產物各自
+  保留 checksum 與 submission metadata。
+- 在中英文指南新增 Finder 手動解除安裝步驟。保留 `scripts/uninstall-app.sh` 作為
+  repository／CLI 進階工具，不把它當成 Finder 可執行 command 散布。
+- 加入模擬的發行流程檢查，驗證 Installer 身分簽署、套件簽章與 ticket、公證順序，以及
+  DMG 內不含 `.command` 檔案。
+
+#### 輸入監控權限復原
 
 - 按下 Request Input Monitoring 後若權限仍未授予，自動開啟 macOS「隱私權與安全性」
   中的輸入監控頁面；若已授權或請求的是其他權限，則不會開啟。

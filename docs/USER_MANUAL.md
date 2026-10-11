@@ -2,10 +2,11 @@
 
 # MacKVM user manual
 
-Source version: **1.101.01 (build 96)**. A Developer ID-signed, notarized
-universal DMG is available locally at `dist/MacKVM-1.101.01-universal.dmg`,
-but has not been uploaded to a GitHub Release. Existing build 94 DMGs lack the
-new purge mode. Local test builds are separate from distribution installers.
+Source version: **1.101.01 (build 96)**. This packaging-only update does not
+change the app version or build. The distribution flow uses a standalone
+Developer ID Installer-signed PKG inside a separately notarized DMG. Local
+test builds are separate from distribution installers; no release artifact has
+been generated or published.
 
 MacKVM is a macOS app with a menu-bar entry and a full control window for
 sharing one keyboard, mouse, and trackpad, plus an optional BenQ MA270U display, between a
@@ -24,7 +25,12 @@ sharing one keyboard, mouse, and trackpad, plus an optional BenQ MA270U display,
 
 ## Install and build
 
-Build on the M5 Pro and copy the matching app to `/Applications`:
+For a normal distribution install, open the release DMG and double-click
+`MacKVM.pkg`. The macOS Installer places the app in `/Applications`. The DMG
+contains the installer package and bilingual guides only; it has no loose app
+bundle or Finder-executable `.command` files.
+
+To build local test apps on the M5 Pro:
 
 ```sh
 ./scripts/build-app.sh --arch arm64
@@ -37,15 +43,16 @@ connection must expose VESA DDC/CI; some MA270U firmware does not show a
 DDC/CI toggle in the OSD, so MacKVM uses the native bridge when macOS exposes
 the display.
 
-For a local DMG:
+For a local-testing DMG:
 
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
 ```
 
-Ad-hoc signing is for local testing. Distribution requires Developer ID,
-hardened runtime, and Apple notarization.
+The local-testing app is ad-hoc signed and its PKG is unsigned. Distribution
+requires Developer ID Application signing for the app, Developer ID Installer
+signing for the PKG, and Apple notarization of the PKG and containing DMG.
 
 ## First launch
 
@@ -201,8 +208,14 @@ private keys, passwords, credentials, and network endpoints.
 
 ## Uninstall and reset permissions
 
-Quit MacKVM first. The updated repository script has a preview and an explicit
-purge mode (older DMGs may still contain the app-only version):
+For a normal uninstall, quit MacKVM, move `MacKVM.app` from **Applications**
+to the Trash in Finder, and remove it from **System Settings > General > Login
+Items** if **Launch MacKVM at Login** was enabled. This manual process leaves
+pairing data, private keys, preferences, and privacy permissions intact.
+
+The `scripts/uninstall-app.sh` tool is an advanced repository/CLI option only;
+it is not shipped in the DMG. Quit MacKVM before using its preview and explicit
+purge mode:
 
 ```sh
 ./scripts/uninstall-app.sh --purge --dry-run

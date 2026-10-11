@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set +x
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -7,13 +8,17 @@ cd "$project_root"
 usage() {
   cat >&2 <<'EOF'
 Usage: scripts/package-notarized-dmg.sh \
-       --sign "Developer ID Application: …" \
-       --keychain-profile PROFILE \
-       [--arch universal|arm64|x86_64] [--timeout DURATION]
+       [--sign "Developer ID Application: …"] \
+       [--installer-sign "Developer ID Installer: …"] \
+       [--keychain-profile PROFILE] [--auth auto|keychain-profile|api-key] \
+       [--config PATH] [--arch universal|arm64|x86_64] [--timeout DURATION]
 
-Builds a Developer ID-signed DMG, submits it to Apple's notary service,
-staples the accepted ticket, validates the result, and writes a final SHA-256
-sidecar. Credentials are read from a notarytool Keychain profile.
+Builds a Developer ID-signed app and Installer-signed PKG, submits and staples
+the PKG, then embeds it in a separately signed and notarized DMG. The PKG is
+independently installable and has its own checksum and notary metadata. The app
+signing identity and notary authentication default to the shared Codex
+configuration at ~/.config/codex/notarization.env; the Installer identity is
+derived from the app identity unless --installer-sign overrides it.
 
 This is the distribution path. For local ad-hoc testing, use:
   scripts/package-dmg.sh --arch universal
@@ -21,37 +26,73 @@ EOF
 }
 
 requested_arch="universal"
-signing_identity=""
-notary_profile=""
+signing_identity_override=""
+installer_signing_identity_override=""
+notary_profile_override=""
+notary_auth="auto"
 notary_timeout="2h"
+notarization_config=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --arch)
-      [[ $# -ge 2 ]] || { usage; exit 2; }
+      [[ $# -ge 2 && -n "$2" ]] || { usage; exit 2; }
       requested_arch="$2"
       shift 2
       ;;
     --arch=*)
       requested_arch="${1#--arch=}"
+      [[ -n "$requested_arch" ]] || { usage; exit 2; }
       shift
       ;;
     --sign)
       [[ $# -ge 2 && -n "$2" ]] || { usage; exit 2; }
-      signing_identity="$2"
+      signing_identity_override="$2"
       shift 2
       ;;
     --sign=*)
-      signing_identity="${1#--sign=}"
+      signing_identity_override="${1#--sign=}"
+      [[ -n "$signing_identity_override" ]] || { usage; exit 2; }
+      shift
+      ;;
+    --installer-sign)
+      [[ $# -ge 2 && -n "$2" ]] || { usage; exit 2; }
+      installer_signing_identity_override="$2"
+      shift 2
+      ;;
+    --installer-sign=*)
+      installer_signing_identity_override="${1#--installer-sign=}"
+      [[ -n "$installer_signing_identity_override" ]] || { usage; exit 2; }
       shift
       ;;
     --keychain-profile)
       [[ $# -ge 2 && -n "$2" ]] || { usage; exit 2; }
-      notary_profile="$2"
+      notary_profile_override="$2"
       shift 2
       ;;
     --keychain-profile=*)
-      notary_profile="${1#--keychain-profile=}"
+      notary_profile_override="${1#--keychain-profile=}"
+      [[ -n "$notary_profile_override" ]] || { usage; exit 2; }
+      shift
+      ;;
+    --auth)
+      [[ $# -ge 2 && -n "$2" ]] || { usage; exit 2; }
+      notary_auth="$2"
+      shift 2
+      ;;
+    --auth=*)
+      notary_auth="${1#--auth=}"
+      [[ -n "$notary_auth" ]] || { usage; exit 2; }
+      shift
+      ;;
+    --config)
+      [[ $# -ge 2 && -n "$2" ]] || { usage; exit 2; }
+      notarization_config="$2"
+      shift 2
+      ;;
+    --config=*)
+      notarization_config="${1#--config=}"
+      [[ -n "$notarization_config" ]] || { usage; exit 2; }
       shift
       ;;
     --timeout)
@@ -83,41 +124,123 @@ case "$requested_arch" in
     ;;
 esac
 
-if [[ -z "$signing_identity" ]]; then
-  echo "--sign is required for a notarized release." >&2
+case "$notary_auth" in
+  auto|keychain-profile|api-key)
+    ;;
+  *)
+    echo "Unsupported notary authentication mode: $notary_auth" >&2
+    exit 2
+    ;;
+esac
+
+if [[ ! "$notary_timeout" =~ ^[1-9][0-9]*([smh])?$ ]]; then
+  echo "Invalid notarization timeout: $notary_timeout" >&2
+  echo "Use positive seconds or an integer followed by s, m, or h (for example, 2h)." >&2
+  exit 2
+fi
+submission_timeout="$notary_timeout"
+if [[ "$submission_timeout" =~ ^[0-9]+$ ]]; then
+  submission_timeout="${submission_timeout}s"
+fi
+
+notarization_tool="${MACKVM_NOTARIZATION_TOOL:-${HOME:-}/.codex/skills/macos-notarization-release/scripts/macos_notarization.py}"
+if [[ ! -f "$notarization_tool" ]]; then
+  echo "Shared macOS notarization helper was not found: $notarization_tool" >&2
+  exit 2
+fi
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "Python 3 is required to run the shared macOS notarization helper." >&2
+  exit 2
+fi
+
+identity_arguments=(resolve-signing-identity)
+if [[ -n "$notarization_config" ]]; then
+  identity_arguments+=(--config "$notarization_config")
+fi
+if [[ -n "$signing_identity_override" ]]; then
+  identity_arguments+=(--identity "$signing_identity_override")
+fi
+if ! signing_identity="$(python3 "$notarization_tool" "${identity_arguments[@]}")"; then
+  echo "A Developer ID Application identity is unavailable; configure MACOS_SIGNING_IDENTITY or pass --sign." >&2
+  exit 2
+fi
+if [[ -z "$signing_identity" || "$signing_identity" == *$'\n'* ]]; then
+  echo "The shared macOS notarization helper did not return one signing identity." >&2
   exit 2
 fi
 case "$signing_identity" in
   "Developer ID Application:"*)
     ;;
   *)
-    echo "--sign must name a Developer ID Application identity." >&2
+    echo "The signing identity must be a Developer ID Application identity." >&2
     exit 2
     ;;
 esac
 
-if [[ -z "$notary_profile" ]]; then
-  echo "--keychain-profile is required for a notarized release." >&2
+if [[ -n "$installer_signing_identity_override" ]]; then
+  installer_signing_identity="$installer_signing_identity_override"
+else
+  installer_signing_identity="${signing_identity/Developer ID Application:/Developer ID Installer:}"
+fi
+case "$installer_signing_identity" in
+  "Developer ID Installer:"*)
+    ;;
+  *)
+    echo "The package identity must be a Developer ID Installer identity." >&2
+    exit 2
+    ;;
+esac
+
+auth_arguments=(resolve-auth --auth "$notary_auth")
+auth_arguments+=(--project-root "$project_root")
+if [[ -n "$notarization_config" ]]; then
+  auth_arguments+=(--config "$notarization_config")
+fi
+if [[ -n "$notary_profile_override" ]]; then
+  auth_arguments+=(--profile "$notary_profile_override")
+fi
+if ! resolved_auth="$(python3 "$notarization_tool" "${auth_arguments[@]}")"; then
+  echo "Apple notary authentication is unavailable or invalid; configure it in ~/.config/codex/notarization.env or pass a CLI override." >&2
   exit 2
 fi
+case "$resolved_auth" in
+  keychain-profile|api-key)
+    ;;
+  *)
+    echo "The shared macOS notarization helper returned an unsupported authentication mode." >&2
+    exit 2
+    ;;
+esac
 
-if [[ ! "$notary_timeout" =~ ^[0-9]+[smh]?$ ]]; then
-  echo "Invalid notarization timeout: $notary_timeout" >&2
-  echo "Use seconds or an integer followed by s, m, or h (for example, 2h)." >&2
-  exit 2
-fi
-
-identity_list="$(security find-identity -v -p codesigning 2>/dev/null || true)"
+identity_list="$(security find-identity -v 2>/dev/null || true)"
 if ! grep -F -- "\"$signing_identity\"" <<<"$identity_list" >/dev/null; then
-  echo "Developer ID identity was not found in the login Keychain:" >&2
+  echo "Developer ID Application identity was not found in the login Keychain:" >&2
   echo "  $signing_identity" >&2
   exit 1
 fi
+if ! grep -F -- "\"$installer_signing_identity\"" <<<"$identity_list" >/dev/null; then
+  echo "Developer ID Installer identity was not found in the login Keychain:" >&2
+  echo "  $installer_signing_identity" >&2
+  exit 1
+fi
 
-./scripts/package-dmg.sh \
-  --arch "$requested_arch" \
-  --sign "$signing_identity" \
+package_arguments=(
+  --arch "$requested_arch"
+  --sign "$signing_identity"
+  --installer-sign "$installer_signing_identity"
   --require-developer-id
+  --use-shared-signing
+  --pkg-only
+)
+if [[ -n "$notarization_config" ]]; then
+  package_arguments+=(--notarization-config "$notarization_config")
+fi
+env \
+  -u MACOS_NOTARY_PROFILE \
+  -u MACOS_NOTARY_KEY_PATH \
+  -u MACOS_NOTARY_KEY_ID \
+  -u MACOS_NOTARY_ISSUER \
+  ./scripts/package-dmg.sh "${package_arguments[@]}"
 
 case "$requested_arch" in
   universal)
@@ -130,15 +253,27 @@ esac
 
 version="$(plutil -extract CFBundleShortVersionString raw -o - \
   "$app_dir/Contents/Info.plist")"
+pkg_path="$project_root/dist/MacKVM-$version-$requested_arch.pkg"
 dmg_path="$project_root/dist/MacKVM-$version-$requested_arch.dmg"
-checksum_path="$dmg_path.sha256"
-notary_log_path="$dmg_path.notary.json"
+pkg_checksum_path="$pkg_path.sha256"
+pkg_notary_log_path="$pkg_path.notary.json"
+dmg_checksum_path="$dmg_path.sha256"
+dmg_notary_log_path="$dmg_path.notary.json"
 
-[[ -f "$dmg_path" ]] || {
-  echo "DMG was not created: $dmg_path" >&2
+[[ -f "$pkg_path" ]] || {
+  echo "Installer package was not created: $pkg_path" >&2
   exit 1
 }
-rm -f -- "$notary_log_path"
+package_signature="$(pkgutil --check-signature "$pkg_path")"
+grep -F -- "$installer_signing_identity" <<<"$package_signature" >/dev/null || {
+  echo "The package signature does not match the requested Developer ID Installer identity." >&2
+  exit 1
+}
+
+# A pending or failed package submission must never leave a checksum that looks
+# like a successfully notarized standalone installer.
+rm -f -- "$pkg_checksum_path" "$pkg_notary_log_path" \
+  "$dmg_path" "$dmg_checksum_path" "$dmg_notary_log_path"
 
 assert_secure_timestamp() {
   local path="$1"
@@ -156,62 +291,122 @@ assert_secure_timestamp() {
   --require-developer-id
 assert_secure_timestamp "$app_dir"
 
-# A Developer ID signature on the disk image avoids Gatekeeper path
-# randomization for a directly distributed DMG. The app inside was already
-# signed and verified by package-dmg.sh before this container is signed.
+print_submission_summary() {
+  local output="$1"
+  local line
+  while IFS= read -r line; do
+    case "$line" in
+      "Apple submission status:"*|"Apple submission ID:"*)
+        printf '%s\n' "$line"
+        ;;
+    esac
+  done <<<"$output"
+}
+
+write_submission_metadata() {
+  local metadata_path="$1"
+  local submission_id="$2"
+  local submission_status="$3"
+  cat >"$metadata_path" <<EOF
+{
+  "id": "$submission_id",
+  "status": "$submission_status"
+}
+EOF
+}
+
+submit_staple_verify() {
+  local artifact_path="$1"
+  local metadata_path="$2"
+  local checksum_path="$3"
+  local artifact_label="$4"
+  local -a submission_arguments
+  local submission_output
+  local submission_status
+  local submission_id
+
+  submission_arguments=(
+    submit "$artifact_path"
+    --authorized
+    --wait
+    --auth "$resolved_auth"
+    --timeout "$submission_timeout"
+    --project-root "$project_root"
+  )
+  if [[ -n "$notary_profile_override" ]]; then
+    submission_arguments+=(--profile "$notary_profile_override")
+  fi
+  if [[ -n "$notarization_config" ]]; then
+    submission_arguments+=(--config "$notarization_config")
+  fi
+
+  if submission_output="$(python3 "$notarization_tool" "${submission_arguments[@]}")"; then
+    submission_status="$(sed -n 's/^Apple submission status:[[:space:]]*//p' <<<"$submission_output")"
+    submission_id="$(sed -n 's/^Apple submission ID:[[:space:]]*//p' <<<"$submission_output")"
+    print_submission_summary "$submission_output"
+    if [[ "$submission_status" != "Accepted" || ! "$submission_id" =~ ^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$ ]]; then
+      echo "The shared helper did not report one accepted Apple submission with a valid ID for $artifact_label." >&2
+      exit 1
+    fi
+  else
+    submission_status="$(sed -n 's/^Apple submission status:[[:space:]]*//p' <<<"$submission_output")"
+    submission_id="$(sed -n 's/^Apple submission ID:[[:space:]]*//p' <<<"$submission_output")"
+    print_submission_summary "$submission_output"
+    echo "Apple notarization of the $artifact_label did not finish with an accepted result. Inspect the existing submission; do not submit this artifact again automatically." >&2
+    exit 1
+  fi
+
+  # When an explicitly supplied Keychain profile can fetch the Apple log, keep
+  # it as useful provenance. Log retrieval is optional and never blocks staple.
+  if [[ -n "$notary_profile_override" ]]; then
+    if xcrun notarytool log \
+      --keychain-profile "$notary_profile_override" \
+      "$submission_id" "$metadata_path" && [[ -s "$metadata_path" ]]; then
+      echo "Notarization log: $metadata_path"
+    else
+      write_submission_metadata "$metadata_path" "$submission_id" "$submission_status"
+      echo "The $artifact_label notarization log was unavailable; continuing with the accepted ticket." >&2
+      echo "Submission metadata: $metadata_path"
+    fi
+  else
+    write_submission_metadata "$metadata_path" "$submission_id" "$submission_status"
+    echo "Submission metadata: $metadata_path"
+  fi
+
+  python3 "$notarization_tool" staple "$artifact_path"
+  # The shared helper verifies package signatures, Gatekeeper's install
+  # assessment for PKGs, and the stapled ticket (including stapler validate).
+  python3 "$notarization_tool" verify "$artifact_path"
+
+  (cd "$(dirname "$artifact_path")" && \
+    shasum -a 256 "$(basename "$artifact_path")" > "$(basename "$checksum_path")")
+}
+
+# The package is independently signed, submitted, stapled, and verified before
+# the DMG is composed, so the container carries the exact standalone artifact.
+submit_staple_verify \
+  "$pkg_path" "$pkg_notary_log_path" "$pkg_checksum_path" "installer package"
+
+./scripts/compose-dmg.sh \
+  --pkg "$pkg_path" \
+  --version "$version" \
+  --arch "$requested_arch"
+[[ -f "$dmg_path" ]] || {
+  echo "DMG was not created: $dmg_path" >&2
+  exit 1
+}
+rm -f -- "$dmg_checksum_path" "$dmg_notary_log_path"
+
+# The app and PKG are signed before composition; the DMG remains independently
+# signed and notarized as the top-level release container.
 codesign --force --timestamp --sign "$signing_identity" "$dmg_path"
 codesign --verify --verbose=2 "$dmg_path"
 assert_secure_timestamp "$dmg_path"
 
-submission_plist="$(mktemp -t mackvm-notary)"
-cleanup_submission() {
-  if [[ -n "$submission_plist" && -f "$submission_plist" ]]; then
-    rm -f -- "$submission_plist"
-  fi
-}
-trap cleanup_submission EXIT
+submit_staple_verify \
+  "$dmg_path" "$dmg_notary_log_path" "$dmg_checksum_path" "disk image"
 
-if ! xcrun notarytool submit "$dmg_path" \
-  --keychain-profile "$notary_profile" \
-  --wait \
-  --timeout "$notary_timeout" \
-  --no-progress \
-  --output-format plist >"$submission_plist"; then
-  echo "Apple notarization submission failed or timed out." >&2
-  cat "$submission_plist" >&2 || true
-  exit 1
-fi
-
-submission_id="$(plutil -extract id raw -o - "$submission_plist")"
-submission_status="$(plutil -extract status raw -o - "$submission_plist")"
-cat "$submission_plist"
-
-if [[ "$submission_status" != "Accepted" ]]; then
-  echo "Apple notarization was not accepted: $submission_status" >&2
-  if ! xcrun notarytool log \
-    --keychain-profile "$notary_profile" \
-    "$submission_id" "$notary_log_path"; then
-    echo "The notarization log was not available." >&2
-  else
-    echo "Notarization log: $notary_log_path" >&2
-  fi
-  exit 1
-fi
-
-xcrun notarytool log \
-  --keychain-profile "$notary_profile" \
-  "$submission_id" "$notary_log_path"
-echo "Notarization log: $notary_log_path"
-
-xcrun stapler staple "$dmg_path"
-xcrun stapler validate "$dmg_path"
-spctl --assess --type open \
-  --context context:primary-signature \
-  --verbose=4 "$dmg_path"
-
-# Stapling changes the DMG, so the checksum must be generated afterwards.
-(cd "$(dirname "$dmg_path")" && \
-  shasum -a 256 "$(basename "$dmg_path")" > "$(basename "$checksum_path")")
-
+echo "Created notarized PKG: $pkg_path"
+echo "SHA-256: $pkg_checksum_path"
 echo "Created notarized DMG: $dmg_path"
-echo "SHA-256: $checksum_path"
+echo "SHA-256: $dmg_checksum_path"

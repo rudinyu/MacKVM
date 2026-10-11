@@ -4,32 +4,32 @@ set -euo pipefail
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$project_root"
 
-staging_root="$project_root/dist/.staging"
-staging_dir=""
-cleanup_staging() {
-  if [[ -n "$staging_dir" && -d "$staging_dir" ]]; then
-    rm -rf "$staging_dir"
-  fi
-  if [[ -d "$staging_root" ]]; then
-    rmdir "$staging_root" 2>/dev/null || true
-  fi
-}
-trap cleanup_staging EXIT
-
 usage() {
   cat >&2 <<'EOF'
 Usage: scripts/package-dmg.sh [--arch universal|arm64|x86_64]
        [--sign SIGNING_IDENTITY] [--require-developer-id]
+       [--installer-sign INSTALLER_IDENTITY] [--pkg-only]
+       [--use-shared-signing] [--notarization-config PATH]
 
 Without --sign, the app is ad-hoc signed for local testing. Use a Developer ID
-Application identity plus --require-developer-id before distributing outside
-your own Macs.
+Application identity and a Developer ID Installer identity before distributing
+outside your own Macs. Without --installer-sign, the local-testing package is
+unsigned.
+
+--use-shared-signing applies the installed Codex macOS signing helper to the
+finished app before the package is built. --pkg-only builds the app and package
+without composing a DMG; it is used to notarize the package before embedding it
+in the release DMG.
 EOF
 }
 
 requested_arch="universal"
 signing_identity=""
+installer_signing_identity=""
 require_developer_id=false
+use_shared_signing=false
+notarization_config=""
+pkg_only=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -51,8 +51,36 @@ while [[ $# -gt 0 ]]; do
       signing_identity="${1#--sign=}"
       shift
       ;;
+    --installer-sign)
+      [[ $# -ge 2 && -n "$2" ]] || { usage; exit 2; }
+      installer_signing_identity="$2"
+      shift 2
+      ;;
+    --installer-sign=*)
+      installer_signing_identity="${1#--installer-sign=}"
+      [[ -n "$installer_signing_identity" ]] || { usage; exit 2; }
+      shift
+      ;;
+    --pkg-only)
+      pkg_only=true
+      shift
+      ;;
     --require-developer-id)
       require_developer_id=true
+      shift
+      ;;
+    --use-shared-signing)
+      use_shared_signing=true
+      shift
+      ;;
+    --notarization-config)
+      [[ $# -ge 2 && -n "$2" ]] || { usage; exit 2; }
+      notarization_config="$2"
+      shift 2
+      ;;
+    --notarization-config=*)
+      notarization_config="${1#--notarization-config=}"
+      [[ -n "$notarization_config" ]] || { usage; exit 2; }
       shift
       ;;
     -h|--help)
@@ -79,6 +107,24 @@ if [[ "$require_developer_id" == true && -z "$signing_identity" ]]; then
   echo "--require-developer-id needs --sign 'Developer ID Application: …'" >&2
   exit 2
 fi
+if [[ "$require_developer_id" == true && -z "$installer_signing_identity" ]]; then
+  echo "--require-developer-id needs --installer-sign 'Developer ID Installer: …'" >&2
+  exit 2
+fi
+if [[ -n "$installer_signing_identity" && "$installer_signing_identity" != "Developer ID Installer:"* ]]; then
+  echo "--installer-sign must name a Developer ID Installer identity." >&2
+  exit 2
+fi
+if [[ "$use_shared_signing" == true && -z "$signing_identity" ]]; then
+  echo "--use-shared-signing needs --sign 'Developer ID Application: …'" >&2
+  exit 2
+fi
+
+notarization_tool="${MACKVM_NOTARIZATION_TOOL:-${HOME:-}/.codex/skills/macos-notarization-release/scripts/macos_notarization.py}"
+if [[ "$use_shared_signing" == true && ! -f "$notarization_tool" ]]; then
+  echo "Shared macOS notarization helper was not found: $notarization_tool" >&2
+  exit 2
+fi
 
 # A DMG is one multi-architecture build batch. Clean its generated state once
 # here, then keep the architecture bundles while composing the image below.
@@ -87,7 +133,7 @@ fi
 if [[ "$requested_arch" == universal ]]; then
   # Keep the first app while adding the second architecture; otherwise the
   # second invocation would remove the first bundle before lipo combines them.
-  if [[ -n "$signing_identity" ]]; then
+  if [[ -n "$signing_identity" && "$use_shared_signing" != true ]]; then
     ./scripts/build-app.sh --arch arm64 --sign "$signing_identity" --no-clean
     ./scripts/build-app.sh --arch x86_64 --sign "$signing_identity" --no-clean
   else
@@ -103,7 +149,7 @@ if [[ "$requested_arch" == universal ]]; then
     "$project_root/dist/x86_64/MacKVM.app/Contents/MacOS/MacKVM" \
     -output "$app_dir/Contents/MacOS/MacKVM"
 else
-  if [[ -n "$signing_identity" ]]; then
+  if [[ -n "$signing_identity" && "$use_shared_signing" != true ]]; then
     ./scripts/build-app.sh --arch "$requested_arch" --sign "$signing_identity" --no-clean
   else
     ./scripts/build-app.sh --arch "$requested_arch" --no-clean
@@ -111,7 +157,13 @@ else
   app_dir="$project_root/dist/$requested_arch/MacKVM.app"
 fi
 
-if [[ -n "$signing_identity" ]]; then
+if [[ "$use_shared_signing" == true ]]; then
+  signing_arguments=(sign "$app_dir" --authorized --identity "$signing_identity")
+  if [[ -n "$notarization_config" ]]; then
+    signing_arguments+=(--config "$notarization_config")
+  fi
+  python3 "$notarization_tool" "${signing_arguments[@]}"
+elif [[ -n "$signing_identity" ]]; then
   codesign --force --deep --options runtime --timestamp \
     --sign "$signing_identity" "$app_dir"
 else
@@ -129,36 +181,32 @@ fi
 
 version="$(plutil -extract CFBundleShortVersionString raw -o - \
   "$app_dir/Contents/Info.plist")"
-dmg_path="$project_root/dist/MacKVM-$version-$requested_arch.dmg"
-checksum_path="$dmg_path.sha256"
-rm -f "$dmg_path" "$checksum_path"
-# The staging directory is generated output. Remove any abandoned staging
-# folders from an interrupted package so they cannot leak into the next image.
-rm -rf "$staging_root"
-mkdir -p "$staging_root"
-staging_dir="$(mktemp -d "$staging_root/MacKVM.XXXXXX")"
-# Build the image from a fresh staging directory so an old resource or a
-# Finder sidecar can never leak into a subsequent release image.
-ditto --norsrc "$app_dir" "$staging_dir/MacKVM.app"
-install -m 755 "$project_root/scripts/install-app.sh" \
-  "$staging_dir/Install MacKVM.command"
-install -m 755 "$project_root/scripts/uninstall-app.sh" \
-  "$staging_dir/Uninstall MacKVM.command"
-install -m 644 "$project_root/INSTALL.md" "$staging_dir/INSTALL.md"
-install -m 644 "$project_root/INSTALL.zh-TW.md" \
-  "$staging_dir/INSTALL.zh-TW.md"
-ln -s /Applications "$staging_dir/Applications"
-hdiutil create \
-  -volname "MacKVM $version" \
-  -srcfolder "$staging_dir" \
-  -ov \
-  -format UDZO \
-  "$dmg_path" >/dev/null
+pkg_path="$project_root/dist/MacKVM-$version-$requested_arch.pkg"
+rm -f -- "$pkg_path" "$pkg_path.sha256" "$pkg_path.notary.json"
+pkgbuild_arguments=(
+  --component "$app_dir"
+  --install-location /Applications
+)
+if [[ -n "$installer_signing_identity" ]]; then
+  pkgbuild_arguments+=(--sign "$installer_signing_identity")
+fi
+pkgbuild_arguments+=("$pkg_path")
+pkgbuild "${pkgbuild_arguments[@]}"
 
-# Keep only the DMG basename in the sidecar so the pair can be moved together
-# and verified from any release directory.
-(cd "$(dirname "$dmg_path")" && \
-  shasum -a 256 "$(basename "$dmg_path")" > "$(basename "$checksum_path")")
+if [[ -n "$installer_signing_identity" ]]; then
+  package_signature="$(pkgutil --check-signature "$pkg_path")"
+  grep -F -- "$installer_signing_identity" <<<"$package_signature" >/dev/null || {
+    echo "The package signature does not match the requested Developer ID Installer identity." >&2
+    exit 1
+  }
+fi
 
-echo "Created $dmg_path"
-echo "SHA-256: $checksum_path"
+echo "Created PKG: $pkg_path"
+if [[ "$pkg_only" == true ]]; then
+  exit 0
+fi
+
+./scripts/compose-dmg.sh \
+  --pkg "$pkg_path" \
+  --version "$version" \
+  --arch "$requested_arch"

@@ -150,17 +150,14 @@ bash -n scripts/install-app.sh scripts/uninstall-app.sh scripts/test-uninstall-a
 ./scripts/install-app.sh --help >/dev/null
 ./scripts/uninstall-app.sh --help >/dev/null
 
-# The notarized release path requires credentials and is intentionally not
-# submitted during CI. Keep its command-line contract covered without
-# contacting Apple's notary service.
+# Exercise the release adapter with mocked signing, notary, and packaging
+# tools. Never invoke the real release command from CI: a developer machine
+# may have the shared Codex credentials configured.
 ./scripts/package-notarized-dmg.sh --help >/dev/null
-if ./scripts/package-notarized-dmg.sh --arch universal >/dev/null 2>&1; then
-  echo "Notarized packaging without signing credentials was unexpectedly accepted." >&2
-  exit 1
-else
-  notarized_status=$?
-fi
-if [[ "$notarized_status" -ne 2 ]]; then
-  echo "Notarized packaging missing credentials returned $notarized_status instead of 2." >&2
-  exit 1
-fi
+./scripts/package-dmg.sh --help >/dev/null
+bash -n \
+  scripts/package-notarized-dmg.sh \
+  scripts/package-dmg.sh \
+  scripts/compose-dmg.sh \
+  scripts/test-package-notarized-dmg.sh
+./scripts/test-package-notarized-dmg.sh

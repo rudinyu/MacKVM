@@ -45,7 +45,7 @@
     <header>
       <div class="badge">MacKVM 1.101.01（build 96）</div>
       <h1>MacKVM 使用手冊</h1>
-      <p>本手冊以目前原始碼為準。Developer ID 簽章與 Apple 公證的 universal DMG 已在本機產生於 <code>dist/MacKVM-1.101.01-universal.dmg</code>，但尚未上傳至 GitHub Release。既有 build 94 DMG 尚未包含新的清除模式。</p>
+      <p>本手冊說明原始碼版本 1.101.01（build 96）。此次僅調整封裝流程，不變更 app 版本或 build。正式散布流程會將 Developer ID Installer 簽署的 PKG 放入另行公證的 DMG；目前尚未產生或發布正式發行產物。</p>
       <p class="lede">提供選單列入口與一般控制視窗，讓兩台 MacBook Pro 共用一組鍵盤、滑鼠與觸控板，並可選擇切換 BenQ MA270U 螢幕的 macOS app。</p>
       <p><a href="USER_MANUAL.html" lang="en">English Version</a> · <a href="USER_MANUAL.zh-TW.md">Markdown 版本</a></p>
     </header>
@@ -80,7 +80,7 @@
         <li>外接螢幕不是配對或遠端控制的必要條件；只有 DDC 切換與跨螢幕指標定位才需要。</li>
       </ul>
       <div class="notice">
-        <strong>首次開啟提示：</strong>本機測試 build 使用 ad-hoc 簽章；正式散布的 DMG 使用 Developer ID 簽章與 Apple 公證。若 macOS 阻擋本機測試版本，請在 Finder 對 <code>MacKVM.app</code> 按右鍵，選擇「打開」，再於提示視窗確認。
+        <strong>首次開啟提示：</strong>本機測試 build 使用 ad-hoc 簽章；正式散布的 PKG 與 DMG 使用 Developer ID 簽章與 Apple 公證。若 macOS 阻擋本機測試版本，請在 Finder 對 <code>MacKVM.app</code> 按右鍵，選擇「打開」，再於提示視窗確認。
       </div>
       <p>自動 DDC/CI 在偵測到選定螢幕或路由已確認為遠端時保持顯示管線喚醒；螢幕消失且未確認為遠端時會釋放防止閒置睡眠的 assertion。「顯示遠端輸入時拔線」與手動 OSD 切換目前仍有歧義，可關閉自動 DDC/CI 或退出 App 以釋放保活。</p>
     </section>
@@ -88,24 +88,22 @@
     <section id="install">
       <h2>2. 安裝與啟動</h2>
       <ol>
-        <li>將正確架構的 <code>MacKVM.app</code> 複製到該 Mac 的 <code>/Applications</code>。</li>
+        <li>一般正式安裝時，請在 Finder 開啟散布用 DMG 並雙擊 <code>MacKVM.pkg</code>；macOS Installer 會將 app 安裝到 <code>/Applications</code>。</li>
         <li>雙擊開啟。MacKVM 會顯示在 Dock 並提供一般控制視窗，也會在選單列顯示 KVM／雙螢幕圖示。</li>
         <li>可從 Dock 視窗或選單列圖示開啟控制。</li>
         <li>若希望登入後自動啟動，在選單中啟用 <strong>Launch MacKVM at Login</strong>。</li>
         <li>由登入項目自動啟動時會隱藏完整視窗以免搶走焦點；需要時可從選單列圖示或 Dock 重新開啟。</li>
       </ol>
-      <p>若你需要在 M5 Pro 上自行重建兩個版本：</p>
+      <p>DMG 只含 <code>MacKVM.pkg</code> 與中英文安裝指南，不含獨立 app bundle 或 Finder 可執行的 <code>.command</code> 檔案。若要在 M5 Pro 上自行建置本機測試 app：</p>
       <pre><code>cd MacKVM
 ./scripts/build-app.sh --arch arm64
 ./scripts/build-app.sh --arch x86_64 --no-clean</code></pre>
-      <p>要建立 DMG，可使用：</p>
+      <p>建立本機測試 DMG，可使用：</p>
       <pre><code>./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist &amp;&amp; shasum -a 256 -c MacKVM-1.101.00-universal.dmg.sha256)</code></pre>
-      <p>DMG 會從乾淨的暫存目錄建立，並在旁邊產生可攜式 SHA-256 檔案；驗證結果應顯示 <strong>OK</strong>。</p>
-      <p>未提供 Developer ID 時是 ad-hoc 簽章，只適合本機測試；跨電腦散布前請用
-        <code>--sign "Developer ID Application: …" --require-developer-id</code>，
-        並完成 Apple notarization。</p>
+(cd dist &amp;&amp; shasum -a 256 -c MacKVM-1.101.01-universal.dmg.sha256)</code></pre>
+      <p>本機測試 app 使用 ad-hoc 簽章，PKG 未簽署。套件與 DMG 各自產生 SHA-256 sidecar，驗證結果應顯示 <strong>OK</strong>。正式散布需以 Developer ID Application 簽署 app、以 Developer ID Installer 簽署 PKG，並分別公證 PKG 與外層 DMG。</p>
+      <p>正式散布請使用上述 release script；它會以 Developer ID Installer 簽署獨立 PKG，先提交、公證、staple 並驗證套件，再把同一份已 staple 的 PKG 放進另行簽署與公證的 DMG。兩個產物各自保有 checksum 與 submission metadata。</p>
       <p>若要在 Mac App Store 以外正式散布，請先建立 notarytool Keychain profile，並把 profile 名稱與 Developer ID 身分設定在 <code>~/.config/codex/notarization.env</code>（權限 <code>0600</code>）。預設讀取共用 Codex 設定；完整 API key 設定也可使用。需要時仍可用 <code>--sign</code>、<code>--keychain-profile</code> 與 <code>--auth</code> 覆寫。</p>
       <pre><code>xcrun notarytool store-credentials "mackvm-notary" \
   --apple-id "YOUR_APPLE_ID" \
@@ -267,7 +265,8 @@
 
     <section id="uninstall">
       <h2>12. 解除安裝與重設權限</h2>
-      <p>請先結束 MacKVM，在 repository 根目錄以目前登入的使用者執行更新後的 script，不要對整個 script 使用 <code>sudo</code>。舊 DMG 可能仍附上僅移除 App 的版本。</p>
+      <p>一般手動解除安裝時，請先結束 MacKVM，再在 Finder 將「應用程式」中的 <code>MacKVM.app</code> 移到垃圾桶；若曾啟用登入時啟動，請到<strong>系統設定 &gt; 一般 &gt; 登入項目</strong>移除 MacKVM。此流程會保留使用者資料與隱私權限。</p>
+      <p><code>scripts/uninstall-app.sh</code> 僅供 repository／CLI 進階使用，不會放入 DMG。若使用此工具，請先結束 MacKVM，並在 repository 根目錄以目前登入的使用者執行，不要對整個 script 使用 <code>sudo</code>。</p>
       <pre><code>./scripts/uninstall-app.sh --purge --dry-run
 ./scripts/uninstall-app.sh --purge</code></pre>
       <p>第一行只預覽；第二行會要求確認，再刪除 App、目前使用者的偏好設定、配對資料與身分私密金鑰，並要求只重設此 App 可重設的隱私權限，包含輔助使用與輸入監控。</p>

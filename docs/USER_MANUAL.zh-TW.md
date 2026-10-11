@@ -2,9 +2,9 @@
 
 # MacKVM 使用手冊
 
-原始碼版本：**1.101.01（build 96）**。Developer ID 簽章與 Apple 公證的 universal DMG
-已在本機產生於 `dist/MacKVM-1.101.01-universal.dmg`，但尚未上傳至 GitHub Release。
-既有 build 94 DMG 尚未包含新的清除模式。本機測試建置與正式散布安裝檔分開處理。
+原始碼版本：**1.101.01（build 96）**。此次僅調整封裝流程，不變更 app 版本或 build。
+正式散布流程會以 Developer ID Installer 簽署獨立 PKG，放入另行公證的 DMG。本機測試建置
+與正式散布安裝檔分開處理；目前尚未產生或發布正式發行產物。
 
 MacKVM 是 macOS app，提供選單列入口與一般控制視窗，讓 14 吋 M5 Pro MacBook Pro
 與 2019 Intel MacBook Pro 共用一組鍵盤、滑鼠與觸控板，並可選擇切換 BenQ MA270U 螢幕。
@@ -20,7 +20,11 @@ MacKVM 是 macOS app，提供選單列入口與一般控制視窗，讓 14 吋 M
 
 ## 安裝與建置
 
-在 M5 Pro 建置兩種架構，並把相符的 app 複製到兩台 Mac 的 `/Applications`：
+一般正式安裝時，請在 Finder 開啟散布用 DMG，並雙擊 `MacKVM.pkg`；macOS
+Installer 會將 app 安裝到 `/Applications`。DMG 只含安裝套件與中英文指南，不含
+獨立 app bundle 或 Finder 可執行的 `.command` 檔案。
+
+若要在 M5 Pro 建置本機測試 app：
 
 ```sh
 ./scripts/build-app.sh --arch arm64
@@ -38,8 +42,8 @@ MacKVM 使用原生 IOKit DDC/CI：Apple Silicon 走 `IOAVService`，Intel 走 `
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
 ```
 
-ad-hoc 簽章只適合本機測試；正式散布需要 Developer ID、hardened runtime 與 Apple
-notarization。
+本機測試 app 使用 ad-hoc 簽章，PKG 未簽署。正式散布需要以 Developer ID Application
+簽署 app、以 Developer ID Installer 簽署 PKG，並分別公證 PKG 與外層 DMG。
 
 ## 第一次啟動
 
@@ -163,8 +167,12 @@ mapping 原始碼。按下 Ctrl-C 或收到 SIGTERM 時會停止候選值迴圈�
 
 ## 解除安裝與重設權限
 
-請先結束 MacKVM。更新後的 repository script 提供預覽與明確選用的清除模式；
-舊 DMG 可能仍附上僅移除 App 的版本：
+一般手動解除安裝時，先結束 MacKVM，再在 Finder 將「應用程式」中的 `MacKVM.app` 移到垃圾桶；
+若曾啟用 **Launch MacKVM at Login**，請到**系統設定 > 一般 > 登入項目**移除 MacKVM。
+這個手動流程會保留配對資料、私密金鑰、偏好設定與隱私權限。
+
+`scripts/uninstall-app.sh` 僅供 repository／CLI 進階使用，不會放入 DMG；使用其預覽與清除模式前，
+請先結束 MacKVM：
 
 ```sh
 ./scripts/uninstall-app.sh --purge --dry-run

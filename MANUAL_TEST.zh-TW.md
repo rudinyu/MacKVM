@@ -26,7 +26,7 @@ Intel Mac 的 `/Applications`，再開啟各自架構的 app。
 - Finder 能顯示 app icon，選單列出現鍵盤圖示，不在 Dock 顯示。
 - macOS 在需要時提出 Local Network 權限提示。
 
-建立 release 產物：
+建立本機測試封裝：
 
 ```sh
 ./scripts/package-dmg.sh --arch universal
@@ -35,19 +35,36 @@ Intel Mac 的 `/Applications`，再開啟各自架構的 app。
 ```
 
 前兩個指令會在本機建置並驗證 1.101.01（build 96）原始碼；checksum 指令會驗證 `dist` 中
-相同版本的 DMG。Developer ID 簽章與 Apple 公證的 build 96 DMG 已在本機產生，但尚未上傳至
-GitHub Release。既有 build 94 DMG 仍使用僅移除 App 的 script，清除模式驗收請用目前
-repository 的版本。
+本機測試用 DMG。此次僅調整封裝流程，尚未產生或發布正式發行產物。本機 PKG 未簽署，
+不可用於正式散布。
 
-本機 ad-hoc 簽章只能用於測試；正式散布必須使用 Developer ID、hardened runtime
-、secure timestamp 與 Apple notarization。正式 release 應使用獨立流程：
+預期 app 顯示 `arm64` 與 `x86_64`，並明確標示 ad-hoc 簽章僅供本機測試。checksum 應回報
+`OK`，封裝後 `dist/.staging` 應不存在。正式 release 必須使用 Developer ID Application 與
+Developer ID Installer 身分、hardened runtime、secure timestamp，並完成兩次 Apple 公證提交。
+預設會從 app 身分推導 Installer 身分，也可用 `--installer-sign` 覆寫。共用 Codex 設定提供
+app 簽章身分與 notary 認證；可用 `--sign` 與 `--keychain-profile` 覆寫。正式流程為：
 
 ```sh
 ./scripts/package-notarized-dmg.sh --arch universal
 ```
 
-正式流程預設讀取共用 Codex 設定中的 Developer ID 與 notary 認證；需要時可用
-`--sign` 和 `--keychain-profile` 覆寫。
+standalone `dist/MacKVM-1.101.01-universal.pkg` 必須先通過 Apple 公證、staple 與驗證，之後
+才會用來組成 DMG。檢查最後的正式產物：
+
+```sh
+pkgutil --check-signature dist/MacKVM-1.101.01-universal.pkg
+spctl --assess --type install --verbose=4 dist/MacKVM-1.101.01-universal.pkg
+xcrun stapler validate dist/MacKVM-1.101.01-universal.pkg
+xcrun stapler validate dist/MacKVM-1.101.01-universal.dmg
+(cd dist && shasum -a 256 -c MacKVM-1.101.01-universal.pkg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.101.01-universal.dmg.sha256)
+```
+
+在 Finder 裝載正式 DMG，確認內容只有 `MacKVM.pkg`、`INSTALL.md` 與 `INSTALL.zh-TW.md`，
+沒有 `.command` 或重複的 loose app。雙擊 `MacKVM.pkg` 安裝，確認 `/Applications` 出現 MacKVM
+並可正常啟動。測試一般解除安裝時，先結束 MacKVM，再於 Finder 將「應用程式」中的 App
+移到垃圾桶，若有登入項目也一併移除；確認使用者資料與權限仍保留。不可在真實帳號使用
+CLI 清除工具。
 
 ### 1.1 建置與執行 DDC 診斷工具
 
@@ -268,7 +285,8 @@ Acceptance record。
 ## 10. 解除安裝與清除模式驗收
 
 破壞性檢查只在可丟棄的 macOS 帳號與測試 peer 配對上進行。在該帳號的 `Applications`
-資料夾安裝測試副本，每次解除安裝指令都加上 `--target-dir "$HOME/Applications"`。
+資料夾安裝測試副本。一般解除安裝先依上方步驟用 Finder 測試；只有以下明確清除測試會使用
+repository／CLI 進階清除工具，且指令需加上 `--target-dir "$HOME/Applications"`。
 不要刪除真正使用者的身分或配對來測試。本機 17 個移除回歸案例模擬 Keychain、TCC 與
 防火牆呼叫，不能取代以下系統層驗收。
 

@@ -10,11 +10,11 @@ native DDC/CI where the display supports it.
 Current macOS source: **1.101.01 (build 96)**. After an Input Monitoring
 request, MacKVM now opens the matching Privacy & Security pane when permission
 is still missing, and setup/control status text is localized in English and
-Traditional Chinese. A Developer ID-signed, notarized universal DMG is built
-locally at `dist/MacKVM-1.101.01-universal.dmg`; it has not been uploaded to a
-GitHub Release. Existing build 94 DMGs contain the old app-only uninstaller.
-The current WindowsKVM source is **1.02.32 (build 113; RC3 testing channel)**;
-its wire protocol is unchanged.
+Traditional Chinese. The distribution flow now creates a standalone,
+Developer ID Installer-signed PKG and embeds that notarized, stapled package in
+a separately notarized DMG. This packaging-only update has not generated or
+published a release artifact. The current WindowsKVM source is **1.02.32
+(build 113; RC3 testing channel)**; its wire protocol is unchanged.
 
 The current MVP provides:
 
@@ -44,9 +44,9 @@ The current MVP provides:
   checklist that prevents overlapping macOS permission prompts and refreshes
   when MacKVM becomes active again;
 - an optional **Launch MacKVM at Login** setting;
-- an opt-in complete-removal script with preview, explicit confirmation,
-  per-user data cleanup and app-scoped permission reset, with documented
-  [macOS limitations](INSTALL.md#remove-mackvm-and-saved-data);
+- a repository/CLI-only advanced complete-removal script with preview,
+  explicit confirmation, per-user data cleanup and app-scoped permission
+  reset, with documented [macOS limitations](INSTALL.md#remove-mackvm-and-saved-data);
 - injected-event marking that prevents input feedback loops;
 - explicit Allow/Deny control consent on the receiving Mac, deterministic
   collision handling, and a receiver-side stop action;
@@ -189,11 +189,13 @@ ad-hoc signature for local testing:
 ./scripts/package-dmg.sh --arch universal
 ```
 
-The package is built from a fresh staging directory and writes a portable
-SHA-256 sidecar next to the DMG. Verify the pair from the `dist` directory:
+The local-testing app is ad-hoc signed and its package is unsigned. The DMG
+contains `MacKVM.pkg` and bilingual installation guides, but no
+Finder-executable `.command` scripts or duplicate loose app. The package and
+DMG each get a portable SHA-256 sidecar. Verify the DMG from `dist`:
 
 ```sh
-(cd dist && shasum -a 256 -c MacKVM-1.101.00-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.101.01-universal.dmg.sha256)
 ```
 
 For direct distribution outside the Mac App Store, use the separate notarized
@@ -212,30 +214,32 @@ xcrun notarytool store-credentials "mackvm-notary" \
 ./scripts/package-notarized-dmg.sh --arch universal
 ```
 
-The script requires a Developer ID Application identity, signs the app through
-the shared helper before packaging, signs the DMG with the project adapter,
-submits it once to Apple, staples and verifies the accepted ticket, and writes
-the final SHA-256 sidecar. Use `--timeout` to bound how long the script waits
-for Apple. An accepted submission log is best-effort; it does not block
-stapling.
+The script signs the app with Developer ID Application and the installer with
+Developer ID Installer (derived from the app identity by default; override via
+`--installer-sign`). It submits the standalone PKG first, staples it, then
+verifies its signature, Gatekeeper install assessment, and ticket before
+writing the PKG checksum. It then composes a DMG from that exact stapled PKG and
+separately signs, submits, staples, and verifies the DMG. Each artifact has
+independent checksum and submission metadata. Use `--timeout` to bound each
+wait for Apple; an optional submission log never blocks stapling.
 
 The existing `scripts/package-dmg.sh` command remains the ad-hoc local-testing
 path. No signing, notarization, or Keychain credentials belong in this
 repository.
 
-The generated DMG also contains `Install MacKVM.command` and
-`Uninstall MacKVM.command`, plus the installation guides. Double-click the
-install command to validate and copy MacKVM.app atomically into `/Applications`;
-quit MacKVM first when upgrading. By default the uninstall command removes only
-the app bundle. The updated source script also supports an explicit `--purge`
-mode to remove this user's pairing data, identity key, and preferences, and
-reset the app's resettable macOS privacy permissions. Preview with
+For normal installation, open the DMG and double-click `MacKVM.pkg`; macOS
+Installer places the app in `/Applications`. To uninstall manually, quit
+MacKVM, move `MacKVM.app` from **Applications** to the Trash in Finder, and
+remove it from **System Settings > General > Login Items** if launch at login
+was enabled. This leaves user data and privacy permissions intact. The
+bilingual installation guides inside the DMG include these non-executable
+steps. `scripts/uninstall-app.sh` remains a repository/CLI advanced tool only;
+it is not shipped in the DMG. Its optional purge mode removes this user's
+pairing data, identity key, and preferences, and requests reset of the app's
+resettable macOS privacy permissions. Preview with
 `./scripts/uninstall-app.sh --purge --dry-run`; see
 [complete removal and permission limits](INSTALL.md#remove-mackvm-and-saved-data)
-before running it. Existing build 94 DMGs contain an app-only uninstaller.
-A signed installer package would require a separate Developer ID
-Installer certificate, so the current release path intentionally uses the
-notarized DMG and its scripts.
+before using that advanced path.
 
 `scripts/verify-release.sh` verifies an existing app bundle without creating a
 DMG. Ad-hoc signatures pass local verification but are not Apple Developer ID
