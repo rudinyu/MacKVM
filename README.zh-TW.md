@@ -5,8 +5,11 @@
 MacKVM 是原生 macOS 應用程式，可在同一本機網路上的兩台電腦間共享鍵盤、滑鼠與觸控板。
 此 repo 也包含 Windows 接收端。螢幕輸入切換是選用功能，並透過相容螢幕的原生 DDC/CI 控制。
 
-目前 macOS 原始碼版本：**1.101.00（build 95）**。此次新增完整移除工具，未發布新版 DMG；
-既有 build 94 DMG 仍是僅移除 App 的舊 script。WindowsKVM 版本與通訊協定不變。
+目前 macOS 原始碼版本：**1.101.01（build 96）**。按下輸入監控權限請求後，若權限仍未授予，
+MacKVM 會開啟對應的「隱私權與安全性」頁面；設定與控制狀態文字也已提供英文及繁體中文。
+Developer ID 簽章與 Apple 公證的 universal DMG 已在本機產生於
+`dist/MacKVM-1.101.01-universal.dmg`，但尚未上傳至 GitHub Release。既有 build 94 DMG
+仍使用僅移除 App 的舊 script。WindowsKVM 版本與通訊協定不變。
 
 ## 功能
 
@@ -120,23 +123,23 @@ CI 在偵測到 .NET 8 SDK 時會執行 Windows protocol／desktop self-test；�
 `RUN_WINDOWS_CI=1` 可將缺少 SDK 視為失敗。
 
 第一次使用時，在 Keychain 建立 notarytool profile（指令會安全提示輸入
-app-specific password）：
+app-specific password）。正式封裝流程預設讀取共用 Codex 設定檔
+`~/.config/codex/notarization.env` 中的 `MACOS_SIGNING_IDENTITY` 與
+`MACOS_NOTARY_PROFILE`，檔案權限須為 `0600`；完整的 API key 設定也可使用。
+需要時仍可用 `--sign`、`--keychain-profile` 與 `--auth` 明確覆寫設定：
 
 ```sh
 xcrun notarytool store-credentials "mackvm-notary" \
   --apple-id "YOUR_APPLE_ID" \
   --team-id "YOUR_TEAM_ID"
 
-./scripts/package-notarized-dmg.sh \
-  --arch universal \
-  --sign "Developer ID Application: Your Name (TEAMID)" \
-  --keychain-profile "mackvm-notary"
+./scripts/package-notarized-dmg.sh --arch universal
 ```
 
-此 script 會要求 Developer ID Application、啟用 hardened runtime、加入 secure
-timestamp、簽署 DMG、上傳 Apple、staple 通過的 ticket、驗證結果，並在最後重新產生
-SHA-256。既有的 `scripts/package-dmg.sh` 維持為本機 ad-hoc 測試流程；repository
-不應保存 signing 或 notarization 憑證。
+此 script 會先透過共用 helper 簽署 app，再由專案流程簽署 DMG，並向 Apple 提交一次。
+收到 Accepted 後會 staple 並驗證 ticket，最後產生 SHA-256。取得 submission log
+屬於選用步驟，失敗時仍會繼續 staple。既有的 `scripts/package-dmg.sh` 維持為本機
+ad-hoc 測試流程；repository 不應保存 signing 或 notarization 憑證。
 
 產生的 DMG 也會包含 `Install MacKVM.command`、`Uninstall MacKVM.command` 與安裝指南。
 在 Finder 雙擊安裝 command 後，script 會驗證 app 並以原子方式將 MacKVM.app 安裝到

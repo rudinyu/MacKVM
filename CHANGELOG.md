@@ -4,6 +4,15 @@
 
 ## Unreleased
 
+### MacKVM 1.101.01 (build 96) — Input Monitoring permission recovery
+
+- After a Request Input Monitoring action, open the matching Privacy & Security
+  pane when access remains ungranted; skip the fallback when permission is
+  granted or another permission is requested.
+- Add focused policy tests for the fallback decision.
+- Localize the setup, permission, and control-status text in English and
+  Traditional Chinese to avoid mixed-language UI in those sections.
+
 ### MacKVM 1.101.00 (build 95) — complete removal tooling
 
 - Add an explicit per-user purge mode with a no-change preview and destructive

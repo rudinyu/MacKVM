@@ -5,8 +5,10 @@
 本指南適用於目標雙 Mac 配置：14 吋 Apple Silicon M5 Pro MacBook Pro 以 USB-C
 連接 BenQ MA270U，以及 2019 16 吋 Intel MacBook Pro 以 HDMI 連接螢幕。
 
-原始碼版本：**1.101.00（build 95）**。下方封裝指令是建置此原始碼的範例，不代表安裝檔
-已發布。既有 build 94 DMG 尚未包含 `--purge`，請使用目前 repository 的 script。
+原始碼版本：**1.101.01（build 96）**。下方封裝指令是建置此原始碼的範例，不代表已發布到
+GitHub 的安裝檔。Developer ID 簽章與 Apple 公證的 universal DMG 已在本機產生於
+`dist/MacKVM-1.101.01-universal.dmg`，但尚未上傳至 GitHub Release。既有 build 94 DMG
+尚未包含 `--purge`，請使用目前 repository 的 script。
 
 ## 需求
 
@@ -102,23 +104,23 @@ transport 與 VCP `0x60` 輸入狀態。唯讀報告可保存為：
 
 ad-hoc 簽章只適合本機測試。要在 Mac App Store 以外正式散布，請使用獨立的 notarized
 release script。第一次使用時先建立 notarytool Keychain profile；指令會安全提示輸入
-app-specific password：
+app-specific password。正式封裝流程預設讀取共用 Codex 設定檔
+`~/.config/codex/notarization.env` 中的 `MACOS_SIGNING_IDENTITY` 與
+`MACOS_NOTARY_PROFILE`，檔案權限須為 `0600`；完整的 API key 設定也可使用。
+`--sign`、`--keychain-profile` 與 `--auth` 可明確覆寫這些設定。
 
 ```sh
 xcrun notarytool store-credentials "mackvm-notary" \
   --apple-id "YOUR_APPLE_ID" \
   --team-id "YOUR_TEAM_ID"
 
-./scripts/package-notarized-dmg.sh \
-  --arch universal \
-  --sign "Developer ID Application: Your Name (TEAMID)" \
-  --keychain-profile "mackvm-notary"
+./scripts/package-notarized-dmg.sh --arch universal
 ```
 
-此 script 會要求 Developer ID Application、啟用 hardened runtime、加入 secure
-timestamp、簽署 DMG、上傳 Apple、staple 通過的 ticket、驗證結果，並在最後重新產生
-SHA-256。既有的 `scripts/package-dmg.sh` 維持本機 ad-hoc 測試流程；本 repository
-不應存放 signing、notarization 或 Keychain 憑證。
+此 script 會先透過共用 helper 簽署 app，再由專案流程簽署 DMG，並向 Apple 提交一次。
+收到 Accepted 後會 staple 並驗證 ticket，最後重新產生 SHA-256。取得 submission log
+屬於選用步驟，失敗時仍會繼續 staple。既有的 `scripts/package-dmg.sh` 維持本機
+ad-hoc 測試流程；本 repository 不應存放 signing、notarization 或 Keychain 憑證。
 
 ## 安裝並授予權限
 

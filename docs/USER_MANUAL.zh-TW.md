@@ -2,8 +2,9 @@
 
 # MacKVM 使用手冊
 
-原始碼版本：**1.101.00（build 95）**；此次未發布新版 DMG，既有 build 94 DMG 尚未包含
-新的清除模式。正式散布的安裝檔須通過 Developer ID 簽章與 Apple 公證驗證；本機測試建置另計。
+原始碼版本：**1.101.01（build 96）**。Developer ID 簽章與 Apple 公證的 universal DMG
+已在本機產生於 `dist/MacKVM-1.101.01-universal.dmg`，但尚未上傳至 GitHub Release。
+既有 build 94 DMG 尚未包含新的清除模式。本機測試建置與正式散布安裝檔分開處理。
 
 MacKVM 是 macOS app，提供選單列入口與一般控制視窗，讓 14 吋 M5 Pro MacBook Pro
 與 2019 Intel MacBook Pro 共用一組鍵盤、滑鼠與觸控板，並可選擇切換 BenQ MA270U 螢幕。

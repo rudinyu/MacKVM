@@ -932,7 +932,7 @@ private struct MacKVMMenuView: View {
             Divider()
 
             HStack {
-                Text(discovery.status)
+                localizedStatusText(discovery.status)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
@@ -1110,6 +1110,12 @@ private struct MacKVMMenuView: View {
                         inputSink: inputSink
                     )
                     refreshSetupState()
+                    if PermissionOnboardingPolicy.shouldOpenInputMonitoringSettingsAfterRequest(
+                        for: permission,
+                        inputMonitoringGranted: inputCapture.hasInputMonitoringPermission
+                    ) {
+                        PrivacySettings.open(.inputMonitoring)
+                    }
                 }
                 .buttonStyle(.borderedProminent)
                 Button("Settings") {
@@ -1362,7 +1368,7 @@ private struct MacKVMMenuView: View {
                     }
                 }
             }
-            Text(secureSession.status)
+            localizedStatusText(secureSession.status)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
@@ -1657,13 +1663,13 @@ private struct MacKVMMenuView: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
-            Text("State: \(control.state.rawValue)")
+            Text("State: \(control.state.localizedDisplayName)")
                 .font(.caption2.monospaced())
                 .foregroundStyle(.secondary)
-            Text(control.status)
+            localizedStatusText(control.status)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
-            Text(inputSink.status)
+            localizedStatusText(inputSink.status)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
@@ -1854,13 +1860,13 @@ private struct MacKVMMenuView: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 if let combinedControlStatus = bootstrap.combinedControlStatus {
-                    Text(combinedControlStatus)
+                    localizedStatusText(combinedControlStatus)
                         .font(.caption2)
                         .foregroundStyle(.orange)
                 }
             }
 
-            Text(monitor.status)
+            localizedStatusText(monitor.status)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
             if let diagnostic = monitor.diagnostic {
@@ -1926,7 +1932,7 @@ private struct MacKVMMenuView: View {
             )
             .disabled(launchAtLogin.isUpdating)
             if let status = launchAtLogin.status {
-                Text(status)
+                localizedStatusText(status)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -1952,7 +1958,7 @@ private struct MacKVMMenuView: View {
         granted: Bool
     ) -> some View {
         HStack {
-            Text(title)
+            Text(LocalizedStringKey(title))
             Spacer()
             Label(
                 granted ? "Granted" : "Required",
@@ -1962,6 +1968,158 @@ private struct MacKVMMenuView: View {
             )
             .font(.caption)
             .foregroundStyle(granted ? .green : .orange)
+        }
+    }
+}
+
+private func localizedStatusText(_ status: String) -> Text {
+    func formatted(_ key: String, _ values: String...) -> Text {
+        let format = NSLocalizedString(key, comment: "MacKVM status message")
+        let arguments = values.map { $0 as NSString }
+        return Text(verbatim: String(
+            format: format,
+            locale: Locale.current,
+            arguments: arguments
+        ))
+    }
+
+    func payload(
+        in value: String,
+        after prefix: String,
+        before suffix: String
+    ) -> String? {
+        guard value.hasPrefix(prefix), value.hasSuffix(suffix) else {
+            return nil
+        }
+        let start = value.index(value.startIndex, offsetBy: prefix.count)
+        let end = value.index(value.endIndex, offsetBy: -suffix.count)
+        guard start <= end else { return nil }
+        return String(value[start..<end])
+    }
+
+    func pair(
+        in value: String,
+        after prefix: String,
+        separatedBy separator: String,
+        before suffix: String
+    ) -> (String, String)? {
+        guard let contents = payload(
+            in: value,
+            after: prefix,
+            before: suffix
+        ), let range = contents.range(of: separator, options: .backwards) else {
+            return nil
+        }
+        return (
+            String(contents[..<range.lowerBound]),
+            String(contents[range.upperBound...])
+        )
+    }
+
+    // These templates only match strings owned by the status-producing
+    // controllers. Dynamic names, labels, numbers, and diagnostics stay opaque.
+    let templates: [(prefix: String, suffix: String, key: String)] = [
+        ("Could not update Login Items: ", "", "Could not update Login Items: %@"),
+        ("Connecting securely to ", "…", "Connecting securely to %@…"),
+        ("Authenticating ", "…", "Authenticating %@…"),
+        ("Encrypted session connected to ", "", "Encrypted session connected to %@"),
+        ("Waiting for encrypted key confirmation from ", "…", "Waiting for encrypted key confirmation from %@…"),
+        ("Secure session lost; retrying in ", "s…", "Secure session lost; retrying in %@s…"),
+        ("Secure listener failed: ", "", "Secure listener failed: %@"),
+        ("Could not start secure listener: ", "", "Could not start secure listener: %@"),
+        ("Secure discovery failed: ", "", "Secure discovery failed: %@"),
+        ("Secure connection failed: ", "", "Secure connection failed: %@"),
+        ("Incoming secure connection failed: ", "", "Incoming secure connection failed: %@"),
+        ("Secure send failed: ", "", "Secure send failed: %@"),
+        ("Could not encrypt session data: ", "", "Could not encrypt session data: %@"),
+        ("Pairing with ", " canceled", "Pairing with %@ canceled"),
+        ("Connecting to ", "… If macOS asks about the firewall on the receiving Mac, allow it, then select Retry pairing.", "Connecting to %@… If macOS asks about the firewall on the receiving Mac, allow it, then select Retry pairing."),
+        ("Could not reach ", ". Allow incoming connections on the receiving Mac in macOS Firewall, then select Retry pairing.", "Could not reach %@. Allow incoming connections on the receiving Mac in macOS Firewall, then select Retry pairing."),
+        ("Negotiating a security code with ", "…", "Negotiating a security code with %@…"),
+        ("Waiting for ", "… If the receiving Mac shows a firewall prompt, allow it, then select Retry pairing.", "Waiting for %@… If the receiving Mac shows a firewall prompt, allow it, then select Retry pairing."),
+        ("Waiting for ", " to confirm the code…", "Waiting for %@ to confirm the code…"),
+        ("", " wants to pair", "%@ wants to pair"),
+        ("", " declined pairing", "%@ declined pairing"),
+        ("", " confirmed; accept this request when the code matches", "%@ confirmed; accept this request when the code matches"),
+        ("Code confirmed; completing pairing with ", "…", "Code confirmed; completing pairing with %@…"),
+        ("Code confirmed; waiting for ", " to accept…", "Code confirmed; waiting for %@ to accept…"),
+        ("Accepted here; completing pairing with ", "…", "Accepted here; completing pairing with %@…"),
+        ("Could not save pairing with ", "; try Pair again", "Could not save pairing with %@; try Pair again"),
+        ("Paired with ", "", "Paired with %@"),
+        ("Pairing network stopped (", "). Allow incoming connections on the receiving Mac in macOS Firewall, then select Retry pairing.", "Pairing network stopped (%@). Allow incoming connections on the receiving Mac in macOS Firewall, then select Retry pairing."),
+        ("Incoming pairing is waiting for the local network or firewall approval: ", "", "Incoming pairing is waiting for the local network or firewall approval: %@"),
+        ("Could not start listener: ", "", "Could not start listener: %@"),
+        ("Listening failed: ", "", "Listening failed: %@"),
+        ("Discovery failed: ", "", "Discovery failed: %@"),
+        ("Send failed: ", "", "Send failed: %@"),
+        ("Selected ", " for native DDC/CI switching", "Selected %@ for native DDC/CI switching"),
+        ("", " has no native DDC/CI selector; automatic switching remains blocked", "%@ has no native DDC/CI selector; automatic switching remains blocked"),
+        ("Detected ", " DDC-capable external display", "Detected %@ DDC-capable external display"),
+        ("Detected ", " DDC-capable external displays", "Detected %@ DDC-capable external displays"),
+        ("DDC/CI could not confirm the switch; a command to restore ", " was sent", "DDC/CI could not confirm the switch; a command to restore %@ was sent"),
+        ("Native DDC/CI switch failed; use the monitor OSD to select ", "", "Native DDC/CI switch failed; use the monitor OSD to select %@")
+    ]
+    for template in templates {
+        if let value = payload(
+            in: status,
+            after: template.prefix,
+            before: template.suffix
+        ) {
+            return formatted(template.key, value)
+        }
+    }
+
+    if let values = pair(
+        in: status,
+        after: "Compare security code ",
+        separatedBy: " with ",
+        before: ", then confirm…"
+    ) {
+        return formatted("Compare security code %@ with %@, then confirm…", values.0, values.1)
+    }
+    for (prefix, separator, suffix, key) in [
+        ("Use the monitor OSD to select ", " for ", "", "Use the monitor OSD to select %@ for %@"),
+        ("Switching ", " to ", "…", "Switching %@ to %@…")
+    ] {
+        if let values = pair(in: status, after: prefix, separatedBy: separator, before: suffix) {
+            return formatted(key, values.0, values.1)
+        }
+    }
+    if let values = pair(in: status, after: "", separatedBy: " is already showing ", before: ""),
+       let range = values.1.range(of: " for ", options: .backwards) {
+        return formatted(
+            "%@ is already showing %@ for %@",
+            values.0,
+            String(values.1[..<range.lowerBound]),
+            String(values.1[range.upperBound...])
+        )
+    }
+    if let range = status.range(of: " switched to "),
+       let target = status.range(of: " for ", options: .backwards) {
+        return formatted(
+            "%@ switched to %@ for %@",
+            String(status[..<range.lowerBound]),
+            String(status[range.upperBound..<target.lowerBound]),
+            String(status[target.upperBound...])
+        )
+    }
+
+    return Text(LocalizedStringKey(status))
+}
+
+private extension ControlSessionState {
+    var localizedDisplayName: String {
+        switch self {
+        case .idle:
+            String(localized: "Idle")
+        case .connected:
+            String(localized: "Connected")
+        case .suspended:
+            String(localized: "Suspended")
+        case .controlling:
+            String(localized: "Controlling")
+        case .disconnected:
+            String(localized: "Disconnected")
         }
     }
 }

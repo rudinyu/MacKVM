@@ -6,9 +6,12 @@ This guide installs MacKVM on the target two-Mac setup: a 14-inch Apple
 Silicon M5 Pro MacBook Pro connected to a BenQ MA270U over USB-C, and a 2019
 16-inch Intel MacBook Pro connected over HDMI.
 
-Source version: **1.101.00 (build 95)**. Packaging commands below describe
-building this source, not an already published installer. Existing build 94
-DMGs do not include the new `--purge` mode; use the current repository script.
+Source version: **1.101.01 (build 96)**. Packaging commands below describe
+building this source, not a GitHub-published installer. The Developer ID-signed
+and notarized universal DMG is available locally at
+`dist/MacKVM-1.101.01-universal.dmg`; it has not been uploaded to a GitHub
+Release. Existing build 94 DMGs do not include the `--purge` mode; use the
+current repository script.
 
 ## Requirements
 
@@ -117,24 +120,24 @@ Create and verify a universal DMG for local testing:
 Ad-hoc signing is suitable only for local testing. For direct distribution
 outside the Mac App Store, use the separate notarized release script. Create a
 notarytool Keychain profile once; the command prompts for an app-specific
-password:
+password. The release script reads `MACOS_SIGNING_IDENTITY` and
+`MACOS_NOTARY_PROFILE` from `~/.config/codex/notarization.env` (mode `0600`);
+complete API-key settings are also supported. `--sign`, `--keychain-profile`,
+and `--auth` remain available as explicit overrides.
 
 ```sh
 xcrun notarytool store-credentials "mackvm-notary" \
   --apple-id "YOUR_APPLE_ID" \
   --team-id "YOUR_TEAM_ID"
 
-./scripts/package-notarized-dmg.sh \
-  --arch universal \
-  --sign "Developer ID Application: Your Name (TEAMID)" \
-  --keychain-profile "mackvm-notary"
+./scripts/package-notarized-dmg.sh --arch universal
 ```
 
-The script requires Developer ID Application signing, enables the hardened
-runtime, adds a secure timestamp, signs the DMG, submits it to Apple, staples
-the accepted ticket, validates the result, and regenerates the final SHA-256
-sidecar. No signing, notarization, or Keychain credentials belong in this
-repository.
+The script signs the app through the shared helper before packaging, signs the
+DMG with the project adapter, submits it once to Apple, staples and verifies
+the accepted ticket, and regenerates the final SHA-256 sidecar. An accepted
+submission log is best-effort and does not block stapling. No signing,
+notarization, or Keychain credentials belong in this repository.
 
 ## Install and grant permissions
 

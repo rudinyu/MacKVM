@@ -43,9 +43,9 @@
 <body>
   <main>
     <header>
-      <div class="badge">MacKVM 1.101.00（build 95）</div>
+      <div class="badge">MacKVM 1.101.01（build 96）</div>
       <h1>MacKVM 使用手冊</h1>
-      <p>本手冊以目前原始碼為準。此次未發布新版 DMG；既有 build 94 DMG 尚未包含新的清除模式。</p>
+      <p>本手冊以目前原始碼為準。Developer ID 簽章與 Apple 公證的 universal DMG 已在本機產生於 <code>dist/MacKVM-1.101.01-universal.dmg</code>，但尚未上傳至 GitHub Release。既有 build 94 DMG 尚未包含新的清除模式。</p>
       <p class="lede">提供選單列入口與一般控制視窗，讓兩台 MacBook Pro 共用一組鍵盤、滑鼠與觸控板，並可選擇切換 BenQ MA270U 螢幕的 macOS app。</p>
       <p><a href="USER_MANUAL.html" lang="en">English Version</a> · <a href="USER_MANUAL.zh-TW.md">Markdown 版本</a></p>
     </header>
@@ -106,14 +106,11 @@
       <p>未提供 Developer ID 時是 ad-hoc 簽章，只適合本機測試；跨電腦散布前請用
         <code>--sign "Developer ID Application: …" --require-developer-id</code>，
         並完成 Apple notarization。</p>
-      <p>若要在 Mac App Store 以外正式散布，請先建立 notarytool Keychain profile，再使用獨立的 release script：</p>
+      <p>若要在 Mac App Store 以外正式散布，請先建立 notarytool Keychain profile，並把 profile 名稱與 Developer ID 身分設定在 <code>~/.config/codex/notarization.env</code>（權限 <code>0600</code>）。預設讀取共用 Codex 設定；完整 API key 設定也可使用。需要時仍可用 <code>--sign</code>、<code>--keychain-profile</code> 與 <code>--auth</code> 覆寫。</p>
       <pre><code>xcrun notarytool store-credentials "mackvm-notary" \
   --apple-id "YOUR_APPLE_ID" \
   --team-id "YOUR_TEAM_ID"
-./scripts/package-notarized-dmg.sh \
-  --arch universal \
-  --sign "Developer ID Application: Your Name (TEAMID)" \
-  --keychain-profile "mackvm-notary"</code></pre>
+./scripts/package-notarized-dmg.sh --arch universal</code></pre>
     </section>
 
     <section id="input">
@@ -280,7 +277,7 @@
     </section>
 
     <footer>
-      <p>MacKVM 使用手冊 · 原始碼版本 1.101.00（build 95）· 最後更新 2026-10-04 · 正式散布的安裝檔須通過 Developer ID 簽章與 Apple 公證驗證。</p>
+      <p>MacKVM 使用手冊 · 原始碼版本 1.101.01（build 96）· 最後更新 2026-10-12 · 正式散布的安裝檔須通過 Developer ID 簽章與 Apple 公證驗證。</p>
     </footer>
   </main>
 </body>

@@ -2,9 +2,10 @@
 
 # MacKVM user manual
 
-Source version: **1.101.00 (build 95)**; no new DMG is published by this update.
-Existing build 94 DMGs lack the new purge mode. Distribution installers must pass Developer ID
-signature and Apple notarization verification; local test builds are separate.
+Source version: **1.101.01 (build 96)**. A Developer ID-signed, notarized
+universal DMG is available locally at `dist/MacKVM-1.101.01-universal.dmg`,
+but has not been uploaded to a GitHub Release. Existing build 94 DMGs lack the
+new purge mode. Local test builds are separate from distribution installers.
 
 MacKVM is a macOS app with a menu-bar entry and a full control window for
 sharing one keyboard, mouse, and trackpad, plus an optional BenQ MA270U display, between a

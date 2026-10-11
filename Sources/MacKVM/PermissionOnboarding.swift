@@ -184,6 +184,15 @@ enum PermissionOnboardingPolicy {
         return missing
     }
 
+    /// Decides whether an in-app request should fall back to the Input
+    /// Monitoring Settings pane after the permission status has been refreshed.
+    static func shouldOpenInputMonitoringSettingsAfterRequest(
+        for permission: MacKVMPermission,
+        inputMonitoringGranted: Bool
+    ) -> Bool {
+        permission == .inputMonitoring && !inputMonitoringGranted
+    }
+
     /// Refreshes the two permissions macOS lets MacKVM preflight, then returns
     /// a new checklist snapshot. Call when the app becomes active or its menu
     /// is opened after returning from System Settings.

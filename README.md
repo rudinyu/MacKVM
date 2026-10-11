@@ -7,9 +7,13 @@ between two computers on the same local network. A Windows receiver companion
 is included in this repository. Monitor input switching is optional and uses
 native DDC/CI where the display supports it.
 
-Current macOS source: **1.101.00 (build 95)**. This update adds complete removal
-tooling; it does not publish a new DMG. Existing build 94 DMGs contain the old
-app-only uninstaller. WindowsKVM's version and wire protocol are unchanged.
+Current macOS source: **1.101.01 (build 96)**. After an Input Monitoring
+request, MacKVM now opens the matching Privacy & Security pane when permission
+is still missing, and setup/control status text is localized in English and
+Traditional Chinese. A Developer ID-signed, notarized universal DMG is built
+locally at `dist/MacKVM-1.101.01-universal.dmg`; it has not been uploaded to a
+GitHub Release. Existing build 94 DMGs contain the old app-only uninstaller.
+WindowsKVM's version and wire protocol are unchanged.
 
 The current MVP provides:
 
@@ -193,23 +197,26 @@ SHA-256 sidecar next to the DMG. Verify the pair from the `dist` directory:
 
 For direct distribution outside the Mac App Store, use the separate notarized
 release script. Set up a notarytool Keychain profile once; the command prompts
-for an app-specific password and does not put it in this repository:
+for an app-specific password and does not put it in this repository. The
+release script reads `MACOS_SIGNING_IDENTITY` and `MACOS_NOTARY_PROFILE` from
+the shared Codex settings at `~/.config/codex/notarization.env` (mode `0600`).
+Complete API-key settings are also supported. `--sign`, `--keychain-profile`,
+and `--auth` override the shared settings when needed.
 
 ```sh
 xcrun notarytool store-credentials "mackvm-notary" \
   --apple-id "YOUR_APPLE_ID" \
   --team-id "YOUR_TEAM_ID"
 
-./scripts/package-notarized-dmg.sh \
-  --arch universal \
-  --sign "Developer ID Application: Your Name (TEAMID)" \
-  --keychain-profile "mackvm-notary"
+./scripts/package-notarized-dmg.sh --arch universal
 ```
 
-The script requires a Developer ID Application identity, enables the hardened
-runtime, adds a secure timestamp, signs the DMG, submits it to Apple, staples
-the accepted ticket, validates the result, and writes the final SHA-256
-sidecar. Use `--timeout` to bound how long the script waits for Apple.
+The script requires a Developer ID Application identity, signs the app through
+the shared helper before packaging, signs the DMG with the project adapter,
+submits it once to Apple, staples and verifies the accepted ticket, and writes
+the final SHA-256 sidecar. Use `--timeout` to bound how long the script waits
+for Apple. An accepted submission log is best-effort; it does not block
+stapling.
 
 The existing `scripts/package-dmg.sh` command remains the ad-hoc local-testing
 path. No signing, notarization, or Keychain credentials belong in this

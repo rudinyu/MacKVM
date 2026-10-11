@@ -33,25 +33,25 @@ Release check (from the M5 Pro) is also available:
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.101.00-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.101.01-universal.dmg.sha256)
 ```
 
-These commands package the 1.101.00 (build 95) source locally; this source
-update does not publish a new DMG. Existing build 94 DMGs retain the app-only
-uninstaller, so use the current repository script for purge acceptance.
+The first two commands build and verify the 1.101.01 (build 96) source locally;
+the checksum command verifies the matching 1.101.01 DMG produced in `dist`.
+The Developer ID-signed and notarized build 96 DMG is available locally, but
+has not been uploaded to a GitHub Release. Existing build 94 DMGs retain the
+app-only uninstaller, so use the current repository script for purge acceptance.
 
 Expected: the app reports both `arm64` and `x86_64`, and an ad-hoc signature
 is explicitly labelled as local-testing-only. The checksum command reports
 `OK`, and `dist/.staging` is absent after packaging. A release build must
 provide a Developer ID Application identity, report the hardened runtime and a
 secure timestamp, and complete Apple notarization. The separate release path
-is:
+uses `MACOS_SIGNING_IDENTITY` and notary authentication from the shared Codex
+settings file; `--sign` and `--keychain-profile` can override them. It is:
 
 ```sh
-./scripts/package-notarized-dmg.sh \
-  --arch universal \
-  --sign "Developer ID Application: Your Name (TEAMID)" \
-  --keychain-profile "mackvm-notary"
+./scripts/package-notarized-dmg.sh --arch universal
 ```
 
 ### 1.1 Build and exercise the DDC diagnostic tool
@@ -152,8 +152,10 @@ Expected:
    and open the menu-bar item.
 2. Under **Set up this Mac**, select **Enable Local Network**. Answer the
    macOS prompt before selecting **I handled the macOS prompt**.
-3. Select **Request Input Monitoring**, grant it, return to MacKVM, and verify
-   that the checklist advances without quitting the app.
+3. Select **Request Input Monitoring**. If the request leaves access
+   ungranted, verify that Privacy & Security opens to Input Monitoring; grant
+   it there, return to MacKVM, and verify that the checklist advances without
+   quitting the app.
 4. Select **Request Accessibility** and grant it.
 5. After the checklist is complete, select **Enable** beside **Control request
    notifications** and grant the optional macOS alert permission.

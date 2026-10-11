@@ -43,6 +43,36 @@ final class PermissionOnboardingTests: XCTestCase {
         )
     }
 
+    func testInputMonitoringSettingsOpenWhenRequestLeavesPermissionMissing() {
+        XCTAssertTrue(
+            PermissionOnboardingPolicy
+                .shouldOpenInputMonitoringSettingsAfterRequest(
+                    for: .inputMonitoring,
+                    inputMonitoringGranted: false
+                )
+        )
+    }
+
+    func testInputMonitoringSettingsStayClosedWhenRequestGrantsPermission() {
+        XCTAssertFalse(
+            PermissionOnboardingPolicy
+                .shouldOpenInputMonitoringSettingsAfterRequest(
+                    for: .inputMonitoring,
+                    inputMonitoringGranted: true
+                )
+        )
+    }
+
+    func testAccessibilityRequestDoesNotOpenInputMonitoringSettings() {
+        XCTAssertFalse(
+            PermissionOnboardingPolicy
+                .shouldOpenInputMonitoringSettingsAfterRequest(
+                    for: .accessibility,
+                    inputMonitoringGranted: false
+                )
+        )
+    }
+
     func testChecklistStartsWithLocalNetworkAwareness() {
         let state = PermissionOnboardingPolicy.checklistState(
             localNetworkAccessReviewed: false,

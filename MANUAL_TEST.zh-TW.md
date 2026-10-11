@@ -31,21 +31,23 @@ Intel Mac 的 `/Applications`，再開啟各自架構的 app。
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.101.00-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.101.01-universal.dmg.sha256)
 ```
 
-這些指令是在本機封裝 1.101.00（build 95）原始碼；此次原始碼更新沒有發布新版 DMG。
-既有 build 94 DMG 仍使用僅移除 App 的 script，清除模式驗收請用目前 repository 的版本。
+前兩個指令會在本機建置並驗證 1.101.01（build 96）原始碼；checksum 指令會驗證 `dist` 中
+相同版本的 DMG。Developer ID 簽章與 Apple 公證的 build 96 DMG 已在本機產生，但尚未上傳至
+GitHub Release。既有 build 94 DMG 仍使用僅移除 App 的 script，清除模式驗收請用目前
+repository 的版本。
 
 本機 ad-hoc 簽章只能用於測試；正式散布必須使用 Developer ID、hardened runtime
 、secure timestamp 與 Apple notarization。正式 release 應使用獨立流程：
 
 ```sh
-./scripts/package-notarized-dmg.sh \
-  --arch universal \
-  --sign "Developer ID Application: Your Name (TEAMID)" \
-  --keychain-profile "mackvm-notary"
+./scripts/package-notarized-dmg.sh --arch universal
 ```
+
+正式流程預設讀取共用 Codex 設定中的 Developer ID 與 notary 認證；需要時可用
+`--sign` 和 `--keychain-profile` 覆寫。
 
 ### 1.1 建置與執行 DDC 診斷工具
 
@@ -103,7 +105,8 @@ HDMI 1 使用 VCP 17（`0x11`）。其他型號使用自己的 mapping；螢幕�
 
 ## 3. macOS 權限
 
-1. 依序完成 Local Network、Input Monitoring、Accessibility。
+1. 依序完成 Local Network、Input Monitoring、Accessibility。測試 Input Monitoring 時，若按鈕
+   執行後權限仍未授予，確認會自動開啟「隱私權與安全性」中的輸入監控頁面。
 2. 如果之前拒絕過，使用各項 **Settings** 按鈕到系統設定中允許。
 3. 可在第一個控制請求前按 **Enable** 開啟通知權限。
 4. 啟用 **Launch MacKVM at Login**，登出／登入後確認鍵盤圖示回來。
