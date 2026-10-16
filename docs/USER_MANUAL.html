@@ -94,7 +94,7 @@
       </ol>
       <p>The DMG contains <code>MacKVM.pkg</code> and bilingual installation guides only; it has no loose app bundle or Finder-executable <code>.command</code> files. Build local test apps on the M5 Pro when needed:</p>
       <pre><code>./scripts/build-app.sh --arch arm64
-./scripts/build-app.sh --arch x86_64 --no-clean</code></pre>
+./scripts/build-app.sh --arch x86_64</code></pre>
       <p>Create and verify a DMG:</p>
       <pre><code>./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal

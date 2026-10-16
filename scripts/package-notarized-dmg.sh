@@ -2,8 +2,12 @@
 set +x
 set -euo pipefail
 
-project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+project_root="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$project_root"
+
+source "$project_root/scripts/lib/build-environment.sh"
+original_arguments=("$@")
+original_argument_count=$#
 
 usage() {
   cat >&2 <<'EOF'
@@ -141,6 +145,14 @@ fi
 submission_timeout="$notary_timeout"
 if [[ "$submission_timeout" =~ ^[0-9]+$ ]]; then
   submission_timeout="${submission_timeout}s"
+fi
+
+# Hold the shared lock through signing, Apple submissions, stapling, verification,
+# and DMG composition. Nested package/build scripts reuse this lock token.
+if [[ "$original_argument_count" -eq 0 ]]; then
+  mackvm_enter_build_lock "$project_root" "$project_root/scripts/package-notarized-dmg.sh"
+else
+  mackvm_enter_build_lock "$project_root" "$project_root/scripts/package-notarized-dmg.sh" "${original_arguments[@]}"
 fi
 
 notarization_tool="${MACKVM_NOTARIZATION_TOOL:-${HOME:-}/.codex/skills/macos-notarization-release/scripts/macos_notarization.py}"

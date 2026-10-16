@@ -3,6 +3,9 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 project_root="$(cd "$script_dir/.." && pwd -P)"
+# This test runs under CI's main-repository lock but creates isolated fixture
+# checkouts. Do not let fixture entrypoints inherit the main lock token.
+unset MACKVM_BUILD_LOCK_DIR MACKVM_BUILD_LOCK_TOKEN
 test_root="$(mktemp -d "${TMPDIR:-/tmp}/mackvm-notary-test.XXXXXX")"
 test_root="$(cd "$test_root" && pwd -P)"
 cleanup() {
@@ -296,12 +299,14 @@ new_project() {
   fixture_project="$case_root/project"
   fixture_scripts="$fixture_project/scripts"
   export MACKVM_TEST_LOG="$case_root/tool-calls.log"
-  mkdir -p "$fixture_scripts" "$fixture_project/Resources"
+  mkdir -p "$fixture_scripts/lib" "$fixture_project/Resources"
   : > "$MACKVM_TEST_LOG"
 
   cp "$project_root/scripts/package-notarized-dmg.sh" "$fixture_scripts/"
   cp "$project_root/scripts/package-dmg.sh" "$fixture_scripts/"
   cp "$project_root/scripts/compose-dmg.sh" "$fixture_scripts/"
+  cp "$project_root/scripts/with-build-lock.sh" "$fixture_scripts/"
+  cp "$project_root/scripts/lib/build-environment.sh" "$fixture_scripts/lib/"
   cat > "$fixture_scripts/clean-build.sh" <<'CLEAN'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -497,6 +502,8 @@ for path in sys.argv[1:]:
     }
 JSONCHECK
 [[ ! -d "$fixture_project/dist/.staging" ]] || fail "staging directory was left behind"
+[[ ! -e "$fixture_project/.mackvm-build.lock" ]] || \
+  fail "successful notarized packaging left the shared build lock behind"
 unset MACOS_NOTARY_PROFILE MACOS_NOTARY_KEY_PATH MACOS_NOTARY_KEY_ID MACOS_NOTARY_ISSUER
 
 # When the helper resolves a complete legacy API-key setup, the adapter passes

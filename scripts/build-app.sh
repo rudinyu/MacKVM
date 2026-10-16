@@ -1,26 +1,30 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+project_root="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$project_root"
+
+source "$project_root/scripts/lib/build-environment.sh"
+original_arguments=("$@")
+original_argument_count=$#
 
 usage() {
   cat >&2 <<'EOF'
 Usage: scripts/build-app.sh [--arch native|arm64|x86_64]
-       [--sign SIGNING_IDENTITY] [--no-clean]
+       [--sign SIGNING_IDENTITY] [--clean]
 
 Without --sign, the app is ad-hoc signed for local testing. A non-ad-hoc
 identity is signed with the hardened runtime enabled.
 
-Builds are clean by default: SwiftPM state and all dist outputs are removed
-before compiling. Use --no-clean only when composing multiple architectures in
-one higher-level build (for example, the universal DMG or CI flow).
+Builds reuse project-local SwiftPM state by default and replace only the app
+bundle for the requested architecture. Use --clean to clear SwiftPM state
+before compiling; existing dist deliverables are preserved.
 EOF
 }
 
 requested_arch="native"
 signing_identity=""
-clean_build=true
+clean_build=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --arch)
@@ -59,6 +63,10 @@ while [[ $# -gt 0 ]]; do
       clean_build=false
       shift
       ;;
+    --clean)
+      clean_build=true
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -88,12 +96,17 @@ case "$target_arch" in
     ;;
 esac
 
-if [[ "$clean_build" == true ]]; then
-  "$project_root/scripts/clean-build.sh"
+if [[ "$original_argument_count" -eq 0 ]]; then
+  mackvm_enter_build_lock "$project_root" "$project_root/scripts/build-app.sh"
+else
+  mackvm_enter_build_lock "$project_root" "$project_root/scripts/build-app.sh" "${original_arguments[@]}"
 fi
 
-if [[ -d /Applications/Xcode.app/Contents/Developer ]]; then
-  export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+mackvm_select_xcode
+swift_bin="$MACKVM_SWIFT_PATH"
+
+if [[ "$clean_build" == true ]]; then
+  "$project_root/scripts/clean-build.sh"
 fi
 
 export CLANG_MODULE_CACHE_PATH="$project_root/.build/ModuleCache"
@@ -110,11 +123,11 @@ build_arguments=(
   --triple "$target_triple"
 )
 
-swift build "${build_arguments[@]}"
+"$swift_bin" build "${build_arguments[@]}"
 # SwiftPM's output layout differs between toolchain generations (some use the
 # triple/configuration path, while newer Xcode versions use out/Products).
 # Ask SwiftPM for the authoritative bin path instead of guessing its layout.
-binary_dir="$(swift build "${build_arguments[@]}" --show-bin-path)"
+binary_dir="$("$swift_bin" build "${build_arguments[@]}" --show-bin-path)"
 binary_path="$binary_dir/MacKVM"
 
 if [[ ! -x "$binary_path" ]]; then

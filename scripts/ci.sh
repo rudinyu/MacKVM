@@ -1,22 +1,91 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+project_root="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$project_root"
 
-# CI is one multi-target build batch. Clean once here, then keep the outputs
-# while each architecture and diagnostic target is produced below.
-./scripts/clean-build.sh
+source "$project_root/scripts/lib/build-environment.sh"
+original_arguments=("$@")
+original_argument_count=$#
 
-if [[ -d /Applications/Xcode.app/Contents/Developer ]]; then
-  export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+usage() {
+  cat >&2 <<'EOF'
+Usage: scripts/ci.sh [--clean|--quick]
+
+The default runs the full validation gate and reuses project-local caches.
+--clean clears .build first, then runs the same full gate.
+--quick runs the native Swift suite and focused shell/tooling fixtures while
+skipping cross-architecture app/DDC builds and the Windows SDK suite.
+EOF
+}
+
+clean_cache=false
+quick_mode=false
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --clean)
+      clean_cache=true
+      shift
+      ;;
+    --quick)
+      quick_mode=true
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage
+      exit 2
+      ;;
+  esac
+done
+
+if [[ "$original_argument_count" -eq 0 ]]; then
+  mackvm_enter_build_lock "$project_root" "$project_root/scripts/ci.sh"
+else
+  mackvm_enter_build_lock "$project_root" "$project_root/scripts/ci.sh" "${original_arguments[@]}"
+fi
+mackvm_select_xcode
+"$project_root/scripts/check-environment.sh"
+
+if [[ "$clean_cache" == true ]]; then
+  ./scripts/clean-build.sh
 fi
 
 export CLANG_MODULE_CACHE_PATH="$project_root/.build/ModuleCache"
 export SWIFTPM_MODULECACHE_OVERRIDE="$CLANG_MODULE_CACHE_PATH"
+swift_bin="$MACKVM_SWIFT_PATH"
 
-swift build --disable-sandbox
-swift test --disable-sandbox
+"$swift_bin" build --disable-sandbox
+"$swift_bin" test --disable-sandbox
+
+if [[ "$quick_mode" == true ]]; then
+  ./scripts/test-build-tools.sh
+  ./scripts/test-uninstall-app.sh
+  bash -n \
+    scripts/build-app.sh \
+    scripts/build-ddc-diagnostic.sh \
+    scripts/build-windows-macos.sh \
+    scripts/check-environment.sh \
+    scripts/clean-build.sh \
+    scripts/clean-artifacts.sh \
+    scripts/with-build-lock.sh \
+    scripts/lib/build-environment.sh \
+    scripts/test-build-tools.sh \
+    scripts/package-notarized-dmg.sh \
+    scripts/package-dmg.sh \
+    scripts/compose-dmg.sh \
+    scripts/test-package-notarized-dmg.sh
+  ./scripts/test-package-notarized-dmg.sh
+  echo "Quick mode skipped cross-architecture app/DDC builds and the Windows SDK suite."
+  exit 0
+fi
+
+# Lock, cleanup, and Xcode-selection behavior are part of both validation
+# modes, including the default full gate.
+./scripts/test-build-tools.sh
 
 # Exercise both the documented native output and the two supported release
 # architectures. Cross-build validation is intentionally part of CI because
@@ -87,8 +156,12 @@ fi
 
 if [[ "$run_windows_ci" != "0" && "$run_windows_ci" != "false" ]] \
   && "$dotnet_sdk_available"; then
-  windows_build_dir="$(mktemp -d "${TMPDIR:-/tmp}/mackvm-windows-ci.XXXXXX")"
-  trap 'rm -rf "$windows_build_dir"' EXIT
+  windows_build_dir="$project_root/.build/windows-ci"
+  mkdir -p "$windows_build_dir" "$project_root/.build/dotnet-home" \
+    "$project_root/.build/nuget-packages"
+  export DOTNET_CLI_HOME="$project_root/.build/dotnet-home"
+  export NUGET_PACKAGES="$project_root/.build/nuget-packages"
+  export DOTNET_CLI_TELEMETRY_OPTOUT=1
   case "$(uname -m)" in
     arm64|aarch64)
       windows_test_runtime=osx-arm64

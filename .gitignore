@@ -3,6 +3,7 @@
 .build*/
 .swiftpm/
 **/.build/
+/.mackvm-build.lock/
 
 # Release artifacts produced by macOS and Windows build scripts.
 /dist/

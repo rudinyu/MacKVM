@@ -34,7 +34,7 @@ To build local test apps on the M5 Pro:
 
 ```sh
 ./scripts/build-app.sh --arch arm64
-./scripts/build-app.sh --arch x86_64 --no-clean
+./scripts/build-app.sh --arch x86_64
 ```
 
 MacKVM uses native IOKit DDC/CI: `IOAVService` on Apple Silicon and `IOI2C`

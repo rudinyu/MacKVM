@@ -1,8 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+project_root="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$project_root"
+
+source "$project_root/scripts/lib/build-environment.sh"
+
+if [[ $# -gt 0 ]]; then
+  if [[ "$#" -eq 1 && "$1" == "--help" ]]; then
+    echo "Usage: scripts/clean-build.sh"
+    echo "Removes project-local SwiftPM build state and preserves dist artifacts."
+    exit 0
+  fi
+  echo "Usage: scripts/clean-build.sh" >&2
+  exit 2
+fi
+
+mackvm_enter_build_lock "$project_root" "$project_root/scripts/clean-build.sh"
 
 # This helper is intentionally scoped to generated paths owned by this
 # repository. Keep the guards explicit: a malformed project root must never
@@ -12,12 +26,11 @@ if [[ -z "$project_root" || "$project_root" == "/" ]]; then
   exit 1
 fi
 
-dist_root="$project_root/dist"
 build_root="$project_root/.build"
 
-for generated_root in "$build_root" "$dist_root"; do
+for generated_root in "$build_root"; do
   case "$generated_root" in
-    "$project_root/.build"|"$project_root/dist")
+    "$project_root/.build")
       ;;
     *)
       echo "Refusing to clean unexpected path: $generated_root" >&2
@@ -32,5 +45,4 @@ for generated_root in "$build_root" "$dist_root"; do
   fi
 done
 
-mkdir -p "$dist_root"
-echo "Cleaned Swift build state and dist outputs."
+echo "Cleaned Swift build state; dist artifacts were preserved."

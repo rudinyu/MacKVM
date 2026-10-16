@@ -97,6 +97,48 @@ Run the Windows desktop acceptance checks on both architectures before a
 release; a successful cross-build does not validate native dialogs, hotkeys,
 or input injection on a real Windows desktop.
 
+## Cross-publish from macOS
+
+Windows executables can also be cross-published directly from macOS. Install a
+.NET 8 SDK or newer, then run the separate macOS-native script from the
+repository root. The macOS `file` utility is used to verify that each output is
+a Windows PE executable of the requested architecture:
+
+```sh
+./scripts/build-windows-macos.sh
+./scripts/build-windows-macos.sh --arch x64
+./scripts/build-windows-macos.sh --arch arm64
+```
+
+The default is `both`. Outputs use the same layout as the Windows-native
+script:
+
+```text
+dist/windows/x64/WindowsKVM.exe
+dist/windows/arm64/WindowsKVM.exe
+```
+
+Default builds clean `dist` once before publishing. A custom output must be a
+strict child of `dist/` (not `dist` itself) and cleans only that destination,
+for example:
+
+```sh
+./scripts/build-windows-macos.sh --arch x64 --output dist/windows-local
+```
+
+Use `--plan` to print the publish commands without invoking .NET, creating
+output directories, or cleaning existing artifacts:
+
+```sh
+./scripts/build-windows-macos.sh --plan
+```
+
+Intermediate publish state is isolated by Windows runtime identifier under
+`.build/windows-publish/` (`win-x64` and `win-arm64`). A successful cross-publish
+verifies the PE format and machine architecture only; it does not replace
+native Windows desktop acceptance for the tray UI, dialogs, hotkeys,
+`SendInput`, firewall prompts, or HiDPI behavior.
+
 ## Run the pairing receiver
 
 Confirm the executable before starting a test:
@@ -275,17 +317,19 @@ On the M5 Pro, preview the command without executing it:
 pwsh ./scripts/test-windows.ps1 -Plan
 ```
 
-## Preview from the M5 Pro
+## Preview the Windows-native script from macOS
 
-The publish script intentionally runs on a Windows host. On macOS, use
-`-Plan` to print the commands without invoking .NET or creating a Windows
-executable:
+The PowerShell publish script remains Windows-only. On macOS, use its `-Plan`
+switch to preview those Windows-host commands without invoking .NET or creating
+an executable:
 
 ```sh
 pwsh ./scripts/build-windows.ps1 -Architecture both -Plan
 ```
 
-The plan mode does not create `dist/windows`.
+To preview the commands used by the macOS-native cross-publisher instead, run
+`./scripts/build-windows-macos.sh --plan`. Neither plan mode creates or cleans
+`dist/windows`.
 
 ## Optional parameters
 

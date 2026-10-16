@@ -15,7 +15,7 @@ has been generated or published.
 
 - macOS 13 or later on both Macs.
 - A trusted local network shared by both Macs.
-- Swift 6 toolchain or Xcode on the Mac used to build the app.
+- Full Xcode with the Swift 6 toolchain on the Mac used to build the app.
 - An external monitor and connection that expose VESA DDC/CI. Some MA270U
   firmware does not show a DDC/CI toggle in the OSD; MacKVM uses the native
   bridge when macOS exposes the display.
@@ -31,8 +31,9 @@ be mapped after running the diagnostic scan.
 Build on the M5 Pro, which can produce both architectures:
 
 ```sh
+./scripts/check-environment.sh
 ./scripts/build-app.sh --arch arm64
-./scripts/build-app.sh --arch x86_64 --no-clean
+./scripts/build-app.sh --arch x86_64
 ```
 
 Install `dist/arm64/MacKVM.app` on the M5 Pro and
@@ -44,6 +45,14 @@ Run the local checks before installation:
 ```sh
 ./scripts/ci.sh
 ```
+
+The default CI command runs the full validation gate and reuses `.build/`.
+`./scripts/ci.sh --clean` clears that cache and runs the same full gate;
+`./scripts/ci.sh --quick` runs the native Swift suite and focused tooling
+fixtures while skipping cross-architecture and Windows SDK checks. Individual
+app and diagnostic builds also reuse the cache by default; pass `--clean` for a
+cold build. `scripts/clean-build.sh` clears caches while preserving `dist/`,
+and `scripts/clean-artifacts.sh` explicitly deletes generated `dist/` files.
 
 ## Build the Windows companion
 

@@ -97,7 +97,7 @@
       <p>DMG 只含 <code>MacKVM.pkg</code> 與中英文安裝指南，不含獨立 app bundle 或 Finder 可執行的 <code>.command</code> 檔案。若要在 M5 Pro 上自行建置本機測試 app：</p>
       <pre><code>cd MacKVM
 ./scripts/build-app.sh --arch arm64
-./scripts/build-app.sh --arch x86_64 --no-clean</code></pre>
+./scripts/build-app.sh --arch x86_64</code></pre>
       <p>建立本機測試 DMG，可使用：</p>
       <pre><code>./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal

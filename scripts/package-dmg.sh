@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+project_root="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$project_root"
+
+source "$project_root/scripts/lib/build-environment.sh"
+original_arguments=("$@")
+original_argument_count=$#
 
 usage() {
   cat >&2 <<'EOF'
@@ -124,6 +128,12 @@ notarization_tool="${MACKVM_NOTARIZATION_TOOL:-${HOME:-}/.codex/skills/macos-not
 if [[ "$use_shared_signing" == true && ! -f "$notarization_tool" ]]; then
   echo "Shared macOS notarization helper was not found: $notarization_tool" >&2
   exit 2
+fi
+
+if [[ "$original_argument_count" -eq 0 ]]; then
+  mackvm_enter_build_lock "$project_root" "$project_root/scripts/package-dmg.sh"
+else
+  mackvm_enter_build_lock "$project_root" "$project_root/scripts/package-dmg.sh" "${original_arguments[@]}"
 fi
 
 # A DMG is one multi-architecture build batch. Clean its generated state once

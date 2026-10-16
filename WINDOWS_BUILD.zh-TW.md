@@ -86,6 +86,43 @@ reference graph 中的每個 project，避免 `net8.0` protocol library 與
 發佈前仍須在兩種架構執行 Windows 桌面驗收；cross-build 成功不能驗證真實 Windows 桌面的
 原生對話框、熱鍵與輸入注入行為。
 
+## 從 macOS cross-publish
+
+也可以直接從 macOS cross-publish Windows executable。請先安裝 .NET 8 SDK 或更新版本，
+再於 repository 根目錄執行另一支 macOS 原生腳本。腳本使用 macOS 內建的 `file` 工具，
+驗證輸出為 Windows PE executable，且架構符合指定目標：
+
+```sh
+./scripts/build-windows-macos.sh
+./scripts/build-windows-macos.sh --arch x64
+./scripts/build-windows-macos.sh --arch arm64
+```
+
+預設為 `both`，產物路徑與 Windows 原生腳本相同：
+
+```text
+dist/windows/x64/WindowsKVM.exe
+dist/windows/arm64/WindowsKVM.exe
+```
+
+使用預設輸出時，腳本會在 publish 前清理一次 `dist`。自訂輸出必須是 `dist/` 底下的子目錄
+（不能直接指定 `dist`），且只會清理該目的目錄，例如：
+
+```sh
+./scripts/build-windows-macos.sh --arch x64 --output dist/windows-local
+```
+
+加上 `--plan` 可預覽 publish 指令；不會呼叫 .NET、不會建立輸出目錄，也不會清除既有產物：
+
+```sh
+./scripts/build-windows-macos.sh --plan
+```
+
+中間 publish 狀態會依 Windows runtime identifier 隔離在 `.build/windows-publish/` 下
+（`win-x64` 與 `win-arm64`）。成功 cross-publish 只驗證 PE 格式與機器架構，不能取代真實
+Windows 桌面驗收；系統匣 UI、原生對話框、熱鍵、`SendInput`、防火牆提示與 HiDPI 行為仍需
+在 Windows 實機確認。
+
 ## 啟動配對 receiver
 
 開始測試前先確認執行檔版本：
@@ -219,16 +256,17 @@ identity。請先在所有曾信任這台 Windows 的 Mac 忘記舊 peer，再�
 pwsh ./scripts/test-windows.ps1 -Plan
 ```
 
-## 在 M5 Pro 預覽建置指令
+## 從 macOS 預覽 Windows 原生腳本
 
-publish 腳本刻意要求 Windows 建置主機。在 macOS 上可使用 `-Plan` 預覽指令，
-不呼叫 .NET，也不產生 Windows executable：
+PowerShell publish 腳本仍要求 Windows 建置主機。在 macOS 上可使用它的 `-Plan` 預覽
+Windows host 指令，不呼叫 .NET，也不產生 executable：
 
 ```sh
 pwsh ./scripts/build-windows.ps1 -Architecture both -Plan
 ```
 
-Plan 模式不會建立 `dist/windows`。
+若要預覽 macOS 原生 cross-publisher 使用的指令，請執行
+`./scripts/build-windows-macos.sh --plan`。兩種 plan 模式都不會建立或清除 `dist/windows`。
 
 ## 選用參數
 

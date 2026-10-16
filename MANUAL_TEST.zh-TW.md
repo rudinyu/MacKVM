@@ -13,7 +13,7 @@ macOS 隱私權提示，因此仍需在兩台實機執行以下步驟。
 ```sh
 ./scripts/ci.sh
 ./scripts/build-app.sh --arch arm64
-./scripts/build-app.sh --arch x86_64 --no-clean
+./scripts/build-app.sh --arch x86_64
 ```
 
 將 `dist/arm64/MacKVM.app` 複製到 M5 Pro，將 `dist/x86_64/MacKVM.app` 複製到

@@ -102,7 +102,7 @@ that Mac, and nothing is sent to the peer.
 ## Requirements
 
 - macOS 13 or later
-- Swift 6 toolchain (Xcode is preferred when installed)
+- Full Xcode installation with the Swift 6 toolchain
 - An external monitor and cable that expose VESA DDC/CI are optional; they are
   required only for automatic monitor input switching.
 
@@ -116,6 +116,7 @@ both architectures use the same automatic switching flow.
 Build and ad-hoc sign an app bundle for the current Mac:
 
 ```sh
+./scripts/check-environment.sh
 ./scripts/build-app.sh
 open dist/MacKVM.app
 ```
@@ -129,11 +130,19 @@ An Apple Silicon Mac can also cross-build both supported architectures:
 ./scripts/build-app.sh --arch arm64
 
 # 2019 Intel MacBook Pro
-./scripts/build-app.sh --arch x86_64 --no-clean
+./scripts/build-app.sh --arch x86_64
 ```
 
-Each normal build starts clean. Use `--no-clean` for later architectures in
-the same build batch so the earlier app slice remains in `dist/`.
+Builds reuse the project-local `.build/` cache and replace only the app bundle
+for the requested architecture. Use `--clean` to clear build state before a
+build; existing `dist/` deliverables remain. `scripts/clean-build.sh` clears
+build state only, while `scripts/clean-artifacts.sh` explicitly deletes
+generated files under `dist/`.
+
+The full validation gate reuses caches by default. Use `./scripts/ci.sh --clean`
+for the same full gate from an empty cache, or `./scripts/ci.sh --quick` for the
+native Swift suite and focused tooling fixtures without cross-architecture or
+Windows SDK checks.
 
 These commands produce `dist/arm64/MacKVM.app` and
 `dist/x86_64/MacKVM.app`. Copy the x86_64 app to the Intel Mac and the arm64

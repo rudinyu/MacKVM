@@ -28,9 +28,9 @@ Build the tool on a Mac with the repository checkout:
 ./scripts/build-ddc-diagnostic.sh --arch universal
 ```
 
-Direct diagnostic builds clean the repository `.build` state and all `dist`
-outputs first. When building several targets in one batch, pass
-`--no-clean` to the later invocations so earlier binaries remain available.
+Diagnostic builds reuse the repository-local `.build` cache and preserve
+existing `dist` deliverables. Pass `--clean` when you need to clear build state;
+building multiple targets does not require a cleanup flag.
 
 The executables are written to `dist/ddc-diagnostic-arm64`,
 `dist/ddc-diagnostic-x86_64`, and `dist/ddc-diagnostic-universal`. The

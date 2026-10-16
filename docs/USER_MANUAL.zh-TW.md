@@ -28,7 +28,7 @@ Installer 會將 app 安裝到 `/Applications`。DMG 只含安裝套件與中英
 
 ```sh
 ./scripts/build-app.sh --arch arm64
-./scripts/build-app.sh --arch x86_64 --no-clean
+./scripts/build-app.sh --arch x86_64
 ```
 
 MacKVM 使用原生 IOKit DDC/CI：Apple Silicon 走 `IOAVService`，Intel 走 `IOI2C`，

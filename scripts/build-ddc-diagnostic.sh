@@ -1,26 +1,30 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+project_root="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$project_root"
+
+source "$project_root/scripts/lib/build-environment.sh"
+original_arguments=("$@")
+original_argument_count=$#
 
 usage() {
   cat >&2 <<'EOF'
 Usage: scripts/build-ddc-diagnostic.sh [--arch native|arm64|x86_64|universal]
-       [--output PATH] [--no-clean]
+       [--output PATH] [--clean]
 
 Builds the standalone native DDC diagnostic tool. The tool is intentionally
 not part of the MacKVM.app bundle; copy it to the Mac being diagnosed.
 
-Builds are clean by default: Swift/Clang state and all dist outputs are
-removed before compiling. Use --no-clean only when composing multiple targets
-in one higher-level build (for example, CI).
+Builds reuse project-local Swift/Clang state by default and replace only the
+selected diagnostic output. Use --clean to clear build state; existing dist
+deliverables are preserved.
 EOF
 }
 
 requested_arch="native"
 output_path=""
-clean_build=true
+clean_build=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --arch)
@@ -45,6 +49,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-clean)
       clean_build=false
+      shift
+      ;;
+    --clean)
+      clean_build=true
       shift
       ;;
     -h|--help)
@@ -74,10 +82,6 @@ case "$target_arch" in
     ;;
 esac
 
-if [[ "$clean_build" == true ]]; then
-  "$project_root/scripts/clean-build.sh"
-fi
-
 if [[ -z "$output_path" ]]; then
   if [[ "$target_arch" == "universal" ]]; then
     output_path="$project_root/dist/ddc-diagnostic-universal"
@@ -88,8 +92,17 @@ elif [[ "$output_path" != /* ]]; then
   output_path="$project_root/$output_path"
 fi
 
-if [[ -d /Applications/Xcode.app/Contents/Developer ]]; then
-  export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+if [[ "$original_argument_count" -eq 0 ]]; then
+  mackvm_enter_build_lock "$project_root" "$project_root/scripts/build-ddc-diagnostic.sh"
+else
+  mackvm_enter_build_lock "$project_root" "$project_root/scripts/build-ddc-diagnostic.sh" "${original_arguments[@]}"
+fi
+
+mackvm_select_xcode
+clang_bin="$MACKVM_CLANG_PATH"
+
+if [[ "$clean_build" == true ]]; then
+  "$project_root/scripts/clean-build.sh"
 fi
 
 source_file="$project_root/Tools/DDCDiagnostic/ddc-diagnostic.m"
@@ -102,8 +115,9 @@ mkdir -p "$(dirname "$output_path")"
 build_one() {
   local architecture="$1"
   local destination="$2"
-  clang \
+  "$clang_bin" \
     -arch "$architecture" \
+    -isysroot "$MACKVM_MACOS_SDK_PATH" \
     -mmacosx-version-min=13.0 \
     -std=c11 \
     -O2 \

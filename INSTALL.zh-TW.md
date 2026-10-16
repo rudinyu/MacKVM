@@ -12,7 +12,7 @@
 
 - 兩台 Mac 都使用 macOS 13 或更新版本。
 - 兩台 Mac 位於同一個可信任的本機網路。
-- 建置 MacKVM 的電腦安裝 Swift 6 toolchain 或 Xcode。
+- 建置 MacKVM 的電腦安裝完整 Xcode 與 Swift 6 toolchain。
 - 外接螢幕與線材需提供 VESA DDC/CI。部分 MA270U 韌體不會在 OSD 顯示
   DDC/CI 開關；MacKVM 會在 macOS 暴露顯示器時使用原生 bridge。
 
@@ -25,8 +25,9 @@ EDID mapping 使用 `19`／`0x13`；其他型號保留通用值，或先執行�
 建議在 M5 Pro 上建置，因為它可以產生兩種架構：
 
 ```sh
+./scripts/check-environment.sh
 ./scripts/build-app.sh --arch arm64
-./scripts/build-app.sh --arch x86_64 --no-clean
+./scripts/build-app.sh --arch x86_64
 ```
 
 把 `dist/arm64/MacKVM.app` 安裝到 M5 Pro，把 `dist/x86_64/MacKVM.app` 安裝到
@@ -37,6 +38,12 @@ Intel Mac。建置腳本會驗證 Mach-O 架構與 ad-hoc 簽章。
 ```sh
 ./scripts/ci.sh
 ```
+
+預設 CI 會執行完整檢查並沿用 `.build/` 快取。`./scripts/ci.sh --clean` 會清除快取後
+執行相同的完整檢查；`./scripts/ci.sh --quick` 執行原生 Swift 測試與工具腳本 fixture，
+略過跨架構建置及 Windows SDK 檢查。個別 app 與診斷工具建置也預設沿用快取；加上
+`--clean` 可進行冷建置。`scripts/clean-build.sh` 只清除快取並保留 `dist/`；
+`scripts/clean-artifacts.sh` 會明確刪除 `dist/` 下的產物。
 
 ## 建置 Windows companion
 

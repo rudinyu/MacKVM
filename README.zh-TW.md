@@ -74,7 +74,7 @@ CoreGraphics 只公開鍵盤、滑鼠與滾輪的事件建構子，因此控制�
 ## 需求
 
 - macOS 13 或更新版本。
-- Swift 6 toolchain；若要使用完整 Xcode 產物可安裝 Xcode。
+- 完整 Xcode 與 Swift 6 toolchain。
 - 若要自動切換螢幕輸入，外接螢幕與線材需提供 VESA DDC/CI；若螢幕 OSD 有 DDC/CI
   選項，請先開啟。沒有外接螢幕仍可配對與遠端控制。
 
@@ -88,18 +88,26 @@ MA270U 的 USB-C 輸入使用 VCP 0x60 值 `19 (0x13)`；MacKVM 會依 EDID 套�
 請參閱完整的[繁體中文安裝指南](INSTALL.zh-TW.md)。常用指令如下：
 
 ```sh
+# 檢查目前建置環境
+./scripts/check-environment.sh
+
 # Apple Silicon 版本
 ./scripts/build-app.sh --arch arm64
 
 # 2019 Intel Mac 可用的 Intel 版本
-./scripts/build-app.sh --arch x86_64 --no-clean
+./scripts/build-app.sh --arch x86_64
 
 # 同時支援兩種架構的 DMG
 ./scripts/package-dmg.sh --arch universal
 ```
 
-每次一般建置會先清除舊輸出。同一批要建置多個架構時，後續指令請加上
-`--no-clean`，以保留先前架構的 app。
+建置預設沿用 repository 的 `.build/` 快取，只替換指定架構的 app。使用
+`--clean` 可在建置前清除快取；`dist/` 內既有產物會保留。`scripts/clean-build.sh`
+只清除快取，`scripts/clean-artifacts.sh` 則會明確刪除 `dist/` 下的產物。
+
+完整檢查預設沿用快取。`./scripts/ci.sh --clean` 會清除快取後執行相同的完整檢查；
+`./scripts/ci.sh --quick` 執行原生 Swift 測試與工具腳本 fixture，略過跨架構 app/DDC
+建置與 Windows SDK 檢查。
 
 產物位於 `dist/`。本機測試使用 ad-hoc 簽章；要透過 GitHub 或其他方式提供給其他
 Mac 正式安裝，請使用獨立的 notarized release script，不需要上架 Mac App Store。

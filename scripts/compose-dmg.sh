@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+project_root="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$project_root"
+source "$project_root/scripts/lib/build-environment.sh"
+original_arguments=("$@")
+original_argument_count=$#
 
 usage() {
   cat >&2 <<'EOF'
@@ -79,6 +82,13 @@ esac
   echo "Installer package not found: $pkg_path" >&2
   exit 1
 }
+
+if [[ "$original_argument_count" -eq 0 ]]; then
+  mackvm_enter_build_lock "$project_root" "$project_root/scripts/compose-dmg.sh"
+else
+  mackvm_enter_build_lock "$project_root" "$project_root/scripts/compose-dmg.sh" \
+    "${original_arguments[@]}"
+fi
 
 staging_root="$project_root/dist/.staging"
 mkdir -p "$staging_root"
