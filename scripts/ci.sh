@@ -74,6 +74,7 @@ if [[ "$quick_mode" == true ]]; then
     scripts/with-build-lock.sh \
     scripts/lib/build-environment.sh \
     scripts/test-build-tools.sh \
+    scripts/test-install-uninstall-integration.sh \
     scripts/package-notarized-dmg.sh \
     scripts/package-dmg.sh \
     scripts/compose-dmg.sh \
@@ -95,27 +96,10 @@ fi
 ./scripts/build-app.sh --arch x86_64 --no-clean
 
 # Exercise the checked-in installer and uninstaller against the arm64 bundle
-# without touching /Applications or the user's preferences.
-installer_test_dir="$(mktemp -d "${TMPDIR:-/tmp}/mackvm-installer.XXXXXX")"
-installer_test_dir="$(CDPATH= cd -P -- "$installer_test_dir" && pwd -P)"
-cleanup_installer_test() {
-  rm -rf -- "$installer_test_dir"
-}
-trap cleanup_installer_test EXIT
-./scripts/install-app.sh \
-  --source "$project_root/dist/arm64/MacKVM.app" \
-  --target-dir "$installer_test_dir" >/dev/null
-[[ -d "$installer_test_dir/MacKVM.app" ]] || {
-  echo "Installer did not create the app bundle." >&2
-  exit 1
-}
-./scripts/uninstall-app.sh --target-dir "$installer_test_dir" >/dev/null
-[[ ! -e "$installer_test_dir/MacKVM.app" ]] || {
-  echo "Uninstaller did not remove the app bundle." >&2
-  exit 1
-}
-cleanup_installer_test
-trap - EXIT
+# without touching /Applications or the user's preferences. Process state is
+# simulated for the uninstaller's exact temporary binary path because CI does
+# not launch the app and must not depend on host process enumeration.
+./scripts/test-install-uninstall-integration.sh
 
 ./scripts/test-uninstall-app.sh
 
@@ -219,7 +203,8 @@ assert_build_app_rejected "Invalid architecture" --arch invalid
 assert_build_app_rejected "Invalid equals-form architecture" --arch=invalid
 assert_build_app_rejected "Missing architecture value" --arch
 
-bash -n scripts/install-app.sh scripts/uninstall-app.sh scripts/test-uninstall-app.sh
+bash -n scripts/install-app.sh scripts/uninstall-app.sh \
+  scripts/test-install-uninstall-integration.sh scripts/test-uninstall-app.sh
 ./scripts/install-app.sh --help >/dev/null
 ./scripts/uninstall-app.sh --help >/dev/null
 

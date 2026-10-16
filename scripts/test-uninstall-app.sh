@@ -23,8 +23,13 @@ case "$tool" in
     printf '%s\n' "${MACKVM_TEST_BUNDLE_ID:-app.mackvm.MacKVM}"
     ;;
   pgrep)
-    [[ "${MACKVM_TEST_RUNNING:-false}" == true ]] && exit 0
-    exit 1
+    case "${MACKVM_TEST_PGREP_STATUS:-1}" in
+      0|1|3) exit "$MACKVM_TEST_PGREP_STATUS" ;;
+      *)
+        echo "unexpected pgrep test status" >&2
+        exit 50
+        ;;
+    esac
     ;;
   security)
     case "${1:-}" in
@@ -124,6 +129,12 @@ assert_contains() {
   esac
 }
 
+assert_logged() {
+  local log_path="$1"
+  local expected_call="$2"
+  grep -Fqx -- "$expected_call" "$log_path" || fail "expected logged command: $expected_call"
+}
+
 assert_no_mutating_tool_calls() {
   local log_path="$1"
   if grep -Eq '^(defaults[[:space:]]delete|security[[:space:]]delete|tccutil[[:space:]]|sudo[[:space:]])' "$log_path"; then
@@ -148,7 +159,7 @@ new_case() {
   export MACKVM_TEST_SUDO_ARGS="$case_root/sudo-args"
   export MACKVM_TEST_BUNDLE_ID="app.mackvm.MacKVM"
   export MACKVM_TEST_KEYCHAIN_MODE=present
-  export MACKVM_TEST_RUNNING=false
+  export MACKVM_TEST_PGREP_STATUS=1
   export MACKVM_TEST_TCC_STATUS=0
   export MACKVM_TEST_DEFAULTS_DENIED=false
   export MACKVM_TEST_DEFAULTS_FORCE_PRESENT=false
@@ -172,7 +183,7 @@ run_uninstaller_reopened_after_confirmation() (
     printf '%s\n' "$MACKVM_TEST_HOME"
   }
   confirm_purge() {
-    export MACKVM_TEST_RUNNING=true
+    export MACKVM_TEST_PGREP_STATUS=0
   }
   main "$@"
 )
@@ -188,6 +199,8 @@ create_app() {
 # Legacy mode still removes only the validated app bundle.
 new_case legacy
 output="$(run_uninstaller --target-dir "$target_dir")"
+assert_logged "$MACKVM_TEST_LOG" \
+  $'pgrep\t-f '"$target_dir/MacKVM.app/Contents/MacOS/MacKVM"
 assert_absent "$target_dir/MacKVM.app"
 assert_exists "$MACKVM_TEST_HOME/Library/Preferences/app.mackvm.device-identity.plist"
 assert_exists "$MACKVM_TEST_HOME/Library/Preferences/app.mackvm.MacKVM.plist"
@@ -196,6 +209,18 @@ assert_contains "$output" "User preferences, paired device data, private keys, a
 if grep -Eq '^(defaults|security|tccutil|sudo)[[:space:]]' "$MACKVM_TEST_LOG"; then
   fail "legacy mode invoked purge-only commands"
 fi
+
+# Only pgrep exit 1 means no match. Other query failures must preserve the app.
+new_case pgrep-failure
+export MACKVM_TEST_PGREP_STATUS=3
+if output="$(run_uninstaller --target-dir "$target_dir" 2>&1)"; then
+  fail "uninstall proceeded after pgrep failed"
+fi
+assert_logged "$MACKVM_TEST_LOG" \
+  $'pgrep\t-f '"$target_dir/MacKVM.app/Contents/MacOS/MacKVM"
+assert_contains "$output" "Could not verify whether MacKVM is stopped (pgrep exit 3)."
+assert_exists "$target_dir/MacKVM.app"
+assert_no_mutating_tool_calls "$MACKVM_TEST_LOG"
 
 # A purge dry-run, including the optional firewall action, must enumerate but
 # not execute any mutation and must not require confirmation.
@@ -292,10 +317,11 @@ assert_contains "$output" "MacKVM purge was incomplete"
 # A running app blocks purge even if the target bundle is already absent.
 new_case running
 /bin/rm -rf -- "$target_dir/MacKVM.app"
-export MACKVM_TEST_RUNNING=true
+export MACKVM_TEST_PGREP_STATUS=0
 if output="$(run_uninstaller --purge --yes --target-dir "$target_dir" 2>&1)"; then
   fail "purge proceeded while MacKVM was running"
 fi
+assert_logged "$MACKVM_TEST_LOG" $'pgrep\t-x MacKVM'
 assert_contains "$output" "quit every MacKVM process before purging"
 assert_exists "$MACKVM_TEST_HOME/Library/Preferences/app.mackvm.device-identity.plist"
 assert_no_mutating_tool_calls "$MACKVM_TEST_LOG"
