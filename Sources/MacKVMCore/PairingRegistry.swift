@@ -279,6 +279,7 @@ public final class PairingRegistry {
             model: preferredModel(model, existing: existing?.model),
             lastConnectedAt: date,
             seamlessControlAuthorized: existing?.seamlessControlAuthorized ?? false,
+            clipboardSyncEnabled: existing?.clipboardSyncEnabled ?? false,
             signingPublicKey: publicKey
         )
         let persistence = enqueuePersistenceLocked(immediately: persistImmediately)
@@ -315,6 +316,7 @@ public final class PairingRegistry {
             model: existing?.model,
             lastConnectedAt: existing?.lastConnectedAt,
             seamlessControlAuthorized: existing?.seamlessControlAuthorized ?? false,
+            clipboardSyncEnabled: existing?.clipboardSyncEnabled ?? false,
             signingPublicKey: publicKey
         )
         let persistence = enqueuePersistenceLocked(immediately: persistImmediately)
@@ -359,6 +361,49 @@ public final class PairingRegistry {
             model: existing?.model,
             lastConnectedAt: existing?.lastConnectedAt,
             seamlessControlAuthorized: authorized,
+            clipboardSyncEnabled: existing?.clipboardSyncEnabled ?? false,
+            signingPublicKey: publicKey
+        )
+        let persistence = enqueuePersistenceLocked(immediately: persistImmediately)
+        let saved = finishPersistenceLocked(
+            persistence,
+            previousPeers: previousPeers,
+            previousProfiles: previousProfiles,
+            rollbackOnFailure: true
+        )
+        lock.unlock()
+        return saved
+    }
+
+    /// Returns the explicitly configured, local clipboard consent for a
+    /// currently pinned peer. Missing, stale, or older profiles default off.
+    public func clipboardSyncEnabled(for peerID: UUID) -> Bool {
+        profile(for: peerID)?.clipboardSyncEnabled ?? false
+    }
+
+    /// Updates the local clipboard consent for a currently pinned peer.
+    @discardableResult
+    public func updateClipboardSyncEnabled(
+        for peerID: UUID,
+        enabled: Bool,
+        persistImmediately: Bool = true
+    ) -> Bool {
+        lock.lock()
+        guard let publicKey = cachedPeers[peerID] else {
+            lock.unlock()
+            return false
+        }
+        let previousPeers = cachedPeers
+        let previousProfiles = cachedProfiles
+        let existing = cachedProfiles[peerID]
+        cachedProfiles[peerID] = PairedPeerProfile(
+            peerID: peerID,
+            friendlyName: existing?.friendlyName
+                ?? generatedFriendlyName(for: peerID),
+            model: existing?.model,
+            lastConnectedAt: existing?.lastConnectedAt,
+            seamlessControlAuthorized: existing?.seamlessControlAuthorized ?? false,
+            clipboardSyncEnabled: enabled,
             signingPublicKey: publicKey
         )
         let persistence = enqueuePersistenceLocked(immediately: persistImmediately)
@@ -481,6 +526,7 @@ public final class PairingRegistry {
             // so make daily switching seamless immediately. Preserve an
             // existing local opt-out when the same pinned peer is refreshed.
             seamlessControlAuthorized: existing?.seamlessControlAuthorized ?? true,
+            clipboardSyncEnabled: existing?.clipboardSyncEnabled ?? false,
             signingPublicKey: peer.signingPublicKey
         )
     }

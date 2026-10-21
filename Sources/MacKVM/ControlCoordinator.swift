@@ -6,12 +6,28 @@ struct IncomingControlRequest: Identifiable, Equatable {
     let id: UUID
     let peerID: UUID
     let managesDisplayRoute: Bool
+    let supportsClipboard: Bool?
+    let clipboardEnabled: Bool?
 
-    init(id: UUID, peerID: UUID, managesDisplayRoute: Bool = true) {
+    init(
+        id: UUID,
+        peerID: UUID,
+        managesDisplayRoute: Bool = true,
+        supportsClipboard: Bool? = nil,
+        clipboardEnabled: Bool? = nil
+    ) {
         self.id = id
         self.peerID = peerID
         self.managesDisplayRoute = managesDisplayRoute
+        self.supportsClipboard = supportsClipboard
+        self.clipboardEnabled = clipboardEnabled
     }
+}
+
+enum ControlOwnershipTransition: Equatable {
+    case outboundControl(peerID: UUID)
+    case inboundControl(peerID: UUID)
+    case returnedLocally
 }
 
 enum ControlInputFailure {
@@ -95,6 +111,9 @@ final class ControlCoordinator: ObservableObject {
     var onReceivingStarted: (() -> Void)?
     var onReceivingStopped: ((@escaping () -> Void) -> Void)?
     var onIncomingControlRequest: ((IncomingControlRequest) -> Void)?
+    /// Fires only after input capture or injection has actually started, and
+    /// when an active session has returned input locally.
+    var onOwnershipTransition: ((ControlOwnershipTransition) -> Void)?
     /// Called synchronously when a pending incoming request is resolved or
     /// invalidated. Keeping the exact request here lets notification cleanup
     /// use request identity instead of inferring ownership from delayed
@@ -109,11 +128,15 @@ final class ControlCoordinator: ObservableObject {
     private let localControlAllowed: () -> Bool
     private let keyboardLayoutIdentifier: () -> String?
     private let seamlessControlAuthorized: (UUID) -> Bool
+    private let clipboardSyncEnabled: (UUID) -> Bool
+    private let clipboardSync: any ClipboardSyncManaging
     private var machine = ControlSessionStateMachine()
     private var connectionObservation: AnyCancellable?
     private var requestTimeout: DispatchWorkItem?
     private var incomingRequestTimeout: DispatchWorkItem?
     private var activeOutboundRequestID: UUID?
+    private var clipboardSyncIsActive = false
+    private(set) var ownershipTransitionRevision: UInt64 = 0
     private var activeControlRequestCompletion: ((Bool) -> Void)?
     private var activeControlDisplayAlreadyRemote = false
     /// Whether MacKVM owns the display route for the active outbound session.
@@ -155,7 +178,9 @@ final class ControlCoordinator: ObservableObject {
         inputSink: any ControlInputSink,
         localControlAllowed: @escaping () -> Bool = { true },
         keyboardLayoutIdentifier: @escaping () -> String? = { nil },
-        seamlessControlAuthorized: @escaping (UUID) -> Bool = { _ in false }
+        seamlessControlAuthorized: @escaping (UUID) -> Bool = { _ in false },
+        clipboardSyncEnabled: @escaping (UUID) -> Bool = { _ in false },
+        clipboardSync: any ClipboardSyncManaging = PasteboardClipboardSyncService()
     ) {
         self.localID = localID
         self.secureSession = secureSession
@@ -164,6 +189,8 @@ final class ControlCoordinator: ObservableObject {
         self.localControlAllowed = localControlAllowed
         self.keyboardLayoutIdentifier = keyboardLayoutIdentifier
         self.seamlessControlAuthorized = seamlessControlAuthorized
+        self.clipboardSyncEnabled = clipboardSyncEnabled
+        self.clipboardSync = clipboardSync
         // Treat the initial publisher value as describing the gate's initial
         // generation. If authentication races that first nil delivery, the
         // nil event must not invalidate the newer authenticated generation.
@@ -176,6 +203,9 @@ final class ControlCoordinator: ObservableObject {
                 return
             }
             send(.input(event, requestID: requestID))
+        }
+        clipboardSync.onLocalTextChange = { [weak self] text in
+            self?.sendClipboardText(text)
         }
         inputCapture.onEmergencyStop = { [weak self] in
             self?.stopControl(reason: "Emergency shortcut returned input locally")
@@ -275,6 +305,10 @@ final class ControlCoordinator: ObservableObject {
             completion?(false)
             return false
         }
+        guard let peerID = secureSession.connectedPeerID else {
+            completion?(false)
+            return false
+        }
         do {
             let requestID = UUID()
             state = try machine.handle(.requestControl)
@@ -287,7 +321,8 @@ final class ControlCoordinator: ObservableObject {
                 ControlMessage.requestControl(
                     requestID: requestID,
                     keyboardLayoutIdentifier: keyboardLayoutIdentifier(),
-                    managesDisplayRoute: managesDisplayRoute
+                    managesDisplayRoute: managesDisplayRoute,
+                    clipboardEnabled: clipboardSyncEnabled(peerID)
                 )
             )
             scheduleRequestTimeout()
@@ -362,6 +397,7 @@ final class ControlCoordinator: ObservableObject {
         }
         let wasControlling = state == .controlling
         let wasWaitingForControlGrant = state == .suspended
+        stopClipboardSync()
         // A combined request has already switched the monitor before it
         // enters the suspended state. Its request completion owns the local
         // DDC restoration when that request is cancelled or times out. Keep
@@ -399,6 +435,9 @@ final class ControlCoordinator: ObservableObject {
                 && ((sessionManagedDisplayRoute && !displayWasAlreadyRemote)
                     || returnDisplayLocally)) {
             onControllingStopped?()
+        }
+        if wasControlling {
+            notifyOwnershipTransition(.returnedLocally)
         }
         status = reason
     }
@@ -506,6 +545,7 @@ final class ControlCoordinator: ObservableObject {
     func stopForQuit(completion: @escaping () -> Void) {
         guard !isStoppingForQuit else { return }
         isStoppingForQuit = true
+        stopClipboardSync()
         requestTimeout?.cancel()
         requestTimeout = nil
         incomingRequestTimeout?.cancel()
@@ -665,7 +705,7 @@ final class ControlCoordinator: ObservableObject {
             handleControlRequest(message: message, requestID: requestID)
         case .controlGranted:
             guard message.requestID == activeOutboundRequestID else { return }
-            handleControlGranted()
+            handleControlGranted(message: message)
         case .controlDenied:
             guard state == .suspended,
                   message.requestID == activeOutboundRequestID else {
@@ -675,13 +715,14 @@ final class ControlCoordinator: ObservableObject {
             _ = try? machine.handle(.stopControl)
             state = machine.state
             activeOutboundRequestID = nil
+            stopClipboardSync()
             activeControlDisplayAlreadyRemote = false
             activeControlManagesDisplayRoute = true
             completeActiveControlRequest(false)
             status = "The other device denied control"
         case .endControl:
             if message.requestID == activeOutboundRequestID,
-               state == .controlling || state == .suspended {
+               (state == .controlling || state == .suspended) {
                 let wasControlling = state == .controlling
                 let wasWaitingForControlGrant = state == .suspended
                 let sessionManagedDisplayRoute = activeControlManagesDisplayRoute
@@ -691,6 +732,7 @@ final class ControlCoordinator: ObservableObject {
                 _ = try? machine.handle(.stopControl)
                 state = machine.state
                 activeOutboundRequestID = nil
+                stopClipboardSync()
                 activeControlDisplayAlreadyRemote = false
                 activeControlManagesDisplayRoute = true
                 if wasWaitingForControlGrant {
@@ -700,6 +742,9 @@ final class ControlCoordinator: ObservableObject {
                 // only; the display stays on the route the user set by hand.
                 if wasControlling && sessionManagedDisplayRoute {
                     onControllingStopped?()
+                }
+                if wasControlling {
+                    notifyOwnershipTransition(.returnedLocally)
                 }
                 status = "The other device ended control; input is local"
             }
@@ -732,6 +777,16 @@ final class ControlCoordinator: ObservableObject {
                isReceivingControl {
                 inputSink.receive(input)
             }
+        case .clipboard:
+            let matchesActiveRequest =
+                message.requestID == activeOutboundRequestID
+                    || message.requestID == activeInboundControlRequest?.id
+            if let text = message.clipboardText,
+               clipboardSyncIsActive,
+               matchesActiveRequest,
+               (state == .controlling || isReceivingControl) {
+                clipboardSync.receive(text)
+            }
         }
     }
 
@@ -746,7 +801,9 @@ final class ControlCoordinator: ObservableObject {
         let request = IncomingControlRequest(
             id: requestID,
             peerID: peerID,
-            managesDisplayRoute: message.managesDisplayRoute ?? true
+            managesDisplayRoute: message.managesDisplayRoute ?? true,
+            supportsClipboard: message.supportsClipboard,
+            clipboardEnabled: message.clipboardEnabled
         )
         guard ControlProtocolCompatibility.isCompatible(
             remoteVersion: message.protocolVersion,
@@ -867,14 +924,26 @@ final class ControlCoordinator: ObservableObject {
 
         activeInboundControlRequest = request
         isReceivingControl = true
+        let clipboardIsMutuallyEnabled = clipboardSyncEnabled(request.peerID)
+            && request.supportsClipboard == true
+            && request.clipboardEnabled == true
+        if clipboardIsMutuallyEnabled {
+            startClipboardSync()
+        }
         if request.managesDisplayRoute {
             onReceivingStarted?()
         }
-        sendResponse(kind: .controlGranted, for: request)
+        sendResponse(
+            kind: .controlGranted,
+            for: request,
+            clipboardEnabled: request.supportsClipboard == true
+                ? clipboardSyncEnabled(request.peerID) : nil
+        )
+        notifyOwnershipTransition(.inboundControl(peerID: request.peerID))
         status = "Remote control granted to the other device"
     }
 
-    private func handleControlGranted() {
+    private func handleControlGranted(message: ControlMessage) {
         guard state == .suspended else { return }
         requestTimeout?.cancel()
         requestTimeout = nil
@@ -904,6 +973,14 @@ final class ControlCoordinator: ObservableObject {
             activeControlDisplayAlreadyRemote = false
             if !displayAlreadyRemote && activeControlManagesDisplayRoute {
                 onControllingStarted?()
+            }
+            if let peerID = secureSession.connectedPeerID {
+                if clipboardSyncEnabled(peerID),
+                   message.supportsClipboard == true,
+                   message.clipboardEnabled == true {
+                    startClipboardSync()
+                }
+                notifyOwnershipTransition(.outboundControl(peerID: peerID))
             }
             completeActiveControlRequest(true)
             status = "Controlling the other device — ⌃⌥⌘Esc returns locally"
@@ -959,6 +1036,7 @@ final class ControlCoordinator: ObservableObject {
         }
         let wasControlling = state == .controlling
         let wasWaitingForControlGrant = state == .suspended
+        stopClipboardSync()
         let sessionManagedDisplayRoute = activeControlManagesDisplayRoute
         requestTimeout?.cancel()
         requestTimeout = nil
@@ -976,6 +1054,9 @@ final class ControlCoordinator: ObservableObject {
         preparingIncomingControlRequest = nil
         if wasControlling && sessionManagedDisplayRoute {
             onControllingStopped?()
+        }
+        if wasControlling {
+            notifyOwnershipTransition(.returnedLocally)
         }
         if var teardown = receiverTeardown {
             teardown.restoreMonitor = false
@@ -1008,6 +1089,7 @@ final class ControlCoordinator: ObservableObject {
             state = machine.state
             status = "Secure session connected; input is local"
         }
+        stopClipboardSync()
     }
 
     private func remoteInputSinkFailed(_ failure: ControlInputFailure) {
@@ -1138,6 +1220,7 @@ final class ControlCoordinator: ObservableObject {
         }
         isReceivingControl = false
         activeInboundControlRequest = nil
+        stopClipboardSync()
         isRemoteInputTearingDown = true
         receiverTeardown = ReceiverTeardown(
             request: request,
@@ -1191,6 +1274,9 @@ final class ControlCoordinator: ObservableObject {
         }
         receiverTeardown = nil
         isRemoteInputTearingDown = false
+        if !isStoppingForQuit {
+            notifyOwnershipTransition(.returnedLocally)
+        }
         if teardown.notifyPeer {
             sendResponse(kind: .endControl, for: teardown.request)
         }
@@ -1220,17 +1306,78 @@ final class ControlCoordinator: ObservableObject {
 
     private func sendResponse(
         kind: ControlMessageKind,
-        for request: IncomingControlRequest
+        for request: IncomingControlRequest,
+        clipboardEnabled: Bool? = nil
     ) {
         guard secureSession.connectedPeerID == request.peerID else {
             return
         }
-        send(
-            ControlMessage(
-                kind: kind,
-                requestID: request.id
+        let message: ControlMessage
+        if kind == .controlGranted {
+            message = .controlGranted(
+                requestID: request.id,
+                clipboardEnabled: clipboardEnabled
             )
-        )
+        } else {
+            message = ControlMessage(kind: kind, requestID: request.id)
+        }
+        send(message)
+    }
+
+    /// A live control session was negotiated with the prior per-peer
+    /// preference. End it when that preference changes so the remote side
+    /// stops reading or sending clipboard content immediately and the next
+    /// session renegotiates both sides' consent.
+    func clipboardSyncPreferenceChanged(for peerID: UUID) {
+        guard secureSession.connectedPeerID == peerID else { return }
+        if isReceivingControl,
+           activeInboundControlRequest?.peerID == peerID {
+            endReceivingControl(
+                reason: "Clipboard sync setting changed; control ended"
+            )
+        } else if activeOutboundRequestID != nil,
+                  (state == .controlling || state == .suspended) {
+            stopControl(
+                reason: "Clipboard sync setting changed; control ended"
+            )
+        }
+    }
+
+    private func startClipboardSync() {
+        guard !clipboardSyncIsActive else { return }
+        clipboardSyncIsActive = true
+        clipboardSync.start()
+    }
+
+    private func notifyOwnershipTransition(
+        _ transition: ControlOwnershipTransition
+    ) {
+        ownershipTransitionRevision &+= 1
+        onOwnershipTransition?(transition)
+    }
+
+    private func stopClipboardSync() {
+        guard clipboardSyncIsActive else { return }
+        clipboardSyncIsActive = false
+        clipboardSync.stop()
+    }
+
+    private func sendClipboardText(_ text: String) {
+        guard clipboardSyncIsActive,
+              (state == .controlling || isReceivingControl),
+              let requestID = activeOutboundRequestID
+                    ?? activeInboundControlRequest?.id else {
+            return
+        }
+        do {
+            let payload = try ControlMessageCodec.encode(
+                .clipboard(text, requestID: requestID)
+            )
+            secureSession.send(payload)
+        } catch {
+            // Clipboard size/encoding failures are intentionally silent. The
+            // text itself must never appear in a status, diagnostic, or log.
+        }
     }
 
     private func send(_ message: ControlMessage) {

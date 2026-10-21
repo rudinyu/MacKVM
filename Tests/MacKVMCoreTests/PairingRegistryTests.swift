@@ -247,6 +247,47 @@ final class PairingRegistryTests: XCTestCase {
         XCTAssertFalse(reloaded.seamlessControlAuthorized(for: first.id))
     }
 
+    func testClipboardSyncConsentIsPerPeerDefaultsOffAndPersists() {
+        let first = PeerIdentity(
+            name: "M5 Pro",
+            signingPublicKey: P256.Signing.PrivateKey()
+                .publicKey.x963Representation
+        )
+        let second = PeerIdentity(
+            name: "Intel Mac",
+            signingPublicKey: P256.Signing.PrivateKey()
+                .publicKey.x963Representation
+        )
+        let registry = makeRegistry(storageKey: "clipboard-consent")
+        registry.add(first)
+        registry.add(second)
+
+        XCTAssertFalse(registry.clipboardSyncEnabled(for: first.id))
+        XCTAssertFalse(registry.clipboardSyncEnabled(for: second.id))
+        XCTAssertTrue(
+            registry.updateClipboardSyncEnabled(
+                for: second.id,
+                enabled: true
+            )
+        )
+        XCTAssertTrue(registry.clipboardSyncEnabled(for: second.id))
+        XCTAssertFalse(registry.clipboardSyncEnabled(for: first.id))
+        XCTAssertTrue(
+            registry.updateFriendlyName(
+                for: second.id,
+                friendlyName: "Studio Intel"
+            )
+        )
+
+        let reloaded = makeRegistry(storageKey: "clipboard-consent")
+        XCTAssertTrue(reloaded.clipboardSyncEnabled(for: second.id))
+        XCTAssertFalse(reloaded.clipboardSyncEnabled(for: first.id))
+        XCTAssertEqual(
+            reloaded.profile(for: second.id)?.friendlyName,
+            "Studio Intel"
+        )
+    }
+
     func testReplacingSigningKeyDoesNotReuseTheOldProfileAuthorization() {
         let peerID = UUID()
         let first = PeerIdentity(
@@ -300,11 +341,13 @@ final class PairingRegistryTests: XCTestCase {
         )
         var withoutNewField = object
         withoutNewField.removeValue(forKey: "seamlessControlAuthorized")
+        withoutNewField.removeValue(forKey: "clipboardSyncEnabled")
         let decoded = try JSONDecoder().decode(
             PairedPeerProfile.self,
             from: JSONSerialization.data(withJSONObject: withoutNewField)
         )
         XCTAssertFalse(decoded.seamlessControlAuthorized)
+        XCTAssertFalse(decoded.clipboardSyncEnabled)
     }
 
     func testLegacyPairingWithoutProfileDoesNotSynthesizePersistentMetadata() throws {

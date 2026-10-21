@@ -317,3 +317,9 @@
 "Verifying the saved DDC display before switching…" = "Verifying the saved DDC display before switching…";
 "Wait for remote input to finish returning locally" = "Wait for remote input to finish returning locally";
 "The other device denied control" = "The other device denied control";
+"Sync plain-text clipboard with this device" = "Sync plain-text clipboard with this device";
+"Off by default. Both devices must enable this; sync runs only during active control. Items marked concealed, transient, or auto-generated are skipped." = "Off by default. Both devices must enable this; sync runs only during active control. Items marked concealed, transient, or auto-generated are skipped.";
+"Changing this setting ends active control so both devices can renegotiate." = "Changing this setting ends active control so both devices can renegotiate.";
+"Keyboard input now goes to %@" = "Keyboard input now goes to %@";
+"%@ now controls this Mac" = "%@ now controls this Mac";
+"Keyboard input returned to this Mac" = "Keyboard input returned to this Mac";

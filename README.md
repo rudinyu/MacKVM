@@ -7,14 +7,14 @@ between two computers on the same local network. A Windows receiver companion
 is included in this repository. Monitor input switching is optional and uses
 native DDC/CI where the display supports it.
 
-Current macOS source: **1.101.01 (build 96)**. After an Input Monitoring
-request, MacKVM now opens the matching Privacy & Security pane when permission
-is still missing, and setup/control status text is localized in English and
-Traditional Chinese. The distribution flow now creates a standalone,
-Developer ID Installer-signed PKG and embeds that notarized, stapled package in
-a separately notarized DMG. This packaging-only update has not generated or
-published a release artifact. The current WindowsKVM source is **1.02.32
-(build 113; RC3 testing channel)**; its wire protocol is unchanged.
+Current macOS source: **1.102.00 (build 97)**. It adds opt-in plain-text
+clipboard synchronization with WindowsKVM and a brief, non-activating HUD when
+keyboard ownership changes. The current WindowsKVM source is **1.03.00
+(build 114)**, with matching per-peer clipboard consent and a control-status
+prompt. Clipboard sync requires both peers to opt in and an active control
+grant; legacy peers that do not negotiate the feature remain compatible. The
+distribution flow uses a Developer ID Installer-signed PKG inside a separately
+signed and notarized DMG.
 
 The current MVP provides:
 
@@ -50,6 +50,12 @@ The current MVP provides:
 - injected-event marking that prevents input feedback loops;
 - explicit Allow/Deny control consent on the receiving Mac, deterministic
   collision handling, and a receiver-side stop action;
+- plain-text clipboard sync that is off by default and requires opt-in on both
+  paired devices; it runs only during granted control, skips pasteboard items
+  marked concealed, transient, or auto-generated, and never sends the existing
+  clipboard when control starts;
+- a brief, non-activating status HUD after keyboard ownership actually changes,
+  showing which device has control without taking focus;
 - explicit physical-input topology modes that document the external USB path;
   each Mac can still originate software control from its own keyboard, mouse,
   and trackpad, regardless of CPU architecture or HDMI wiring;
@@ -164,7 +170,8 @@ SDK:
 The output is `dist\windows\x64\WindowsKVM.exe` and
 `dist\windows\arm64\WindowsKVM.exe`. The Windows UI includes the resident
 tray host, pairing/control consent, compact Simple mode and full Advanced
-mode. See [WINDOWS_BUILD.md](WINDOWS_BUILD.md),
+mode. Clipboard sync is an off-by-default per-peer option in Advanced mode and
+works with MacKVM only during an active control session. See [WINDOWS_BUILD.md](WINDOWS_BUILD.md),
 [WindowsKVM/README.md](WindowsKVM/README.md), and
 [DEBUGGING.md](DEBUGGING.md) for the Windows build, firewall, and log
 procedures. The macOS CI script runs the Windows protocol/desktop self-tests
@@ -204,7 +211,7 @@ Finder-executable `.command` scripts or duplicate loose app. The package and
 DMG each get a portable SHA-256 sidecar. Verify the DMG from `dist`:
 
 ```sh
-(cd dist && shasum -a 256 -c MacKVM-1.101.01-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.102.00-universal.dmg.sha256)
 ```
 
 For direct distribution outside the Mac App Store, use the separate notarized

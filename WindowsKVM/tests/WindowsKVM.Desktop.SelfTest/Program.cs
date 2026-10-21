@@ -19,6 +19,9 @@ internal static class Program
             TestTrayNativeChildBounds();
             TestDiagnosticStatusSanitization();
             TestRemoteInputPreferenceFallback();
+            TestClipboardPreferenceAndNotificationPolicy();
+            TestClipboardConsentTrustLifecycle();
+            await TestClipboardSyncLifecycleAsync();
             TestPairingRevocationGate();
             PairingHarness.TestCoalescedReadBuffer();
             await PairingHarness.RunSlotCleanupTestsAsync();
@@ -66,6 +69,177 @@ internal static class Program
             !WindowsKvmPreferences.ResolveRemoteInputEnabled(true, "invalid"),
             "an invalid stored value must fail closed"
         );
+    }
+
+    private static void TestClipboardPreferenceAndNotificationPolicy()
+    {
+        Assert(
+            !WindowsTrustStore.ResolveClipboardSyncEnabled(false, true),
+            "clipboard sync must default off for a new peer"
+        );
+        Assert(
+            !WindowsTrustStore.ResolveClipboardSyncEnabled(true, false),
+            "a missing or explicit off preference must remain disabled"
+        );
+        Assert(
+            WindowsTrustStore.ResolveClipboardSyncEnabled(true, true),
+            "an explicit on preference is available only for a pinned peer"
+        );
+
+        var notifications = new ControlStatusNotificationPolicy();
+        Assert(notifications.Observe(false) is null,
+            "startup without control must not show a status notification");
+        Assert(notifications.Observe(true) == "Mac control is active on this Windows PC.",
+            "a confirmed control begin must report the actual active state");
+        Assert(notifications.Observe(true) is null,
+            "duplicate active events must not show duplicate notifications");
+        Assert(notifications.Observe(false) == "Windows control has returned locally.",
+            "a confirmed control end must report the actual returned state");
+        Assert(notifications.Observe(false) is null,
+            "duplicate inactive events must not show duplicate notifications");
+    }
+
+    private static void TestClipboardConsentTrustLifecycle()
+    {
+        var path = Path.Combine(
+            Path.GetTempPath(),
+            "mackvm-clipboard-trust-" + Guid.NewGuid().ToString("N") + ".json"
+        );
+        using var originalCredentials = DeviceCredentials.Create("Clipboard peer");
+        using var replacementCredentials = DeviceCredentials.Create("Clipboard replacement");
+        var store = CreateEmptyTrustStore(path);
+        try
+        {
+            Assert(!store.IsClipboardSyncEnabled(originalCredentials.Identity.Id),
+                "unknown peers must never inherit clipboard consent");
+            Assert(!store.SetClipboardSyncEnabled(originalCredentials.Identity.Id, true),
+                "clipboard consent must not be editable for an unpinned peer");
+            store.Record(originalCredentials.Identity, enableDefaultControlApproval: false);
+            Assert(!store.IsClipboardSyncEnabled(originalCredentials.Identity.Id),
+                "a newly pinned peer must default to clipboard sync off");
+            Assert(store.SetClipboardSyncEnabled(originalCredentials.Identity.Id, true),
+                "a pinned peer may explicitly opt in");
+            Assert(store.IsClipboardSyncEnabled(originalCredentials.Identity.Id),
+                "explicit clipboard consent should survive trust-store reloads");
+
+            Assert(store.Remove(originalCredentials.Identity.Id),
+                "forget should remove the pinned peer");
+            store.Record(originalCredentials.Identity, enableDefaultControlApproval: false);
+            Assert(!store.IsClipboardSyncEnabled(originalCredentials.Identity.Id),
+                "forget and re-pair must clear clipboard consent, even for the same key");
+
+            Assert(store.SetClipboardSyncEnabled(originalCredentials.Identity.Id, true),
+                "the re-paired key may opt in again explicitly");
+            var replacement = new PeerIdentity(
+                originalCredentials.Identity.Id,
+                replacementCredentials.Identity.Name,
+                replacementCredentials.Identity.SigningPublicKey
+            );
+            Assert(store.Record(
+                replacement,
+                allowKeyReplacement: true,
+                enableDefaultControlApproval: false
+            ), "explicit replacement should update the pinned key");
+            Assert(!store.IsClipboardSyncEnabled(replacement.Id),
+                "a replacement key must start with clipboard sync disabled");
+        }
+        finally
+        {
+            try
+            {
+                File.Delete(path);
+            }
+            catch (IOException)
+            {
+            }
+        }
+    }
+
+    private static async Task TestClipboardSyncLifecycleAsync()
+    {
+        var requestID = Guid.NewGuid();
+        var boundary = new FakeClipboardTextBoundary("clipboard before grant", busy: true);
+        var messages = new System.Collections.Concurrent.ConcurrentQueue<ControlMessage>();
+        var firstMessage = new TaskCompletionSource<ControlMessage>(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        await using var coordinator = new WindowsClipboardSyncCoordinator(boundary);
+        Assert(
+            coordinator.Start(requestID, (message, token) =>
+            {
+                if (token.IsCancellationRequested)
+                {
+                    return Task.FromCanceled(token);
+                }
+
+                messages.Enqueue(message);
+                firstMessage.TrySetResult(message);
+                return Task.CompletedTask;
+            }),
+            "an available clipboard boundary should start for the granted request"
+        );
+
+        // The first successful read is a baseline even if the clipboard only
+        // became readable after control began.
+        await Task.Delay(100).ConfigureAwait(false);
+        boundary.SetText("baseline established after a busy clipboard");
+        boundary.SetBusy(false);
+        await Task.Delay(650).ConfigureAwait(false);
+        Assert(messages.IsEmpty,
+            "the initial clipboard contents must not be sent after the grant");
+
+        boundary.SetText(new string('\n', 17_000));
+        await Task.Delay(650).ConfigureAwait(false);
+        Assert(messages.IsEmpty,
+            "a text value whose JSON envelope exceeds the frame budget must be dropped");
+
+        boundary.SetText("local edit");
+        var sent = await firstMessage.Task.WaitAsync(TimeSpan.FromSeconds(3))
+            .ConfigureAwait(false);
+        Assert(sent.Kind == ControlMessageKind.Clipboard
+            && sent.RequestID == requestID
+            && sent.ClipboardText == "local edit",
+            "a later local text change must use the active request ID");
+
+        Assert(coordinator.Receive(requestID, "remote edit"),
+            "the active request should receive peer clipboard text");
+        Assert(boundary.ReadText() == "remote edit",
+            "accepted peer text must reach the injected clipboard boundary");
+        await Task.Delay(650).ConfigureAwait(false);
+        Assert(messages.Count == 1,
+            "a remote clipboard write must not echo back as a local edit");
+
+        Assert(coordinator.Receive(requestID, "unrepresentable\0suffix"),
+            "unrepresentable NUL text should be dropped without ending control");
+        Assert(boundary.ReadText() == "remote edit",
+            "embedded NUL text must not be truncated into a different clipboard value");
+        await Task.Delay(650).ConfigureAwait(false);
+        Assert(messages.Count == 1,
+            "dropped embedded-NUL text must not be echoed");
+
+        coordinator.Stop(requestID);
+        boundary.SetText("edit after revoke");
+        await Task.Delay(650).ConfigureAwait(false);
+        Assert(messages.Count == 1,
+            "clipboard polling must stop when control ends");
+    }
+
+    private static WindowsTrustStore CreateEmptyTrustStore(string path)
+    {
+        var trustType = typeof(WindowsTrustStore);
+        var stamp = trustType.GetNestedType("TrustFileStamp", BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("trust stamp type missing");
+        var constructor = trustType.GetConstructors(
+            BindingFlags.NonPublic | BindingFlags.Instance
+        ).Single();
+        return (WindowsTrustStore)constructor.Invoke([
+            path,
+            new Dictionary<Guid, PeerIdentity>(),
+            new HashSet<Guid>(),
+            new HashSet<Guid>(),
+            new HashSet<Guid>(),
+            Activator.CreateInstance(stamp)!
+        ]);
     }
 
     private static void TestPairingRevocationGate()
@@ -633,10 +807,159 @@ internal static class Program
 
     private static async Task TestSecureSessionLifecycleAsync()
     {
+        await TestSecureClipboardSyncTransportAsync().ConfigureAwait(false);
+        await TestSecureClipboardSyncNegotiationAsync().ConfigureAwait(false);
         await TestHotKeyAndEndedRequestAsync().ConfigureAwait(false);
         await TestDisableEnableAndConsentGenerationAsync().ConfigureAwait(false);
         await TestActiveDisableEnableAndFreshGrantAsync().ConfigureAwait(false);
         await TestGrantBoundaryNotificationOrderAsync().ConfigureAwait(false);
+    }
+
+    private static async Task TestSecureClipboardSyncTransportAsync()
+    {
+        var boundary = new FakeClipboardTextBoundary("Windows baseline", busy: false);
+        var harness = await SecureHarness.ConnectAsync(
+            autoAcceptControl: true,
+            clipboardBoundary: boundary
+        ).ConfigureAwait(false);
+        await using (harness.ConfigureAwait(false))
+        {
+            Assert(harness.SetClipboardSyncEnabled(true),
+                "the authenticated peer should accept local clipboard consent");
+            var grant = await harness.RequestControlAsync(
+                supportsClipboard: true,
+                clipboardEnabled: true
+            ).ConfigureAwait(false);
+            var requestID = harness.CurrentRequestID;
+            Assert(
+                grant.Kind == ControlMessageKind.ControlGranted
+                    && grant.SupportsClipboard == true
+                    && grant.ClipboardEnabled == true,
+                "a mutually enabled request should receive a clipboard-capable grant"
+            );
+
+            // Allow the synchronizer to record the pre-existing clipboard as
+            // its baseline before applying a remote value.
+            await Task.Delay(650).ConfigureAwait(false);
+            await harness.SendControlAsync(
+                ControlMessage.ClipboardMessage(requestID, "Mac clipboard text")
+            ).ConfigureAwait(false);
+            Assert(
+                await WaitForConditionAsync(
+                    () => boundary.ReadText() == "Mac clipboard text"
+                ).ConfigureAwait(false),
+                "the authenticated secure transport should apply incoming clipboard text"
+            );
+
+            // The just-applied remote value must not echo back after polling.
+            using (var noEcho = new CancellationTokenSource(TimeSpan.FromMilliseconds(700)))
+            {
+                try
+                {
+                    var unexpected = await harness.ReadControlAsync(noEcho.Token)
+                        .ConfigureAwait(false);
+                    Assert(false,
+                        $"remote clipboard update unexpectedly echoed as {unexpected.Kind}");
+                }
+                catch (OperationCanceledException) when (noEcho.IsCancellationRequested)
+                {
+                }
+            }
+
+            boundary.SetText("Windows clipboard text");
+            using (var outboundDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(3)))
+            {
+                var outbound = await harness.ReadControlAsync(outboundDeadline.Token)
+                    .ConfigureAwait(false);
+                Assert(
+                    outbound.Kind == ControlMessageKind.Clipboard
+                        && outbound.RequestID == requestID
+                        && outbound.ClipboardText == "Windows clipboard text",
+                    "local clipboard changes should travel over the matching active request"
+                );
+            }
+
+            var currentText = boundary.ReadText();
+            await harness.SendControlAsync(
+                ControlMessage.ClipboardMessage(Guid.NewGuid(), "stale clipboard text")
+            ).ConfigureAwait(false);
+            Assert(
+                await WaitForCompletionAsync(harness.Session).ConfigureAwait(false),
+                "a stale clipboard request ID should be rejected by the secure receiver"
+            );
+            Assert(
+                boundary.ReadText() == currentText,
+                "a stale clipboard packet must not change the Windows clipboard"
+            );
+        }
+    }
+
+    private static async Task TestSecureClipboardSyncNegotiationAsync()
+    {
+        var legacyBoundary = new FakeClipboardTextBoundary("legacy baseline", busy: false);
+        var legacy = await SecureHarness.ConnectAsync(
+            autoAcceptControl: true,
+            clipboardBoundary: legacyBoundary
+        ).ConfigureAwait(false);
+        await using (legacy.ConfigureAwait(false))
+        {
+            Assert(legacy.SetClipboardSyncEnabled(true),
+                "legacy negotiation fixture should have local consent enabled");
+            var grant = await legacy.RequestControlAsync().ConfigureAwait(false);
+            Assert(
+                grant.Kind == ControlMessageKind.ControlGranted
+                    && grant.SupportsClipboard is null
+                    && grant.ClipboardEnabled is null,
+                "legacy requests must receive a grant with clipboard fields omitted"
+            );
+            await AssertNoClipboardSendAsync(legacy, legacyBoundary, "legacy");
+        }
+
+        var disabledBoundary = new FakeClipboardTextBoundary("disabled baseline", busy: false);
+        var disabled = await SecureHarness.ConnectAsync(
+            autoAcceptControl: true,
+            clipboardBoundary: disabledBoundary
+        ).ConfigureAwait(false);
+        await using (disabled.ConfigureAwait(false))
+        {
+            Assert(disabled.SetClipboardSyncEnabled(true),
+                "one-sided negotiation fixture should have local consent enabled");
+            var grant = await disabled.RequestControlAsync(
+                supportsClipboard: true,
+                clipboardEnabled: false
+            ).ConfigureAwait(false);
+            Assert(
+                grant.Kind == ControlMessageKind.ControlGranted
+                    && grant.SupportsClipboard == true
+                    && grant.ClipboardEnabled == true,
+                "grant capability reports the Windows peer's local opt-in independently"
+            );
+            await AssertNoClipboardSendAsync(disabled, disabledBoundary, "one-side-off");
+        }
+    }
+
+    private static async Task AssertNoClipboardSendAsync(
+        SecureHarness harness,
+        FakeClipboardTextBoundary boundary,
+        string scenario
+    )
+    {
+        await Task.Delay(650).ConfigureAwait(false);
+        boundary.SetText($"{scenario} local change");
+        using var noClipboard = new CancellationTokenSource(TimeSpan.FromMilliseconds(800));
+        try
+        {
+            var unexpected = await harness.ReadControlAsync(noClipboard.Token)
+                .ConfigureAwait(false);
+            Assert(false,
+                $"{scenario} control unexpectedly sent {unexpected.Kind}");
+        }
+        catch (OperationCanceledException) when (noClipboard.IsCancellationRequested)
+        {
+        }
+
+        Assert(!harness.Session.IsCompleted,
+            $"{scenario} negotiation should keep normal control active");
     }
 
     private static async Task TestHotKeyAndEndedRequestAsync()
@@ -838,6 +1161,86 @@ internal static class Program
         }
 
         return true;
+    }
+
+    private sealed class FakeClipboardTextBoundary : IClipboardTextBoundary
+    {
+        private readonly object gate = new();
+        private string text;
+        private bool busy;
+
+        public FakeClipboardTextBoundary(string initialText, bool busy)
+        {
+            text = initialText;
+            this.busy = busy;
+        }
+
+        public bool IsAvailable => true;
+
+        public bool TryReadText(CancellationToken token, out string value)
+        {
+            value = string.Empty;
+            if (token.IsCancellationRequested)
+            {
+                return false;
+            }
+
+            lock (gate)
+            {
+                if (busy)
+                {
+                    return false;
+                }
+
+                value = text;
+                return true;
+            }
+        }
+
+        public bool TryWriteText(string value, CancellationToken token)
+        {
+            if (token.IsCancellationRequested)
+            {
+                return false;
+            }
+
+            lock (gate)
+            {
+                if (busy)
+                {
+                    return false;
+                }
+
+                text = value;
+                return true;
+            }
+        }
+
+        public void SetText(string value)
+        {
+            lock (gate)
+            {
+                text = value;
+            }
+        }
+
+        public void SetBusy(bool value)
+        {
+            lock (gate)
+            {
+                busy = value;
+            }
+        }
+
+        public string ReadText()
+        {
+            lock (gate)
+            {
+                return text;
+            }
+        }
+
+        public void Dispose() { }
     }
 
     private static void Assert(bool condition, string message)

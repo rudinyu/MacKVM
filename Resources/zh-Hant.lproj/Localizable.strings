@@ -298,6 +298,12 @@
 "The other device requests control — choose Allow or Deny" = "另一台裝置正在請求控制 — 請選擇「允許」或「拒絕」";
 "The other device returned control" = "另一台裝置已交還控制權";
 "The paired Mac's secure service is not available; waiting to reconnect" = "已配對 Mac 的安全服務目前無法使用；正在等候重新連線";
+"Sync plain-text clipboard with this device" = "與這台裝置同步純文字剪貼簿";
+"Off by default. Both devices must enable this; sync runs only during active control. Items marked concealed, transient, or auto-generated are skipped." = "預設關閉。兩台裝置都必須啟用，且只會在控制工作階段進行同步。標記為 concealed、transient 或 auto-generated 的剪貼簿項目會略過。";
+"Changing this setting ends active control so both devices can renegotiate." = "變更此設定會結束目前控制，讓兩台裝置重新協商。";
+"Keyboard input now goes to %@" = "鍵盤輸入現在傳送至「%@」";
+"%@ now controls this Mac" = "「%@」現在控制這台 Mac";
+"Keyboard input returned to this Mac" = "鍵盤輸入已還給這台 Mac";
 "The pairing confirmation has expired" = "配對確認已逾期";
 "The pairing request has expired" = "配對請求已逾期";
 "The peer key does not match the pinned pairing" = "對端金鑰與已固定的配對不符";

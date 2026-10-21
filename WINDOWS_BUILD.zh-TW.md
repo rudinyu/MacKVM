@@ -131,8 +131,7 @@ Windows 桌面驗收；系統匣 UI、原生對話框、熱鍵、`SendInput`、�
 .\WindowsKVM.exe --version
 ```
 
-目前 UI 測試 build 應顯示 `WindowsKVM 1.02.32 (build 113)`，使用 RC3 測試通道；RC3 是通道標記，
-不屬於語意版本。回報捲動破圖與下拉清單問題時使用的是歷史版本 **1.02.09（build 89）Beta 3**。
+目前 UI 測試 build 應顯示 `WindowsKVM 1.03.00 (build 114)`。回報捲動破圖與下拉清單問題時使用的是歷史版本 **1.02.09（build 89）Beta 3**。
 Advanced 通知與 Physical input 標籤分別為 **Available** 與 **Remote input to this PC**；選擇行為不變。
 實體 Windows 與 HiDPI 視覺驗收仍待完成。替換前請先退出舊的系統匣 receiver；啟動後確認此版本及
 **WindowsKVM** 視窗標題。
@@ -210,6 +209,22 @@ console 模式則要求本機輸入 `y`／`yes`。可重新勾選或執行 `--al
 `Ctrl+Alt+Shift+Esc` 會釋放所有按住的輸入並把控制權交回本機；從 MacKVM 結束 control
 也有相同的 release-all 行為。
 
+純文字剪貼簿同步是另一項依 peer 設定的明確同意，位於 **Advanced mode**：選取已釘選的 Mac，
+再勾選 **Allow plain-text clipboard sync with this paired Mac**。此功能預設關閉，設定與該釘選身分一同保存；
+忘記 peer 或更換其金鑰時會清除。Mac 端也必須啟用。只有控制權已授予，且兩端都宣告支援並同意時才同步；
+舊版 peer 不會帶入此 capability，因此 Windows 不會向它傳送剪貼簿封包。控制權授予後第一次成功讀取的剪貼簿內容
+只建立基準，不會傳送；僅複製純文字，忽略其他剪貼簿格式。若 UTF-8 文字或完整加密 JSON 封包超過 32 KiB，
+該次更新會略過。更改此設定會結束目前的控制，讓兩端停止輪詢；控制結束、斷線、撤銷配對或 Quit 也會停止同步。
+剪貼簿內容不會寫入 log。
+
+Windows 會依剪貼簿標記處理敏感內容：只要存在
+`ExcludeClipboardContentFromMonitorProcessing`，便排除此資料；`CanIncludeInClipboardHistory` 或
+`CanUploadToCloudClipboard` 的 DWORD `0` 也代表排除，DWORD `1` 則明確允許該政策。若已宣告的標記無法讀取，
+Windows 會 fail closed。這些是平台提供的最佳努力訊號，無法完整偵測所有 password manager 或敏感應用程式；
+未提供已識別標記的應用程式仍可能公開純文字。
+
+成功授予控制，或確認控制權已交回本機後，Windows 會短暫顯示不會取得焦點的狀態提示。啟動時與尚未確認的請求不會顯示提示。
+
 ### 驗證記住的控制同意
 
 1. 讓 Mac 與 WindowsKVM 完成配對；新配對的控制授權預設會自動開啟。
@@ -242,7 +257,7 @@ identity。請先在所有曾信任這台 Windows 的 Mac 忘記舊 peer，再�
 該 script 只移除指定的 Mac App 與目前帳號的資料，不會解除安裝 WindowsKVM，也不會修改
 `%LOCALAPPDATA%\MacKVM` 或 Windows 端信任。Mac 成功清除並重裝後，請在 Windows 對
 舊 Mac 按 **Forget paired Mac**，再配對它新產生的身分。WindowsKVM 仍是
-原始碼版本 1.02.32（build 113，RC3 測試通道）；此次 macOS 工具更新不改變 WindowsKVM 通訊協定。
+原始碼版本 1.03.00（build 114），新增經協商的純文字剪貼簿同步與控制狀態提示。
 
 在開發主機可執行 protocol 與 desktop regression self-test：
 

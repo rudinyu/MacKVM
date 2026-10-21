@@ -130,6 +130,101 @@ final class ControlProtocolTests: XCTestCase {
         }
     }
 
+    func testClipboardCapabilityNegotiationIsOptionalAndComplete() throws {
+        let requestID = UUID()
+        let request = ControlMessage.requestControl(
+            requestID: requestID,
+            clipboardEnabled: true
+        )
+        let decodedRequest = try ControlMessageCodec.decode(
+            ControlMessageCodec.encode(request)
+        )
+        XCTAssertEqual(decodedRequest.supportsClipboard, true)
+        XCTAssertEqual(decodedRequest.clipboardEnabled, true)
+
+        let legacy = ControlMessage(kind: .requestControl, requestID: requestID)
+        let decodedLegacy = try ControlMessageCodec.decode(
+            ControlMessageCodec.encode(legacy)
+        )
+        XCTAssertNil(decodedLegacy.supportsClipboard)
+        XCTAssertNil(decodedLegacy.clipboardEnabled)
+
+        let grant = ControlMessage.controlGranted(
+            requestID: requestID,
+            clipboardEnabled: false
+        )
+        let decodedGrant = try ControlMessageCodec.decode(
+            ControlMessageCodec.encode(grant)
+        )
+        XCTAssertEqual(decodedGrant.supportsClipboard, true)
+        XCTAssertEqual(decodedGrant.clipboardEnabled, false)
+
+        for malformed in [
+            ControlMessage(
+                kind: .requestControl,
+                requestID: requestID,
+                supportsClipboard: true
+            ),
+            ControlMessage(
+                kind: .controlGranted,
+                requestID: requestID,
+                supportsClipboard: false,
+                clipboardEnabled: true
+            ),
+            ControlMessage(
+                kind: .endControl,
+                requestID: requestID,
+                supportsClipboard: true,
+                clipboardEnabled: false
+            )
+        ] {
+            XCTAssertThrowsError(try malformed.validated())
+        }
+    }
+
+    func testClipboardTextRoundTripsInsideControlMessage() throws {
+        let requestID = UUID()
+        let message = ControlMessage.clipboard(
+            "plain text\n你好",
+            requestID: requestID
+        )
+
+        let payload = try ControlMessageCodec.encode(message)
+        let decoded = try ControlMessageCodec.decode(payload)
+
+        XCTAssertLessThanOrEqual(payload.count, ControlMessageCodec.maximumPayloadLength)
+        XCTAssertEqual(decoded.kind, .clipboard)
+        XCTAssertEqual(decoded.requestID, requestID)
+        XCTAssertEqual(decoded.clipboardText, "plain text\n你好")
+    }
+
+    func testClipboardPayloadEnforcesTextAndWholeEnvelopeLimits() {
+        let requestID = UUID()
+        let maximumText = String(
+            repeating: "x",
+            count: ControlMessageCodec.maximumClipboardUTF8Length
+        )
+        XCTAssertNoThrow(
+            try ControlMessage.clipboard(maximumText, requestID: requestID)
+                .validated()
+        )
+        XCTAssertThrowsError(
+            try ControlMessageCodec.encode(
+                .clipboard(maximumText, requestID: requestID)
+            )
+        ) { error in
+            XCTAssertEqual(error as? ControlProtocolError, .payloadTooLarge)
+        }
+
+        let oversizedText = maximumText + "x"
+        XCTAssertThrowsError(
+            try ControlMessage.clipboard(oversizedText, requestID: requestID)
+                .validated()
+        ) { error in
+            XCTAssertEqual(error as? ControlProtocolError, .invalidFields)
+        }
+    }
+
     func testRequestRejectsAnUnboundedKeyboardLayoutIdentifier() {
         let message = ControlMessage(
             kind: .requestControl,

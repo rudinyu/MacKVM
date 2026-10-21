@@ -33,6 +33,7 @@ internal sealed class WindowsTrustStore
     private readonly Dictionary<Guid, PeerIdentity> peers;
     private readonly HashSet<Guid> controlAuthorized;
     private readonly HashSet<Guid> controlAuthorizationConfigured;
+    private readonly HashSet<Guid> clipboardSyncEnabled;
     private TrustFileStamp fileStamp;
     // A failed mutation can roll the dictionaries back after ReloadLocked has
     // already observed a newer durable snapshot. Mark the stamp invalid in
@@ -45,6 +46,7 @@ internal sealed class WindowsTrustStore
         Dictionary<Guid, PeerIdentity> peers,
         HashSet<Guid> controlAuthorized,
         HashSet<Guid> controlAuthorizationConfigured,
+        HashSet<Guid> clipboardSyncEnabled,
         TrustFileStamp fileStamp
     )
     {
@@ -52,6 +54,7 @@ internal sealed class WindowsTrustStore
         this.peers = peers;
         this.controlAuthorized = controlAuthorized;
         this.controlAuthorizationConfigured = controlAuthorizationConfigured;
+        this.clipboardSyncEnabled = clipboardSyncEnabled;
         this.fileStamp = fileStamp;
         fileStampValid = true;
     }
@@ -77,6 +80,7 @@ internal sealed class WindowsTrustStore
             loaded.Peers,
             loaded.ControlAuthorized,
             loaded.ControlAuthorizationConfigured,
+            loaded.ClipboardSyncEnabled,
             ReadFileStamp(path)
         );
     }
@@ -135,6 +139,7 @@ internal sealed class WindowsTrustStore
                 var previous = new Dictionary<Guid, PeerIdentity>(peers);
                 var previousAuthorizations = new HashSet<Guid>(controlAuthorized);
                 var previousConfigured = new HashSet<Guid>(controlAuthorizationConfigured);
+                var previousClipboardSync = new HashSet<Guid>(clipboardSyncEnabled);
                 try
                 {
                     ReloadLocked();
@@ -144,6 +149,7 @@ internal sealed class WindowsTrustStore
                     }
                     controlAuthorized.Remove(peerID);
                     controlAuthorizationConfigured.Remove(peerID);
+                    clipboardSyncEnabled.Remove(peerID);
 
                     SaveLocked();
                     return true;
@@ -153,7 +159,8 @@ internal sealed class WindowsTrustStore
                     RestoreLocked(
                         previous,
                         previousAuthorizations,
-                        previousConfigured
+                        previousConfigured,
+                        previousClipboardSync
                     );
                     InvalidateFileStampLocked();
 
@@ -318,6 +325,7 @@ internal sealed class WindowsTrustStore
                 var previousPeers = new Dictionary<Guid, PeerIdentity>(peers);
                 var previousAuthorizations = new HashSet<Guid>(controlAuthorized);
                 var previousConfigured = new HashSet<Guid>(controlAuthorizationConfigured);
+                var previousClipboardSync = new HashSet<Guid>(clipboardSyncEnabled);
                 try
                 {
                     ReloadLocked();
@@ -344,7 +352,8 @@ internal sealed class WindowsTrustStore
                     RestoreLocked(
                         previousPeers,
                         previousAuthorizations,
-                        previousConfigured
+                        previousConfigured,
+                        previousClipboardSync
                     );
                     InvalidateFileStampLocked();
                     throw;
@@ -359,6 +368,125 @@ internal sealed class WindowsTrustStore
             }
         }
     }
+
+    /// <summary>
+    /// Returns the clipboard-sharing decision only for a currently pinned
+    /// peer. Missing settings and unknown peers are disabled.
+    /// </summary>
+    public bool IsClipboardSyncEnabled(Guid peerID)
+    {
+        if (peerID == Guid.Empty)
+        {
+            return false;
+        }
+
+        lock (gate)
+        {
+            using var processMutex = new Mutex(false, TrustStoreMutexName);
+            var ownsProcessMutex = false;
+            try
+            {
+                try
+                {
+                    processMutex.WaitOne();
+                    ownsProcessMutex = true;
+                }
+                catch (AbandonedMutexException)
+                {
+                    ownsProcessMutex = true;
+                }
+
+                ReloadLocked();
+                return ResolveClipboardSyncEnabled(
+                    peers.ContainsKey(peerID),
+                    clipboardSyncEnabled.Contains(peerID)
+                );
+            }
+            finally
+            {
+                if (ownsProcessMutex)
+                {
+                    processMutex.ReleaseMutex();
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Stores clipboard consent in the same atomic record as the pinned key.
+    /// Consent cannot be changed for an unknown or forgotten peer.
+    /// </summary>
+    public bool SetClipboardSyncEnabled(Guid peerID, bool enabled)
+    {
+        if (peerID == Guid.Empty)
+        {
+            return false;
+        }
+
+        lock (gate)
+        {
+            using var processMutex = new Mutex(false, TrustStoreMutexName);
+            var ownsProcessMutex = false;
+            try
+            {
+                try
+                {
+                    processMutex.WaitOne();
+                    ownsProcessMutex = true;
+                }
+                catch (AbandonedMutexException)
+                {
+                    ownsProcessMutex = true;
+                }
+
+                var previousPeers = new Dictionary<Guid, PeerIdentity>(peers);
+                var previousAuthorizations = new HashSet<Guid>(controlAuthorized);
+                var previousConfigured = new HashSet<Guid>(controlAuthorizationConfigured);
+                var previousClipboardSync = new HashSet<Guid>(clipboardSyncEnabled);
+                try
+                {
+                    ReloadLocked();
+                    if (!peers.ContainsKey(peerID))
+                    {
+                        return false;
+                    }
+
+                    if (enabled)
+                    {
+                        clipboardSyncEnabled.Add(peerID);
+                    }
+                    else
+                    {
+                        clipboardSyncEnabled.Remove(peerID);
+                    }
+
+                    SaveLocked();
+                    return true;
+                }
+                catch
+                {
+                    RestoreLocked(
+                        previousPeers,
+                        previousAuthorizations,
+                        previousConfigured,
+                        previousClipboardSync
+                    );
+                    InvalidateFileStampLocked();
+                    throw;
+                }
+            }
+            finally
+            {
+                if (ownsProcessMutex)
+                {
+                    processMutex.ReleaseMutex();
+                }
+            }
+        }
+    }
+
+    public static bool ResolveClipboardSyncEnabled(bool hasTrustedPeer, bool storedValue)
+        => hasTrustedPeer && storedValue;
 
     /// <summary>
     /// Records a completed, user-approved pairing. A changed key remains
@@ -402,6 +530,7 @@ internal sealed class WindowsTrustStore
                 var previous = new Dictionary<Guid, PeerIdentity>(peers);
                 var previousAuthorizations = new HashSet<Guid>(controlAuthorized);
                 var previousConfigured = new HashSet<Guid>(controlAuthorizationConfigured);
+                var previousClipboardSync = new HashSet<Guid>(clipboardSyncEnabled);
                 var replacedExistingKey = false;
                 var shouldEnableDefaultControlApproval = false;
                 try
@@ -425,6 +554,7 @@ internal sealed class WindowsTrustStore
                             // replacement, even when the peer UUID is reused.
                             controlAuthorized.Remove(identity.Id);
                             controlAuthorizationConfigured.Remove(identity.Id);
+                            clipboardSyncEnabled.Remove(identity.Id);
                             shouldEnableDefaultControlApproval = true;
                         }
 
@@ -453,7 +583,8 @@ internal sealed class WindowsTrustStore
                     RestoreLocked(
                         previous,
                         previousAuthorizations,
-                        previousConfigured
+                        previousConfigured,
+                        previousClipboardSync
                     );
                     InvalidateFileStampLocked();
 
@@ -477,7 +608,8 @@ internal sealed class WindowsTrustStore
         RestoreLocked(
             loaded.Peers,
             loaded.ControlAuthorized,
-            loaded.ControlAuthorizationConfigured
+            loaded.ControlAuthorizationConfigured,
+            loaded.ClipboardSyncEnabled
         );
         fileStamp = ReadFileStamp(path);
         fileStampValid = true;
@@ -496,7 +628,8 @@ internal sealed class WindowsTrustStore
         RestoreLocked(
             loaded.Peers,
             loaded.ControlAuthorized,
-            loaded.ControlAuthorizationConfigured
+            loaded.ControlAuthorizationConfigured,
+            loaded.ClipboardSyncEnabled
         );
         // Read again after parsing in case an atomic writer replaced the file
         // while it was being loaded. The next admission check will retry if
@@ -513,7 +646,8 @@ internal sealed class WindowsTrustStore
     private void RestoreLocked(
         IReadOnlyDictionary<Guid, PeerIdentity> loadedPeers,
         IEnumerable<Guid> loadedAuthorizations,
-        IEnumerable<Guid> loadedConfigured
+        IEnumerable<Guid> loadedConfigured,
+        IEnumerable<Guid> loadedClipboardSync
     )
     {
         peers.Clear();
@@ -539,6 +673,15 @@ internal sealed class WindowsTrustStore
                 controlAuthorizationConfigured.Add(peerID);
             }
         }
+
+        clipboardSyncEnabled.Clear();
+        foreach (var peerID in loadedClipboardSync)
+        {
+            if (peers.ContainsKey(peerID))
+            {
+                clipboardSyncEnabled.Add(peerID);
+            }
+        }
     }
 
     private static LoadedPeers LoadPeers(string path)
@@ -546,9 +689,10 @@ internal sealed class WindowsTrustStore
         var loaded = new Dictionary<Guid, PeerIdentity>();
         var authorizations = new HashSet<Guid>();
         var configured = new HashSet<Guid>();
+        var clipboardSync = new HashSet<Guid>();
         if (!File.Exists(path))
         {
-            return new LoadedPeers(loaded, authorizations, configured);
+            return new LoadedPeers(loaded, authorizations, configured, clipboardSync);
         }
 
         var stored = JsonSerializer.Deserialize<StoredPeer[]>(
@@ -566,6 +710,10 @@ internal sealed class WindowsTrustStore
             }
 
             loaded[identity.Id] = identity;
+            if (entry.ClipboardSyncEnabled)
+            {
+                clipboardSync.Add(identity.Id);
+            }
             // Older trust files did not carry an authorization decision. Keep
             // those records unconfigured so an upgrade never turns an
             // unattended pairing into an implicit automatic-control grant.
@@ -579,7 +727,7 @@ internal sealed class WindowsTrustStore
             }
         }
 
-        return new LoadedPeers(loaded, authorizations, configured);
+        return new LoadedPeers(loaded, authorizations, configured, clipboardSync);
     }
 
     private void SaveLocked()
@@ -594,7 +742,8 @@ internal sealed class WindowsTrustStore
                 peer.Name,
                 Convert.ToBase64String(peer.SigningPublicKey),
                 controlAuthorized.Contains(peer.Id),
-                controlAuthorizationConfigured.Contains(peer.Id)
+                controlAuthorizationConfigured.Contains(peer.Id),
+                clipboardSyncEnabled.Contains(peer.Id)
             ))
             .ToArray();
         var temporary = path + $".{Environment.ProcessId}.tmp";
@@ -671,13 +820,15 @@ internal sealed class WindowsTrustStore
         string Name,
         string SigningPublicKey,
         bool ControlAuthorized = false,
-        bool ControlAuthorizationConfigured = false
+        bool ControlAuthorizationConfigured = false,
+        bool ClipboardSyncEnabled = false
     );
 
     private sealed record LoadedPeers(
         Dictionary<Guid, PeerIdentity> Peers,
         HashSet<Guid> ControlAuthorized,
-        HashSet<Guid> ControlAuthorizationConfigured
+        HashSet<Guid> ControlAuthorizationConfigured,
+        HashSet<Guid> ClipboardSyncEnabled
     );
 
     private readonly record struct TrustFileStamp(

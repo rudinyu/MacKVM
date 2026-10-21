@@ -11,8 +11,8 @@ namespace WindowsKVM;
 /// </summary>
 internal sealed class WindowsKvmRuntime : IAsyncDisposable
 {
-    public const string ApplicationVersion = "1.02.32";
-    public const string ApplicationBuild = "113";
+    public const string ApplicationVersion = "1.03.00";
+    public const string ApplicationBuild = "114";
 
     private readonly DeviceCredentials credentials;
     private readonly WindowsTrustStore trustStore;
@@ -31,7 +31,8 @@ internal sealed class WindowsKvmRuntime : IAsyncDisposable
         Func<PeerIdentity, string, bool, CancellationToken, Task<bool>>? pairingConsent = null,
         Func<string, CancellationToken, Task<bool>>? controlConsent = null,
         bool enableConsoleInput = true,
-        int pairingPort = 0
+        int pairingPort = 0,
+        IClipboardTextBoundary? clipboardBoundary = null
     )
     {
         var acquiredListenerGuard = WindowsKvmListenerGuard.Acquire();
@@ -78,7 +79,8 @@ internal sealed class WindowsKvmRuntime : IAsyncDisposable
                     autoAcceptControl: autoAccept,
                     promptConsent: controlConsent ?? pairingReceiver.PromptYesNoAsync,
                     status: PublishStatus,
-                    controlStateChanged: PublishControlState
+                    controlStateChanged: PublishControlState,
+                    clipboardBoundary: clipboardBoundary
                 );
             }
 
@@ -119,6 +121,27 @@ internal sealed class WindowsKvmRuntime : IAsyncDisposable
     /// </summary>
     public bool SetControlAuthorization(Guid peerID, bool authorized)
         => trustStore.SetControlAuthorization(peerID, authorized);
+
+    public bool IsClipboardSyncEnabled(Guid peerID)
+        => trustStore.IsClipboardSyncEnabled(peerID);
+
+    /// <summary>
+    /// Saves the local per-peer clipboard decision and ends matching active
+    /// control so both peers stop polling under the previous consent state.
+    /// </summary>
+    public bool SetClipboardSyncEnabled(Guid peerID, bool enabled)
+    {
+        try
+        {
+            return trustStore.SetClipboardSyncEnabled(peerID, enabled);
+        }
+        finally
+        {
+            // A failed persistence attempt must still end any session that
+            // could be polling under the prior consent decision.
+            secureReceiver?.EndControlForPeer(peerID);
+        }
+    }
 
     /// <summary>
     /// Controls whether a paired Mac may request or deliver keyboard/mouse

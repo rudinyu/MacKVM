@@ -8,7 +8,7 @@ authenticate a secure Connect session, and receive keyboard/mouse control over
 that encrypted session. A console mode remains available for automation and
 firewall diagnostics.
 
-## Current feature set — 1.02.32 (build 113; RC3 testing channel)
+## Current feature set — 1.03.00 (build 114)
 
 The Windows host includes:
 
@@ -268,15 +268,17 @@ The [macOS purge uninstaller](../INSTALL.md#remove-mackvm-and-saved-data) does
 not remove WindowsKVM, `%LOCALAPPDATA%\MacKVM`, or Windows-side trust. After
 deliberately purging and reinstalling MacKVM, Forget the old Mac on Windows
 and Pair its new identity again. This is macOS removal tooling only;
-the current WindowsKVM source is 1.02.32 (build 113, RC3 testing channel),
-and its wire protocol is unchanged.
+the current WindowsKVM source is 1.03.00 (build 114). It adds negotiated,
+per-peer plain-text clipboard sync and a brief control-status prompt while
+retaining compatibility with peers that omit the clipboard capability.
 
 ## Windows regression acceptance
 
 Run these checks on both Windows x64 and ARM64 using a compatible MacKVM peer.
 Use a disposable text document for input tests. Automated tests with simulated
-native APIs do not replace these desktop checks. Physical Windows and HiDPI
-visual acceptance of the shortened build 113 labels is still pending.
+native APIs do not replace these desktop checks. Clipboard synchronization,
+control-status prompts, and HiDPI behavior still need physical Windows
+acceptance.
 
 1. Hold a letter, Backspace, and an arrow key in turn. Repeat should continue
    while held and stop on release. End control while Ctrl or a mouse button is
@@ -310,8 +312,8 @@ visual acceptance of the shortened build 113 labels is still pending.
    that the mode and pairing buttons do not overlap. Resize or
    move between monitors during a connection; changing the view must not
    reset pairing or control, and consent prompts must remain usable.
-8. Confirm `--version` reports **1.02.32 (build 113)**; RC3 is the testing
-   channel, not a semantic-version suffix. The reported UI defects were tested
+8. Confirm `--version` reports **1.03.00 (build 114)**. The reported UI
+   defects were tested
    on **1.02.09 (build 89) Beta 3**, which remains historical context. Quit the
    old tray receiver before starting the replacement. Check the title/heading
    say **WindowsKVM**. Scroll Advanced rapidly up/down and drag both scrollbars;

@@ -33,7 +33,8 @@ public enum ControlMessageKind
     ControlGranted,
     ControlDenied,
     EndControl,
-    Input
+    Input,
+    Clipboard
 }
 
 public sealed class ControlMessageKindJsonConverter : JsonConverter<ControlMessageKind>
@@ -56,6 +57,7 @@ public sealed class ControlMessageKindJsonConverter : JsonConverter<ControlMessa
             "controlDenied" => ControlMessageKind.ControlDenied,
             "endControl" => ControlMessageKind.EndControl,
             "input" => ControlMessageKind.Input,
+            "clipboard" => ControlMessageKind.Clipboard,
             _ => throw new JsonException("Unknown control message kind.")
         };
     }
@@ -73,6 +75,7 @@ public sealed class ControlMessageKindJsonConverter : JsonConverter<ControlMessa
             ControlMessageKind.ControlDenied => "controlDenied",
             ControlMessageKind.EndControl => "endControl",
             ControlMessageKind.Input => "input",
+            ControlMessageKind.Clipboard => "clipboard",
             _ => throw new JsonException("Unknown control message kind.")
         });
     }
@@ -112,6 +115,18 @@ public sealed class ControlMessage
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public bool? ManagesDisplayRoute { get; }
 
+    [JsonPropertyName("supportsClipboard")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? SupportsClipboard { get; }
+
+    [JsonPropertyName("clipboardEnabled")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? ClipboardEnabled { get; }
+
+    [JsonPropertyName("clipboardText")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ClipboardText { get; }
+
     [JsonConstructor]
     public ControlMessage(
         int version,
@@ -121,7 +136,10 @@ public sealed class ControlMessage
         int? protocolVersion,
         int? minimumProtocolVersion,
         string? keyboardLayoutIdentifier,
-        bool? managesDisplayRoute = null
+        bool? managesDisplayRoute = null,
+        bool? supportsClipboard = null,
+        bool? clipboardEnabled = null,
+        string? clipboardText = null
     )
     {
         Version = version;
@@ -132,6 +150,9 @@ public sealed class ControlMessage
         MinimumProtocolVersion = minimumProtocolVersion;
         KeyboardLayoutIdentifier = keyboardLayoutIdentifier;
         ManagesDisplayRoute = managesDisplayRoute;
+        SupportsClipboard = supportsClipboard;
+        ClipboardEnabled = clipboardEnabled;
+        ClipboardText = clipboardText;
     }
 
     public ControlMessage(
@@ -142,7 +163,10 @@ public sealed class ControlMessage
         int? minimumProtocolVersion = null,
         string? keyboardLayoutIdentifier = null,
         int version = CurrentVersion,
-        bool? managesDisplayRoute = null
+        bool? managesDisplayRoute = null,
+        bool? supportsClipboard = null,
+        bool? clipboardEnabled = null,
+        string? clipboardText = null
     ) : this(
         version,
         kind,
@@ -151,7 +175,10 @@ public sealed class ControlMessage
         protocolVersion,
         minimumProtocolVersion,
         keyboardLayoutIdentifier,
-        managesDisplayRoute
+        managesDisplayRoute,
+        supportsClipboard,
+        clipboardEnabled,
+        clipboardText
     )
     {
     }
@@ -159,20 +186,44 @@ public sealed class ControlMessage
     public static ControlMessage RequestControl(
         Guid requestID,
         string? keyboardLayoutIdentifier = null,
-        bool? managesDisplayRoute = null
+        bool? managesDisplayRoute = null,
+        bool? supportsClipboard = null,
+        bool? clipboardEnabled = null
     ) => new(
         ControlMessageKind.RequestControl,
         requestID,
         protocolVersion: ControlProtocolCompatibility.CurrentVersion,
         minimumProtocolVersion: ControlProtocolCompatibility.MinimumCompatibleVersion,
         keyboardLayoutIdentifier: keyboardLayoutIdentifier,
-        managesDisplayRoute: managesDisplayRoute
+        managesDisplayRoute: managesDisplayRoute,
+        supportsClipboard: supportsClipboard,
+        clipboardEnabled: clipboardEnabled
+    );
+
+    public static ControlMessage ControlGranted(
+        Guid requestID,
+        bool? supportsClipboard = null,
+        bool? clipboardEnabled = null
+    ) => new(
+        ControlMessageKind.ControlGranted,
+        requestID,
+        supportsClipboard: supportsClipboard,
+        clipboardEnabled: clipboardEnabled
     );
 
     public static ControlMessage InputMessage(
         RemoteInputEvent input,
         Guid requestID
     ) => new(ControlMessageKind.Input, requestID, input);
+
+    public static ControlMessage ClipboardMessage(
+        Guid requestID,
+        string clipboardText
+    ) => new(
+        ControlMessageKind.Clipboard,
+        requestID,
+        clipboardText: clipboardText
+    );
 
     public ControlMessage Validated()
     {
@@ -194,6 +245,9 @@ public sealed class ControlMessage
                         && MinimumProtocolVersion is null
                         && KeyboardLayoutIdentifier is null
                         && ManagesDisplayRoute is null
+                        && SupportsClipboard is null
+                        && ClipboardEnabled is null
+                        && ClipboardText is null
                 );
                 Input!.Validated();
                 break;
@@ -201,10 +255,23 @@ public sealed class ControlMessage
                 Require(
                     RequestID is not null
                         && Input is null
+                        && ClipboardText is null
+                        && ValidClipboardFields
                         && ValidNegotiationFields
                 );
                 break;
             case ControlMessageKind.ControlGranted:
+                Require(
+                    RequestID is not null
+                        && Input is null
+                        && ProtocolVersion is null
+                        && MinimumProtocolVersion is null
+                        && KeyboardLayoutIdentifier is null
+                        && ManagesDisplayRoute is null
+                        && ClipboardText is null
+                        && ValidClipboardFields
+                );
+                break;
             case ControlMessageKind.ControlDenied:
             case ControlMessageKind.EndControl:
                 Require(
@@ -214,6 +281,23 @@ public sealed class ControlMessage
                         && MinimumProtocolVersion is null
                         && KeyboardLayoutIdentifier is null
                         && ManagesDisplayRoute is null
+                        && SupportsClipboard is null
+                        && ClipboardEnabled is null
+                        && ClipboardText is null
+                );
+                break;
+            case ControlMessageKind.Clipboard:
+                Require(
+                    RequestID is not null
+                        && Input is null
+                        && ClipboardText is not null
+                        && Encoding.UTF8.GetByteCount(ClipboardText) <= ControlMessageCodec.MaximumClipboardTextLength
+                        && ProtocolVersion is null
+                        && MinimumProtocolVersion is null
+                        && KeyboardLayoutIdentifier is null
+                        && ManagesDisplayRoute is null
+                        && SupportsClipboard is null
+                        && ClipboardEnabled is null
                 );
                 break;
             default:
@@ -225,6 +309,10 @@ public sealed class ControlMessage
 
         return this;
     }
+
+    private bool ValidClipboardFields
+        => (SupportsClipboard is null) == (ClipboardEnabled is null)
+            && (SupportsClipboard != false || ClipboardEnabled != true);
 
     private bool ValidNegotiationFields
     {
@@ -287,6 +375,7 @@ public sealed class ControlMessageException : Exception
 public static class ControlMessageCodec
 {
     public const int MaximumPayloadLength = 32_768;
+    public const int MaximumClipboardTextLength = 32_768;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {

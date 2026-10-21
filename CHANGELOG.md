@@ -4,6 +4,28 @@
 
 ## Unreleased
 
+### MacKVM 1.102.00 (build 97) — clipboard sync and control HUD
+
+- Add negotiated, opt-in plain-text clipboard synchronization with WindowsKVM.
+  Both paired devices must enable it, and sync runs only after control is
+  granted. Starting a session establishes a clipboard baseline without sending
+  existing contents; legacy peers that omit the capability receive no
+  clipboard traffic.
+- Limit synchronization to UTF-8 plain text up to 32 KiB and skip macOS items
+  marked concealed, transient, or auto-generated. Clipboard contents are not
+  written to logs or support diagnostics.
+- Show a brief non-activating macOS HUD after keyboard ownership actually
+  changes.
+
+### WindowsKVM 1.03.00 (build 114) — clipboard sync and control status
+
+- Add per-peer, off-by-default consent for negotiated plain-text clipboard
+  synchronization, with baseline sampling, bounded payloads, and fail-closed
+  handling of recognized clipboard policy markers.
+- Show a brief non-activating prompt after a successful control grant or
+  confirmed local return. Physical Windows and HiDPI acceptance remains
+  pending.
+
 ### MacKVM 1.101.01 (build 96) — Packaging and permission updates
 
 #### Signed installer distribution

@@ -73,7 +73,8 @@ internal sealed class SecureHarness : IAsyncDisposable
         bool autoAcceptControl = false,
         Func<string, CancellationToken, Task<bool>>? promptConsent = null,
         Action<bool>? onControlStateChanged = null,
-        Action? beforeControlGranted = null
+        Action? beforeControlGranted = null,
+        IClipboardTextBoundary? clipboardBoundary = null
     )
     {
         var mac = DeviceCredentials.Create("SyntheticMac");
@@ -117,7 +118,8 @@ internal sealed class SecureHarness : IAsyncDisposable
                     hotKeySlot.Value = new TestReleaseHotKey(callback);
                     return hotKeySlot.Value;
                 },
-                beforeControlGranted: beforeControlGranted
+                beforeControlGranted: beforeControlGranted,
+                clipboardBoundary: clipboardBoundary
             );
 
             listener = new TcpListener(IPAddress.Loopback, 0);
@@ -206,20 +208,32 @@ internal sealed class SecureHarness : IAsyncDisposable
     public static async Task<SecureHarness> CreateAsync(
         Func<string, CancellationToken, Task<bool>>? promptConsent = null,
         Action<bool>? onControlStateChanged = null,
-        Action? beforeControlGranted = null
+        Action? beforeControlGranted = null,
+        IClipboardTextBoundary? clipboardBoundary = null
     ) => await ConnectAsync(
         autoAcceptControl: false,
         promptConsent,
         onControlStateChanged,
-        beforeControlGranted
+        beforeControlGranted,
+        clipboardBoundary
     ).ConfigureAwait(false);
 
     public Guid NextRequestID() => Guid.NewGuid();
 
-    public async Task<ControlMessage> RequestControlAsync()
+    public bool SetClipboardSyncEnabled(bool enabled)
+        => trustStore.SetClipboardSyncEnabled(mac.Identity.Id, enabled);
+
+    public async Task<ControlMessage> RequestControlAsync(
+        bool? supportsClipboard = null,
+        bool? clipboardEnabled = null
+    )
     {
         CurrentRequestID = NextRequestID();
-        await SendControlAsync(ControlMessage.RequestControl(CurrentRequestID)).ConfigureAwait(false);
+        await SendControlAsync(ControlMessage.RequestControl(
+            CurrentRequestID,
+            supportsClipboard: supportsClipboard,
+            clipboardEnabled: clipboardEnabled
+        )).ConfigureAwait(false);
         return await ReadControlAsync().ConfigureAwait(false);
     }
 
@@ -232,8 +246,11 @@ internal sealed class SecureHarness : IAsyncDisposable
     }
 
     public async Task<ControlMessage> ReadControlAsync()
+        => await ReadControlAsync(cancellation.Token).ConfigureAwait(false);
+
+    public async Task<ControlMessage> ReadControlAsync(CancellationToken token)
     {
-        var message = await ReadWireMessageAsync(stream, buffer, cancellation.Token)
+        var message = await ReadWireMessageAsync(stream, buffer, token)
             .ConfigureAwait(false);
         if (message.Packet is null)
         {
@@ -282,6 +299,7 @@ internal sealed class SecureHarness : IAsyncDisposable
         var store = (WindowsTrustStore)ctor.Invoke([
             path,
             new Dictionary<Guid, PeerIdentity>(),
+            new HashSet<Guid>(),
             new HashSet<Guid>(),
             new HashSet<Guid>(),
             Activator.CreateInstance(stamp)!

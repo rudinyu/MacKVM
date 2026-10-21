@@ -242,6 +242,7 @@ private final class AppBootstrap: ObservableObject {
     let controlRequestNotifier: ControlRequestNotifier?
     let inputTopology = InputTopologyController()
     let launchAtLogin = LaunchAtLoginController()
+    private let controlOwnershipHUD = ControlOwnershipHUDController()
     let errorMessage: String?
     let canResetIdentity: Bool
     @Published private(set) var networkServicesStarted = false
@@ -295,6 +296,9 @@ private final class AppBootstrap: ObservableObject {
                 },
                 seamlessControlAuthorized: { [weak discovery] peerID in
                     discovery?.seamlessControlAuthorized(for: peerID) ?? false
+                },
+                clipboardSyncEnabled: { [weak discovery] peerID in
+                    discovery?.clipboardSyncEnabled(for: peerID) ?? false
                 }
             )
             control.onControllingStarted = { monitor.switchToRemote() }
@@ -333,6 +337,33 @@ private final class AppBootstrap: ObservableObject {
             // the idle and receiving sides without leaking it to other apps.
             errorMessage = nil
             canResetIdentity = false
+            control.onOwnershipTransition = {
+                [weak self, weak control] transition in
+                guard let control else { return }
+                let transitionRevision = control.ownershipTransitionRevision
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    guard self.control?.ownershipTransitionRevision
+                        == transitionRevision else { return }
+                    let remoteDeviceName: String?
+                    switch transition {
+                    case .outboundControl(let peerID),
+                         .inboundControl(let peerID):
+                        remoteDeviceName = self.discovery?
+                            .pairedPeerProfile(for: peerID)?.friendlyName
+                            ?? peerDisplayName(
+                                for: peerID,
+                                from: self.discovery
+                            )
+                    case .returnedLocally:
+                        remoteDeviceName = nil
+                    }
+                    self.controlOwnershipHUD.show(
+                        transition,
+                        remoteDeviceName: remoteDeviceName
+                    )
+                }
+            }
             control.onIncomingControlRequestResolved = {
                 [weak self, weak controlRequestNotifier] request in
                 controlRequestNotifier?.clearActiveRequest(
@@ -1433,6 +1464,21 @@ private struct MacKVMMenuView: View {
                         )
                         .font(.caption2)
                         .foregroundStyle(.secondary)
+                        Toggle(
+                            "Sync plain-text clipboard with this device",
+                            isOn: clipboardSyncBinding(for: profile)
+                        )
+                        .font(.caption)
+                        Text(
+                            "Off by default. Both devices must enable this; sync runs only during active control. Items marked concealed, transient, or auto-generated are skipped."
+                        )
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        Text(
+                            "Changing this setting ends active control so both devices can renegotiate."
+                        )
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                     }
                 }
             }
@@ -1520,6 +1566,28 @@ private struct MacKVMMenuView: View {
                     for: profile.peerID,
                     authorized: authorized
                 )
+            }
+        )
+    }
+
+    private func clipboardSyncBinding(
+        for profile: PairedPeerProfile
+    ) -> Binding<Bool> {
+        Binding(
+            get: {
+                discovery.pairedPeerProfile(
+                    for: profile.peerID
+                )?.clipboardSyncEnabled ?? false
+            },
+            set: { enabled in
+                if discovery.updateClipboardSyncEnabled(
+                    for: profile.peerID,
+                    enabled: enabled
+                ) {
+                    control.clipboardSyncPreferenceChanged(
+                        for: profile.peerID
+                    )
+                }
             }
         )
     }

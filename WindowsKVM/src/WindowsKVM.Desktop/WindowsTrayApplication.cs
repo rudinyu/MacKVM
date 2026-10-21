@@ -20,6 +20,8 @@ internal sealed class WindowsTrayApplication : IDisposable
     private const uint WindowMessageStatus = 0x8002;
     private const uint WindowMessageConsent = 0x8003;
     private const uint WindowMessageConsentCancel = 0x8004;
+    private const uint WindowMessageControlNotification = 0x8005;
+    private const uint WindowMessageDismissControlNotification = 0x8006;
     private const uint WindowMessageClose = 0x0010;
     private const uint WindowMessageDestroy = 0x0002;
     private const uint WindowMessageCommand = 0x0111;
@@ -62,6 +64,7 @@ internal sealed class WindowsTrayApplication : IDisposable
     private const int ViewModeButtonID = 1006;
     private const int ForgetButtonID = 1007;
     private const int ControlAuthorizationButtonID = 1008;
+    private const int ClipboardSyncButtonID = 1009;
     private const int ConsentYesButtonID = 1101;
     private const int ConsentNoButtonID = 1102;
     private const int TrayShowCommandID = 2001;
@@ -129,7 +132,7 @@ internal sealed class WindowsTrayApplication : IDisposable
     // lines in Advanced mode.  A single long STATIC line wraps at an
     // implementation-dependent word boundary and used to be clipped by the
     // following support-information row.
-    private const int AdvancedContentHeight = 2000;
+    private const int AdvancedContentHeight = 2110;
     private const int SimpleContentHeight = 430;
     private const int ScreenMetricWidth = 0;
     private const int ScreenMetricHeight = 1;
@@ -197,6 +200,7 @@ internal sealed class WindowsTrayApplication : IDisposable
     private IntPtr pairedPeerDetailsLabel;
     private IntPtr forgetButton;
     private IntPtr controlAuthorizationCheckBox;
+    private IntPtr clipboardSyncCheckBox;
     private IntPtr controlStateLabel;
     private IntPtr monitorStatusLabel;
     private IntPtr supportPeerLabel;
@@ -228,6 +232,11 @@ internal sealed class WindowsTrayApplication : IDisposable
     private IntPtr simpleInputPathLabel;
     private IntPtr simpleRefreshButton;
     private IntPtr simpleQuitButton;
+    private readonly ConcurrentQueue<bool> pendingControlNotifications = new();
+    private readonly ControlStatusNotificationPolicy controlStatusNotificationPolicy = new();
+    private WindowsControlStatusPrompt? controlStatusPrompt;
+    private System.Threading.Timer? controlStatusDismissTimer;
+    private int controlStatusNotificationGeneration;
     private string lastStatus = "Starting WindowsKVM…";
     private string? pairedPeerName;
     private string? pairedPeerID;
@@ -370,6 +379,7 @@ internal sealed class WindowsTrayApplication : IDisposable
         }
 
         CreateControls();
+        UpdateClipboardSyncControls();
         ApplyResponsiveMode();
         UpdateScrollBar();
         AddTrayIcon();
@@ -880,19 +890,37 @@ internal sealed class WindowsTrayApplication : IDisposable
             captionFont,
             LabelColor.Secondary
         );
+        clipboardSyncCheckBox = CreateCheckBox(
+            "Allow plain-text clipboard sync with this paired Mac",
+            AdvancedEdge,
+            1898,
+            620,
+            30,
+            ClipboardSyncButtonID
+        );
+        CreateLabel(
+            "Off by default. Enable on both devices; changing this setting ends active control.\r\n"
+                + "Sensitive Windows clipboard markers are honored when they can be read.",
+            AdvancedEdge,
+            1932,
+            AdvancedTextWidth,
+            40,
+            captionFont,
+            LabelColor.Secondary
+        );
         CreateButton(
             "Copy support information",
             AdvancedEdge,
-            1904,
+            1984,
             250,
             36,
             CopyButtonID
         );
-        CreateButton("Quit", AdvancedQuitX, 1904, AdvancedQuitWidth, 36, QuitButtonID);
+        CreateButton("Quit", AdvancedQuitX, 1984, AdvancedQuitWidth, 36, QuitButtonID);
         CreateLabel(
             "Closing this window hides WindowsKVM to the system tray; LAN access must be confirmed from MacKVM.",
             AdvancedEdge,
-            1960,
+            2040,
             AdvancedTextWidth,
             28,
             captionFont,
@@ -2188,6 +2216,17 @@ internal sealed class WindowsTrayApplication : IDisposable
                 DrainStatusQueue();
                 return IntPtr.Zero;
 
+            case WindowMessageControlNotification:
+                DrainControlNotifications();
+                return IntPtr.Zero;
+
+            case WindowMessageDismissControlNotification:
+                if (wParam.ToInt64() == Volatile.Read(ref controlStatusNotificationGeneration))
+                {
+                    controlStatusPrompt?.Hide();
+                }
+                return IntPtr.Zero;
+
             case WindowMessageConsent:
                 HandleConsentRequest(wParam.ToInt64());
                 return IntPtr.Zero;
@@ -2198,6 +2237,10 @@ internal sealed class WindowsTrayApplication : IDisposable
 
             case WindowMessageDestroy:
                 RemoveTrayIcon();
+                window = IntPtr.Zero;
+                controlStatusDismissTimer?.Dispose();
+                controlStatusPrompt?.Dispose();
+                controlStatusPrompt = null;
                 ResolvePendingConsents();
                 PostQuitMessage(0);
                 return IntPtr.Zero;
@@ -2250,6 +2293,9 @@ internal sealed class WindowsTrayApplication : IDisposable
                 break;
             case ControlAuthorizationButtonID:
                 HandleControlAuthorizationSelection();
+                break;
+            case ClipboardSyncButtonID:
+                HandleClipboardSyncSelection();
                 break;
             case QuitButtonID:
             case TrayQuitCommandID:
@@ -2372,6 +2418,52 @@ internal sealed class WindowsTrayApplication : IDisposable
             UpdateControlAuthorizationControls();
             OnRuntimeStatusChanged(
                 $"Could not update automatic control approval: {ex.Message}"
+            );
+        }
+    }
+
+    private void HandleClipboardSyncSelection()
+    {
+        var peerIDText = Volatile.Read(ref pairedPeerFullID);
+        if (!Guid.TryParse(peerIDText, out var peerID))
+        {
+            UpdateClipboardSyncControls();
+            OnRuntimeStatusChanged("Select a paired Mac before changing clipboard sync.");
+            return;
+        }
+
+        var checkBox = clipboardSyncCheckBox;
+        var enabled = checkBox != IntPtr.Zero
+            && SendMessage(
+                checkBox,
+                ButtonGetCheck,
+                IntPtr.Zero,
+                IntPtr.Zero
+            ).ToInt64() == ButtonStateChecked;
+        try
+        {
+            if (!runtime.SetClipboardSyncEnabled(peerID, enabled))
+            {
+                UpdateClipboardSyncControls();
+                OnRuntimeStatusChanged(
+                    "The selected Mac is no longer trusted; pair it again before changing clipboard sync."
+                );
+                return;
+            }
+
+            UpdateClipboardSyncControls();
+            var peerName = Volatile.Read(ref pairedPeerName) ?? "the paired Mac";
+            OnRuntimeStatusChanged(
+                enabled
+                    ? $"Plain-text clipboard sync enabled locally for {peerName}; the Mac must also enable it."
+                    : $"Plain-text clipboard sync disabled for {peerName}."
+            );
+        }
+        catch (Exception ex)
+        {
+            UpdateClipboardSyncControls();
+            OnRuntimeStatusChanged(
+                $"Could not save the clipboard sync preference; active control was ended: {ex.Message}"
             );
         }
     }
@@ -2746,6 +2838,7 @@ internal sealed class WindowsTrayApplication : IDisposable
             peer is null ? null : Fingerprint(peer.SigningPublicKey)
         );
         UpdateControlAuthorizationControls();
+        UpdateClipboardSyncControls();
     }
 
     private void UpdateControlAuthorizationControls()
@@ -2771,6 +2864,41 @@ internal sealed class WindowsTrayApplication : IDisposable
                 IntPtr.Zero
             );
         }
+    }
+
+    private void UpdateClipboardSyncControls()
+    {
+        var peerIDText = Volatile.Read(ref pairedPeerFullID);
+        var hasPeer = Guid.TryParse(peerIDText, out var peerID);
+        var canReadPreference = hasPeer;
+        var enabled = false;
+        if (hasPeer)
+        {
+            try
+            {
+                enabled = runtime.IsClipboardSyncEnabled(peerID);
+            }
+            catch (Exception ex)
+            {
+                canReadPreference = false;
+                OnRuntimeStatusChanged(
+                    $"Could not read the clipboard sync preference: {ex.Message}"
+                );
+            }
+        }
+
+        if (clipboardSyncCheckBox == IntPtr.Zero)
+        {
+            return;
+        }
+
+        _ = EnableWindow(clipboardSyncCheckBox, canReadPreference);
+        _ = SendMessage(
+            clipboardSyncCheckBox,
+            ButtonSetCheck,
+            enabled ? (IntPtr)ButtonStateChecked : IntPtr.Zero,
+            IntPtr.Zero
+        );
     }
 
     private void RefreshPairedPeerSelector(IReadOnlyList<WindowsKVM.Protocol.PeerIdentity> peers)
@@ -2888,10 +3016,64 @@ internal sealed class WindowsTrayApplication : IDisposable
     private void OnControlStateChanged(bool active)
     {
         Volatile.Write(ref controlActive, active ? 1 : 0);
+        pendingControlNotifications.Enqueue(active);
+        var target = window;
+        if (target != IntPtr.Zero)
+        {
+            _ = PostMessage(
+                target,
+                WindowMessageControlNotification,
+                IntPtr.Zero,
+                IntPtr.Zero
+            );
+        }
         OnRuntimeStatusChanged(
             active
                 ? "Keyboard/mouse control is active on this Windows PC."
                 : "Keyboard/mouse control is local again."
+        );
+    }
+
+    private void DrainControlNotifications()
+    {
+        while (pendingControlNotifications.TryDequeue(out var active))
+        {
+            var message = controlStatusNotificationPolicy.Observe(active);
+            if (message is not null)
+            {
+                ShowControlStatusNotification(message);
+            }
+        }
+    }
+
+    private void ShowControlStatusNotification(string message)
+    {
+        if (window == IntPtr.Zero)
+        {
+            return;
+        }
+
+        controlStatusPrompt ??= new WindowsControlStatusPrompt(window);
+        controlStatusPrompt.Show(message);
+        var generation = Interlocked.Increment(ref controlStatusNotificationGeneration);
+        controlStatusDismissTimer?.Dispose();
+        controlStatusDismissTimer = new System.Threading.Timer(
+            _ =>
+            {
+                var target = window;
+                if (target != IntPtr.Zero)
+                {
+                    _ = PostMessage(
+                        target,
+                        WindowMessageDismissControlNotification,
+                        (IntPtr)generation,
+                        IntPtr.Zero
+                    );
+                }
+            },
+            null,
+            TimeSpan.FromSeconds(3),
+            Timeout.InfiniteTimeSpan
         );
     }
 

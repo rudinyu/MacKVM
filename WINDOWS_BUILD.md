@@ -147,9 +147,8 @@ Confirm the executable before starting a test:
 .\WindowsKVM.exe --version
 ```
 
-The current UI test build reports `WindowsKVM 1.02.32 (build 113)` and is in
-the RC3 testing channel; RC3 is channel metadata, not part of the semantic
-version. This is newer than the historical **1.02.09 (build 89) Beta 3** used
+The current UI test build reports `WindowsKVM 1.03.00 (build 114)`. This is
+newer than the historical **1.02.09 (build 89) Beta 3** used
 in the reported scrolling and dropdown tests. In Advanced mode, the
 control-notification status is **Available** and the Physical input choice is
 **Remote input to this PC**; selection behavior is unchanged. Physical Windows
@@ -255,6 +254,31 @@ and injects the authenticated Mac input with `SendInput`. Press
 `Ctrl+Alt+Shift+Esc` on Windows to release all held input and return control
 locally; ending control from MacKVM has the same release-all behavior.
 
+Plain-text clipboard sync is a separate per-peer opt-in in **Advanced mode**:
+select the pinned Mac and enable **Allow plain-text clipboard sync with this
+paired Mac**. It is off by default, stored with that pinned identity, and
+cleared when the peer is forgotten or its key is replaced. The Mac must also
+opt in. Sync starts only after control is granted and both peers advertise
+support and consent; legacy peers omit that capability, so Windows sends no
+clipboard packets to them. The first readable clipboard value after a grant
+establishes a baseline and is not sent. Only plain text is copied; other
+clipboard formats are ignored. A text update is dropped if its UTF-8 text or
+complete encrypted JSON envelope exceeds 32 KiB. Changing this preference ends
+active control so both peers stop polling. Control end, disconnect, revoke, and
+Quit also stop synchronization. Clipboard contents are never written to logs.
+
+Windows honors the clipboard's `ExcludeClipboardContentFromMonitorProcessing`
+marker by excluding the data whenever it is present. It also excludes data
+when `CanIncludeInClipboardHistory` or `CanUploadToCloudClipboard` contains
+DWORD `0`; DWORD `1` explicitly allows that policy. An unreadable or unknown
+declared marker fails closed. These are best-effort platform signals, not a
+complete password-manager or sensitive-application detector; applications
+that do not publish a recognized marker may still expose plain text.
+
+After a successful control grant or confirmed return, Windows briefly shows a
+non-activating status prompt. Startup and unconfirmed requests do not show a
+prompt.
+
 ### Verify remembered control approval
 
 1. Pair a Mac and WindowsKVM; automatic control approval is enabled by default
@@ -300,9 +324,8 @@ For deliberate Mac-side removal, see the
 only the selected Mac app and its current account's data; it does not uninstall
 WindowsKVM or change `%LOCALAPPDATA%\MacKVM` or Windows-side trust. After a
 successful Mac purge and reinstall, use **Forget paired Mac** for the old Mac
-on Windows, then Pair its newly generated identity again. WindowsKVM remains
-at source version 1.02.32 (build 113, RC3 testing channel); this macOS tooling
-update does not change the WindowsKVM wire protocol.
+on Windows, then Pair its newly generated identity again. WindowsKVM is at source version 1.03.00 (build 114), with negotiated
+plain-text clipboard sync and a control-status prompt.
 
 The protocol and desktop regression self-tests can be run on a development
 host with:

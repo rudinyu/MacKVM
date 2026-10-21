@@ -45,6 +45,9 @@ public struct PairedPeerProfile: Codable, Equatable, Sendable, Identifiable {
     /// deliberately stored beside (and validated against) the pinned public
     /// key; it is never sent over the control protocol.
     public var seamlessControlAuthorized: Bool
+    /// Clipboard sync is local consent and always defaults off for existing
+    /// profiles. It is never trusted from peer metadata or Bonjour.
+    public var clipboardSyncEnabled: Bool
     public let signingPublicKey: Data
 
     public var id: UUID { peerID }
@@ -59,6 +62,7 @@ public struct PairedPeerProfile: Codable, Equatable, Sendable, Identifiable {
         model: String? = nil,
         lastConnectedAt: Date? = nil,
         seamlessControlAuthorized: Bool = false,
+        clipboardSyncEnabled: Bool = false,
         signingPublicKey: Data
     ) {
         self.peerID = peerID
@@ -67,6 +71,7 @@ public struct PairedPeerProfile: Codable, Equatable, Sendable, Identifiable {
         self.model = PeerMetadataValidation.validatedModel(model)
         self.lastConnectedAt = lastConnectedAt
         self.seamlessControlAuthorized = seamlessControlAuthorized
+        self.clipboardSyncEnabled = clipboardSyncEnabled
         self.signingPublicKey = signingPublicKey
     }
 
@@ -76,6 +81,7 @@ public struct PairedPeerProfile: Codable, Equatable, Sendable, Identifiable {
         case model
         case lastConnectedAt
         case seamlessControlAuthorized
+        case clipboardSyncEnabled
         case signingPublicKey
     }
 
@@ -98,6 +104,10 @@ public struct PairedPeerProfile: Codable, Equatable, Sendable, Identifiable {
             Bool.self,
             forKey: .seamlessControlAuthorized
         ) ?? false
+        let clipboardSyncEnabled = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .clipboardSyncEnabled
+        ) ?? false
         let signingPublicKey = try container.decode(
             Data.self,
             forKey: .signingPublicKey
@@ -108,6 +118,7 @@ public struct PairedPeerProfile: Codable, Equatable, Sendable, Identifiable {
             model: model,
             lastConnectedAt: lastConnectedAt,
             seamlessControlAuthorized: seamlessControlAuthorized,
+            clipboardSyncEnabled: clipboardSyncEnabled,
             signingPublicKey: signingPublicKey
         )
     }

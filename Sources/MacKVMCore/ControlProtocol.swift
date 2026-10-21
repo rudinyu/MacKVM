@@ -6,6 +6,7 @@ public enum ControlMessageKind: String, Codable, Sendable {
     case controlDenied
     case endControl
     case input
+    case clipboard
 }
 
 public struct ControlMessage: Codable, Equatable, Sendable {
@@ -30,6 +31,13 @@ public struct ControlMessage: Codable, Equatable, Sendable {
     /// Missing values retain the released automatic-routing behavior; false
     /// marks the manual-monitor keyboard/mouse-only shortcut on both peers.
     public let managesDisplayRoute: Bool?
+    /// Optional clipboard capability negotiation. Missing values identify a
+    /// legacy peer that cannot safely participate in clipboard sync.
+    public let supportsClipboard: Bool?
+    public let clipboardEnabled: Bool?
+    /// UTF-8 plain text is carried only inside the authenticated control
+    /// session and is never included in diagnostics.
+    public let clipboardText: String?
 
     public init(
         version: Int = currentVersion,
@@ -39,7 +47,10 @@ public struct ControlMessage: Codable, Equatable, Sendable {
         protocolVersion: Int? = nil,
         minimumProtocolVersion: Int? = nil,
         keyboardLayoutIdentifier: String? = nil,
-        managesDisplayRoute: Bool? = nil
+        managesDisplayRoute: Bool? = nil,
+        supportsClipboard: Bool? = nil,
+        clipboardEnabled: Bool? = nil,
+        clipboardText: String? = nil
     ) {
         self.version = version
         self.kind = kind
@@ -49,6 +60,9 @@ public struct ControlMessage: Codable, Equatable, Sendable {
         self.minimumProtocolVersion = minimumProtocolVersion
         self.keyboardLayoutIdentifier = keyboardLayoutIdentifier
         self.managesDisplayRoute = managesDisplayRoute
+        self.supportsClipboard = supportsClipboard
+        self.clipboardEnabled = clipboardEnabled
+        self.clipboardText = clipboardText
     }
 
     public static func input(
@@ -65,7 +79,8 @@ public struct ControlMessage: Codable, Equatable, Sendable {
     public static func requestControl(
         requestID: UUID,
         keyboardLayoutIdentifier: String? = nil,
-        managesDisplayRoute: Bool? = nil
+        managesDisplayRoute: Bool? = nil,
+        clipboardEnabled: Bool = false
     ) -> ControlMessage {
         ControlMessage(
             kind: .requestControl,
@@ -73,7 +88,38 @@ public struct ControlMessage: Codable, Equatable, Sendable {
             protocolVersion: currentProtocolVersion,
             minimumProtocolVersion: minimumCompatibleProtocolVersion,
             keyboardLayoutIdentifier: keyboardLayoutIdentifier,
-            managesDisplayRoute: managesDisplayRoute
+            managesDisplayRoute: managesDisplayRoute,
+            supportsClipboard: true,
+            clipboardEnabled: clipboardEnabled
+        )
+    }
+
+    public static func controlGranted(
+        requestID: UUID,
+        clipboardEnabled: Bool?
+    ) -> ControlMessage {
+        guard let clipboardEnabled else {
+            return ControlMessage(
+                kind: .controlGranted,
+                requestID: requestID
+            )
+        }
+        return ControlMessage(
+            kind: .controlGranted,
+            requestID: requestID,
+            supportsClipboard: true,
+            clipboardEnabled: clipboardEnabled
+        )
+    }
+
+    public static func clipboard(
+        _ text: String,
+        requestID: UUID
+    ) -> ControlMessage {
+        ControlMessage(
+            kind: .clipboard,
+            requestID: requestID,
+            clipboardText: text
         )
     }
 
@@ -88,23 +134,54 @@ public struct ControlMessage: Codable, Equatable, Sendable {
                   protocolVersion == nil,
                   minimumProtocolVersion == nil,
                   keyboardLayoutIdentifier == nil,
-                  managesDisplayRoute == nil else {
+                  managesDisplayRoute == nil,
+                  supportsClipboard == nil,
+                  clipboardEnabled == nil,
+                  clipboardText == nil else {
                 throw ControlProtocolError.invalidFields
             }
             _ = try input.validated()
         case .requestControl:
             guard requestID != nil,
                   input == nil,
+                  clipboardText == nil,
                   validNegotiationFields else {
                 throw ControlProtocolError.invalidFields
             }
-        case .controlGranted, .controlDenied, .endControl:
+        case .controlGranted:
             guard requestID != nil,
                   input == nil,
                   protocolVersion == nil,
                   minimumProtocolVersion == nil,
                   keyboardLayoutIdentifier == nil,
-                  managesDisplayRoute == nil else {
+                  managesDisplayRoute == nil,
+                  clipboardText == nil,
+                  validClipboardCapabilityFields else {
+                throw ControlProtocolError.invalidFields
+            }
+        case .controlDenied, .endControl:
+            guard requestID != nil,
+                  input == nil,
+                  protocolVersion == nil,
+                  minimumProtocolVersion == nil,
+                  keyboardLayoutIdentifier == nil,
+                  managesDisplayRoute == nil,
+                  supportsClipboard == nil,
+                  clipboardEnabled == nil,
+                  clipboardText == nil else {
+                throw ControlProtocolError.invalidFields
+            }
+        case .clipboard:
+            guard requestID != nil,
+                  input == nil,
+                  protocolVersion == nil,
+                  minimumProtocolVersion == nil,
+                  keyboardLayoutIdentifier == nil,
+                  managesDisplayRoute == nil,
+                  supportsClipboard == nil,
+                  clipboardEnabled == nil,
+                  let clipboardText,
+                  clipboardText.utf8.count <= ControlMessageCodec.maximumClipboardUTF8Length else {
                 throw ControlProtocolError.invalidFields
             }
         }
@@ -112,6 +189,8 @@ public struct ControlMessage: Codable, Equatable, Sendable {
     }
 
     private var validNegotiationFields: Bool {
+        guard validClipboardCapabilityFields,
+              clipboardText == nil else { return false }
         if let protocolVersion {
             guard (1...255).contains(protocolVersion) else { return false }
             let minimum = minimumProtocolVersion ?? protocolVersion
@@ -130,6 +209,17 @@ public struct ControlMessage: Codable, Equatable, Sendable {
             && trimmed.unicodeScalars.allSatisfy {
                 $0.value >= 0x20 && $0.value != 0x7F
             }
+    }
+
+    private var validClipboardCapabilityFields: Bool {
+        switch (supportsClipboard, clipboardEnabled) {
+        case (nil, nil):
+            return true
+        case let (supports?, enabled?):
+            return supports || !enabled
+        default:
+            return false
+        }
     }
 }
 
@@ -171,6 +261,9 @@ public enum ControlProtocolError: Error, Equatable {
 
 public enum ControlMessageCodec {
     public static let maximumPayloadLength = 32_768
+    /// The text itself may use up to 32 KiB UTF-8. Its JSON envelope must
+    /// also fit inside the existing encrypted-session plaintext cap.
+    public static let maximumClipboardUTF8Length = 32_768
 
     public static func encode(_ message: ControlMessage) throws -> Data {
         let validated = try message.validated()

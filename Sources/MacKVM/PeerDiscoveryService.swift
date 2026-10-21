@@ -488,6 +488,25 @@ final class PeerDiscoveryService: ObservableObject {
         registry.seamlessControlAuthorized(for: peerID)
     }
 
+    func clipboardSyncEnabled(for peerID: UUID) -> Bool {
+        registry.clipboardSyncEnabled(for: peerID)
+    }
+
+    @discardableResult
+    func updateClipboardSyncEnabled(
+        for peerID: UUID,
+        enabled: Bool
+    ) -> Bool {
+        guard registry.updateClipboardSyncEnabled(
+            for: peerID,
+            enabled: enabled
+        ) else {
+            return false
+        }
+        objectWillChange.send()
+        return true
+    }
+
     @discardableResult
     func updateSeamlessControlAuthorization(
         for peerID: UUID,

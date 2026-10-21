@@ -488,6 +488,97 @@ internal static class Program
         Assert(decoded.ManagesDisplayRoute is null
             && !json.Contains("managesDisplayRoute", StringComparison.Ordinal),
             "legacy route mode must remain absent, not change released wire messages");
+        var legacyRequest = ControlMessageCodec.Decode(Encoding.UTF8.GetBytes(
+            $"{{\"version\":1,\"kind\":\"requestControl\",\"requestID\":\"{requestID}\"}}"
+        ));
+        Assert(legacyRequest.SupportsClipboard is null && legacyRequest.ClipboardEnabled is null,
+            "legacy control requests must keep clipboard capability absent");
+        var optedInRequest = ControlMessage.RequestControl(
+            requestID,
+            supportsClipboard: true,
+            clipboardEnabled: true
+        );
+        var optedInRoundTrip = ControlMessageCodec.Decode(
+            ControlMessageCodec.Encode(optedInRequest)
+        );
+        Assert(optedInRoundTrip.SupportsClipboard == true
+            && optedInRoundTrip.ClipboardEnabled == true,
+            "clipboard request capability and local consent must round-trip");
+        var grant = ControlMessageCodec.Decode(ControlMessageCodec.Encode(
+            ControlMessage.ControlGranted(requestID, supportsClipboard: true, clipboardEnabled: false)
+        ));
+        Assert(grant.SupportsClipboard == true && grant.ClipboardEnabled == false,
+            "the control grant must carry capability and peer consent independently");
+        var legacyGrant = ControlMessageCodec.Decode(ControlMessageCodec.Encode(
+            ControlMessage.ControlGranted(requestID)
+        ));
+        Assert(legacyGrant.SupportsClipboard is null && legacyGrant.ClipboardEnabled is null,
+            "a legacy grant must keep clipboard negotiation fields absent");
+        var contradictoryClipboardGrantRejected = false;
+        try
+        {
+            _ = ControlMessageCodec.Encode(ControlMessage.ControlGranted(
+                requestID,
+                supportsClipboard: false,
+                clipboardEnabled: true
+            ));
+        }
+        catch (ControlMessageException ex)
+            when (ex.Code == ControlMessageErrorCode.InvalidFields)
+        {
+            contradictoryClipboardGrantRejected = true;
+        }
+        Assert(contradictoryClipboardGrantRejected,
+            "a peer cannot enable clipboard sync without advertising support");
+        var clipboardText = "line one\r\n第二行 😀";
+        var clipboard = ControlMessageCodec.Decode(ControlMessageCodec.Encode(
+            ControlMessage.ClipboardMessage(requestID, clipboardText)
+        ));
+        Assert(clipboard.Kind == ControlMessageKind.Clipboard
+            && clipboard.RequestID == requestID
+            && clipboard.ClipboardText == clipboardText,
+            "plain-text clipboard message fields must round-trip");
+
+        var emptyClipboardEnvelopeLength = ControlMessageCodec.Encode(
+            ControlMessage.ClipboardMessage(requestID, string.Empty)
+        ).Length;
+        var exactEnvelopeText = new string(
+            'x',
+            ControlMessageCodec.MaximumPayloadLength - emptyClipboardEnvelopeLength
+        );
+        var exactEnvelope = ControlMessageCodec.Encode(
+            ControlMessage.ClipboardMessage(requestID, exactEnvelopeText)
+        );
+        Assert(exactEnvelope.Length == ControlMessageCodec.MaximumPayloadLength,
+            "clipboard envelope should allow the exact encoded limit");
+        var envelopeOverflowRejected = false;
+        try
+        {
+            _ = ControlMessageCodec.Encode(
+                ControlMessage.ClipboardMessage(requestID, exactEnvelopeText + "x")
+            );
+        }
+        catch (ControlMessageException ex)
+            when (ex.Code == ControlMessageErrorCode.PayloadTooLarge)
+        {
+            envelopeOverflowRejected = true;
+        }
+        Assert(envelopeOverflowRejected,
+            "clipboard envelope bytes beyond the exact limit must be rejected");
+        var utf8OverflowRejected = false;
+        try
+        {
+            _ = ControlMessageCodec.Encode(
+                ControlMessage.ClipboardMessage(requestID, new string('界', 10_923))
+            );
+        }
+        catch (ControlMessageException ex)
+            when (ex.Code == ControlMessageErrorCode.InvalidFields)
+        {
+            utf8OverflowRejected = true;
+        }
+        Assert(utf8OverflowRejected,
+            "clipboard text over 32 KiB UTF-8 must be rejected before envelope encoding");
         foreach (var mode in new[] { false, true })
         {
             var routeRequest = ControlMessage.RequestControl(requestID,

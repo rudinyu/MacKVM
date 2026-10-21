@@ -58,7 +58,9 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
     private readonly WindowsInputSink inputSink;
     private readonly Func<Action, IDisposable> createReleaseHotKey;
     private readonly Action? beforeControlGranted;
+    private readonly WindowsClipboardSyncCoordinator clipboardSync;
     private readonly object activeControlLock = new();
+    private readonly object controlStateNotificationLock = new();
     private Guid? activeControlPeerID;
     private Guid? activeControlRequestID;
     private ActiveControlBinding? activeControlBinding;
@@ -91,7 +93,8 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
         Action<bool>? controlStateChanged = null,
         WindowsInputSink? inputSink = null,
         Func<Action, IDisposable>? createReleaseHotKey = null,
-        Action? beforeControlGranted = null
+        Action? beforeControlGranted = null,
+        IClipboardTextBoundary? clipboardBoundary = null
     )
     {
         this.credentials = credentials;
@@ -107,6 +110,9 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
         this.createReleaseHotKey = createReleaseHotKey
             ?? (callback => new WindowsControlReleaseHotKey(callback));
         this.beforeControlGranted = beforeControlGranted;
+        clipboardSync = new WindowsClipboardSyncCoordinator(
+            clipboardBoundary ?? CreateDefaultClipboardBoundary()
+        );
         listener = CreateListener(requestedPort);
     }
 
@@ -156,7 +162,7 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
         detachedHotKey?.Dispose();
         if (ended)
         {
-            PublishControlState(false);
+            PublishControlEnded(endedBinding);
         }
         if (enabled)
         {
@@ -285,6 +291,23 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
         );
     }
 
+    public void EndControlForPeer(Guid peerID)
+    {
+        Guid? requestID = null;
+        lock (activeControlLock)
+        {
+            if (activeControlPeerID == peerID)
+            {
+                requestID = activeControlRequestID;
+            }
+        }
+
+        if (requestID is { } activeRequestID)
+        {
+            EndActiveControl(peerID, activeRequestID);
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref disposed, 1) != 0)
@@ -360,6 +383,7 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
 
         connectionSlots.Dispose();
         unauthenticatedSlots.Dispose();
+        await clipboardSync.DisposeAsync().ConfigureAwait(false);
         inputSink.Dispose();
         cancellation.Dispose();
     }
@@ -887,6 +911,14 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
                                 peerIdentity,
                                 token
                             );
+                            var localClipboardEnabled =
+                                trustStore.IsClipboardSyncEnabled(peerIdentity.Id);
+                            var requestAdvertisesClipboard =
+                                controlMessage.SupportsClipboard is not null;
+                            var clipboardEnabled = clipboardSync.IsAvailable
+                                && localClipboardEnabled
+                                && controlMessage.SupportsClipboard == true
+                                && controlMessage.ClipboardEnabled == true;
                             currentControlBinding = null;
                             if (!consent.Allowed
                                 || Volatile.Read(ref remoteInputEnabled) == 0
@@ -896,6 +928,7 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
                                     inputGeneration,
                                     controlRequestID,
                                     consent.IsOneShot,
+                                    clipboardEnabled,
                                     () => SendControlMessageAsync(
                                         channel,
                                         stream,
@@ -983,9 +1016,14 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
                                     channel,
                                     stream,
                                     outputLock,
-                                    new ControlMessage(
-                                        ControlMessageKind.ControlGranted,
-                                        requestID
+                                    ControlMessage.ControlGranted(
+                                        requestID,
+                                        supportsClipboard: requestAdvertisesClipboard
+                                            ? clipboardSync.IsAvailable
+                                            : null,
+                                        clipboardEnabled: requestAdvertisesClipboard
+                                            ? clipboardSync.IsAvailable && localClipboardEnabled
+                                            : null
                                     ),
                                     token
                                 );
@@ -995,6 +1033,17 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
                             {
                                 currentControlBinding?.GrantCompletion.TrySetResult(false);
                                 throw;
+                            }
+                            if (currentControlBinding is { } confirmedBinding)
+                            {
+                                ConfirmControlGrant(
+                                    confirmedBinding,
+                                    peerIdentity,
+                                    channel,
+                                    stream,
+                                    outputLock,
+                                    token
+                                );
                             }
                             Console.WriteLine(
                                 $"Windows control granted for {Short(requestID)}. "
@@ -1121,6 +1170,109 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
                                 {
                                     await NotifyControlEndedAsync(endedBinding);
                                 }
+                            }
+                            continue;
+                        }
+
+                        if (controlMessage.Kind == ControlMessageKind.Clipboard)
+                        {
+                            var requestID = controlMessage.RequestID
+                                ?? throw new SecureSessionWireException(
+                                    SecureSessionWireErrorCode.InvalidHandshake,
+                                    "A clipboard message has no request ID."
+                                );
+                            if (controlMessage.ClipboardText is null)
+                            {
+                                throw new SecureSessionWireException(
+                                    SecureSessionWireErrorCode.UnexpectedMessage,
+                                    "Clipboard arrived without text."
+                                );
+                            }
+
+                            var acceptedClipboard = false;
+                            var endControlForLocalPreference = false;
+                            SecureSessionWireException? authorizationFailure = null;
+                            Guid? clipboardPeerID = null;
+                            lock (activeControlLock)
+                            {
+                                var binding = currentControlBinding;
+                                if (activePeerID is { } currentClipboardPeerID
+                                    && controlRequestID.Value == requestID
+                                    && binding is not null
+                                    && binding.ClipboardSyncEnabled
+                                    && activeControlPeerID == currentClipboardPeerID
+                                    && activeControlRequestID == requestID
+                                    && activeControlBinding == binding)
+                                {
+                                    clipboardPeerID = currentClipboardPeerID;
+                                    var authorization = trustStore.GetControlAuthorization(
+                                        activePeerIdentity
+                                            ?? throw new SecureSessionWireException(
+                                                SecureSessionWireErrorCode.InvalidHandshake,
+                                                "The authenticated peer identity is missing."
+                                            )
+                                    );
+                                    if (authorization is
+                                        WindowsTrustStore.ControlAuthorizationState.Untrusted)
+                                    {
+                                        authorizationFailure = new SecureSessionWireException(
+                                            SecureSessionWireErrorCode.InvalidSignature,
+                                            "The paired peer is no longer authorized for clipboard sync."
+                                        );
+                                    }
+                                    else if (authorization is
+                                            WindowsTrustStore.ControlAuthorizationState.Denied
+                                        && !controlRequestID.IsOneShot(requestID))
+                                    {
+                                        authorizationFailure = new SecureSessionWireException(
+                                            SecureSessionWireErrorCode.InvalidSignature,
+                                            "The paired peer's remembered control approval was revoked."
+                                        );
+                                    }
+                                    else if (!trustStore.IsClipboardSyncEnabled(
+                                        currentClipboardPeerID
+                                    ))
+                                    {
+                                        endControlForLocalPreference = true;
+                                    }
+                                    else
+                                    {
+                                        // Serialize clipboard writes with local revoke,
+                                        // disconnect, and grant teardown. The native
+                                        // boundary has a bounded wait for busy clipboard use.
+                                        acceptedClipboard = clipboardSync.Receive(
+                                            requestID,
+                                            controlMessage.ClipboardText
+                                        );
+                                    }
+                                }
+                            }
+
+                            if (authorizationFailure is not null)
+                            {
+                                throw authorizationFailure;
+                            }
+
+                            if (endControlForLocalPreference
+                                && clipboardPeerID is { } preferencePeerID
+                                && EndActiveControl(
+                                    preferencePeerID,
+                                    requestID,
+                                    out var preferenceEndedBinding
+                                )
+                                && preferenceEndedBinding is not null)
+                            {
+                                await NotifyControlEndedAsync(preferenceEndedBinding)
+                                    .ConfigureAwait(false);
+                                continue;
+                            }
+
+                            if (!acceptedClipboard)
+                            {
+                                throw new SecureSessionWireException(
+                                    SecureSessionWireErrorCode.UnexpectedMessage,
+                                    "Clipboard arrived without an active clipboard synchronizer."
+                                );
                             }
                             continue;
                         }
@@ -1354,6 +1506,7 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
         long inputGeneration,
         SessionControlRequestState requestState,
         bool oneShot,
+        bool clipboardSyncEnabled,
         Func<Task> notifyEndAsync,
         out ActiveControlBinding? activatedBinding
     )
@@ -1383,14 +1536,108 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
                 PeerID = peerID,
                 RequestID = requestID,
                 RequestState = requestState,
+                ClipboardSyncEnabled = clipboardSyncEnabled,
                 NotifyEndAsync = notifyEndAsync
             };
             activeControlBinding = activatedBinding;
             activated = true;
         }
 
-        PublishControlState(activated);
         return activated;
+    }
+
+    private void ConfirmControlGrant(
+        ActiveControlBinding binding,
+        PeerIdentity peerIdentity,
+        SecureSessionChannel channel,
+        NetworkStream stream,
+        SemaphoreSlim outputLock,
+        CancellationToken token
+    )
+    {
+        lock (controlStateNotificationLock)
+        {
+            lock (activeControlLock)
+            {
+                if (activeControlBinding != binding
+                    || activeControlPeerID != binding.PeerID
+                    || activeControlRequestID != binding.RequestID)
+                {
+                    return;
+                }
+
+                if (binding.ClipboardSyncEnabled)
+                {
+                    _ = clipboardSync.Start(
+                        binding.RequestID,
+                        (message, sendToken) => SendClipboardIfAuthorizedAsync(
+                            binding,
+                            peerIdentity,
+                            channel,
+                            stream,
+                            outputLock,
+                            message,
+                            sendToken
+                        )
+                    );
+                }
+
+                binding.GrantConfirmed = true;
+            }
+
+            PublishControlState(true);
+        }
+    }
+
+    private async Task SendClipboardIfAuthorizedAsync(
+        ActiveControlBinding binding,
+        PeerIdentity peerIdentity,
+        SecureSessionChannel channel,
+        NetworkStream stream,
+        SemaphoreSlim outputLock,
+        ControlMessage message,
+        CancellationToken token
+    )
+    {
+        var shouldEndControl = false;
+        lock (activeControlLock)
+        {
+            if (activeControlBinding != binding
+                || activeControlPeerID != binding.PeerID
+                || activeControlRequestID != binding.RequestID
+                || !binding.ClipboardSyncEnabled)
+            {
+                return;
+            }
+
+            var authorization = trustStore.GetControlAuthorization(peerIdentity);
+            shouldEndControl = authorization is
+                    WindowsTrustStore.ControlAuthorizationState.Untrusted
+                || (authorization is WindowsTrustStore.ControlAuthorizationState.Denied
+                    && !binding.RequestState.IsOneShot(binding.RequestID))
+                || !trustStore.IsClipboardSyncEnabled(binding.PeerID);
+        }
+
+        if (shouldEndControl)
+        {
+            if (EndActiveControl(
+                binding.PeerID,
+                binding.RequestID,
+                out var endedBinding
+            ) && endedBinding is not null)
+            {
+                await NotifyControlEndedAsync(endedBinding).ConfigureAwait(false);
+            }
+            return;
+        }
+
+        await SendControlMessageAsync(
+            channel,
+            stream,
+            outputLock,
+            message,
+            token
+        ).ConfigureAwait(false);
     }
 
     private bool TryReceiveControlInput(
@@ -1443,7 +1690,7 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
         }
 
         detachedHotKey?.Dispose();
-        PublishControlState(false);
+        PublishControlEnded(endedBinding);
         return true;
     }
 
@@ -1486,9 +1733,29 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
         inputSink.End();
         if (endedBinding is not null)
         {
+            clipboardSync.Stop(requestID);
             endedBinding.RequestState.End(requestID, out detachedHotKey);
         }
         return true;
+    }
+
+    private void PublishControlEnded(ActiveControlBinding? binding)
+    {
+        if (binding is null)
+        {
+            return;
+        }
+
+        lock (controlStateNotificationLock)
+        {
+            if (!binding.GrantConfirmed)
+            {
+                return;
+            }
+
+            binding.GrantConfirmed = false;
+            PublishControlState(false);
+        }
     }
 
     private async Task NotifyControlEndedAsync(ActiveControlBinding binding)
@@ -1784,10 +2051,12 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
         public required Guid PeerID { get; init; }
         public required Guid RequestID { get; init; }
         public required SessionControlRequestState RequestState { get; init; }
+        public required bool ClipboardSyncEnabled { get; init; }
         public required Func<Task> NotifyEndAsync { get; init; }
         public TaskCompletionSource<bool> GrantCompletion { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         public int NotificationStarted;
+        public bool GrantConfirmed;
     }
 
     private void PublishStatus(string message)
@@ -1815,6 +2084,11 @@ internal sealed class SecureSessionTcpReceiver : IAsyncDisposable
             // the receive loop.
         }
     }
+
+    private static IClipboardTextBoundary CreateDefaultClipboardBoundary()
+        => OperatingSystem.IsWindows()
+            ? new WindowsClipboardTextBoundary()
+            : new NullClipboardTextBoundary();
 
     private sealed class SessionControlRequestState
     {

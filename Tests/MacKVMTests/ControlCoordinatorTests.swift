@@ -192,6 +192,199 @@ final class ControlCoordinatorTests: XCTestCase {
         )
     }
 
+    func testClipboardSyncRequiresMutualOptInAndStartsOnlyAfterGrant() throws {
+        let fixture = makeFixture(clipboardSyncEnabled: true)
+        var transitions: [ControlOwnershipTransition] = []
+        fixture.coordinator.onOwnershipTransition = {
+            transitions.append($0)
+        }
+
+        XCTAssertTrue(fixture.coordinator.requestControl())
+        let request = try XCTUnwrap(fixture.transport.sentMessages.last)
+        XCTAssertEqual(request.kind, .requestControl)
+        XCTAssertEqual(request.supportsClipboard, true)
+        XCTAssertEqual(request.clipboardEnabled, true)
+        XCTAssertEqual(fixture.clipboard.startCount, 0)
+        XCTAssertTrue(transitions.isEmpty)
+
+        let requestID = try XCTUnwrap(request.requestID)
+        fixture.transport.deliver(
+            .controlGranted(requestID: requestID, clipboardEnabled: true)
+        )
+        drainMainQueue()
+
+        XCTAssertEqual(fixture.coordinator.state, .controlling)
+        XCTAssertEqual(fixture.clipboard.startCount, 1)
+        XCTAssertEqual(
+            transitions,
+            [.outboundControl(peerID: fixture.transport.connectedPeerID!)]
+        )
+
+        fixture.clipboard.emitLocalText("hello")
+        let clipboardMessage = try XCTUnwrap(fixture.transport.sentMessages.last)
+        XCTAssertEqual(clipboardMessage.kind, .clipboard)
+        XCTAssertEqual(clipboardMessage.requestID, requestID)
+        XCTAssertEqual(clipboardMessage.clipboardText, "hello")
+
+        fixture.transport.deliver(
+            .clipboard("remote text", requestID: requestID)
+        )
+        drainMainQueue()
+        XCTAssertEqual(fixture.clipboard.receivedTexts, ["remote text"])
+
+        fixture.coordinator.stopControl()
+        XCTAssertEqual(fixture.clipboard.stopCount, 1)
+        XCTAssertEqual(transitions.last, .returnedLocally)
+    }
+
+    func testOwnershipHUDTransitionsOnlyAfterGrantAndReturnShortcuts() throws {
+        let fixture = makeFixture()
+        var transitions: [ControlOwnershipTransition] = []
+        fixture.coordinator.onOwnershipTransition = {
+            transitions.append($0)
+        }
+
+        fixture.capture.onSwitchControl?()
+        XCTAssertTrue(transitions.isEmpty)
+        var requestID = try XCTUnwrap(
+            fixture.transport.sentMessages.last?.requestID
+        )
+        fixture.transport.deliver(controlMessage(.controlGranted, requestID))
+        drainMainQueue()
+        XCTAssertEqual(
+            transitions,
+            [.outboundControl(peerID: fixture.transport.connectedPeerID!)]
+        )
+
+        // The manual-monitor K shortcut ends an established session and must
+        // report the return even though it deliberately leaves the display route alone.
+        fixture.capture.onSwitchControl?()
+        XCTAssertEqual(transitions.last, .returnedLocally)
+
+        fixture.capture.onSwitchControl?()
+        requestID = try XCTUnwrap(
+            fixture.transport.sentMessages.last?.requestID
+        )
+        fixture.transport.deliver(controlMessage(.controlGranted, requestID))
+        drainMainQueue()
+        fixture.capture.onEmergencyStop?()
+
+        XCTAssertEqual(
+            transitions,
+            [
+                .outboundControl(peerID: fixture.transport.connectedPeerID!),
+                .returnedLocally,
+                .outboundControl(peerID: fixture.transport.connectedPeerID!),
+                .returnedLocally
+            ]
+        )
+    }
+
+    func testIncomingOwnershipTransitionWaitsForAcceptedControl() throws {
+        let fixture = makeFixture(
+            seamlessControlAuthorized: false,
+            clipboardSyncEnabled: true
+        )
+        var transitions: [ControlOwnershipTransition] = []
+        fixture.coordinator.onOwnershipTransition = {
+            transitions.append($0)
+        }
+        let requestID = UUID()
+        let peerID = try XCTUnwrap(fixture.transport.connectedPeerID)
+        fixture.transport.deliver(
+            ControlMessage.requestControl(
+                requestID: requestID,
+                clipboardEnabled: true
+            )
+        )
+        drainMainQueue()
+
+        XCTAssertTrue(transitions.isEmpty)
+        fixture.coordinator.acceptIncomingControlRequest(requestID)
+
+        XCTAssertEqual(
+            transitions,
+            [.inboundControl(peerID: peerID)]
+        )
+        XCTAssertEqual(fixture.clipboard.startCount, 1)
+        let grant = try XCTUnwrap(fixture.transport.sentMessages.last)
+        XCTAssertEqual(grant.kind, .controlGranted)
+        XCTAssertEqual(grant.supportsClipboard, true)
+        XCTAssertEqual(grant.clipboardEnabled, true)
+
+        fixture.coordinator.endReceivingControl()
+        XCTAssertEqual(transitions.last, .returnedLocally)
+        XCTAssertEqual(fixture.clipboard.stopCount, 1)
+    }
+
+    func testLegacyPeerCannotNegotiateClipboardOrTriggerClipboardMessages() throws {
+        let fixture = makeFixture(
+            seamlessControlAuthorized: true,
+            clipboardSyncEnabled: true
+        )
+        let requestID = UUID()
+        fixture.transport.deliver(
+            ControlMessage(kind: .requestControl, requestID: requestID)
+        )
+        drainMainQueue()
+
+        XCTAssertTrue(fixture.coordinator.isReceivingControl)
+        XCTAssertEqual(fixture.clipboard.startCount, 0)
+        let grant = try XCTUnwrap(fixture.transport.sentMessages.last)
+        XCTAssertEqual(grant.kind, .controlGranted)
+        XCTAssertNil(grant.supportsClipboard)
+        XCTAssertNil(grant.clipboardEnabled)
+
+        fixture.clipboard.emitLocalText("private")
+        XCTAssertFalse(fixture.transport.sentMessages.contains {
+            $0.kind == .clipboard
+        })
+    }
+
+    func testChangingClipboardPreferenceEndsTheActiveControlSession() throws {
+        let fixture = makeFixture(clipboardSyncEnabled: true)
+        XCTAssertTrue(fixture.coordinator.requestControl())
+        let requestID = try XCTUnwrap(
+            fixture.transport.sentMessages.last?.requestID
+        )
+        fixture.transport.deliver(
+            .controlGranted(requestID: requestID, clipboardEnabled: true)
+        )
+        drainMainQueue()
+        XCTAssertEqual(fixture.clipboard.startCount, 1)
+
+        fixture.coordinator.clipboardSyncPreferenceChanged(
+            for: fixture.transport.connectedPeerID!
+        )
+
+        XCTAssertEqual(fixture.coordinator.state, .connected)
+        XCTAssertEqual(fixture.clipboard.stopCount, 1)
+        XCTAssertEqual(fixture.transport.sentMessages.last?.kind, .endControl)
+    }
+
+    func testChangingClipboardPreferenceEndsIncomingControlSession() {
+        let fixture = makeFixture(
+            seamlessControlAuthorized: true,
+            clipboardSyncEnabled: true
+        )
+        let peerID = fixture.transport.connectedPeerID!
+        fixture.transport.deliver(
+            .requestControl(
+                requestID: UUID(),
+                clipboardEnabled: true
+            )
+        )
+        drainMainQueue()
+        XCTAssertTrue(fixture.coordinator.isReceivingControl)
+        XCTAssertEqual(fixture.clipboard.startCount, 1)
+
+        fixture.coordinator.clipboardSyncPreferenceChanged(for: peerID)
+
+        XCTAssertFalse(fixture.coordinator.isReceivingControl)
+        XCTAssertEqual(fixture.clipboard.stopCount, 1)
+        XCTAssertEqual(fixture.transport.sentMessages.last?.kind, .endControl)
+    }
+
     func testManualMonitorHotKeyDoesNotStartAutomaticDisplayRoute() {
         let fixture = makeFixture()
         var automaticRouteStartCount = 0
@@ -1213,20 +1406,24 @@ final class ControlCoordinatorTests: XCTestCase {
         remoteID: UUID = UUID(),
         initiallyConnected: Bool = true,
         keyboardLayoutIdentifier: String? = nil,
-        seamlessControlAuthorized: Bool = false
+        seamlessControlAuthorized: Bool = false,
+        clipboardSyncEnabled: Bool = false
     ) -> Fixture {
         let transport = FakeControlTransport(
             connectedPeerID: initiallyConnected ? remoteID : nil
         )
         let capture = FakeInputCapture()
         let sink = FakeInputSink()
+        let clipboard = FakeClipboardSync()
         let coordinator = ControlCoordinator(
             localID: localID,
             secureSession: transport,
             inputCapture: capture,
             inputSink: sink,
             keyboardLayoutIdentifier: { keyboardLayoutIdentifier },
-            seamlessControlAuthorized: { _ in seamlessControlAuthorized }
+            seamlessControlAuthorized: { _ in seamlessControlAuthorized },
+            clipboardSyncEnabled: { _ in clipboardSyncEnabled },
+            clipboardSync: clipboard
         )
         drainMainQueue()
         transport.sentMessages.removeAll()
@@ -1236,7 +1433,8 @@ final class ControlCoordinatorTests: XCTestCase {
             coordinator: coordinator,
             transport: transport,
             capture: capture,
-            sink: sink
+            sink: sink,
+            clipboard: clipboard
         )
     }
 
@@ -1264,6 +1462,30 @@ private struct Fixture {
     let transport: FakeControlTransport
     let capture: FakeInputCapture
     let sink: FakeInputSink
+    let clipboard: FakeClipboardSync
+}
+
+private final class FakeClipboardSync: ClipboardSyncManaging {
+    var onLocalTextChange: ((String) -> Void)?
+    private(set) var startCount = 0
+    private(set) var stopCount = 0
+    private(set) var receivedTexts: [String] = []
+
+    func start() {
+        startCount += 1
+    }
+
+    func receive(_ text: String) {
+        receivedTexts.append(text)
+    }
+
+    func stop() {
+        stopCount += 1
+    }
+
+    func emitLocalText(_ text: String) {
+        onLocalTextChange?(text)
+    }
 }
 
 private final class FakeControlTransport: ControlSessionTransport {

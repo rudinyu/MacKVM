@@ -5,11 +5,10 @@
 MacKVM 是原生 macOS 應用程式，可在同一本機網路上的兩台電腦間共享鍵盤、滑鼠與觸控板。
 此 repo 也包含 Windows 接收端。螢幕輸入切換是選用功能，並透過相容螢幕的原生 DDC/CI 控制。
 
-目前 macOS 原始碼版本：**1.101.01（build 96）**。按下輸入監控權限請求後，若權限仍未授予，
-MacKVM 會開啟對應的「隱私權與安全性」頁面；設定與控制狀態文字也已提供英文及繁體中文。
-新的發行流程會產生獨立的 Developer ID Installer 簽章 PKG，並將已公證與 staple 的套件放入
-另一個獨立公證的 DMG。此次僅調整封裝流程，未產生或發布新的發行產物。WindowsKVM
-目前原始碼版本為 **1.02.32（build 113；RC3 測試通道）**，通訊協定不變。
+目前 macOS 原始碼版本：**1.102.00（build 97）**，新增與 WindowsKVM 互通的選用純文字剪貼簿同步，
+以及鍵盤控制權切換時短暫顯示的非啟用狀態 HUD。WindowsKVM 目前原始碼版本為 **1.03.00（build 114）**，
+提供逐台設定的剪貼簿同意與控制狀態提示。剪貼簿功能須由雙方明確啟用，且只在控制權授予後同步；
+未協商此功能的舊版 peer 仍可相容。正式散布流程使用 Developer ID Installer 簽署 PKG，放入另行簽署與公證的 DMG。
 
 ## 功能
 
@@ -25,6 +24,9 @@ MacKVM 會開啟對應的「隱私權與安全性」頁面；設定與控制狀�
 - 驗證後的鍵盤、滑鼠與觸控板轉送，包括高解析度雙軸捲動、捲動相位／慣性、點按／拖曳／
   次要點按狀態，以及回報的 pressure 數值；並搭配明確的 Allow／Deny 控制同意。手勢的
   支援界線請見[觸控板支援範圍](#觸控板支援範圍)。
+- 純文字剪貼簿同步預設關閉，配對的兩台裝置都必須明確啟用；只在控制已授權時同步，並略過
+  標記為 concealed、transient 或 auto-generated 的剪貼簿項目。開始控制時不會傳送既有剪貼簿內容。
+- 鍵盤控制權實際切換後，短暫顯示不會啟用視窗焦點的狀態 HUD，指出目前由哪台裝置控制。
 - Local Network、Input Monitoring、Accessibility 的循序設定檢查。
 - Launch MacKVM at Login、通知 Allow／Deny／Review、斷線安全返回，以及睡眠／喚醒時的自動重連。
 - 明確選用的完整移除 script，包含預覽、確認、單一使用者資料清理與 App 專屬權限重設；
@@ -124,7 +126,8 @@ repository 同時包含 `WindowsKVM/` 下的原生 C#／.NET 8 Windows companion
 
 產物位於 `dist\windows\x64\WindowsKVM.exe` 與
 `dist\windows\arm64\WindowsKVM.exe`。Windows UI 提供常駐 tray、配對／控制同意、精簡
-Simple mode 與完整 Advanced mode。請參閱
+Simple mode 與完整 Advanced mode。Advanced mode 可逐台啟用預設關閉的剪貼簿同步，並且只在與
+MacKVM 的控制工作階段中運作。請參閱
 [Windows 建置指南](WINDOWS_BUILD.zh-TW.md)、[WindowsKVM 說明](WindowsKVM/README.zh-TW.md)
 與[除錯指南](DEBUGGING.zh-TW.md)；其中包含 Windows build、防火牆與 log 步驟。macOS
 CI 在偵測到 .NET 8 SDK 時會執行 Windows protocol／desktop self-test；設定
@@ -149,7 +152,7 @@ xcrun notarytool store-credentials "mackvm-notary" \
 sidecar；從 `dist` 驗證 DMG：
 
 ```sh
-(cd dist && shasum -a 256 -c MacKVM-1.101.01-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.102.00-universal.dmg.sha256)
 ```
 
 正式發行 script 會用 Developer ID Application 簽署 app，並以 Developer ID Installer 簽署套件
