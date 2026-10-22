@@ -179,6 +179,29 @@ final class ControlCoordinatorTests: XCTestCase {
         XCTAssertEqual(fixture.coordinator.state, .connected)
     }
 
+    func testInputPermissionRevocationEndsOutboundControlOnce() throws {
+        let fixture = makeFixture()
+        XCTAssertTrue(fixture.coordinator.requestControl())
+        let requestID = try XCTUnwrap(
+            fixture.transport.sentMessages.last?.requestID
+        )
+
+        fixture.transport.deliver(controlMessage(.controlGranted, requestID))
+        drainMainQueue()
+        XCTAssertEqual(fixture.coordinator.state, .controlling)
+
+        fixture.capture.hasInputMonitoringPermission = false
+        fixture.capture.onPermissionRevoked?()
+
+        XCTAssertEqual(fixture.coordinator.state, .connected)
+        XCTAssertFalse(fixture.capture.isCapturing)
+        XCTAssertEqual(
+            fixture.transport.sentMessages.filter { $0.kind == .endControl }.count,
+            1
+        )
+        XCTAssertEqual(fixture.transport.sentMessages.last?.requestID, requestID)
+    }
+
     func testSwitchHotKeyStartsControlWhenConnected() {
         let fixture = makeFixture()
 
@@ -1253,6 +1276,117 @@ final class ControlCoordinatorTests: XCTestCase {
         )
     }
 
+    func testTerminationDisplayRouteUsesTheOwnedControllerSession() throws {
+        let fixture = makeFixture()
+        XCTAssertNil(fixture.coordinator.displayRouteRoleForTermination)
+
+        XCTAssertTrue(fixture.coordinator.requestControl())
+        let requestID = try XCTUnwrap(
+            fixture.transport.sentMessages.last?.requestID
+        )
+        fixture.transport.deliver(controlMessage(.controlGranted, requestID))
+        drainMainQueue()
+
+        XCTAssertEqual(
+            fixture.coordinator.displayRouteRoleForTermination,
+            .local
+        )
+        var quitCompleted = false
+        fixture.coordinator.stopForQuit { quitCompleted = true }
+
+        XCTAssertTrue(quitCompleted)
+        XCTAssertFalse(fixture.capture.isCapturing)
+        XCTAssertNil(fixture.coordinator.displayRouteRoleForTermination)
+    }
+
+    func testTerminationDisplayRouteKeepsManualAndNotYetRoutedControlLocal() {
+        let waiting = makeFixture()
+        XCTAssertTrue(waiting.coordinator.requestControl())
+        XCTAssertNil(waiting.coordinator.displayRouteRoleForTermination)
+
+        let manual = makeFixture()
+        XCTAssertTrue(
+            manual.coordinator.requestControl(
+                displayAlreadyRemote: true,
+                managesDisplayRoute: false
+            )
+        )
+        let requestID = manual.transport.sentMessages.last!.requestID!
+        manual.transport.deliver(controlMessage(.controlGranted, requestID))
+        drainMainQueue()
+
+        XCTAssertNil(manual.coordinator.displayRouteRoleForTermination)
+
+        let receiverManual = makeFixture()
+        let receiverManualRequestID = UUID()
+        receiverManual.transport.deliver(
+            ControlMessage.requestControl(
+                requestID: receiverManualRequestID,
+                managesDisplayRoute: false
+            )
+        )
+        drainMainQueue()
+        receiverManual.coordinator.acceptIncomingControlRequest(
+            receiverManualRequestID
+        )
+
+        XCTAssertNil(
+            receiverManual.coordinator.displayRouteRoleForTermination
+        )
+    }
+
+    func testTerminationDisplayRoutePreservesExplicitManualReceiverReturn() throws {
+        let fixture = makeFixture()
+        let requestID = UUID()
+        fixture.transport.deliver(
+            ControlMessage.requestControl(
+                requestID: requestID,
+                managesDisplayRoute: false
+            )
+        )
+        drainMainQueue()
+        fixture.coordinator.acceptIncomingControlRequest(requestID)
+        fixture.sink.completesEndImmediately = false
+        var receiverRouteCount = 0
+        var quitCompletionCount = 0
+        fixture.coordinator.onReceivingStopped = { completion in
+            receiverRouteCount += 1
+            completion()
+        }
+
+        fixture.coordinator.endReceivingControl(
+            forceDisplayRouteRestoration: true
+        )
+
+        XCTAssertTrue(fixture.coordinator.isRemoteInputTearingDown)
+        XCTAssertEqual(
+            fixture.coordinator.displayRouteRoleForTermination,
+            .remote
+        )
+        let terminationRoute = fixture.coordinator.displayRouteRoleForTermination
+        fixture.coordinator.stopForQuit { quitCompletionCount += 1 }
+
+        XCTAssertEqual(terminationRoute, .remote)
+        XCTAssertNil(fixture.coordinator.displayRouteRoleForTermination)
+        XCTAssertEqual(quitCompletionCount, 0)
+        fixture.sink.completeNextEnd()
+
+        XCTAssertEqual(receiverRouteCount, 0)
+        XCTAssertEqual(quitCompletionCount, 1)
+    }
+
+    func testTerminationDisplayRouteReturnsLocalForAnOwnedPreRoutedRequest() {
+        let fixture = makeFixture()
+        XCTAssertTrue(
+            fixture.coordinator.requestControl(displayAlreadyRemote: true)
+        )
+
+        XCTAssertEqual(
+            fixture.coordinator.displayRouteRoleForTermination,
+            .local
+        )
+    }
+
     func testQuitFromReceiverNeverRequestsTheRemoteMonitorRoute() {
         let fixture = makeFixture()
         let requestID = UUID()
@@ -1267,9 +1401,18 @@ final class ControlCoordinatorTests: XCTestCase {
             completion()
         }
 
+        XCTAssertEqual(
+            fixture.coordinator.displayRouteRoleForTermination,
+            .remote
+        )
+
         fixture.coordinator.stopForQuit { quitCompletionCount += 1 }
 
         XCTAssertFalse(fixture.coordinator.isReceivingControl)
+        XCTAssertEqual(
+            fixture.coordinator.displayRouteRoleForTermination,
+            .remote
+        )
         XCTAssertEqual(receiverStopCount, 0)
         XCTAssertEqual(quitCompletionCount, 0)
         XCTAssertEqual(fixture.sink.endCount, 1)
@@ -1278,6 +1421,7 @@ final class ControlCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(receiverStopCount, 0)
         XCTAssertEqual(quitCompletionCount, 1)
+        XCTAssertNil(fixture.coordinator.displayRouteRoleForTermination)
         XCTAssertTrue(
             fixture.transport.sentMessages.contains(
                 controlMessage(.endControl, requestID)
@@ -1298,6 +1442,7 @@ final class ControlCoordinatorTests: XCTestCase {
         fixture.coordinator.acceptIncomingControlRequest(requestID)
         XCTAssertEqual(fixture.sink.beginCount, 1)
         XCTAssertFalse(fixture.coordinator.isReceivingControl)
+        XCTAssertNil(fixture.coordinator.displayRouteRoleForTermination)
 
         var quitCompletionCount = 0
         fixture.coordinator.stopForQuit { quitCompletionCount += 1 }
@@ -1556,6 +1701,7 @@ private final class FakeInputCapture: ControlInputCapture {
     var hasInputMonitoringPermission = true
     var isCapturing = false
     var onEvent: ((RemoteInputEvent) -> Void)?
+    var onPermissionRevoked: (() -> Void)?
     var onEmergencyStop: (() -> Void)?
     var onSwitchControl: (() -> Void)?
     var onSwitchMonitor: (() -> Void)?

@@ -450,11 +450,16 @@ struct CapsLockRemoteInputPolicy {
 }
 
 final class InputCaptureService: ObservableObject, ControlInputCapture {
-    @Published private(set) var hasInputMonitoringPermission: Bool
+    @Published private(set) var permissionSnapshot: RuntimePermissionSnapshot
     @Published private(set) var isCapturing = false
     @Published private(set) var status = "Input capture stopped"
 
+    var hasInputMonitoringPermission: Bool {
+        permissionSnapshot.canCaptureInput
+    }
+
     var onEvent: ((RemoteInputEvent) -> Void)?
+    var onPermissionRevoked: (() -> Void)?
     var onEmergencyStop: (() -> Void)?
     var onSwitchControl: (() -> Void)?
     var onSwitchMonitor: (() -> Void)?
@@ -473,9 +478,19 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
     private var registeredHotKeyHandler: EventHandlerRef?
     private var suppressesLocalEvents = false
     private var capsLockCapturePolicy = CapsLockCapturePolicy()
+    private let permissionSnapshotProvider:
+        any RuntimePermissionSnapshotProviding
 
-    init() {
-        hasInputMonitoringPermission = CGPreflightListenEventAccess()
+    init(
+        permissionSnapshotProvider: any RuntimePermissionSnapshotProviding =
+            SystemRuntimePermissionSnapshotProvider()
+    ) {
+        self.permissionSnapshotProvider = permissionSnapshotProvider
+        permissionSnapshot = permissionSnapshotProvider.currentSnapshot()
+        RuntimePermissionDiagnostics.log(
+            permissionSnapshot,
+            source: "input-capture"
+        )
     }
 
     deinit {
@@ -483,15 +498,40 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
     }
 
     func refreshPermission() {
-        hasInputMonitoringPermission = CGPreflightListenEventAccess()
-        stopHotKeyMonitoring()
-        startHotKeyMonitoring()
+        let previousSnapshot = permissionSnapshot
+        let snapshot = permissionSnapshotProvider.currentSnapshot()
+        guard snapshot != previousSnapshot else { return }
+        permissionSnapshot = snapshot
+        RuntimePermissionDiagnostics.log(snapshot, source: "input-capture")
+
+        // The session tap and Carbon fallback have different requirements.
+        // Rebuild only when either effective path changes; routine snapshot
+        // refreshes must not interrupt a working shortcut monitor.
+        if previousSnapshot.requiresHotKeyMonitorRebuild(
+            comparedTo: snapshot
+        ) {
+            stopHotKeyMonitoring()
+            startHotKeyMonitoring()
+        }
+
+        // Listen access can stay available after Accessibility or event-post
+        // access is revoked. Capture is still a reported capability, but an
+        // active outbound-control session must stop when any of its required
+        // grants disappears.
+        if previousSnapshot.revokesOutboundControl(comparedTo: snapshot) {
+            if isCapturing {
+                stopCapture()
+                status = snapshot.canCaptureInput
+                    ? snapshot.remoteControlPermissionFailureStatus
+                    : "Input Monitoring permission is required"
+            }
+            onPermissionRevoked?()
+        }
     }
 
     func requestPermission() {
-        hasInputMonitoringPermission = CGRequestListenEventAccess()
-        stopHotKeyMonitoring()
-        startHotKeyMonitoring()
+        _ = CGRequestListenEventAccess()
+        refreshPermission()
         status = hasInputMonitoringPermission
             ? "Input Monitoring permission granted"
             : "Enable Input Monitoring in System Settings, then return to MacKVM"
@@ -511,11 +551,10 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
             return
         }
         // A session event tap is the strongest path because it can consume
-        // the shortcut before a foreground application sees it. A receiver
-        // may only have Accessibility permission, however, so fall back to a
-        // Carbon registered hot key, which is global and does not require
-        // Input Monitoring.
-        guard hasInputMonitoringPermission else {
+        // the shortcut before a foreground application sees it. If any of its
+        // listen, trust, or event-posting checks is unavailable, fall back to
+        // a Carbon registered hot key, which does not require Input Monitoring.
+        guard permissionSnapshot.canUseSessionHotKeyTap else {
             startCarbonHotKey()
             return
         }
@@ -1196,12 +1235,30 @@ enum RemoteInputSinkError: Error, Equatable {
 }
 
 final class RemoteInputSink: ObservableObject, ControlInputSink {
-    @Published private(set) var hasAccessibilityPermission: Bool
+    @Published private(set) var permissionSnapshot: RuntimePermissionSnapshot
     @Published private(set) var status = "Remote input ready"
+
+    var hasAccessibilityPermission: Bool {
+        permissionSnapshot.canInjectRemoteInput
+    }
+
+    var permissionFailureStatus: String {
+        permissionSnapshot.remoteControlPermissionFailureStatus
+    }
+
+    var permissionDenialReason: String {
+        permissionSnapshot.remoteInputPermissionDenialReason
+    }
+
+    var permissionFailureEndReason: String {
+        permissionSnapshot.remoteInputPermissionFailureEndReason
+    }
 
     var onControlFailure: ((ControlInputFailure) -> Void)?
 
     private let queue = DispatchQueue(label: "app.mackvm.input-injection")
+    private let permissionSnapshotProvider:
+        any RuntimePermissionSnapshotProviding
     // Keep injected modifier state in Quartz's private source table. The
     // HID table queried during teardown then represents physical local keys,
     // rather than echoing the remote flags we are about to release.
@@ -1234,24 +1291,60 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
 
     init(
         keyboardLayoutProvider: any KeyboardLayoutProviding =
-            CarbonKeyboardLayoutProvider()
+            CarbonKeyboardLayoutProvider(),
+        permissionSnapshotProvider: any RuntimePermissionSnapshotProviding =
+            SystemRuntimePermissionSnapshotProvider()
     ) {
         self.keyboardLayoutProvider = keyboardLayoutProvider
-        hasAccessibilityPermission = AXIsProcessTrusted()
+        self.permissionSnapshotProvider = permissionSnapshotProvider
+        permissionSnapshot = permissionSnapshotProvider.currentSnapshot()
+        RuntimePermissionDiagnostics.log(
+            permissionSnapshot,
+            source: "remote-input"
+        )
     }
 
     func refreshPermission() {
-        hasAccessibilityPermission = AXIsProcessTrusted()
+        let wasAllowed = hasAccessibilityPermission
+        let snapshot = permissionSnapshotProvider.currentSnapshot()
+        guard snapshot != permissionSnapshot else { return }
+        permissionSnapshot = snapshot
+        RuntimePermissionDiagnostics.log(snapshot, source: "remote-input")
+        guard wasAllowed && !snapshot.canInjectRemoteInput else { return }
+
+        // Stop admission before queueing release so no event can be added
+        // behind the teardown after the grant is revoked in System Settings.
+        invalidateInputAdmission()
+        queue.async { [weak self] in
+            guard let self, isAcceptingRemoteInput else { return }
+            isAcceptingRemoteInput = false
+            capsLockRemoteInputPolicy.reset()
+            let released = releaseAllInputsOnQueue()
+            hasPublishedInputActivity = false
+            publish(
+                permissionSnapshot: snapshot,
+                status: released
+                    ? snapshot.remoteInputPermissionFailureStatus
+                    : "Remote control ended; input release will be retried"
+            )
+            DispatchQueue.main.async { [weak self] in
+                self?.onControlFailure?(.accessibilityPermission)
+            }
+        }
     }
 
     func requestPermission() {
         let options = [
             kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true
         ] as CFDictionary
-        hasAccessibilityPermission = AXIsProcessTrustedWithOptions(options)
+        let accessibilityTrusted = AXIsProcessTrustedWithOptions(options)
+        if accessibilityTrusted && !CGPreflightPostEventAccess() {
+            _ = CGRequestPostEventAccess()
+        }
+        refreshPermission()
         status = hasAccessibilityPermission
             ? "Accessibility permission granted"
-            : "Enable Accessibility in System Settings, then return to MacKVM"
+            : permissionSnapshot.remoteInputPermissionFailureStatus
     }
 
     /// Marks the sink ready to receive remote input before invoking completion.
@@ -1267,11 +1360,13 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
                 }
                 return
             }
-            guard AXIsProcessTrusted() else {
+            let permissionSnapshot = permissionSnapshotProvider.currentSnapshot()
+            guard permissionSnapshot.canInjectRemoteInput else {
                 invalidateInputAdmission()
                 publish(
-                    permission: false,
-                    status: "Accessibility permission is required"
+                    permissionSnapshot: permissionSnapshot,
+                    status: permissionSnapshot
+                        .remoteInputPermissionFailureStatus
                 )
                 DispatchQueue.main.async {
                     completion(false)
@@ -1292,7 +1387,10 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
             capsLockRemoteInputPolicy.reset()
             droppedKeyUps.removeAll()
             hasPublishedInputActivity = false
-            publish(status: "Remote control granted")
+            publish(
+                permissionSnapshot: permissionSnapshot,
+                status: "Remote control granted"
+            )
             DispatchQueue.main.async {
                 completion(true)
             }
@@ -1340,13 +1438,18 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
             defer { inputAdmission.release(admission) }
             guard inputAdmission.isCurrent(admission),
                   isAcceptingRemoteInput else { return }
-            guard AXIsProcessTrusted() else {
+            let permissionCheck =
+                permissionSnapshotProvider.currentRemoteInputPermission()
+            guard permissionCheck.isAuthorized else {
                 isAcceptingRemoteInput = false
                 invalidateInputAdmission()
                 releaseAllInputsOnQueue()
+                let permissionSnapshot =
+                    permissionSnapshotProvider.currentSnapshot()
                 publish(
-                    permission: false,
-                    status: "Accessibility permission is required"
+                    permissionSnapshot: permissionSnapshot,
+                    status: permissionSnapshot
+                        .remoteInputPermissionFailureStatus
                 )
                 DispatchQueue.main.async { [weak self] in
                     self?.onControlFailure?(.accessibilityPermission)
@@ -2010,12 +2113,12 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
     }
 
     private func publish(
-        permission: Bool? = nil,
+        permissionSnapshot: RuntimePermissionSnapshot? = nil,
         status: String
     ) {
         DispatchQueue.main.async { [weak self] in
-            if let permission {
-                self?.hasAccessibilityPermission = permission
+            if let permissionSnapshot {
+                self?.permissionSnapshot = permissionSnapshot
             }
             self?.status = status
         }

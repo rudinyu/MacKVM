@@ -60,6 +60,7 @@ swift_bin="$MACKVM_SWIFT_PATH"
 
 "$swift_bin" build --disable-sandbox
 "$swift_bin" test --disable-sandbox
+./scripts/test-install-app.sh
 
 if [[ "$quick_mode" == true ]]; then
   ./scripts/test-build-tools.sh
@@ -74,6 +75,7 @@ if [[ "$quick_mode" == true ]]; then
     scripts/with-build-lock.sh \
     scripts/lib/build-environment.sh \
     scripts/test-build-tools.sh \
+    scripts/test-install-app.sh \
     scripts/test-install-uninstall-integration.sh \
     scripts/package-notarized-dmg.sh \
     scripts/package-dmg.sh \
@@ -204,7 +206,8 @@ assert_build_app_rejected "Invalid equals-form architecture" --arch=invalid
 assert_build_app_rejected "Missing architecture value" --arch
 
 bash -n scripts/install-app.sh scripts/uninstall-app.sh \
-  scripts/test-install-uninstall-integration.sh scripts/test-uninstall-app.sh
+  scripts/test-install-app.sh scripts/test-install-uninstall-integration.sh \
+  scripts/test-uninstall-app.sh
 ./scripts/install-app.sh --help >/dev/null
 ./scripts/uninstall-app.sh --help >/dev/null
 

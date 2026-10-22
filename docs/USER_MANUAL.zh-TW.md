@@ -2,9 +2,8 @@
 
 # MacKVM 使用手冊
 
-原始碼版本：**1.101.01（build 96）**。此次僅調整封裝流程，不變更 app 版本或 build。
-正式散布流程會以 Developer ID Installer 簽署獨立 PKG，放入另行公證的 DMG。本機測試建置
-與正式散布安裝檔分開處理；目前尚未產生或發布正式發行產物。
+原始碼版本：**1.102.04（build 101）**。預設正式散布流程會以 Developer ID Application 簽署 app，
+先公證並 staple，再直接放入另行公證的 DMG。本機測試產物及其公證結果與 GitHub 發布分開確認。
 
 MacKVM 是 macOS app，提供選單列入口與一般控制視窗，讓 14 吋 M5 Pro MacBook Pro
 與 2019 Intel MacBook Pro 共用一組鍵盤、滑鼠與觸控板，並可選擇切換 BenQ MA270U 螢幕。
@@ -20,9 +19,10 @@ MacKVM 是 macOS app，提供選單列入口與一般控制視窗，讓 14 吋 M
 
 ## 安裝與建置
 
-一般正式安裝時，請在 Finder 開啟散布用 DMG，並雙擊 `MacKVM.pkg`；macOS
-Installer 會將 app 安裝到 `/Applications`。DMG 只含安裝套件與中英文指南，不含
-獨立 app bundle 或 Finder 可執行的 `.command` 檔案。
+一般正式安裝時，請在 Finder 開啟散布用 DMG，雙擊 `Install MacKVM.command`，
+或將 `MacKVM.app` 拖到 Applications 捷徑。helper 會驗證 app 並複製到 `/Applications`。
+DMG 也含 `Uninstall MacKVM.command`、共用 helper scripts，以及分開提供的中英文安裝與解除安裝指南；
+不會建立 PKG。
 
 若要在 M5 Pro 建置本機測試 app：
 
@@ -42,10 +42,19 @@ MacKVM 使用原生 IOKit DDC/CI：Apple Silicon 走 `IOAVService`，Intel 走 `
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
 ```
 
-本機測試 app 使用 ad-hoc 簽章，PKG 未簽署。正式散布需要以 Developer ID Application
-簽署 app、以 Developer ID Installer 簽署 PKG，並分別公證 PKG 與外層 DMG。
+本機測試 app 使用 ad-hoc 簽章；DMG 直接放入 app，不會建立 PKG。正式散布以 Developer ID
+Application 簽署並公證 app 與 DMG。安裝 helper 會保留本機配對資料、金鑰、偏好設定與 TCC 權限記錄，
+不會重設或清除權限。保留記錄不保證 macOS 一定授權目前的 app；若無法使用權限，請檢查系統設定。
 
 ## 第一次啟動
+
+macOS 27 原本名為「輔助使用」的 App 授權位於**隱私權與安全性 > 裝置控制和資料取用**。
+MacKVM 回報目前事件監聽與發送 API 的檢查結果，不代表系統的獨立「輸入監控」清單一定存在
+MacKVM；本機網路的已檢視狀態也不代表已驗證存取。若系統設定與 App 顯示不一致，請使用
+設定按鈕與可展開的權限診斷。
+
+在 App 管理的螢幕／控制工作階段中按 Quit，會先將輸入與螢幕還給原主控 Mac，再結束 App。
+返回目標以工作階段的主控／接收角色決定，不能只憑是否接上鍵盤或滑鼠判斷。
 
 在兩台 Mac 點擊選單列 KVM／雙螢幕圖示，或從 Dock／一般視窗開啟 MacKVM，完成
 **Set up this Mac**：
@@ -55,7 +64,8 @@ MacKVM 使用原生 IOKit DDC/CI：Apple Silicon 走 `IOAVService`，Intel 走 `
 3. 請求並授予 Accessibility。
 4. 可選擇啟用控制請求通知與 Launch MacKVM at Login。
 
-若之前拒絕過權限，使用對應的 **Settings** 按鈕。
+若之前拒絕過權限，使用對應的 **Settings** 按鈕。安裝或升級不會清除 TCC 記錄；
+macOS 仍可能要求檢查權限，既有設定也可能無法授權目前的 app。
 
 沒有外接螢幕仍可配對與遠端控制；只有自動 DDC 輸入切換與跨螢幕指標定位才需要螢幕。
 自動 DDC/CI 在偵測到選定螢幕或路由已確認為遠端時，會保持顯示管線喚醒；螢幕消失且
@@ -167,19 +177,20 @@ mapping 原始碼。按下 Ctrl-C 或收到 SIGTERM 時會停止候選值迴圈�
 
 ## 解除安裝與重設權限
 
-一般手動解除安裝時，先結束 MacKVM，再在 Finder 將「應用程式」中的 `MacKVM.app` 移到垃圾桶；
-若曾啟用 **Launch MacKVM at Login**，請到**系統設定 > 一般 > 登入項目**移除 MacKVM。
-這個手動流程會保留配對資料、私密金鑰、偏好設定與隱私權限。
+一般解除安裝時，先結束 MacKVM，再雙擊 `Uninstall MacKVM.command`，或在 Finder 將
+「應用程式」中的 `MacKVM.app` 移到垃圾桶。若曾啟用 **Launch MacKVM at Login**，
+請到**系統設定 > 一般 > 登入項目**移除 MacKVM。此流程只移除 app，並保留配對資料、私密金鑰、
+偏好設定與 TCC 記錄。
 
-`scripts/uninstall-app.sh` 僅供 repository／CLI 進階使用，不會放入 DMG；使用其預覽與清除模式前，
-請先結束 MacKVM：
+DMG 內含共用的 `scripts/uninstall-app.sh` helper，並透過 `Uninstall MacKVM.command` 執行。
+使用預覽與明確選用的清除模式前，請先結束 MacKVM：
 
 ```sh
 ./scripts/uninstall-app.sh --purge --dry-run
 ./scripts/uninstall-app.sh --purge
 ```
 
-請在 repository 根目錄以目前登入的使用者執行，不要對整個 script 使用 `sudo`。
+請在 repository 根目錄或已掛載的 DMG 根目錄，以目前登入的使用者執行，不要對整個 script 使用 `sudo`。
 清除模式會刪除此使用者的配對資料、身分私密金鑰與偏好設定、移除 App，並要求
 只重設此 App 可重設的隱私權限，包含輔助使用與輸入監控。重新安裝後必須重新配對，
 其他裝置也要對舊身分按 **Forget**。

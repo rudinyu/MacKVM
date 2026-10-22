@@ -8,6 +8,7 @@ project_root="$(cd "$script_dir/.." && pwd -P)"
 unset MACKVM_BUILD_LOCK_DIR MACKVM_BUILD_LOCK_TOKEN
 test_root="$(mktemp -d "${TMPDIR:-/tmp}/mackvm-notary-test.XXXXXX")"
 test_root="$(cd "$test_root" && pwd -P)"
+export MACKVM_TEST_ROOT="$test_root"
 cleanup() {
   rm -rf -- "$test_root"
 }
@@ -27,6 +28,7 @@ cat > "$mock_notary" <<'PYMOCK'
 #!/usr/bin/env python3
 import os
 import sys
+import zipfile
 from pathlib import Path
 
 args = sys.argv[1:]
@@ -76,12 +78,22 @@ if action == "sign":
 
 if action == "submit":
     artifact = Path(args[1])
-    if not artifact.is_file():
+    if not artifact.exists() or artifact.is_dir():
         print(f"submitted artifact does not exist: {artifact}", file=sys.stderr)
         raise SystemExit(1)
     if artifact.suffix == ".pkg" and b"MACKVM-TEST-PKG-SIGNED:" not in artifact.read_bytes():
         print("submitted package does not contain the test Installer signature", file=sys.stderr)
         raise SystemExit(1)
+    if artifact.suffix == ".zip":
+        try:
+            with zipfile.ZipFile(artifact) as archive:
+                entries = archive.namelist()
+        except (OSError, zipfile.BadZipFile):
+            print("submitted app archive is not a valid ZIP", file=sys.stderr)
+            raise SystemExit(1)
+        if "MacKVM.app/.mackvm-test-signed" not in entries:
+            print("submitted app archive does not contain the test Developer ID signature", file=sys.stderr)
+            raise SystemExit(1)
     submission_id = "01234567-89ab-cdef-0123-456789abcdef"
     if os.environ.get("MACKVM_TEST_SUBMISSION", "accepted") == "timeout":
         print("Apple submission status: In Progress")
@@ -94,17 +106,30 @@ if action == "submit":
 
 if action == "staple":
     artifact = Path(args[1])
-    with artifact.open("ab") as output:
-        output.write(b"\nMACKVM-TEST-STAPLED\n")
+    if artifact.is_dir():
+        (artifact / ".mackvm-test-stapled").write_bytes(b"MACKVM-TEST-STAPLED\n")
+    else:
+        with artifact.open("ab") as output:
+            output.write(b"\nMACKVM-TEST-STAPLED\n")
     raise SystemExit(0)
 
 if action == "verify":
     artifact = Path(args[1])
-    artifact_bytes = artifact.read_bytes()
+    artifact_bytes = (
+        (artifact / ".mackvm-test-stapled").read_bytes()
+        if artifact.is_dir()
+        else artifact.read_bytes()
+    )
     if b"MACKVM-TEST-STAPLED" not in artifact_bytes:
         print("verification ran before stapling", file=sys.stderr)
         raise SystemExit(1)
-    if artifact.suffix == ".pkg":
+    if artifact.suffix == ".app":
+        if not (artifact / ".mackvm-test-signed").is_file():
+            print("app verification ran without a Developer ID signature", file=sys.stderr)
+            raise SystemExit(1)
+        log("mock-app-gatekeeper spctl --assess --type execute")
+        log("mock-app-ticket xcrun stapler validate")
+    elif artifact.suffix == ".pkg":
         if b"MACKVM-TEST-PKG-SIGNED" not in artifact_bytes:
             print("package verification ran without an Installer signature", file=sys.stderr)
             raise SystemExit(1)
@@ -132,7 +157,9 @@ case "$tool" in
     ;;
   plutil)
     if [[ "${1:-}" == -extract && "${2:-}" == CFBundleShortVersionString ]]; then
-      printf '1.101.01\n'
+      printf '1.102.01\n'
+    elif [[ "${1:-}" == -extract && "${2:-}" == CFBundleIdentifier ]]; then
+      printf 'app.mackvm.MacKVM\n'
     fi
     ;;
   pkgbuild)
@@ -180,6 +207,24 @@ case "$tool" in
   ditto)
     source_path=""
     destination_path=""
+    if [[ "${1:-}" == -c ]]; then
+      [[ "${2:-}" == -k && "${3:-}" == --keepParent ]] || exit 91
+      source_path="${4:-}"
+      destination_path="${5:-}"
+      [[ -d "$source_path" && -n "$destination_path" ]] || exit 91
+      python3 - "$source_path" "$destination_path" <<'ZIPAPP'
+import sys
+import zipfile
+from pathlib import Path
+
+source = Path(sys.argv[1])
+destination = Path(sys.argv[2])
+with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+    for path in source.rglob("*"):
+        archive.write(path, (Path(source.name) / path.relative_to(source)).as_posix())
+ZIPAPP
+      exit 0
+    fi
     if [[ "${1:-}" == --norsrc ]]; then shift; fi
     source_path="${1:-}"
     destination_path="${2:-}"
@@ -219,16 +264,63 @@ case "$tool" in
     for entry in "$source_path"/*; do
       [[ -e "$entry" ]] || continue
       entry_name="${entry##*/}"
-      [[ "$entry_name" != *.command ]] || {
-        echo "Finder-executable command found in release DMG: $entry_name" >&2
-        exit 94
-      }
-      [[ "$entry_name" != MacKVM.app ]] || {
-        echo "Loose application found in release DMG: $entry_name" >&2
-        exit 94
-      }
       printf 'dmg-entry %s\n' "$entry_name" >> "$MACKVM_TEST_LOG"
     done
+    if [[ -d "$source_path/MacKVM.app" ]]; then
+      [[ ! -e "$source_path/MacKVM.pkg" ]] || {
+        echo "PKG was included in the app-only DMG" >&2
+        exit 94
+      }
+      [[ -L "$source_path/Applications" && \
+         "$(readlink "$source_path/Applications")" == /Applications ]] || {
+        echo "Applications shortcut is missing or points to the wrong location" >&2
+        exit 94
+      }
+      [[ -f "$source_path/MacKVM.app/.mackvm-test-stapled" ]] || {
+        echo "The app was copied before its notarization ticket was stapled" >&2
+        exit 94
+      }
+      for required_entry in INSTALL.md INSTALL.zh-TW.md UNINSTALL.md UNINSTALL.zh-TW.md Install\ MacKVM.command Uninstall\ MacKVM.command; do
+        [[ -f "$source_path/$required_entry" ]] || {
+          echo "Required app-only DMG entry is missing: $required_entry" >&2
+          exit 94
+        }
+      done
+      for executable_entry in 'Install MacKVM.command' 'Uninstall MacKVM.command' scripts/install-app.sh scripts/uninstall-app.sh; do
+        [[ -x "$source_path/$executable_entry" ]] || {
+          echo "App-only DMG entry is not executable: $executable_entry" >&2
+          exit 94
+        }
+        printf 'dmg-executable %s\n' "$executable_entry" >> "$MACKVM_TEST_LOG"
+      done
+      grep -F 'scripts/install-app.sh' "$source_path/Install MacKVM.command" >/dev/null || exit 94
+      grep -F 'scripts/uninstall-app.sh' "$source_path/Uninstall MacKVM.command" >/dev/null || exit 94
+      grep -F -- '--source "$dmg_dir/MacKVM.app"' "$source_path/Install MacKVM.command" >/dev/null || exit 94
+      grep -F 'Install MacKVM.command' "$source_path/INSTALL.md" >/dev/null || exit 94
+      grep -F 'Uninstall MacKVM.command' "$source_path/INSTALL.zh-TW.md" >/dev/null || exit 94
+      grep -F -- '--purge' "$source_path/UNINSTALL.md" >/dev/null || exit 94
+      grep -F -- '--purge' "$source_path/UNINSTALL.zh-TW.md" >/dev/null || exit 94
+      # Finder launches these files from a mounted read-only volume. Run their
+      # dry-run paths against isolated temp targets to exercise relative paths
+      # and argument quoting without changing the host's Applications folder.
+      restore_staging_permissions() {
+        find "$source_path" -type f -exec chmod u+w {} +
+        find "$source_path" -type d -exec chmod u+w {} +
+      }
+      trap restore_staging_permissions EXIT
+      chmod -R a-w "$source_path"
+      "$source_path/Install MacKVM.command" --dry-run \
+        --target-dir "$MACKVM_TEST_ROOT/install target" >> "$MACKVM_TEST_LOG"
+      "$source_path/Uninstall MacKVM.command" --dry-run \
+        --target-dir "$MACKVM_TEST_ROOT/uninstall target" >> "$MACKVM_TEST_LOG"
+      restore_staging_permissions
+      trap - EXIT
+    else
+      [[ ! -e "$source_path/Install MacKVM.command" && ! -e "$source_path/Uninstall MacKVM.command" ]] || {
+        echo "Finder command wrappers appeared in the optional PKG layout" >&2
+        exit 94
+      }
+    fi
     printf 'MACKVM-TEST-DMG\n' > "$target"
     ;;
   xcrun)
@@ -299,12 +391,16 @@ new_project() {
   fixture_project="$case_root/project"
   fixture_scripts="$fixture_project/scripts"
   export MACKVM_TEST_LOG="$case_root/tool-calls.log"
-  mkdir -p "$fixture_scripts/lib" "$fixture_project/Resources"
+  mkdir -p "$fixture_scripts/lib" "$fixture_scripts/dmg" "$fixture_project/Resources"
   : > "$MACKVM_TEST_LOG"
 
   cp "$project_root/scripts/package-notarized-dmg.sh" "$fixture_scripts/"
   cp "$project_root/scripts/package-dmg.sh" "$fixture_scripts/"
   cp "$project_root/scripts/compose-dmg.sh" "$fixture_scripts/"
+  cp "$project_root/scripts/install-app.sh" "$fixture_scripts/"
+  cp "$project_root/scripts/uninstall-app.sh" "$fixture_scripts/"
+  cp "$project_root/scripts/dmg/Install MacKVM.command" "$fixture_scripts/dmg/"
+  cp "$project_root/scripts/dmg/Uninstall MacKVM.command" "$fixture_scripts/dmg/"
   cp "$project_root/scripts/with-build-lock.sh" "$fixture_scripts/"
   cp "$project_root/scripts/lib/build-environment.sh" "$fixture_scripts/lib/"
   cat > "$fixture_scripts/clean-build.sh" <<'CLEAN'
@@ -335,6 +431,7 @@ done
 app="$project_root/dist/$arch/MacKVM.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 printf 'fake app %s\n' "$arch" > "$app/Contents/MacOS/MacKVM"
+  chmod 755 "$app/Contents/MacOS/MacKVM"
 printf 'fake plist\n' > "$app/Contents/Info.plist"
 BUILD
   cat > "$fixture_scripts/verify-release.sh" <<'VERIFY'
@@ -348,11 +445,11 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -f "$app_path/.mackvm-test-signed" ]] || exit 92
 VERIFY
-  printf '#!/usr/bin/env bash\nexit 0\n' > "$fixture_scripts/install-app.sh"
-  printf '#!/usr/bin/env bash\nexit 0\n' > "$fixture_scripts/uninstall-app.sh"
-  printf 'fixture install guide\n' > "$fixture_project/INSTALL.md"
-  printf 'fixture zh-TW guide\n' > "$fixture_project/INSTALL.zh-TW.md"
-  chmod 755 "$fixture_scripts"/*.sh
+  cp "$project_root/INSTALL.md" "$fixture_project/INSTALL.md"
+  cp "$project_root/INSTALL.zh-TW.md" "$fixture_project/INSTALL.zh-TW.md"
+  cp "$project_root/UNINSTALL.md" "$fixture_project/UNINSTALL.md"
+  cp "$project_root/UNINSTALL.zh-TW.md" "$fixture_project/UNINSTALL.zh-TW.md"
+  chmod 755 "$fixture_scripts"/*.sh "$fixture_scripts/dmg"/*.command
 }
 
 # A path-like version must be rejected before the composer creates its dist
@@ -424,6 +521,56 @@ for invalid_kind in sign installer-sign profile config; do
 done
 [[ ! -s "$MACKVM_TEST_LOG" ]] || fail "empty overrides reached the helper or packaging path"
 
+# The default release path submits, staples, and verifies the signed app before
+# composing the app-only image. The mounted image must include the working
+# Finder wrappers, executable shared helpers, bilingual guides, and no PKG.
+new_project accepted-app-only
+export MACKVM_TEST_AUTH_KIND=keychain-profile
+export MACKVM_TEST_SUBMISSION=accepted
+output="$(
+  "$fixture_scripts/package-notarized-dmg.sh" \
+    --arch universal \
+    --sign "$MACKVM_TEST_IDENTITY" \
+    --keychain-profile cli-profile 2>&1
+)" || fail "mocked app-only release failed: $output"
+assert_contains "$output" "Created notarized app: $fixture_project/dist/universal/MacKVM.app"
+assert_contains "$output" "Created notarized DMG: $fixture_project/dist/MacKVM-1.102.01-universal.dmg"
+assert_file_lacks "$MACKVM_TEST_LOG" "pkgbuild"
+assert_file_lacks "$MACKVM_TEST_LOG" "pkgutil"
+assert_file_lacks "$MACKVM_TEST_LOG" "clean-build"
+app_path="$fixture_project/dist/universal/MacKVM.app"
+app_archive_path="$fixture_project/.build/notarization/MacKVM-1.102.01-universal.app.zip"
+dmg_path="$fixture_project/dist/MacKVM-1.102.01-universal.dmg"
+assert_order "$MACKVM_TEST_LOG" "helper sign $app_path" "ditto -c -k --keepParent $app_path $app_archive_path"
+assert_order "$MACKVM_TEST_LOG" "ditto -c -k --keepParent $app_path $app_archive_path" "helper submit $app_archive_path"
+assert_order "$MACKVM_TEST_LOG" "helper submit $app_archive_path" "helper staple $app_path"
+assert_order "$MACKVM_TEST_LOG" "helper staple $app_path" "helper verify $app_path"
+assert_file_lacks "$MACKVM_TEST_LOG" "helper submit $app_path"
+assert_order "$MACKVM_TEST_LOG" "mock-app-ticket xcrun stapler validate" "hdiutil create"
+assert_file_contains "$MACKVM_TEST_LOG" "dmg-entry MacKVM.app"
+assert_file_contains "$MACKVM_TEST_LOG" "dmg-entry Applications"
+assert_file_contains "$MACKVM_TEST_LOG" "dmg-entry Install MacKVM.command"
+assert_file_contains "$MACKVM_TEST_LOG" "dmg-entry Uninstall MacKVM.command"
+assert_file_contains "$MACKVM_TEST_LOG" "dmg-entry INSTALL.md"
+assert_file_contains "$MACKVM_TEST_LOG" "dmg-entry INSTALL.zh-TW.md"
+assert_file_contains "$MACKVM_TEST_LOG" "dmg-entry UNINSTALL.md"
+assert_file_contains "$MACKVM_TEST_LOG" "dmg-entry UNINSTALL.zh-TW.md"
+assert_file_contains "$MACKVM_TEST_LOG" "dmg-executable Install MacKVM.command"
+assert_file_contains "$MACKVM_TEST_LOG" "dmg-executable Uninstall MacKVM.command"
+assert_file_contains "$MACKVM_TEST_LOG" "dmg-executable scripts/install-app.sh"
+assert_file_contains "$MACKVM_TEST_LOG" "dmg-executable scripts/uninstall-app.sh"
+assert_file_lacks "$MACKVM_TEST_LOG" "dmg-entry MacKVM.pkg"
+assert_order "$MACKVM_TEST_LOG" "hdiutil create" "codesign --force --timestamp --sign"
+assert_order "$MACKVM_TEST_LOG" "helper submit $app_archive_path" "helper submit $dmg_path"
+assert_order "$MACKVM_TEST_LOG" "helper staple $dmg_path" "helper verify $dmg_path"
+[[ -f "$fixture_project/dist/MacKVM-1.102.01-universal.app.notary.json" ]] || \
+  fail "app notarization metadata was not retained"
+[[ ! -e "$app_archive_path" ]] || fail "temporary app notarization archive was not removed after success"
+[[ -f "$dmg_path.sha256" ]] || fail "app-only DMG checksum was not created"
+[[ ! -f "$fixture_project/dist/MacKVM-1.102.01-universal.pkg" ]] || \
+  fail "app-only release unexpectedly created a PKG"
+unset MACKVM_TEST_AUTH_KIND MACKVM_TEST_SUBMISSION
+
 # A successful release signs the app and package, notarizes and staples the
 # standalone package before composing the DMG, then independently notarizes the
 # top-level container. Both checksums follow staple and verification.
@@ -439,6 +586,7 @@ config_path="$case_root/notarization.env"
 chmod 600 "$config_path"
 output="$(
   "$fixture_scripts/package-notarized-dmg.sh" \
+    --pkg \
     --arch universal \
     --sign "$MACKVM_TEST_IDENTITY" \
     --keychain-profile cli-profile \
@@ -461,9 +609,9 @@ assert_file_lacks "$MACKVM_TEST_LOG" "helper-sign-notary-env-present"
 assert_file_lacks "$MACKVM_TEST_LOG" "build-leaked-notary-env"
 assert_file_contains "$MACKVM_TEST_LOG" "--auth keychain-profile"
 assert_file_contains "$MACKVM_TEST_LOG" "--profile cli-profile"
-pkg_path="$fixture_project/dist/MacKVM-1.101.01-universal.pkg"
+pkg_path="$fixture_project/dist/MacKVM-1.102.01-universal.pkg"
 pkg_checksum_path="$pkg_path.sha256"
-dmg_path="$fixture_project/dist/MacKVM-1.101.01-universal.dmg"
+dmg_path="$fixture_project/dist/MacKVM-1.102.01-universal.dmg"
 checksum_path="$dmg_path.sha256"
 assert_order "$MACKVM_TEST_LOG" "helper sign" "pkgbuild"
 assert_order "$MACKVM_TEST_LOG" "pkgutil --check-signature" "helper submit $pkg_path"
@@ -471,8 +619,8 @@ assert_order "$MACKVM_TEST_LOG" "helper submit $pkg_path" "helper staple $pkg_pa
 assert_order "$MACKVM_TEST_LOG" "helper staple $pkg_path" "helper verify $pkg_path"
 assert_order "$MACKVM_TEST_LOG" "helper verify $pkg_path" "mock-package-gatekeeper spctl --assess --type install"
 assert_order "$MACKVM_TEST_LOG" "mock-package-gatekeeper spctl --assess --type install" "mock-package-ticket xcrun stapler validate"
-assert_order "$MACKVM_TEST_LOG" "mock-package-ticket xcrun stapler validate" "shasum -a 256 MacKVM-1.101.01-universal.pkg"
-assert_order "$MACKVM_TEST_LOG" "shasum -a 256 MacKVM-1.101.01-universal.pkg" "hdiutil create"
+assert_order "$MACKVM_TEST_LOG" "mock-package-ticket xcrun stapler validate" "shasum -a 256 MacKVM-1.102.01-universal.pkg"
+assert_order "$MACKVM_TEST_LOG" "shasum -a 256 MacKVM-1.102.01-universal.pkg" "hdiutil create"
 assert_file_contains "$MACKVM_TEST_LOG" "dmg-entry MacKVM.pkg"
 assert_file_contains "$MACKVM_TEST_LOG" "dmg-entry INSTALL.md"
 assert_file_contains "$MACKVM_TEST_LOG" "dmg-entry INSTALL.zh-TW.md"
@@ -480,7 +628,7 @@ assert_file_lacks "$MACKVM_TEST_LOG" "dmg-entry MacKVM.app"
 assert_file_lacks "$MACKVM_TEST_LOG" ".command"
 assert_order "$MACKVM_TEST_LOG" "helper submit $pkg_path" "helper submit $dmg_path"
 assert_order "$MACKVM_TEST_LOG" "helper staple $dmg_path" "helper verify $dmg_path"
-last_dmg_shasum_line="$(grep -nF 'shasum -a 256 MacKVM-1.101.01-universal.dmg' "$MACKVM_TEST_LOG" | tail -n 1 | cut -d: -f1)"
+last_dmg_shasum_line="$(grep -nF 'shasum -a 256 MacKVM-1.102.01-universal.dmg' "$MACKVM_TEST_LOG" | tail -n 1 | cut -d: -f1)"
 dmg_verify_line="$(grep -nF "helper verify $dmg_path" "$MACKVM_TEST_LOG" | tail -n 1 | cut -d: -f1)"
 [[ "$dmg_verify_line" -lt "$last_dmg_shasum_line" ]] || \
   fail "final DMG checksum was not written after staple and verification"
@@ -513,6 +661,7 @@ export MACKVM_TEST_AUTH_KIND=api-key
 export MACKVM_TEST_SUBMISSION=accepted
 output="$(
   "$fixture_scripts/package-notarized-dmg.sh" \
+    --pkg \
     --arch arm64 \
     --sign "$MACKVM_TEST_IDENTITY" \
     --timeout 30 2>&1
@@ -522,8 +671,8 @@ assert_file_contains "$MACKVM_TEST_LOG" "helper resolve-auth --auth auto --proje
 assert_file_contains "$MACKVM_TEST_LOG" "--auth api-key"
 assert_file_contains "$MACKVM_TEST_LOG" "--timeout 30s"
 assert_file_lacks "$MACKVM_TEST_LOG" "xcrun notarytool log"
-[[ -f "$fixture_project/dist/MacKVM-1.101.01-arm64.pkg.notary.json" && \
-   -f "$fixture_project/dist/MacKVM-1.101.01-arm64.dmg.notary.json" ]] || \
+[[ -f "$fixture_project/dist/MacKVM-1.102.01-arm64.pkg.notary.json" && \
+   -f "$fixture_project/dist/MacKVM-1.102.01-arm64.dmg.notary.json" ]] || \
   fail "submission metadata was not retained for both artifacts with API-key authentication"
 
 # A timeout or unknown result is reported once and never proceeds to staple.
@@ -532,6 +681,7 @@ export MACKVM_TEST_AUTH_KIND=keychain-profile
 export MACKVM_TEST_SUBMISSION=timeout
 if output="$(
   "$fixture_scripts/package-notarized-dmg.sh" \
+    --pkg \
     --arch arm64 \
     --sign "$MACKVM_TEST_IDENTITY" \
     --keychain-profile cli-profile 2>&1
@@ -546,9 +696,9 @@ submit_count="$(grep -c '^helper submit ' "$MACKVM_TEST_LOG" || true)"
 [[ "$submit_count" -eq 1 ]] || fail "expected exactly one submission attempt, found $submit_count"
 assert_file_lacks "$MACKVM_TEST_LOG" "helper staple"
 assert_file_lacks "$MACKVM_TEST_LOG" "helper verify"
-[[ ! -f "$fixture_project/dist/MacKVM-1.101.01-arm64.pkg.sha256" ]] || \
+[[ ! -f "$fixture_project/dist/MacKVM-1.102.01-arm64.pkg.sha256" ]] || \
   fail "a package checksum was left behind for an unaccepted submission"
-[[ ! -f "$fixture_project/dist/MacKVM-1.101.01-arm64.dmg" ]] || \
+[[ ! -f "$fixture_project/dist/MacKVM-1.102.01-arm64.dmg" ]] || \
   fail "a DMG was composed for an unaccepted package submission"
 
-echo "Notarized PKG and DMG adapter tests passed."
+echo "Notarized app-only and optional PKG DMG adapter tests passed."

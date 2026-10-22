@@ -13,16 +13,18 @@ usage() {
   cat >&2 <<'EOF'
 Usage: scripts/package-notarized-dmg.sh \
        [--sign "Developer ID Application: …"] \
-       [--installer-sign "Developer ID Installer: …"] \
+       [--pkg] [--installer-sign "Developer ID Installer: …"] \
        [--keychain-profile PROFILE] [--auth auto|keychain-profile|api-key] \
        [--config PATH] [--arch universal|arm64|x86_64] [--timeout DURATION]
 
-Builds a Developer ID-signed app and Installer-signed PKG, submits and staples
-the PKG, then embeds it in a separately signed and notarized DMG. The PKG is
-independently installable and has its own checksum and notary metadata. The app
-signing identity and notary authentication default to the shared Codex
-configuration at ~/.config/codex/notarization.env; the Installer identity is
-derived from the app identity unless --installer-sign overrides it.
+By default, builds and notarizes a Developer ID-signed app, staples it, then
+places the app, Applications shortcut, Finder install/uninstall commands, and
+bilingual guides directly in a separately notarized DMG. This path needs only
+a Developer ID Application identity. Use --pkg to opt into the legacy
+Installer-signed package layout; that path also needs a Developer ID Installer
+identity, derived from the app identity unless --installer-sign overrides it.
+The app signing identity and notary authentication default to the shared Codex
+configuration at ~/.config/codex/notarization.env.
 
 This is the distribution path. For local ad-hoc testing, use:
   scripts/package-dmg.sh --arch universal
@@ -32,6 +34,7 @@ EOF
 requested_arch="universal"
 signing_identity_override=""
 installer_signing_identity_override=""
+pkg_mode=false
 notary_profile_override=""
 notary_auth="auto"
 notary_timeout="2h"
@@ -67,6 +70,10 @@ while [[ $# -gt 0 ]]; do
     --installer-sign=*)
       installer_signing_identity_override="${1#--installer-sign=}"
       [[ -n "$installer_signing_identity_override" ]] || { usage; exit 2; }
+      shift
+      ;;
+    --pkg)
+      pkg_mode=true
       shift
       ;;
     --keychain-profile)
@@ -189,19 +196,25 @@ case "$signing_identity" in
     ;;
 esac
 
-if [[ -n "$installer_signing_identity_override" ]]; then
-  installer_signing_identity="$installer_signing_identity_override"
-else
-  installer_signing_identity="${signing_identity/Developer ID Application:/Developer ID Installer:}"
+installer_signing_identity=""
+if [[ "$pkg_mode" == true ]]; then
+  if [[ -n "$installer_signing_identity_override" ]]; then
+    installer_signing_identity="$installer_signing_identity_override"
+  else
+    installer_signing_identity="${signing_identity/Developer ID Application:/Developer ID Installer:}"
+  fi
+  case "$installer_signing_identity" in
+    "Developer ID Installer:"*)
+      ;;
+    *)
+      echo "The package identity must be a Developer ID Installer identity." >&2
+      exit 2
+      ;;
+  esac
+elif [[ -n "$installer_signing_identity_override" ]]; then
+  echo "--installer-sign requires --pkg." >&2
+  exit 2
 fi
-case "$installer_signing_identity" in
-  "Developer ID Installer:"*)
-    ;;
-  *)
-    echo "The package identity must be a Developer ID Installer identity." >&2
-    exit 2
-    ;;
-esac
 
 auth_arguments=(resolve-auth --auth "$notary_auth")
 auth_arguments+=(--project-root "$project_root")
@@ -230,7 +243,8 @@ if ! grep -F -- "\"$signing_identity\"" <<<"$identity_list" >/dev/null; then
   echo "  $signing_identity" >&2
   exit 1
 fi
-if ! grep -F -- "\"$installer_signing_identity\"" <<<"$identity_list" >/dev/null; then
+if [[ "$pkg_mode" == true ]] && \
+  ! grep -F -- "\"$installer_signing_identity\"" <<<"$identity_list" >/dev/null; then
   echo "Developer ID Installer identity was not found in the login Keychain:" >&2
   echo "  $installer_signing_identity" >&2
   exit 1
@@ -239,11 +253,14 @@ fi
 package_arguments=(
   --arch "$requested_arch"
   --sign "$signing_identity"
-  --installer-sign "$installer_signing_identity"
   --require-developer-id
   --use-shared-signing
-  --pkg-only
 )
+if [[ "$pkg_mode" == true ]]; then
+  package_arguments+=(--pkg --installer-sign "$installer_signing_identity" --pkg-only)
+else
+  package_arguments+=(--build-only)
+fi
 if [[ -n "$notarization_config" ]]; then
   package_arguments+=(--notarization-config "$notarization_config")
 fi
@@ -269,23 +286,29 @@ pkg_path="$project_root/dist/MacKVM-$version-$requested_arch.pkg"
 dmg_path="$project_root/dist/MacKVM-$version-$requested_arch.dmg"
 pkg_checksum_path="$pkg_path.sha256"
 pkg_notary_log_path="$pkg_path.notary.json"
+app_notary_log_path="$project_root/dist/MacKVM-$version-$requested_arch.app.notary.json"
+app_submission_path="$project_root/.build/notarization/MacKVM-$version-$requested_arch.app.zip"
 dmg_checksum_path="$dmg_path.sha256"
 dmg_notary_log_path="$dmg_path.notary.json"
 
-[[ -f "$pkg_path" ]] || {
-  echo "Installer package was not created: $pkg_path" >&2
-  exit 1
-}
-package_signature="$(pkgutil --check-signature "$pkg_path")"
-grep -F -- "$installer_signing_identity" <<<"$package_signature" >/dev/null || {
-  echo "The package signature does not match the requested Developer ID Installer identity." >&2
-  exit 1
-}
-
-# A pending or failed package submission must never leave a checksum that looks
-# like a successfully notarized standalone installer.
-rm -f -- "$pkg_checksum_path" "$pkg_notary_log_path" \
-  "$dmg_path" "$dmg_checksum_path" "$dmg_notary_log_path"
+if [[ "$pkg_mode" == true ]]; then
+  [[ -f "$pkg_path" ]] || {
+    echo "Installer package was not created: $pkg_path" >&2
+    exit 1
+  }
+  package_signature="$(pkgutil --check-signature "$pkg_path")"
+  grep -F -- "$installer_signing_identity" <<<"$package_signature" >/dev/null || {
+    echo "The package signature does not match the requested Developer ID Installer identity." >&2
+    exit 1
+  }
+  # A pending or failed package submission must never leave a checksum that
+  # looks like a successfully notarized standalone installer.
+  rm -f -- "$pkg_checksum_path" "$pkg_notary_log_path" "$app_notary_log_path"
+else
+  # Do not leave stale success metadata alongside a fresh app submission.
+  rm -f -- "$app_notary_log_path"
+fi
+rm -f -- "$dmg_path" "$dmg_checksum_path" "$dmg_notary_log_path"
 
 assert_secure_timestamp() {
   local path="$1"
@@ -328,17 +351,18 @@ EOF
 }
 
 submit_staple_verify() {
-  local artifact_path="$1"
-  local metadata_path="$2"
-  local checksum_path="$3"
-  local artifact_label="$4"
+  local submission_artifact="$1"
+  local notarized_artifact="$2"
+  local metadata_path="$3"
+  local checksum_path="$4"
+  local artifact_label="$5"
   local -a submission_arguments
   local submission_output
   local submission_status
   local submission_id
 
   submission_arguments=(
-    submit "$artifact_path"
+    submit "$submission_artifact"
     --authorized
     --wait
     --auth "$resolved_auth"
@@ -385,40 +409,65 @@ submit_staple_verify() {
     echo "Submission metadata: $metadata_path"
   fi
 
-  python3 "$notarization_tool" staple "$artifact_path"
-  # The shared helper verifies package signatures, Gatekeeper's install
-  # assessment for PKGs, and the stapled ticket (including stapler validate).
-  python3 "$notarization_tool" verify "$artifact_path"
+  python3 "$notarization_tool" staple "$notarized_artifact"
+  # The shared helper verifies app or package signatures, the matching
+  # Gatekeeper assessment, and the stapled ticket.
+  python3 "$notarization_tool" verify "$notarized_artifact"
 
-  (cd "$(dirname "$artifact_path")" && \
-    shasum -a 256 "$(basename "$artifact_path")" > "$(basename "$checksum_path")")
+  if [[ -n "$checksum_path" ]]; then
+    (cd "$(dirname "$notarized_artifact")" && \
+      shasum -a 256 "$(basename "$notarized_artifact")" > "$(basename "$checksum_path")")
+  fi
 }
 
-# The package is independently signed, submitted, stapled, and verified before
-# the DMG is composed, so the container carries the exact standalone artifact.
-submit_staple_verify \
-  "$pkg_path" "$pkg_notary_log_path" "$pkg_checksum_path" "installer package"
-
-./scripts/compose-dmg.sh \
-  --pkg "$pkg_path" \
-  --version "$version" \
-  --arch "$requested_arch"
+if [[ "$pkg_mode" == true ]]; then
+  # The package is independently signed, submitted, stapled, and verified
+  # before the DMG is composed, so the container carries that exact artifact.
+  submit_staple_verify \
+    "$pkg_path" "$pkg_path" "$pkg_notary_log_path" "$pkg_checksum_path" "installer package"
+  ./scripts/compose-dmg.sh \
+    --pkg "$pkg_path" \
+    --version "$version" \
+    --arch "$requested_arch"
+else
+  # Staple the app before copying it into the DMG so users can move the app
+  # out of the image later and retain its own notarization ticket.
+  mkdir -p "$(dirname "$app_submission_path")"
+  rm -f -- "$app_submission_path"
+  ditto -c -k --keepParent "$app_dir" "$app_submission_path"
+  [[ -f "$app_submission_path" ]] || {
+    echo "Notarization archive was not created: $app_submission_path" >&2
+    exit 1
+  }
+  submit_staple_verify \
+    "$app_submission_path" "$app_dir" "$app_notary_log_path" "" "application bundle"
+  rm -f -- "$app_submission_path"
+  ./scripts/compose-dmg.sh \
+    --app "$app_dir" \
+    --version "$version" \
+    --arch "$requested_arch"
+fi
 [[ -f "$dmg_path" ]] || {
   echo "DMG was not created: $dmg_path" >&2
   exit 1
 }
 rm -f -- "$dmg_checksum_path" "$dmg_notary_log_path"
 
-# The app and PKG are signed before composition; the DMG remains independently
-# signed and notarized as the top-level release container.
+# The app (and optional PKG) is signed and notarized before composition; the
+# DMG remains independently signed and notarized as the top-level container.
 codesign --force --timestamp --sign "$signing_identity" "$dmg_path"
 codesign --verify --verbose=2 "$dmg_path"
 assert_secure_timestamp "$dmg_path"
 
 submit_staple_verify \
-  "$dmg_path" "$dmg_notary_log_path" "$dmg_checksum_path" "disk image"
+  "$dmg_path" "$dmg_path" "$dmg_notary_log_path" "$dmg_checksum_path" "disk image"
 
-echo "Created notarized PKG: $pkg_path"
-echo "SHA-256: $pkg_checksum_path"
+if [[ "$pkg_mode" == true ]]; then
+  echo "Created notarized PKG: $pkg_path"
+  echo "SHA-256: $pkg_checksum_path"
+else
+  echo "Created notarized app: $app_dir"
+  echo "Submission metadata: $app_notary_log_path"
+fi
 echo "Created notarized DMG: $dmg_path"
 echo "SHA-256: $dmg_checksum_path"

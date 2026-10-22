@@ -50,6 +50,67 @@ enum SecureSessionCompatibilityPolicy {
     }
 }
 
+enum LocalNetworkAccessRecoveryPolicy {
+    static let blockedStatusMessage =
+        "macOS is blocking this local network connection."
+
+    static func isBlocked(
+        _ reason: NWPath.UnsatisfiedReason?
+    ) -> Bool {
+        reason == .localNetworkDenied
+    }
+}
+
+enum SecureSessionNetworkCheckRetryPolicy {
+    static func shouldRestartPendingOutbound(
+        isSystemSleeping: Bool,
+        hasDesiredPeer: Bool,
+        desiredPeerIsLocallyDisconnected: Bool,
+        hasPendingConnect: Bool,
+        hasActiveContext: Bool,
+        contextCount: Int,
+        contextMatchesDesiredPeer: Bool,
+        contextIsInitiator: Bool,
+        contextIsAuthenticated: Bool,
+        contextIsClosing: Bool,
+        connectionState: NWConnection.State
+    ) -> Bool {
+        guard !isSystemSleeping,
+              hasDesiredPeer,
+              !desiredPeerIsLocallyDisconnected,
+              !hasPendingConnect,
+              !hasActiveContext,
+              contextCount == 1,
+              contextMatchesDesiredPeer,
+              contextIsInitiator,
+              !contextIsAuthenticated,
+              !contextIsClosing else {
+            return false
+        }
+        switch connectionState {
+        case .waiting, .preparing:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
+enum SecureSessionHandshakeAdmissionPolicy {
+    static func acceptsPinnedInitiator(
+        localID: UUID,
+        handshake: SecureSessionHandshake,
+        pinnedPublicKey: Data?
+    ) -> Bool {
+        handshake.role == .initiator
+            && PeerArbitration.isValidPeerPair(
+                localID: localID,
+                remoteID: handshake.sender.id
+            )
+            && pinnedPublicKey == handshake.sender.signingPublicKey
+    }
+}
+
 /// A heartbeat acknowledgement is released only after the receiver's control
 /// path has reached a known progress point. It is intentionally one-shot so a
 /// delayed main/injection-queue callback cannot emit duplicate acknowledgements
@@ -176,6 +237,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
     @Published private(set) var connectedPeerID: UUID?
     @Published private(set) var status = "Secure session idle"
     @Published private(set) var isReconnecting = false
+    @Published private(set) var localNetworkAccessBlocked = false
 
     var onPayload: ((Data) -> Void)?
     var onAuthenticated: (() -> UInt64)?
@@ -377,6 +439,52 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
 
     func connect(to peerID: UUID) {
         connect(to: peerID, automaticPairing: false)
+    }
+
+    /// Replaces only a selected outbound handshake that remains in the
+    /// Network.framework waiting/preparing states after a successful explicit
+    /// Local Network check. An authenticated session, incoming work, close,
+    /// or deliberate Disconnect is never changed by this recovery path.
+    func retryPendingConnectionAfterSuccessfulLocalNetworkCheck() {
+        queue.async { [weak self] in
+            guard let self,
+                  let peerID = self.desiredPeerID,
+                  let context = self.contexts.values.first,
+                  SecureSessionNetworkCheckRetryPolicy
+                    .shouldRestartPendingOutbound(
+                        isSystemSleeping: self.isSystemSleeping,
+                        hasDesiredPeer: self.desiredPeerID != nil,
+                        desiredPeerIsLocallyDisconnected:
+                            self.locallyDisconnectedPeerIDs.contains(peerID),
+                        hasPendingConnect: self.pendingConnectPeerID != nil,
+                        hasActiveContext: self.activeContextID != nil,
+                        contextCount: self.contexts.count,
+                        contextMatchesDesiredPeer:
+                            context.expectedPeer?.id == peerID,
+                        contextIsInitiator:
+                            context.localRole == .initiator,
+                        contextIsAuthenticated: context.isAuthenticated,
+                        contextIsClosing: context.isClosing,
+                        connectionState: context.connection.state
+                    ) else {
+                return
+            }
+
+            self.logSecurePhase(
+                "network-check.retrying-pending-outbound",
+                peerID: peerID,
+                context: context
+            )
+            self.cancelReconnect(resetAttempt: true)
+            self.connectionEpoch.advance()
+            context.suppressesReconnect = true
+            context.connection.cancel()
+            self.remove(context)
+            // `desiredPeerID` is intentionally left untouched. This action
+            // cannot create a connection after Disconnect because that path
+            // clears it before a check result can be applied.
+            self.connectOnQueue(to: peerID)
+        }
     }
 
     /// Used only by the pairing-completion callback. A stale callback may be
@@ -997,6 +1105,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             switch state {
             case .ready:
                 self.cancelTransportLivenessTimeout(for: context)
+                self.publishLocalNetworkAccessBlocked(false)
                 self.logSecurePhase("transport.ready", peerID: peerID, context: context)
                 scheduleTimeout(
                     for: context,
@@ -1037,6 +1146,11 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                     context: context,
                     detail: error.localizedDescription
                 )
+                if LocalNetworkAccessRecoveryPolicy.isBlocked(
+                    connection.currentPath?.unsatisfiedReason
+                ) {
+                    self.publishLocalNetworkAccessBlocked(true)
+                }
                 self.scheduleTransportLivenessTimeout(
                     for: context,
                     reason: "transport.waiting"
@@ -1390,6 +1504,11 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                     context: context,
                     detail: error.localizedDescription
                 )
+                if LocalNetworkAccessRecoveryPolicy.isBlocked(
+                    connection.currentPath?.unsatisfiedReason
+                ) {
+                    self.publishLocalNetworkAccessBlocked(true)
+                }
                 self.scheduleTransportLivenessTimeout(
                     for: context,
                     reason: "transport.waiting"
@@ -1833,13 +1952,15 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             }
 
         case .responder:
-            guard handshake.role == .initiator,
-                  PeerArbitration.isValidPeerPair(
-                      localID: credentials.identity.id,
-                      remoteID: handshake.sender.id
-                  ),
-                  registry.publicKey(for: handshake.sender.id)
-                    == handshake.sender.signingPublicKey else {
+            // `drainBufferedFrames` hands this method only handshakes whose
+            // wire signatures have been verified. Preserve the UUID and
+            // pinned-key checks before collision arbitration so the
+            // local-network fallback never changes who is trusted.
+            guard SecureSessionHandshakeAdmissionPolicy.acceptsPinnedInitiator(
+                localID: credentials.identity.id,
+                handshake: handshake,
+                pinnedPublicKey: registry.publicKey(for: handshake.sender.id)
+            ) else {
                 logSecurePhase(
                     "handshake.responder.rejected",
                     peerID: handshake.sender.id,
@@ -2039,7 +2160,20 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         let timeout = DispatchWorkItem { [weak self, weak context] in
             guard let self, let context, self.isCurrent(context),
                   !context.isAuthenticated else { return }
-            self.logSecurePhase("handshake.timeout", context: context)
+            let pathDetail = self.connectionPathDiagnostic(
+                for: context.connection,
+                label: context.localRole == .initiator ? "outbound" : "incoming"
+            )
+            if LocalNetworkAccessRecoveryPolicy.isBlocked(
+                context.connection.currentPath?.unsatisfiedReason
+            ) {
+                self.publishLocalNetworkAccessBlocked(true)
+            }
+            self.logSecurePhase(
+                "handshake.timeout",
+                context: context,
+                detail: pathDetail
+            )
             fail(context, message: message)
         }
         context.handshakeTimeout = timeout
@@ -2256,19 +2390,41 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             localID: credentials.identity.id,
             remoteID: peer.id
         )
+        let preferredOutboundPath = connectionPathDiagnostic(
+            for: outbound.connection,
+            label: "preferred-outbound"
+        )
+        let preferredOutboundHasLocalNetworkDenial =
+            LocalNetworkAccessRecoveryPolicy.isBlocked(
+                outbound.connection.currentPath?.unsatisfiedReason
+            )
         logSecurePhase(
             "connection.collision",
             peerID: peer.id,
             context: incoming,
-            detail: "preferredRole=\(preferredRole == .initiator ? "initiator" : "responder")"
+            detail: "preferredRole=\(preferredRole == .initiator ? "initiator" : "responder") \(preferredOutboundPath)"
         )
         if preferredRole == .initiator {
+            guard SecureSessionCollisionPolicy.shouldAcceptIncomingFallback(
+                localID: credentials.identity.id,
+                remoteID: peer.id,
+                hasSelectedPeer: desiredPeerID == peer.id,
+                preferredOutboundHasLocalNetworkDenial:
+                    preferredOutboundHasLocalNetworkDenial
+            ) else {
+                logSecurePhase(
+                    "connection.collision.rejected-incoming",
+                    peerID: peer.id,
+                    context: incoming
+                )
+                throw SecureSessionError.invalidHandshake
+            }
+            publishLocalNetworkAccessBlocked(true)
             logSecurePhase(
-                "connection.collision.rejected-incoming",
+                "connection.collision.accepting-incoming-after-local-network-denial",
                 peerID: peer.id,
                 context: incoming
             )
-            throw SecureSessionError.invalidHandshake
         }
         // The incoming responder is now the deterministic winner. Mark it
         // before removing the losing outbound context so remove(_:) does not
@@ -2283,6 +2439,36 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             context: outbound
         )
         remove(outbound)
+    }
+
+    private func connectionPathDiagnostic(
+        for connection: NWConnection,
+        label: String
+    ) -> String {
+        let state: String
+        switch connection.state {
+        case .setup:
+            state = "setup"
+        case .preparing:
+            state = "preparing"
+        case .waiting:
+            state = "waiting"
+        case .ready:
+            state = "ready"
+        case .failed:
+            state = "failed"
+        case .cancelled:
+            state = "cancelled"
+        @unknown default:
+            state = "unknown"
+        }
+
+        guard let path = connection.currentPath else {
+            return "\(label)-state=\(state) \(label)-path=unavailable"
+        }
+        let reason = String(describing: path.unsatisfiedReason)
+        return "\(label)-state=\(state) \(label)-path=\(String(describing: path.status)) "
+            + "\(label)-unsatisfied-reason=\(reason)"
     }
 
     private func remove(
@@ -2618,6 +2804,12 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         }
     }
 
+    private func publishLocalNetworkAccessBlocked(_ blocked: Bool) {
+        DispatchQueue.main.async { [weak self] in
+            self?.localNetworkAccessBlocked = blocked
+        }
+    }
+
     private func publishConnection(
         peerID: UUID?,
         status: String,
@@ -2626,6 +2818,9 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         DispatchQueue.main.async { [weak self] in
             self?.connectedPeerID = peerID
             self?.status = status
+            if peerID != nil {
+                self?.localNetworkAccessBlocked = false
+            }
             self?.connectionPublicationSubject.send(
                 ControlConnectionPublication(
                     peerID: peerID,

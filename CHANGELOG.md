@@ -4,6 +4,71 @@
 
 ## Unreleased
 
+### MacKVM 1.102.04 (build 101) — Local Network guidance and signing diagnostics
+
+- Show the combined discovery/session Local Network denial in the nearby-device
+  empty state and pairing guidance, with a link to Settings. Distinguish an
+  explicit pairing transport denial from a generic firewall/network wait.
+- Separate binary hash changes from Team ID, designated requirement, and leaf
+  certificate comparisons. Include public signing metadata and per-field
+  comparisons in startup logs and copied support information; legacy records
+  without the added fields remain unknown, and ad-hoc signing is labelled.
+- Retain build-aware review invalidation and component-specific automatic
+  recovery while access is blocked. Automated policy tests do not establish
+  that the reported two-Mac pairing failure is fixed; physical acceptance and
+  an observed DNS-SD PolicyDenied log remain pending.
+
+### MacKVM 1.102.03 (build 100) — live permission status and Local Network retry
+
+- Refresh the system-reported keyboard listening, posting, and Accessibility
+  checks every two seconds while an app surface is visible, including when it
+  is inactive, and stop refreshing when all surfaces close. Show when the
+  checks were last refreshed; manual and foreground/settings-return refreshes
+  are coalesced, and diagnostic logging is deduplicated.
+- Derive Local Network status from current evidence: a current authenticated
+  connection reports working, an exact macOS local-network denial reports
+  blocked, and other results remain unverified. An explicit check probes a
+  known peer for up to seven seconds and shows the result time; a timeout
+  remains unconfirmed. With no known peer, refresh Bonjour discovery while
+  idle for two seconds and report when no peer is found.
+- These checks report current system signals and connection evidence; they do
+  not confirm a separate permission grant or guarantee that macOS will retain
+  an existing privacy grant after an upgrade.
+- Physical permission, input, and remote-control acceptance on macOS 27.0.1
+  and 26.7.1 remains pending.
+
+### MacKVM 1.102.02 (build 99) — privacy access checks and upgrade identity
+
+- Report the CoreGraphics keyboard-event listening and posting checks and
+  Accessibility trust separately. Capture follows the listening check;
+  injection requires Accessibility trust and the posting check. IOHID results
+  remain tri-state diagnostics, and “System reports access” does not claim a
+  separate permission grant.
+- On macOS 27, point to Device Control and Data Access for keyboard-event
+  access. The Local Network checklist distinguishes review from verification,
+  and a reported macOS denial exposes a link to its settings.
+- Refuse to replace an installed Team-identified app when the incoming app has
+  a different Team ID or designated code-signing requirement. Installation
+  does not reset privacy permissions and leaves pairing keys intact; macOS
+  decides whether existing grants apply to the incoming app.
+- Before quitting during an app-owned control session, return display and input
+  to the original controller according to the session role; leave idle and
+  manually owned display routes unchanged.
+- Physical input and remote-control acceptance on macOS 27.0.1 and 26.7.1
+  remains pending.
+
+### MacKVM 1.102.01 (build 98) — connection diagnostics and DMG recovery
+
+- Restore the app-only DMG with Finder install/uninstall commands and bilingual
+  guides; keep the installer-package layout opt-in.
+- Show a localized Local Network settings diagnostic when Network.framework
+  reports that macOS denied local-network access.
+- Permit the reciprocal secure connection only when the selected peer's
+  deterministic outbound attempt reports that exact denial. Existing verified
+  handshake, UUID-role, and pinned-key checks still gate admission.
+- Physical two-Mac pairing and connection acceptance remains pending; this
+  change does not establish that the reported pairing failure is fixed.
+
 ### MacKVM 1.102.00 (build 97) — clipboard sync and control HUD
 
 - Add negotiated, opt-in plain-text clipboard synchronization with WindowsKVM.

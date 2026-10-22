@@ -9,15 +9,21 @@ original_argument_count=$#
 
 usage() {
   cat >&2 <<'EOF'
-Usage: scripts/compose-dmg.sh --pkg PATH --version VERSION \
-       --arch universal|arm64|x86_64
+Usage:
+  scripts/compose-dmg.sh --pkg PATH --version VERSION \
+    --arch universal|arm64|x86_64
+  scripts/compose-dmg.sh --app PATH --version VERSION \
+    --arch universal|arm64|x86_64
 
-Creates a DMG containing the supplied installer package and bilingual install
-guides. The package is copied as-is so a previously stapled ticket is retained.
+By default, package-dmg.sh uses the app layout: the supplied app, an
+Applications shortcut, Finder install/uninstall commands, their shared helper
+scripts, and bilingual guides. The optional package layout copies the supplied
+PKG as-is so a previously stapled ticket is retained.
 EOF
 }
 
 pkg_path=""
+app_path=""
 version=""
 requested_arch=""
 while [[ $# -gt 0 ]]; do
@@ -30,6 +36,16 @@ while [[ $# -gt 0 ]]; do
     --pkg=*)
       pkg_path="${1#--pkg=}"
       [[ -n "$pkg_path" ]] || { usage; exit 2; }
+      shift
+      ;;
+    --app)
+      [[ $# -ge 2 && -n "$2" ]] || { usage; exit 2; }
+      app_path="$2"
+      shift 2
+      ;;
+    --app=*)
+      app_path="${1#--app=}"
+      [[ -n "$app_path" ]] || { usage; exit 2; }
       shift
       ;;
     --version)
@@ -63,10 +79,14 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ -n "$pkg_path" && -n "$version" && -n "$requested_arch" ]] || {
+[[ -n "$version" && -n "$requested_arch" ]] || {
   usage
   exit 2
 }
+if [[ -n "$pkg_path" && -n "$app_path" ]] || [[ -z "$pkg_path" && -z "$app_path" ]]; then
+  echo "Specify exactly one of --app or --pkg." >&2
+  exit 2
+fi
 case "$requested_arch" in
   universal|arm64|x86_64) ;;
   *)
@@ -78,10 +98,17 @@ esac
   echo "Invalid version: $version (expected numeric major.minor.patch)" >&2
   exit 2
 }
-[[ -f "$pkg_path" ]] || {
-  echo "Installer package not found: $pkg_path" >&2
-  exit 1
-}
+if [[ -n "$pkg_path" ]]; then
+  [[ -f "$pkg_path" ]] || {
+    echo "Installer package not found: $pkg_path" >&2
+    exit 1
+  }
+else
+  [[ -d "$app_path" && "${app_path##*/}" == "MacKVM.app" ]] || {
+    echo "MacKVM app bundle not found: $app_path" >&2
+    exit 1
+  }
+fi
 
 if [[ "$original_argument_count" -eq 0 ]]; then
   mackvm_enter_build_lock "$project_root" "$project_root/scripts/compose-dmg.sh"
@@ -107,12 +134,28 @@ dmg_path="$project_root/dist/MacKVM-$version-$requested_arch.dmg"
 checksum_path="$dmg_path.sha256"
 rm -f -- "$dmg_path" "$checksum_path"
 
-# The DMG contains a single, regular installer path plus human-readable guides.
-# Do not add Finder-executable shell scripts or duplicate loose app bundles.
-install -m 644 "$pkg_path" "$staging_dir/MacKVM.pkg"
 install -m 644 "$project_root/INSTALL.md" "$staging_dir/INSTALL.md"
 install -m 644 "$project_root/INSTALL.zh-TW.md" \
   "$staging_dir/INSTALL.zh-TW.md"
+
+if [[ -n "$pkg_path" ]]; then
+  install -m 644 "$pkg_path" "$staging_dir/MacKVM.pkg"
+else
+  ditto "$app_path" "$staging_dir/MacKVM.app"
+  ln -s /Applications "$staging_dir/Applications"
+  install -m 644 "$project_root/UNINSTALL.md" "$staging_dir/UNINSTALL.md"
+  install -m 644 "$project_root/UNINSTALL.zh-TW.md" \
+    "$staging_dir/UNINSTALL.zh-TW.md"
+  mkdir -p "$staging_dir/scripts"
+  install -m 755 "$project_root/scripts/install-app.sh" \
+    "$staging_dir/scripts/install-app.sh"
+  install -m 755 "$project_root/scripts/uninstall-app.sh" \
+    "$staging_dir/scripts/uninstall-app.sh"
+  install -m 755 "$project_root/scripts/dmg/Install MacKVM.command" \
+    "$staging_dir/Install MacKVM.command"
+  install -m 755 "$project_root/scripts/dmg/Uninstall MacKVM.command" \
+    "$staging_dir/Uninstall MacKVM.command"
+fi
 
 hdiutil create \
   -volname "MacKVM $version" \

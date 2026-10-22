@@ -35,6 +35,16 @@ final class SecureSessionDisconnectPolicyTests: XCTestCase {
         )
     }
 
+    func testLocalNetworkSettingsRecoveryIsShownOnlyForPrivacyDenial() {
+        XCTAssertTrue(
+            LocalNetworkAccessRecoveryPolicy.isBlocked(.localNetworkDenied)
+        )
+        XCTAssertFalse(
+            LocalNetworkAccessRecoveryPolicy.isBlocked(.notAvailable)
+        )
+        XCTAssertFalse(LocalNetworkAccessRecoveryPolicy.isBlocked(nil))
+    }
+
     func testMissingDisconnectCapabilityRequiresCoordinatedUpgrade() {
         XCTAssertEqual(
             SecureSessionCompatibilityPolicy.decision(for: nil),

@@ -1,21 +1,37 @@
 import AppKit
 
-/// Persists the Local Network setup acknowledgement and migrates installations
-/// created before the acknowledgement existed. A persisted MacKVM identity
-/// proves this is an upgrade rather than a brand-new installation; its network
-/// services retain the prior startup behavior while the recovery shortcut
-/// remains available because macOS does not expose a Local Network preflight.
+/// Persists the Local Network setup acknowledgement and the last app build.
+/// The first build recorded by this version and each later build change clear
+/// the old acknowledgement so the user can review Local Network settings
+/// again. Existing credentials remain untouched and still allow discovery to
+/// start while the acknowledgement is incomplete.
 enum OnboardingDefaults {
     static let localNetworkAccessReviewedKey =
         "MacKVM.onboarding.localNetworkAccessReviewed"
+    static let lastExecutedBuildKey =
+        "MacKVM.onboarding.lastExecutedBuild"
 
     /// Resolves and persists the Local Network acknowledgement. A missing
-    /// value is migrated from the device-identity state, then saved so later
-    /// calls are a plain read of the user's resolved setup state.
+    /// value is migrated from the device-identity state only after the current
+    /// build has already been recorded.
     static func resolveLocalNetworkAccessReviewed(
         defaults: UserDefaults = .standard,
-        hadExistingDeviceCredentials: Bool
+        hadExistingDeviceCredentials: Bool,
+        currentBuild: String
     ) -> Bool {
+        let previousBuild = defaults.string(forKey: lastExecutedBuildKey)
+        let isFirstTrackedBuild = previousBuild == nil
+        let buildChanged = previousBuild != currentBuild
+        defaults.set(currentBuild, forKey: lastExecutedBuildKey)
+
+        // A first run of build tracking and every later build change require
+        // the Local Network prompt/settings review to be revisited. This only
+        // resets the acknowledgement; it does not touch device credentials.
+        if isFirstTrackedBuild || buildChanged {
+            defaults.set(false, forKey: localNetworkAccessReviewedKey)
+            return false
+        }
+
         if defaults.object(forKey: localNetworkAccessReviewedKey) != nil {
             return defaults.bool(forKey: localNetworkAccessReviewedKey)
         }
@@ -52,6 +68,9 @@ enum MacKVMPermission: CaseIterable, Equatable, Hashable, Identifiable {
         case .inputMonitoring:
             return String(localized: "Input Monitoring")
         case .accessibility:
+            if #available(macOS 27, *) {
+                return String(localized: "Device Control and Data Access")
+            }
             return String(localized: "Accessibility")
         }
     }
@@ -73,6 +92,198 @@ enum PermissionOnboardingChecklistStatus: Equatable {
     case complete
     case current
     case waiting
+}
+
+enum LocalNetworkSetupStatus: Equatable {
+    case working
+    case reachable
+    case blocked
+    case checking
+    case unverified
+    case unconfirmed
+    case busy
+    case noPeer
+    case unavailable
+
+
+    static func resolve(
+        hasCurrentAuthenticatedConnection: Bool,
+        isExplicitlyBlocked: Bool,
+        isChecking: Bool,
+        latestCheckResult: LocalNetworkCheckResult?
+    ) -> Self {
+        // A DNS-SD denial is authoritative even when an older socket or probe
+        // still looks healthy. Do not let those stale results mask a current
+        // browser/listener denial.
+        if isExplicitlyBlocked {
+            return .blocked
+        }
+        if isChecking {
+            return .checking
+        }
+        if let latestCheckResult {
+            switch latestCheckResult {
+            case .reachable:
+                return .reachable
+            case .blocked:
+                return .blocked
+            case .unconfirmed:
+                return .unconfirmed
+            case .busy:
+                return .busy
+            case .noPeer:
+                return .noPeer
+            case .unavailable:
+                return .unavailable
+            }
+        }
+        if hasCurrentAuthenticatedConnection {
+            return .working
+        }
+        return .unverified
+    }
+
+    var supportLabel: String {
+        switch self {
+        case .working:
+            "Connection working"
+        case .reachable:
+            "Network test succeeded"
+        case .blocked:
+            "Local Network access blocked by macOS"
+        case .checking:
+            "Checking Local Network access"
+        case .unverified:
+            "Access not verified"
+        case .unconfirmed:
+            "Network test could not be confirmed"
+        case .busy:
+            "Network check waiting for pairing to finish"
+        case .noPeer:
+            "No peer available to test"
+        case .unavailable:
+            "Network check unavailable"
+        }
+    }
+}
+
+enum LocalNetworkStatusFreshnessPolicy {
+    static func hasNewAuthenticatedPeer(
+        previousPeerID: UUID?,
+        currentPeerID: UUID?
+    ) -> Bool {
+        guard let currentPeerID else { return false }
+        return previousPeerID != currentPeerID
+    }
+}
+
+@MainActor
+protocol PermissionRefreshTimerToken: AnyObject {
+    func invalidate()
+}
+
+@MainActor
+protocol PermissionRefreshScheduling {
+    func schedule(
+        every interval: TimeInterval,
+        action: @escaping () -> Void
+    ) -> any PermissionRefreshTimerToken
+}
+
+@MainActor
+private final class FoundationPermissionRefreshTimerToken:
+    PermissionRefreshTimerToken {
+    private var timer: Timer?
+
+    init(interval: TimeInterval, action: @escaping () -> Void) {
+        let timer = Timer(timeInterval: interval, repeats: true) { _ in
+            action()
+        }
+        timer.tolerance = min(interval * 0.125, 0.5)
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+    }
+
+    func invalidate() {
+        timer?.invalidate()
+        timer = nil
+    }
+}
+
+@MainActor
+struct FoundationPermissionRefreshScheduler: PermissionRefreshScheduling {
+    func schedule(
+        every interval: TimeInterval,
+        action: @escaping () -> Void
+    ) -> any PermissionRefreshTimerToken {
+        FoundationPermissionRefreshTimerToken(
+            interval: interval,
+            action: action
+        )
+    }
+}
+
+/// Polls preflight permission APIs only while a MacKVM surface is visible.
+/// App deactivation does not stop the timer because System Settings may be in
+/// front while the MacKVM window remains open.
+@MainActor
+final class PermissionRefreshMonitor {
+    private let scheduler: any PermissionRefreshScheduling
+    private let interval: TimeInterval
+    private let refresh: () -> Void
+    private var timer: (any PermissionRefreshTimerToken)?
+    private(set) var visibleSurfaces = Set<UUID>()
+    private(set) var applicationIsActive = true
+    private(set) var isTerminating = false
+
+    var isPolling: Bool { timer != nil }
+
+    init(
+        interval: TimeInterval = 2,
+        scheduler: (any PermissionRefreshScheduling)? = nil,
+        refresh: @escaping () -> Void
+    ) {
+        self.interval = interval
+        self.scheduler = scheduler ?? FoundationPermissionRefreshScheduler()
+        self.refresh = refresh
+    }
+
+    func surfaceAppeared(_ id: UUID) {
+        guard !isTerminating else { return }
+        visibleSurfaces.insert(id)
+        updateTimer()
+    }
+
+    func surfaceDisappeared(_ id: UUID) {
+        visibleSurfaces.remove(id)
+        updateTimer()
+    }
+
+    func applicationDidBecomeActive() {
+        applicationIsActive = true
+    }
+
+    func applicationWillResignActive() {
+        applicationIsActive = false
+    }
+
+    func terminate() {
+        isTerminating = true
+        visibleSurfaces.removeAll()
+        updateTimer()
+    }
+
+    private func updateTimer() {
+        let shouldPoll = !isTerminating && !visibleSurfaces.isEmpty
+        if shouldPoll, timer == nil {
+            timer = scheduler.schedule(every: interval) { [weak self] in
+                self?.refresh()
+            }
+        } else if !shouldPoll {
+            timer?.invalidate()
+            timer = nil
+        }
+    }
 }
 
 struct PermissionOnboardingChecklistItem: Identifiable, Equatable {
@@ -191,6 +402,16 @@ enum PermissionOnboardingPolicy {
         inputMonitoringGranted: Bool
     ) -> Bool {
         permission == .inputMonitoring && !inputMonitoringGranted
+    }
+
+    /// The Accessibility request may also need the separate Core Graphics
+    /// event-posting grant. If the effective receiver gate is still closed,
+    /// send the user to the privacy pane after the public request APIs return.
+    static func shouldOpenAccessibilitySettingsAfterRequest(
+        for permission: MacKVMPermission,
+        accessibilityGranted: Bool
+    ) -> Bool {
+        permission == .accessibility && !accessibilityGranted
     }
 
     /// Refreshes the two permissions macOS lets MacKVM preflight, then returns

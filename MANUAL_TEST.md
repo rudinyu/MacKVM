@@ -33,47 +33,48 @@ Local packaging check (from the M5 Pro) is also available:
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.101.01-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.102.04-universal.dmg.sha256)
 ```
 
-The first two commands build and verify the 1.101.01 (build 96) source locally;
+The first two commands build and verify the 1.102.04 (build 101) source locally;
 the checksum command verifies the local-testing DMG produced in `dist`. This
-packaging-only update has not generated or published a release artifact.
-The local PKG is unsigned and not for distribution.
+update has not generated or published a release artifact. The local app and
+DMG are ad-hoc signed and not for distribution; the image contains no PKG.
 
 Expected: the app reports both `arm64` and `x86_64`, and an ad-hoc signature
 is explicitly labelled as local-testing-only. The checksum command reports
-`OK`, and `dist/.staging` is absent after packaging. A release build must provide
-Developer ID Application and Developer ID Installer identities, report the
-hardened runtime and secure timestamps, and complete two Apple notarization
-submissions. The installer identity is derived from the app identity by
-default; `--installer-sign` can override it. Shared Codex settings provide the
-app signing identity and notary authentication; `--sign` and
-`--keychain-profile` can override them. The release path is:
+`OK`, and `dist/.staging` is absent after packaging. A release build needs a
+Developer ID Application identity, hardened runtime and secure timestamps, and
+two Apple notarization submissions: one for the app and one for the DMG. The
+app identity and notary authentication come from shared Codex settings;
+`--sign`, `--keychain-profile`, and `--auth` can override them. The release
+path is:
 
 ```sh
 ./scripts/package-notarized-dmg.sh --arch universal
 ```
 
-The standalone `dist/MacKVM-1.101.01-universal.pkg` must be accepted, stapled,
-and verified before the DMG is composed. Check the final release artifacts:
+The app and DMG must be accepted, stapled, and verified. Check the app bundle
+and final release image:
 
 ```sh
-pkgutil --check-signature dist/MacKVM-1.101.01-universal.pkg
-spctl --assess --type install --verbose=4 dist/MacKVM-1.101.01-universal.pkg
-xcrun stapler validate dist/MacKVM-1.101.01-universal.pkg
-xcrun stapler validate dist/MacKVM-1.101.01-universal.dmg
-(cd dist && shasum -a 256 -c MacKVM-1.101.01-universal.pkg.sha256)
-(cd dist && shasum -a 256 -c MacKVM-1.101.01-universal.dmg.sha256)
+codesign --verify --deep --strict --verbose=2 dist/universal/MacKVM.app
+spctl --assess --type execute --verbose=4 dist/universal/MacKVM.app
+xcrun stapler validate dist/universal/MacKVM.app
+xcrun stapler validate dist/MacKVM-1.102.04-universal.dmg
+(cd dist && shasum -a 256 -c MacKVM-1.102.04-universal.dmg.sha256)
 ```
 
-Mount the release DMG in Finder. Confirm it contains `MacKVM.pkg`, `INSTALL.md`,
-and `INSTALL.zh-TW.md`, with no `.command` files and no duplicate loose app.
-Install by double-clicking `MacKVM.pkg`; verify MacKVM appears in
-`/Applications` and launches normally. To test ordinary uninstall, quit
-MacKVM, move the app from Applications to the Trash in Finder, and remove its
-Login Item if present. Confirm user data and permissions remain. Do not use the
-CLI purge tool on a real account.
+Mount the release DMG in Finder. Confirm it contains `MacKVM.app`, the
+`/Applications` shortcut, both executable Finder commands, the shared install
+and uninstall helpers, and all four bilingual guides; confirm it contains no
+PKG. Install by double-clicking `Install MacKVM.command` and verify the app
+appears in `/Applications` and launches. Confirm local data and TCC records
+remain unchanged; record whether macOS authorizes the current app and review
+System Settings if access is unavailable. The installer does not reset or
+clear permissions. Test ordinary uninstall by quitting MacKVM and
+double-clicking `Uninstall MacKVM.command`; confirm saved data remains. Do not
+use the CLI purge tool on a real account.
 
 ### 1.1 Build and exercise the DDC diagnostic tool
 
@@ -194,14 +195,69 @@ Expected:
   has explicitly handled the Local Network step.
 - Only one macOS privacy request can be initiated at a time.
 - **Settings** opens the matching Privacy & Security pane.
-- The Local Network row says **Reviewed**, not **Granted**, and its recovery
-  shortcut remains available after the checklist advances.
-- Both permission rows show **Granted**.
+- Before a network test, the Local Network row distinguishes review from
+  verification. After **Check Local Network Access**, it reports the fresh
+  connection result and its own check time. An input polling tick does not
+  change the network check time. A failed fresh check must not be hidden by a
+  previously authenticated connection.
+- Keep a MacKVM window visible while System Settings is active. Input checks
+  continue every two seconds; returning from settings triggers a coalesced
+  network recheck. Closing the last surface stops input polling.
+- Input rows report **System reports access** only for their corresponding
+  current Core Graphics/Accessibility checks; this is not a claim that a separate
+  Input Monitoring entry exists in System Settings. On macOS 27, check
+  **Device Control and Data Access** as well as Input Monitoring.
+- Expand the permission diagnostics, remove or disable a grant, and refresh
+  the setup status. Record the CG listen/post, AX, and IOHID results before and
+  after a full quit/relaunch. A denied required Core Graphics operation blocks
+  control even when another permission remains allowed.
 - Control cannot begin while a required permission is missing.
 - The optional notification request is presented only after the three required
   setup items; granting or denying it does not grant remote control.
 
 ## 4. Discovery and pairing
+
+Build 101 Local Network and signing acceptance (two Macs):
+
+1. Disable MacKVM in Privacy & Security > Local Network and relaunch it. With
+   no peer available, check within about five seconds that **Nearby devices**
+   shows the blocked guidance and Settings button rather than **Searching…**.
+   The setup row must also show blocked when a policy denial is reported.
+2. Deny access during a pairing attempt. Confirm pairing guidance names Local
+   Network rather than showing only the generic firewall paragraph.
+3. Allow access again. Wait for automatic recovery before trying a relaunch;
+   record whether discovery and pairing recover, including any failure.
+4. Upgrade from 1.101.01 and copy support information. Check binary, Team ID,
+   signing identifier, designated requirement, certificate fingerprint, and
+   per-field comparisons. Newly introduced fields must report unknown when no
+   previous observation exists. Compare a second fully recorded build to test
+   continuity; these comparisons alone do not establish the cause of a lost
+   privacy grant. Label ad-hoc observations separately.
+5. At any failure, save the status text and the output of:
+
+   ```sh
+   log show --last 15m --info --predicate 'process == "MacKVM" AND category == "network-services"'
+   ```
+
+Local Network recovery acceptance (requires real System Settings changes):
+
+- With no peer running, disable MacKVM's Local Network access. Capture the
+  browser/listener state and raw error domain/code. Confirm the blocked message
+  only when the operation reports an explicit policy denial; a timeout or an
+  unrelated network error must not be labelled a privacy denial.
+- Re-enable access without quitting MacKVM. Confirm discovery/advertising
+  recover automatically, including with all MacKVM windows closed. Repeat the
+  disable/enable cycle; quit while blocked and confirm retries stop.
+- Upgrade from a previously reviewed build. Confirm the new build discards the
+  old acknowledgement, starts a fresh network verification, and preserves
+  pairing credentials. Relaunch the same build and check that it does not
+  repeatedly apply the upgrade migration.
+- Copy support information before and after the upgrade and denial. Verify
+  build, Local Network state, last discovery/advertising errors, and current
+  and previous cdhash/Team ID are included. A cdhash change is expected when
+  the executable changes and does not itself mean the signing team changed.
+- Record the actual DNS-SD policy error from the failing operation. SDK
+  constants and injected tests alone do not count as this runtime evidence.
 
 1. Confirm each peer appears under **Nearby devices**.
 2. Press **Pair** on one Mac.
@@ -462,8 +518,11 @@ Expected:
 - The receiving Mac can stop a live session without disconnecting or quitting;
   both held keys and mouse buttons are released before the peer is notified.
 - Keyboard and mouse return before any monitor-switch result is assumed.
-- On quit during receiver-side control, injected input is released and the
-  monitor finishes on this Mac's local input, never on the remote route.
+- On quit during receiver-side control, injected input is released and an
+  app-managed display route returns to the original controlling Mac, not the
+  quitting receiver. Reverse the controlling/receiving roles and repeat.
+- On quit from the controlling Mac, an app-managed display route returns to
+  that controlling Mac. A manual display route must not acquire a new DDC switch.
 - The M5 Pro attempts the correct USB-C/HDMI route; otherwise status identifies
   the exact OSD input to choose.
 - Quit waits for the final DDC attempt (at most about five seconds).
@@ -590,8 +649,10 @@ those tests do not replace this OS-level acceptance.
    app-scoped TCC reset are listed. App, data, and permissions must not change.
    With MacKVM running, confirm the script refuses cleanup without mutation.
 3. Run app-only uninstall without `--purge`, then reinstall the same test
-   build. Confirm the UUID/fingerprint, saved pairings/settings, and previously
-   granted permissions are preserved. Quit again before continuing.
+   build. Confirm the UUID/fingerprint, saved pairings/settings, and TCC
+   records are unchanged. Separately record whether macOS grants the current
+   app access; retained records alone do not guarantee authorization. Quit
+   again before continuing.
 4. Start an interactive purge and decline the `DELETE` confirmation; confirm
    nothing changed. Then deliberately confirm the purge. Use `--yes` only for
    a controlled unattended test. Check every reported result and verify the

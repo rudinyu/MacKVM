@@ -43,10 +43,10 @@
 <body>
   <main>
     <header>
-      <div class="badge">MacKVM 1.101.01 (build 96)</div>
+      <div class="badge">MacKVM 1.102.04 (build 101)</div>
       <h1>MacKVM User Manual</h1>
       <p class="lede">A macOS app with a KVM menu-bar entry and full control window for sharing one keyboard, mouse, and trackpad, plus an optional BenQ MA270U display, between two MacBook Pro computers.</p>
-      <p>This manual describes source version 1.101.01 (build 96). This packaging-only update does not change the app version or build. Distribution uses a Developer ID Installer-signed PKG inside a separately notarized DMG; no release artifact has been generated or published.</p>
+      <p>This manual describes source version 1.102.04 (build 101). The default distribution flow signs and notarizes the app with Developer ID Application, staples it, then places it directly in a separately notarized DMG. Local test artifacts and their notarization results are separate from GitHub publication.</p>
       <p><a href="USER_MANUAL.zh-TW.html" lang="zh-Hant">繁體中文版</a> · <a href="USER_MANUAL.md">Markdown version</a></p>
     </header>
 
@@ -79,33 +79,33 @@
         <li>Install and run MacKVM on both Macs.</li>
         <li>An external display is optional for pairing and remote input; it is needed only for DDC switching and cross-display pointer mapping.</li>
       </ul>
-      <div class="notice"><strong>First launch:</strong> local builds without a signing identity use an ad-hoc signature; distribution PKGs and DMGs use Developer ID signing and Apple notarization. If macOS blocks a local test build, right-click <code>MacKVM.app</code> in Finder, choose <strong>Open</strong>, and confirm.</div>
+      <div class="notice"><strong>First launch:</strong> local builds without a signing identity use an ad-hoc signature; the app and DMG for direct distribution use Developer ID signing and Apple notarization. If macOS blocks a local test build, right-click <code>MacKVM.app</code> in Finder, choose <strong>Open</strong>, and confirm.</div>
       <p>Automatic DDC/CI keeps the selected display pipeline awake while the monitor is detected or its route is confirmed remote. An absent monitor without a confirmed remote route releases the idle-sleep assertion. Remote-route unplug and manual OSD changes are still ambiguous; disable automatic DDC/CI or quit to release the lease.</p>
     </section>
 
     <section id="install">
       <h2>2. Install and launch</h2>
       <ol>
-        <li>For a normal distribution install, open the release DMG and double-click <code>MacKVM.pkg</code>. macOS Installer places the app in <code>/Applications</code>.</li>
+        <li>For a normal distribution install, open the release DMG and double-click <code>Install MacKVM.command</code>, or drag <code>MacKVM.app</code> onto the Applications shortcut. The helper validates and copies the app to <code>/Applications</code>.</li>
         <li>Open it. MacKVM appears in the Dock with a full control window and also provides a KVM/display-sharing icon in the menu bar.</li>
         <li>Open either the Dock window or the menu-bar icon to access controls.</li>
         <li>Optionally enable <strong>Launch MacKVM at Login</strong>.</li>
         <li>Login-item startup keeps the full window hidden so it does not steal focus; use the menu-bar icon or Dock to reopen it.</li>
       </ol>
-      <p>The DMG contains <code>MacKVM.pkg</code> and bilingual installation guides only; it has no loose app bundle or Finder-executable <code>.command</code> files. Build local test apps on the M5 Pro when needed:</p>
+      <p>The app-only DMG contains <code>MacKVM.app</code>, an Applications shortcut, executable <code>Install MacKVM.command</code> and <code>Uninstall MacKVM.command</code>, the shared helper scripts, and bilingual install and uninstall guides. It contains no PKG. Build local test apps on the M5 Pro when needed:</p>
       <pre><code>./scripts/build-app.sh --arch arm64
 ./scripts/build-app.sh --arch x86_64</code></pre>
       <p>Create and verify a DMG:</p>
       <pre><code>./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist &amp;&amp; shasum -a 256 -c MacKVM-1.101.01-universal.dmg.sha256)</code></pre>
-      <p>The local-testing app is ad-hoc signed and its PKG is unsigned. The package and DMG each produce a portable SHA-256 sidecar. Distribution requires Developer ID Application signing for the app, Developer ID Installer signing for the PKG, and Apple notarization of the PKG and containing DMG.</p>
+(cd dist &amp;&amp; shasum -a 256 -c MacKVM-1.102.04-universal.dmg.sha256)</code></pre>
+      <p>The local-testing app is ad-hoc signed and the DMG contains no PKG. Direct distribution uses Developer ID Application signing and Apple notarization for the app and DMG. The install helper preserves local pairing data, keys, preferences, and TCC permission records; it does not reset or clear permissions. Preserved records do not guarantee that macOS authorizes the current app, so review System Settings if access is unavailable.</p>
       <p>For direct distribution outside the Mac App Store, create a notarytool Keychain profile once and add its name plus your Developer ID identity to <code>~/.config/codex/notarization.env</code> (mode <code>0600</code>). Complete API-key settings are also supported. The release script reads these shared settings by default; command-line values remain available as overrides.</p>
       <pre><code>xcrun notarytool store-credentials "mackvm-notary" \
   --apple-id "YOUR_APPLE_ID" \
   --team-id "YOUR_TEAM_ID"
 ./scripts/package-notarized-dmg.sh --arch universal</code></pre>
-      <p>The release script signs the standalone PKG with Developer ID Installer, submits, staples, and verifies that package first, then embeds the same stapled package in the separately signed and notarized DMG. Each artifact has its own checksum and submission metadata.</p>
+      <p>The release script submits a ZIP of the Developer ID-signed app to Apple, staples and verifies the app bundle, then places it directly in the separately signed and notarized DMG. The DMG has its own checksum and submission metadata; app submission metadata is saved in <code>dist/</code>.</p>
     </section>
 
     <section id="input">
@@ -155,7 +155,7 @@
 
     <section id="permissions">
       <h2>6. macOS permissions</h2>
-      <p>Complete <strong>Local Network</strong>, <strong>Input Monitoring</strong>, and <strong>Accessibility</strong> in that order on both Macs.</p>
+      <p>Review <strong>Local Network</strong> and check input access on both Macs. On macOS 27, the privacy page called Accessibility on earlier versions is named <strong>Device Control and Data Access</strong>. A broader grant can provide keyboard access without a separate Input Monitoring entry. Expand MacKVM’s permission diagnostics to see the independent API results; Local Network review does not verify authorization.</p>
       <ol>
         <li>Open the menu-bar item and select <strong>Enable Local Network</strong>.</li>
         <li>Respond to the macOS prompt, then select <strong>I handled the macOS prompt</strong>.</li>
@@ -213,7 +213,7 @@
         <li>With the one-way external USB topology, verify both Macs can request control from their local keyboard, mouse, and trackpad, and that either Mac can receive it.</li>
         <li>If using a physical USB switch, verify both Macs see the devices before testing bidirectional control.</li>
         <li>Watch the MA270U OSD while testing USB-C and HDMI switching. Record DDC diagnostics and test manual OSD fallback.</li>
-        <li>During control test Return keyboard, mouse, and trackpad to [M5 Mac], the emergency shortcut, network unplug/reconnect, and quitting; no key, mouse button, or trackpad gesture state may remain stuck.</li>
+        <li>During control test Return keyboard, mouse, and trackpad to [M5 Mac], the emergency shortcut, network unplug/reconnect, and quitting; no key, mouse button, or trackpad gesture state may remain stuck. Quit returns an app-managed display route to the original controller, identified by the session role, before exiting. Manual display routes stay unchanged.</li>
       </ol>
     </section>
 
@@ -233,8 +233,8 @@
 
     <section id="uninstall">
       <h2>12. Uninstall and reset permissions</h2>
-      <p>For a normal uninstall, quit MacKVM, move <code>MacKVM.app</code> from <strong>Applications</strong> to the Trash in Finder, and remove it from <strong>System Settings &gt; General &gt; Login Items</strong> if launch at login was enabled. This leaves user data and privacy permissions intact.</p>
-      <p><code>scripts/uninstall-app.sh</code> is an advanced repository/CLI tool only and is not shipped in the DMG. Quit MacKVM first; run it from the repository root as the signed-in user, not with <code>sudo</code>.</p>
+      <p>For a normal uninstall, quit MacKVM and double-click <code>Uninstall MacKVM.command</code>, or move <code>MacKVM.app</code> from <strong>Applications</strong> to the Trash in Finder. Remove it from <strong>System Settings &gt; General &gt; Login Items</strong> if launch at login was enabled. This removes only the app and leaves local data and TCC records unchanged.</p>
+      <p>The DMG includes the shared <code>scripts/uninstall-app.sh</code> helper through <code>Uninstall MacKVM.command</code>. Quit MacKVM first; run purge commands from the repository or mounted DMG root as the signed-in user, not with <code>sudo</code>.</p>
       <pre><code>./scripts/uninstall-app.sh --purge --dry-run
 ./scripts/uninstall-app.sh --purge</code></pre>
       <p>The first command only previews. The second asks for confirmation before deleting the app, this user's preferences, pairing data and identity key, and requesting an app-scoped reset of resettable privacy permissions, including Accessibility and Input Monitoring.</p>
@@ -244,7 +244,7 @@
     </section>
 
     <footer>
-      <p>MacKVM User Manual · Source version 1.101.01 (build 96) · Updated 2026-10-12 · Distribution installers require Developer ID signature and Apple notarization verification.</p>
+      <p>MacKVM User Manual · Source version 1.102.04 (build 101) · Updated 2026-10-22 · Distribution apps and DMGs require Developer ID signature and Apple notarization verification.</p>
     </footer>
   </main>
 </body>

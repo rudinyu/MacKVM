@@ -6,10 +6,9 @@ This guide installs MacKVM on the target two-Mac setup: a 14-inch Apple
 Silicon M5 Pro MacBook Pro connected to a BenQ MA270U over USB-C, and a 2019
 16-inch Intel MacBook Pro connected over HDMI.
 
-Source version: **1.101.01 (build 96)**. This packaging-only update changes the
-distribution flow, not the app version. Packaging commands below describe
-building this source, not a GitHub-published installer; no release artifact
-has been generated or published.
+Source version: **1.102.04 (build 101)**. These instructions describe packaging this
+source checkout; they do not identify whether a particular artifact has been
+published on GitHub.
 
 ## Requirements
 
@@ -114,25 +113,28 @@ must be confirmed with the scan. See the [diagnostic tool guide](Tools/DDCDiagno
 and the [source](Tools/DDCDiagnostic/ddc-diagnostic.m). Ctrl-C/SIGTERM stops
 the candidate loop and still attempts to restore the starting input.
 
-Create and verify a universal PKG and DMG for local testing:
+Create an app-only universal DMG for local testing:
 
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh \
   --app dist/universal/MacKVM.app \
   --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.101.01-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.102.04-universal.dmg.sha256)
 ```
 
-Ad-hoc signing and an unsigned package are suitable only for local testing.
-For direct distribution outside the Mac App Store, use the separate notarized
-release script. Create a notarytool Keychain profile once; the command prompts
-for an app-specific password. The release script reads
-`MACOS_SIGNING_IDENTITY` and `MACOS_NOTARY_PROFILE` from
-`~/.config/codex/notarization.env` (mode `0600`); complete API-key settings are
-also supported. By default it derives the matching Developer ID Installer
-identity from the app identity; use `--installer-sign` if a different valid
-Installer certificate is needed. `--sign`, `--keychain-profile`, and `--auth`
+The local-testing app is ad-hoc signed. The DMG contains `MacKVM.app`, an
+Applications shortcut, executable `Install MacKVM.command` and
+`Uninstall MacKVM.command` helpers, the helper scripts, and separate bilingual
+installation and uninstallation guides. No PKG is created. Ad-hoc signatures
+are suitable for local testing; use the notarized release command for direct
+distribution outside the Mac App Store.
+
+Create a notarytool Keychain profile once; the command prompts for an
+app-specific password. The release script reads `MACOS_SIGNING_IDENTITY` and
+`MACOS_NOTARY_PROFILE` from `~/.config/codex/notarization.env` (mode `0600`);
+complete API-key settings are also supported. The default app-only path needs a
+Developer ID Application identity. `--sign`, `--keychain-profile`, and `--auth`
 remain available as explicit overrides.
 
 ```sh
@@ -143,36 +145,58 @@ xcrun notarytool store-credentials "mackvm-notary" \
 ./scripts/package-notarized-dmg.sh --arch universal
 ```
 
-The script signs the app and builds a Developer ID Installer-signed PKG. It
-submits the standalone PKG to Apple first, staples it, then verifies its
-signature, Gatekeeper install assessment, and ticket before writing the PKG
-checksum. Only then does it compose the DMG from that exact stapled package,
-sign the DMG, and separately submit, staple, and verify the DMG. Each artifact
-has its own checksum and submission metadata; log retrieval is optional and
-does not block stapling. No signing, notarization, or Keychain credentials
-belong in this repository.
+The default release path signs the app with Developer ID Application, submits
+the app to Apple, staples and verifies its ticket, then places that stapled app
+directly in the DMG. It separately signs, submits, staples, and verifies the
+DMG. The DMG has its own checksum and submission metadata; app submission
+metadata is saved in `dist/` beside the DMG. Use `--timeout` to bound each wait
+for Apple; an optional submission log never blocks stapling. Pass `--pkg` only to
+opt into the legacy Installer-package layout, which also requires a separate
+Developer ID Installer identity. No signing, notarization, or Keychain
+credentials belong in this repository.
 
 ## Install and grant permissions
 
-The release DMG contains `MacKVM.pkg` and both installation guides. It does not
-contain Finder-executable `.command` files or a duplicate loose app bundle.
-Open the DMG and double-click `MacKVM.pkg`; the signed macOS Installer installs
-MacKVM.app into `/Applications`. The package is independently signed,
-notarized, and stapled; the enclosing DMG has its own signature and ticket.
-Installing or upgrading does not change pairing data, private keys,
-preferences, or macOS privacy permissions. Quit an existing MacKVM process
-before upgrading.
+The app-only release DMG contains the app, an Applications shortcut, both
+Finder command helpers, and bilingual install and uninstall guides. In Finder,
+double-click `Install MacKVM.command`, or drag `MacKVM.app` onto the
+Applications shortcut. The install helper validates and copies the app to
+`/Applications`. Installing or upgrading preserves pairing data, private keys,
+preferences, and TCC permission records; the helper does not reset or clear
+permissions. Preserved records do not guarantee that macOS authorizes the
+current app, so review System Settings if access is unavailable. Quit an
+existing MacKVM process before upgrading.
 
-For a normal manual uninstall, quit MacKVM, open **Applications** in Finder,
-move `MacKVM.app` to the Trash, then remove MacKVM from **System Settings >
-General > Login Items** if **Launch MacKVM at Login** was enabled. This leaves
-user data, pairing keys, preferences, and privacy permissions intact. The
-bilingual guides in the DMG include these non-executable steps. The
-`scripts/uninstall-app.sh` file is a repository/CLI advanced tool only; it is
-not included in the DMG. See [Remove MacKVM and saved data](#remove-mackvm-and-saved-data)
-for its optional purge mode and remaining manual steps.
+For ordinary removal, quit MacKVM and double-click `Uninstall MacKVM.command`,
+or move `MacKVM.app` from Applications to the Trash. This removes only the app
+and preserves user data, trust, preferences, and TCC records. If **Launch MacKVM at
+Login** was enabled, remove MacKVM from **System Settings > General > Login
+Items**. The DMG includes [UNINSTALL.md](UNINSTALL.md) and
+[UNINSTALL.zh-TW.md](UNINSTALL.zh-TW.md) for these steps and the optional purge.
 
 After installation, open MacKVM from `/Applications`.
+
+On macOS 27, the privacy permission previously labelled **Accessibility** is
+labelled **Device Control and Data Access**. This is inside **Privacy & Security**;
+the separate Accessibility category in the System Settings sidebar contains
+assistive features and is not the app permission page. The broader permission
+can also allow keyboard monitoring, so an absent entry in the Input Monitoring
+list alone does not establish that the running app cannot listen to input.
+Check MacKVM's reported API results as well as the relevant system settings.
+
+While a MacKVM window or menu is visible, input checks refresh every two seconds,
+including while System Settings is in front. The last-checked time shows when
+those APIs were queried. After changing Local Network settings, return to
+MacKVM or select **Check Local Network Access** to test a fresh connection to
+a nearby device. A successful network test verifies that operation; a timeout
+can also mean the other device is offline or blocked by a firewall. With no
+nearby device, access cannot be confirmed from a peer connection.
+
+Use a Developer ID-signed release when upgrading an installed release. An
+ad-hoc development build is not an equivalent signing identity. Keep the app at
+`/Applications/MacKVM.app`; do not reset privacy permissions or purge app data
+as a routine upgrade step. macOS owns the grant decision, so retaining the
+signing identity and records cannot force an existing or revoked grant to apply.
 
 1. Select **Enable Local Network**, respond to the macOS prompt, then select
    **I handled the macOS prompt**.
@@ -194,15 +218,16 @@ Dock when needed.
 
 ## Remove MacKVM and saved data
 
-The `scripts/uninstall-app.sh` repository/CLI advanced tool can remove MacKVM
-and this macOS user's saved data. It is not shipped in release DMGs; those
-provide the manual Finder uninstall above. Historical build 94 DMGs included an
-app-only helper. This does not uninstall WindowsKVM or erase another user's
-data.
+The DMG includes `Uninstall MacKVM.command` for app-only removal and preserves
+saved data by default. The shared `scripts/uninstall-app.sh` helper also has an
+explicit destructive `--purge` mode for this macOS user's saved data. Read
+[UNINSTALL.md](UNINSTALL.md) before using it. This does not uninstall WindowsKVM
+or erase another user's data.
 
 1. Turn off **Launch MacKVM at Login**, if enabled, and quit every running copy
    of MacKVM. The script refuses to purge while MacKVM is running.
-2. In Terminal, from the repository root, preview the exact actions:
+2. In Terminal, change to the mounted image's root folder or the repository
+   root, then preview the exact actions:
 
    ```sh
    ./scripts/uninstall-app.sh --purge --dry-run

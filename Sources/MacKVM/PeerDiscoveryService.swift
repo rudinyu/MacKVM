@@ -3,6 +3,7 @@ import CryptoKit
 import Foundation
 import MacKVMCore
 import Network
+import OSLog
 
 struct DiscoveredPeer: Identifiable {
     let id: String
@@ -72,6 +73,290 @@ enum PairingActivity: Equatable {
         case .idle, .retryAvailable:
             return false
         }
+    }
+}
+
+/// Result of a user-requested, one-shot Local Network connectivity check.
+/// `.reachable` proves that this endpoint accepted a fresh TCP connection; it
+/// does not claim that macOS granted a global permission state.
+enum LocalNetworkCheckResult: Equatable {
+    case reachable
+    case blocked
+    case unconfirmed
+    case busy
+    case noPeer
+    case unavailable
+}
+
+enum LocalNetworkCheckDecision: Equatable {
+    case wait
+    case finish(LocalNetworkCheckResult)
+}
+
+enum NetworkServiceComponent: String, CaseIterable, Equatable, Hashable, Sendable {
+    case browser
+    case listener
+}
+
+struct NetworkServiceErrorDiagnostic: Equatable, Sendable {
+    let component: NetworkServiceComponent
+    let state: String
+    let domain: String
+    let code: Int
+
+    static func capture(
+        component: NetworkServiceComponent,
+        state: String,
+        error: Error
+    ) -> Self {
+        let rawError = error as NSError
+        let rawCode: Int
+        if let networkError = error as? NWError,
+           case let .dns(dnsServiceError) = networkError {
+            // NWError's NSError bridge does not preserve DNSServiceErrorType
+            // on every supported macOS version. Read the payload directly.
+            rawCode = Int(dnsServiceError)
+        } else {
+            rawCode = rawError.code
+        }
+        return Self(
+            component: component,
+            state: state,
+            domain: rawError.domain,
+            code: rawCode
+        )
+    }
+
+    var supportDescription: String {
+        "state=\(state) domain=\(domain) code=\(code)"
+    }
+}
+
+enum NetworkServiceStatePolicy {
+    /// Network.framework carries DNS-SD failures as `NWError.dns`. Compare
+    /// the SDK constant directly so generic waiting errors never imply a
+    /// Local Network denial.
+    static func isLocalNetworkPolicyDenied(_ error: NWError) -> Bool {
+        guard case let .dns(dnsError) = error else { return false }
+        return dnsError == DNSServiceErrorType(kDNSServiceErr_PolicyDenied)
+    }
+
+    static func isLocalNetworkAccessDenied(
+        error: NWError,
+        unsatisfiedReason: NWPath.UnsatisfiedReason?
+    ) -> Bool {
+        unsatisfiedReason == .localNetworkDenied
+            || isLocalNetworkPolicyDenied(error)
+    }
+}
+
+enum LocalNetworkAccessBlockedPolicy {
+    static func isBlocked(by sources: Bool...) -> Bool {
+        sources.contains(true)
+    }
+}
+
+enum LocalNetworkRecoveryGuidance {
+    static let localizationKey =
+        "Local Network access is blocked. Allow MacKVM in Local Network settings and wait for the automatic retry. If it still fails, quit and reopen MacKVM."
+
+    static var localizedMessage: String {
+        NSLocalizedString(
+            localizationKey,
+            comment: "Local Network access recovery guidance"
+        )
+    }
+}
+
+enum PairingProgressGuidance: Equatable {
+    case localNetwork
+    case firewall
+
+    static func resolve(localNetworkAccessBlocked: Bool) -> Self {
+        localNetworkAccessBlocked ? .localNetwork : .firewall
+    }
+}
+
+struct PairingTransportLocalNetworkState {
+    private(set) var deniedRequestID: UUID?
+
+    var isBlocked: Bool { deniedRequestID != nil }
+
+    mutating func recordDenial(for requestID: UUID) {
+        deniedRequestID = requestID
+    }
+
+    /// A ready callback may clear a previous denial only when its request is
+    /// still the active outbound transport. The service also checks NWConnection
+    /// identity and the captured pairing status context before calling this.
+    @discardableResult
+    mutating func recovered(
+        by callbackRequestID: UUID,
+        currentRequestID: UUID?
+    ) -> Bool {
+        guard callbackRequestID == currentRequestID, isBlocked else {
+            return false
+        }
+        deniedRequestID = nil
+        return true
+    }
+
+    @discardableResult
+    mutating func recoveredFromInboundReady(
+        connectionIsTracked: Bool
+    ) -> Bool {
+        guard connectionIsTracked, isBlocked else { return false }
+        deniedRequestID = nil
+        return true
+    }
+
+    @discardableResult
+    mutating func recoveredAfterNetworkServicesReady() -> Bool {
+        guard isBlocked else { return false }
+        deniedRequestID = nil
+        return true
+    }
+
+    mutating func stop() {
+        deniedRequestID = nil
+    }
+}
+
+enum NetworkServiceReadyStatusPolicy {
+    static func shouldPublishListenerReady(hasBlockedComponents: Bool) -> Bool {
+        !hasBlockedComponents
+    }
+
+    static func shouldPublishBrowserRecovered(
+        recoveredFromPolicyDenial: Bool,
+        recoveredAfterGenericFailure: Bool,
+        hasBlockedComponents: Bool
+    ) -> Bool {
+        !hasBlockedComponents
+            && (recoveredFromPolicyDenial || recoveredAfterGenericFailure)
+    }
+}
+
+/// Pure retry state for DNS-SD policy denials. Each service owns its own
+/// blocked/recovery lifecycle, and a `.ready` from a service clears its block
+/// only after this state has authorized a new recovery operation for it.
+struct BlockedNetworkRecoveryState {
+    static let retryInterval: TimeInterval = 4
+
+    private(set) var blockedComponents = Set<NetworkServiceComponent>()
+    private(set) var recoveryOperationsAwaitingReady =
+        Set<NetworkServiceComponent>()
+
+    var isBlocked: Bool { !blockedComponents.isEmpty }
+
+    var hasRetryableComponents: Bool { isBlocked }
+
+    mutating func recordPolicyDenial(
+        for component: NetworkServiceComponent
+    ) {
+        blockedComponents.insert(component)
+        recoveryOperationsAwaitingReady.remove(component)
+    }
+
+    mutating func beginRecoveryAttempts(
+        networkServicesStarted: Bool,
+        pairingIsInFlight: Bool
+    ) -> [NetworkServiceComponent] {
+        guard networkServicesStarted, !pairingIsInFlight else { return [] }
+        var started: [NetworkServiceComponent] = []
+        for component in NetworkServiceComponent.allCases
+        where blockedComponents.contains(component) {
+            recoveryOperationsAwaitingReady.insert(component)
+            started.append(component)
+        }
+        return started
+    }
+
+    @discardableResult
+    mutating func recovered(
+        component: NetworkServiceComponent
+    ) -> Bool {
+        guard recoveryOperationsAwaitingReady.remove(component) != nil else {
+            return false
+        }
+        blockedComponents.remove(component)
+        return true
+    }
+
+    mutating func stop() {
+        blockedComponents.removeAll()
+        recoveryOperationsAwaitingReady.removeAll()
+    }
+}
+
+enum LocalNetworkCheckPolicy {
+    static func decision(
+        for state: NWConnection.State,
+        unsatisfiedReason: NWPath.UnsatisfiedReason?
+    ) -> LocalNetworkCheckDecision {
+        switch state {
+        case .ready:
+            return .finish(.reachable)
+        case .waiting:
+            return unsatisfiedReason == .localNetworkDenied
+                ? .finish(.blocked)
+                : .wait
+        case .failed:
+            return unsatisfiedReason == .localNetworkDenied
+                ? .finish(.blocked)
+                : .finish(.unconfirmed)
+        case .cancelled:
+            return .finish(.unconfirmed)
+        case .setup, .preparing:
+            return .wait
+        @unknown default:
+            return .wait
+        }
+    }
+
+    /// A timer expiry by itself is not evidence of a Local Network denial,
+    /// even if the last path snapshot was unsatisfied.
+    static func timeoutResult() -> LocalNetworkCheckResult {
+        .unconfirmed
+    }
+
+    static func acceptsProbeCallback(
+        callbackGeneration: UInt64,
+        currentGeneration: UInt64
+    ) -> Bool {
+        callbackGeneration == currentGeneration
+    }
+
+    static func hasPairingInFlight(
+        activeOutboundRequest: Bool,
+        trackedRequestCount: Int,
+        incomingConnectionCount: Int,
+        pendingConfirmation: Bool,
+        persistenceJobCount: Int,
+        hasScheduledRetry: Bool
+    ) -> Bool {
+        activeOutboundRequest
+            || trackedRequestCount > 0
+            || incomingConnectionCount > 0
+            || pendingConfirmation
+            || persistenceJobCount > 0
+            || hasScheduledRetry
+    }
+
+    static func preferredPeerID(
+        requestedPeerID: UUID?,
+        pairedPeerIDs: Set<UUID>,
+        availablePeerIDs: [UUID]
+    ) -> UUID? {
+        let available = Set(availablePeerIDs)
+        if let requestedPeerID {
+            return available.contains(requestedPeerID) ? requestedPeerID : nil
+        }
+        return availablePeerIDs
+            .filter(pairedPeerIDs.contains)
+            .sorted { $0.uuidString < $1.uuidString }
+            .first
+            ?? availablePeerIDs.sorted { $0.uuidString < $1.uuidString }.first
     }
 }
 
@@ -194,6 +479,11 @@ enum PairingTimeoutPolicy {
 }
 
 final class PeerDiscoveryService: ObservableObject {
+    private static let networkLogger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "app.mackvm.MacKVM",
+        category: "network-services"
+    )
+
     @Published private(set) var peers: [DiscoveredPeer] = []
     @Published private(set) var pendingRequests: [PendingPairingRequest] = []
     @Published private(set) var pairedPeerIDs: Set<UUID>
@@ -204,6 +494,9 @@ final class PeerDiscoveryService: ObservableObject {
         PendingPairingConfirmation?
     @Published private(set) var pairingActivity: PairingActivity = .idle
     @Published private(set) var pairingRetryPeer: DiscoveredPeer?
+    @Published private(set) var localNetworkAccessBlocked = false
+    @Published private(set) var lastBrowserError: NetworkServiceErrorDiagnostic?
+    @Published private(set) var lastListenerError: NetworkServiceErrorDiagnostic?
 
     /// Called after both sides have recorded the signed pairing completion.
     /// The app wires this to the secure-session connector so a user does not
@@ -228,6 +521,8 @@ final class PeerDiscoveryService: ObservableObject {
     private static let maximumUnpairedPendingRequests = 1
     private static let maximumUnauthenticatedConnections = 16
     private static let maximumPairingMessagesPerReceive = 16
+    private static let localNetworkCheckTimeout: TimeInterval = 7
+    private static let localNetworkDiscoveryWait: TimeInterval = 2
     private static let maximumWireBufferLength =
         PairingWireCodec.maximumFramePayloadLength + 4
     private let queue = DispatchQueue(label: "app.mackvm.network")
@@ -241,9 +536,16 @@ final class PeerDiscoveryService: ObservableObject {
     private var browser: NWBrowser?
     private var listenerIsReady = false
     private var browserIsReady = false
+    private var networkServicesStarted = false
+    private var discoveredPeersByID: [UUID: DiscoveredPeer] = [:]
     private var networkRecoveryWorkItem: DispatchWorkItem?
     private var networkRecoveryAttempt = 0
     private var networkRecoveryGeneration: UInt64 = 0
+    private var blockedNetworkRecoveryWorkItem: DispatchWorkItem?
+    private var blockedNetworkRecoveryGeneration: UInt64 = 0
+    private var blockedNetworkRecoveryState = BlockedNetworkRecoveryState()
+    private var pairingTransportLocalNetworkState =
+        PairingTransportLocalNetworkState()
     private var requestConnections: [UUID: NWConnection] = [:]
     private var unauthenticatedConnections: [ObjectIdentifier: NWConnection] = [:]
     private var requestMessages: [UUID: PairingEnvelope] = [:]
@@ -329,6 +631,15 @@ final class PeerDiscoveryService: ObservableObject {
     private var pendingRetryPeer: DiscoveredPeer?
     private var pendingRetryGeneration: UInt64 = 0
     private var pendingRetryWorkItem: DispatchWorkItem?
+    private var localNetworkProbeGeneration: UInt64 = 0
+    private var localNetworkProbeConnection: NWConnection?
+    private var localNetworkProbeTimeout: DispatchWorkItem?
+    private var localNetworkProbeCompletion:
+        ((LocalNetworkCheckResult) -> Void)?
+    private var localNetworkDiscoveryTimeout: DispatchWorkItem?
+    private var localNetworkDiscoveryCompletion:
+        ((LocalNetworkCheckResult) -> Void)?
+    private var localNetworkDiscoveryPreferredPeerID: UUID?
     private var receiveBuffers: [ObjectIdentifier: Data] = [:]
     private var connectionTimeouts: [ObjectIdentifier: DispatchWorkItem] = [:]
     private var admissionLimiter =
@@ -540,11 +851,13 @@ final class PeerDiscoveryService: ObservableObject {
     func start() {
         queue.async { [weak self] in
             guard let self else { return }
+            self.networkServicesStarted = true
             // Repeated bootstrap notifications are harmless. Do not advance
             // the lifecycle epoch when both Bonjour services are already
             // running; doing so would invalidate an in-flight pairing job
             // even though there is nothing to restart.
             guard self.listener == nil || self.browser == nil else {
+                self.scheduleBlockedNetworkRecovery()
                 return
             }
             self.advanceLifecycleEpoch()
@@ -553,9 +866,77 @@ final class PeerDiscoveryService: ObservableObject {
         }
     }
 
+    /// Performs one bounded TCP reachability check against a peer's existing
+    /// Bonjour endpoint. It sends no pairing or session data and cancels as
+    /// soon as TCP becomes ready. A successful probe only proves that this
+    /// peer endpoint was reachable for this attempt.
+    func checkLocalNetworkAccess(
+        preferredPeerID: UUID? = nil,
+        completion: @escaping (LocalNetworkCheckResult) -> Void
+    ) {
+        queue.async { [weak self] in
+            guard let self else {
+                DispatchQueue.main.async { completion(.unavailable) }
+                return
+            }
+
+            // A repeated user action replaces the previous probe. The older
+            // request gets a terminal result, and its callbacks are fenced by
+            // the generation advance in finishLocalNetworkProbe.
+            if let previous = self.localNetworkProbeConnection {
+                self.finishLocalNetworkProbe(
+                    previous,
+                    generation: self.localNetworkProbeGeneration,
+                    result: .unconfirmed
+                )
+            } else if self.localNetworkDiscoveryCompletion != nil {
+                self.finishLocalNetworkDiscoveryWait(
+                    generation: self.localNetworkProbeGeneration,
+                    result: .unconfirmed
+                )
+            }
+
+            guard !self.hasPairingInFlightForNetworkCheck else {
+                self.deliverLocalNetworkCheckResult(.busy, completion: completion)
+                return
+            }
+            guard self.networkServicesStarted else {
+                self.deliverLocalNetworkCheckResult(
+                    .unavailable,
+                    completion: completion
+                )
+                return
+            }
+
+            guard let peer = self.localNetworkCheckPeer(
+                preferredPeerID: preferredPeerID
+            ) else {
+                self.waitForLocalNetworkPeer(
+                    preferredPeerID: preferredPeerID,
+                    completion: completion
+                )
+                return
+            }
+            self.startLocalNetworkProbe(to: peer, completion: completion)
+        }
+    }
+
     func stop() {
         queue.async { [weak self] in
             guard let self else { return }
+            self.networkServicesStarted = false
+            if let probe = self.localNetworkProbeConnection {
+                self.finishLocalNetworkProbe(
+                    probe,
+                    generation: self.localNetworkProbeGeneration,
+                    result: .unavailable
+                )
+            } else if self.localNetworkDiscoveryCompletion != nil {
+                self.finishLocalNetworkDiscoveryWait(
+                    generation: self.localNetworkProbeGeneration,
+                    result: .unavailable
+                )
+            }
             let outstandingPersistenceJobs = Array(
                 self.pairingPersistenceJobs.values
             )
@@ -567,6 +948,11 @@ final class PeerDiscoveryService: ObservableObject {
             self.networkRecoveryWorkItem?.cancel()
             self.networkRecoveryWorkItem = nil
             self.networkRecoveryAttempt = 0
+            self.blockedNetworkRecoveryGeneration &+= 1
+            self.blockedNetworkRecoveryWorkItem?.cancel()
+            self.blockedNetworkRecoveryWorkItem = nil
+            self.blockedNetworkRecoveryState.stop()
+            self.pairingTransportLocalNetworkState.stop()
             self.pendingRetryGeneration &+= 1
             self.pendingRetryWorkItem?.cancel()
             self.pendingRetryWorkItem = nil
@@ -577,6 +963,7 @@ final class PeerDiscoveryService: ObservableObject {
             self.unauthenticatedConnections.values.forEach { $0.cancel() }
             self.listener = nil
             self.browser = nil
+            self.discoveredPeersByID.removeAll()
             self.listenerIsReady = false
             self.browserIsReady = false
             self.requestConnections.removeAll()
@@ -635,6 +1022,7 @@ final class PeerDiscoveryService: ObservableObject {
                 self.pendingPairingConfirmation = nil
                 self.pairingActivity = .idle
                 self.pairingRetryPeer = nil
+                self.localNetworkAccessBlocked = false
                 self.status = "Discovery stopped"
             }
         }
@@ -651,6 +1039,14 @@ final class PeerDiscoveryService: ObservableObject {
         if browser == nil {
             startBrowser()
         }
+    }
+
+    private func refreshBrowserOnQueue() {
+        browser?.cancel()
+        browser = nil
+        discoveredPeersByID.removeAll()
+        browserIsReady = false
+        startBrowser()
     }
 
     private func scheduleNetworkRecovery() {
@@ -672,6 +1068,124 @@ final class PeerDiscoveryService: ObservableObject {
         queue.asyncAfter(deadline: .now() + delay, execute: workItem)
     }
 
+    private func scheduleBlockedNetworkRecovery() {
+        guard networkServicesStarted,
+              blockedNetworkRecoveryState.hasRetryableComponents,
+              blockedNetworkRecoveryWorkItem == nil else {
+            return
+        }
+        blockedNetworkRecoveryGeneration &+= 1
+        let generation = blockedNetworkRecoveryGeneration
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self,
+                  self.blockedNetworkRecoveryGeneration == generation,
+                  self.blockedNetworkRecoveryWorkItem != nil else {
+                return
+            }
+            self.blockedNetworkRecoveryWorkItem = nil
+            guard self.networkServicesStarted else { return }
+
+            let components = self.blockedNetworkRecoveryState
+                .beginRecoveryAttempts(
+                    networkServicesStarted: self.networkServicesStarted,
+                    pairingIsInFlight: self.hasPairingInFlightForNetworkCheck
+                )
+            components.forEach(self.restartBlockedNetworkService)
+            self.scheduleBlockedNetworkRecovery()
+        }
+        blockedNetworkRecoveryWorkItem = workItem
+        queue.asyncAfter(
+            deadline: .now() + BlockedNetworkRecoveryState.retryInterval,
+            execute: workItem
+        )
+    }
+
+    private func restartBlockedNetworkService(
+        _ component: NetworkServiceComponent
+    ) {
+        switch component {
+        case .browser:
+            browser?.cancel()
+            browser = nil
+            browserIsReady = false
+            startBrowser()
+        case .listener:
+            listener?.cancel()
+            listener = nil
+            listenerIsReady = false
+            startListener()
+        }
+    }
+
+    private func cancelGeneralNetworkRecovery() {
+        networkRecoveryGeneration &+= 1
+        networkRecoveryWorkItem?.cancel()
+        networkRecoveryWorkItem = nil
+        networkRecoveryAttempt = 0
+    }
+
+    @discardableResult
+    private func recordNetworkServiceError(
+        component: NetworkServiceComponent,
+        state: String,
+        error: Error
+    ) -> Bool {
+        let diagnostic = NetworkServiceErrorDiagnostic.capture(
+            component: component,
+            state: state,
+            error: error
+        )
+        let isPolicyDenied = (error as? NWError).map {
+            NetworkServiceStatePolicy.isLocalNetworkPolicyDenied($0)
+        } ?? false
+        if isPolicyDenied {
+            blockedNetworkRecoveryState.recordPolicyDenial(for: component)
+            cancelGeneralNetworkRecovery()
+        }
+        let blocked = blockedNetworkRecoveryState.isBlocked
+        let transportBlocked = pairingTransportLocalNetworkState.isBlocked
+        let localNetworkAccessBlocked =
+            LocalNetworkAccessBlockedPolicy.isBlocked(
+                by: blocked,
+                transportBlocked
+            )
+        Self.networkLogger.error(
+            "component=\(component.rawValue, privacy: .public) state=\(state, privacy: .public) errorDomain=\(diagnostic.domain, privacy: .public) errorCode=\(diagnostic.code, privacy: .public) policyDenied=\(isPolicyDenied, privacy: .public)"
+        )
+        publishMain { service in
+            switch component {
+            case .browser:
+                service.lastBrowserError = diagnostic
+            case .listener:
+                service.lastListenerError = diagnostic
+            }
+            service.localNetworkAccessBlocked = localNetworkAccessBlocked
+        }
+        if isPolicyDenied {
+            scheduleBlockedNetworkRecovery()
+        }
+        return isPolicyDenied
+    }
+
+    @discardableResult
+    private func noteBlockedNetworkServiceReady(
+        _ component: NetworkServiceComponent
+    ) -> Bool {
+        guard blockedNetworkRecoveryState.recovered(component: component) else {
+            return false
+        }
+        let stillBlocked = blockedNetworkRecoveryState.isBlocked
+        publishCurrentLocalNetworkAccessBlocked()
+        if !stillBlocked {
+            blockedNetworkRecoveryGeneration &+= 1
+            blockedNetworkRecoveryWorkItem?.cancel()
+            blockedNetworkRecoveryWorkItem = nil
+        } else {
+            scheduleBlockedNetworkRecovery()
+        }
+        return true
+    }
+
     @discardableResult
     private func noteNetworkServiceReady() -> Bool {
         guard Self.areNetworkServicesReady(
@@ -682,6 +1196,10 @@ final class PeerDiscoveryService: ObservableObject {
         ) else {
             return false
         }
+        if pairingTransportLocalNetworkState
+            .recoveredAfterNetworkServicesReady() {
+            publishCurrentLocalNetworkAccessBlocked()
+        }
         let recoveredAfterFailure = networkRecoveryAttempt > 0
             || networkRecoveryWorkItem != nil
         networkRecoveryAttempt = 0
@@ -691,6 +1209,44 @@ final class PeerDiscoveryService: ObservableObject {
         return recoveredAfterFailure
     }
 
+    private var isLocalNetworkAccessBlocked: Bool {
+        LocalNetworkAccessBlockedPolicy.isBlocked(
+            by: blockedNetworkRecoveryState.isBlocked,
+            pairingTransportLocalNetworkState.isBlocked
+        )
+    }
+
+    private func publishCurrentLocalNetworkAccessBlocked() {
+        let isBlocked = isLocalNetworkAccessBlocked
+        publishMain { $0.localNetworkAccessBlocked = isBlocked }
+    }
+
+    private func isCurrentPairingTransport(
+        requestID: UUID,
+        connection: NWConnection,
+        statusContext: PairingStatusContext?
+    ) -> Bool {
+        guard activeOutboundRequestID == requestID,
+              requestConnections[requestID] === connection,
+              let statusContext,
+              let currentContext = pairingStatusContext(for: requestID),
+              statusContext.peerID == currentContext.peerID,
+              statusContext.expectedGeneration
+                == currentContext.expectedGeneration,
+              statusContext.expectedSigningPublicKey
+                == currentContext.expectedSigningPublicKey else {
+            return false
+        }
+        return PairingStatusPublicationPolicy.allows(
+            expectedGeneration: statusContext.expectedGeneration,
+            currentGeneration: registry.generation(for: statusContext.peerID),
+            expectedSigningPublicKey: statusContext.expectedSigningPublicKey,
+            currentSigningPublicKey: registry.publicKey(
+                for: statusContext.peerID
+            )
+        )
+    }
+
     static func areNetworkServicesReady(
         listenerPresent: Bool,
         browserPresent: Bool,
@@ -698,6 +1254,220 @@ final class PeerDiscoveryService: ObservableObject {
         browserReady: Bool
     ) -> Bool {
         listenerPresent && browserPresent && listenerReady && browserReady
+    }
+
+    private var hasPairingInFlightForNetworkCheck: Bool {
+        LocalNetworkCheckPolicy.hasPairingInFlight(
+            activeOutboundRequest: activeOutboundRequestID != nil,
+            trackedRequestCount: requestConnections.count
+                + requestMessages.count,
+            incomingConnectionCount: unauthenticatedConnections.count,
+            pendingConfirmation: pendingPairingConfirmationRequestID != nil,
+            persistenceJobCount: pairingPersistenceJobs.count,
+            hasScheduledRetry: pendingRetryPeer != nil
+                || pendingRetryWorkItem != nil
+        )
+    }
+
+    private func finishLocalNetworkCheckForPairing() {
+        if let connection = localNetworkProbeConnection {
+            finishLocalNetworkProbe(
+                connection,
+                generation: localNetworkProbeGeneration,
+                result: .busy
+            )
+        } else if localNetworkDiscoveryCompletion != nil {
+            finishLocalNetworkDiscoveryWait(
+                generation: localNetworkProbeGeneration,
+                result: .busy
+            )
+        }
+    }
+
+    private func localNetworkCheckPeer(
+        preferredPeerID: UUID?
+    ) -> DiscoveredPeer? {
+        let peerID = LocalNetworkCheckPolicy.preferredPeerID(
+            requestedPeerID: preferredPeerID,
+            pairedPeerIDs: registry.pairedPeerIDs,
+            availablePeerIDs: Array(discoveredPeersByID.keys)
+        )
+        return peerID.flatMap { discoveredPeersByID[$0] }
+    }
+
+    private func waitForLocalNetworkPeer(
+        preferredPeerID: UUID?,
+        completion: @escaping (LocalNetworkCheckResult) -> Void
+    ) {
+        localNetworkProbeGeneration &+= 1
+        let generation = localNetworkProbeGeneration
+        localNetworkDiscoveryPreferredPeerID = preferredPeerID
+        localNetworkDiscoveryCompletion = completion
+
+        // Refresh only idle discovery. A missing component is restarted;
+        // otherwise a fresh browser gets a bounded opportunity to report a
+        // peer after the user changes Local Network settings.
+        if listener == nil || browser == nil {
+            startMissingNetworkServices()
+        } else {
+            refreshBrowserOnQueue()
+        }
+
+        let timeout = DispatchWorkItem { [weak self] in
+            guard let self,
+                  LocalNetworkCheckPolicy.acceptsProbeCallback(
+                      callbackGeneration: generation,
+                      currentGeneration: self.localNetworkProbeGeneration
+                  ),
+                  self.localNetworkDiscoveryCompletion != nil else {
+                return
+            }
+            self.resumeLocalNetworkCheckAfterDiscovery(timeoutExpired: true)
+        }
+        localNetworkDiscoveryTimeout = timeout
+        queue.asyncAfter(
+            deadline: .now() + Self.localNetworkDiscoveryWait,
+            execute: timeout
+        )
+    }
+
+    private func resumeLocalNetworkCheckAfterDiscovery(
+        timeoutExpired: Bool
+    ) {
+        guard let completion = localNetworkDiscoveryCompletion else { return }
+        if hasPairingInFlightForNetworkCheck {
+            finishLocalNetworkDiscoveryWait(
+                generation: localNetworkProbeGeneration,
+                result: .busy
+            )
+            return
+        }
+        if let peer = localNetworkCheckPeer(
+            preferredPeerID: localNetworkDiscoveryPreferredPeerID
+        ) {
+            localNetworkDiscoveryTimeout?.cancel()
+            localNetworkDiscoveryTimeout = nil
+            localNetworkDiscoveryCompletion = nil
+            localNetworkDiscoveryPreferredPeerID = nil
+            startLocalNetworkProbe(to: peer, completion: completion)
+        } else if timeoutExpired {
+            finishLocalNetworkDiscoveryWait(
+                generation: localNetworkProbeGeneration,
+                result: .noPeer
+            )
+        }
+    }
+
+    private func finishLocalNetworkDiscoveryWait(
+        generation: UInt64,
+        result: LocalNetworkCheckResult
+    ) {
+        guard LocalNetworkCheckPolicy.acceptsProbeCallback(
+            callbackGeneration: generation,
+            currentGeneration: localNetworkProbeGeneration
+        ), let completion = localNetworkDiscoveryCompletion else {
+            return
+        }
+        localNetworkProbeGeneration &+= 1
+        localNetworkDiscoveryTimeout?.cancel()
+        localNetworkDiscoveryTimeout = nil
+        localNetworkDiscoveryCompletion = nil
+        localNetworkDiscoveryPreferredPeerID = nil
+        deliverLocalNetworkCheckResult(result, completion: completion)
+    }
+
+    private func startLocalNetworkProbe(
+        to peer: DiscoveredPeer,
+        completion: @escaping (LocalNetworkCheckResult) -> Void
+    ) {
+        localNetworkDiscoveryTimeout?.cancel()
+        localNetworkDiscoveryTimeout = nil
+        localNetworkDiscoveryCompletion = nil
+        localNetworkDiscoveryPreferredPeerID = nil
+        localNetworkProbeGeneration &+= 1
+        let generation = localNetworkProbeGeneration
+        let parameters = NWParameters.tcp
+        parameters.includePeerToPeer = true
+        let connection = NWConnection(to: peer.endpoint, using: parameters)
+        localNetworkProbeConnection = connection
+        localNetworkProbeCompletion = completion
+        connection.stateUpdateHandler = { [weak self, weak connection] state in
+            guard let self, let connection,
+                  LocalNetworkCheckPolicy.acceptsProbeCallback(
+                      callbackGeneration: generation,
+                      currentGeneration: self.localNetworkProbeGeneration
+                  ),
+                  self.localNetworkProbeConnection === connection else {
+                return
+            }
+            let decision = LocalNetworkCheckPolicy.decision(
+                for: state,
+                unsatisfiedReason: connection.currentPath?.unsatisfiedReason
+            )
+            guard case let .finish(result) = decision else { return }
+            self.finishLocalNetworkProbe(
+                connection,
+                generation: generation,
+                result: result
+            )
+        }
+        let timeout = DispatchWorkItem { [weak self, weak connection] in
+            guard let self, let connection,
+                  LocalNetworkCheckPolicy.acceptsProbeCallback(
+                      callbackGeneration: generation,
+                      currentGeneration: self.localNetworkProbeGeneration
+                  ),
+                  self.localNetworkProbeConnection === connection else {
+                return
+            }
+            self.finishLocalNetworkProbe(
+                connection,
+                generation: generation,
+                result: LocalNetworkCheckPolicy.timeoutResult()
+            )
+        }
+        localNetworkProbeTimeout = timeout
+        queue.asyncAfter(
+            deadline: .now() + Self.localNetworkCheckTimeout,
+            execute: timeout
+        )
+        connection.start(queue: queue)
+    }
+
+    private func finishLocalNetworkProbe(
+        _ connection: NWConnection,
+        generation: UInt64,
+        result: LocalNetworkCheckResult
+    ) {
+        guard LocalNetworkCheckPolicy.acceptsProbeCallback(
+            callbackGeneration: generation,
+            currentGeneration: localNetworkProbeGeneration
+        ), localNetworkProbeConnection === connection else {
+            return
+        }
+        localNetworkProbeGeneration &+= 1
+        localNetworkProbeTimeout?.cancel()
+        localNetworkProbeTimeout = nil
+        localNetworkProbeConnection = nil
+        let completion = localNetworkProbeCompletion
+        localNetworkProbeCompletion = nil
+        // No bytes are sent. Clearing the handler and advancing the probe
+        // generation before cancel prevents this intentional close from
+        // publishing a second result.
+        connection.stateUpdateHandler = nil
+        connection.cancel()
+        if let completion {
+            deliverLocalNetworkCheckResult(result, completion: completion)
+        }
+    }
+
+    private func deliverLocalNetworkCheckResult(
+        _ result: LocalNetworkCheckResult,
+        completion: @escaping (LocalNetworkCheckResult) -> Void
+    ) {
+        DispatchQueue.main.async {
+            completion(result)
+        }
     }
 
     func requestPairing(with peer: DiscoveredPeer) {
@@ -792,6 +1562,7 @@ final class PeerDiscoveryService: ObservableObject {
     }
 
     private func requestPairingOnQueue(with peer: DiscoveredPeer) {
+        finishLocalNetworkCheckForPairing()
         guard activeOutboundRequestID == nil else {
             publishStatus("Finish the current pairing request first")
             return
@@ -843,8 +1614,10 @@ final class PeerDiscoveryService: ObservableObject {
             )
         }
         publishStatus(
-            "Connecting to \(peer.name)… If macOS asks about the firewall on "
-                + "the receiving Mac, allow it, then select Retry pairing.",
+            isLocalNetworkAccessBlocked
+                ? LocalNetworkRecoveryGuidance.localizedMessage
+                : "Connecting to \(peer.name)… If macOS asks about the firewall on "
+                    + "the receiving Mac, allow it, then select Retry pairing.",
             context: statusContext
         )
         logPairingPhase(
@@ -858,6 +1631,18 @@ final class PeerDiscoveryService: ObservableObject {
             guard let self, let connection else { return }
             switch state {
             case .ready:
+                if self.isCurrentPairingTransport(
+                    requestID: request.requestID,
+                    connection: connection,
+                    statusContext: statusContext
+                ) {
+                    if self.pairingTransportLocalNetworkState.recovered(
+                        by: request.requestID,
+                        currentRequestID: self.activeOutboundRequestID
+                    ) {
+                        self.publishCurrentLocalNetworkAccessBlocked()
+                    }
+                }
                 self.logPairingPhase(
                     "transport.ready",
                     requestID: request.requestID,
@@ -886,10 +1671,12 @@ final class PeerDiscoveryService: ObservableObject {
                 if !wasPersisted {
                     self.publishRetryAvailable(for: peer)
                     self.publishStatus(
-                        self.pairingTransportFailureMessage(
-                            peerName: peer.name,
-                            detail: error.localizedDescription
-                        ),
+                        self.isLocalNetworkAccessBlocked
+                            ? LocalNetworkRecoveryGuidance.localizedMessage
+                            : self.pairingTransportFailureMessage(
+                                peerName: peer.name,
+                                detail: error.localizedDescription
+                            ),
                         context: statusContext
                     )
                 }
@@ -907,14 +1694,46 @@ final class PeerDiscoveryService: ObservableObject {
                 if wasTracked, !wasPersisted {
                     self.publishRetryAvailable(for: peer)
                     self.publishStatus(
-                        self.pairingTransportFailureMessage(
-                            peerName: peer.name,
-                            detail: "pairing connection canceled"
-                        ),
+                        self.isLocalNetworkAccessBlocked
+                            ? LocalNetworkRecoveryGuidance.localizedMessage
+                            : self.pairingTransportFailureMessage(
+                                peerName: peer.name,
+                                detail: "pairing connection canceled"
+                            ),
                         context: statusContext
                     )
                 }
             case .waiting(let error):
+                guard self.isCurrentPairingTransport(
+                    requestID: request.requestID,
+                    connection: connection,
+                    statusContext: statusContext
+                ) else { return }
+                let unsatisfiedReason = connection.currentPath?.unsatisfiedReason
+                let isLocalNetworkDenied =
+                    NetworkServiceStatePolicy.isLocalNetworkAccessDenied(
+                        error: error,
+                        unsatisfiedReason: unsatisfiedReason
+                    )
+                if isLocalNetworkDenied {
+                    let bridgedError = error as NSError
+                    let errorCode: Int
+                    if case let .dns(dnsError) = error {
+                        errorCode = Int(dnsError)
+                    } else {
+                        errorCode = bridgedError.code
+                    }
+                    let reason = unsatisfiedReason.map {
+                        String(describing: $0)
+                    } ?? "none"
+                    Self.networkLogger.error(
+                        "component=pairing-transport state=waiting request=\(MacKVMLogger.short(request.requestID), privacy: .public) errorDomain=\(bridgedError.domain, privacy: .public) errorCode=\(errorCode, privacy: .public) pathUnsatisfiedReason=\(reason, privacy: .public)"
+                    )
+                    self.pairingTransportLocalNetworkState.recordDenial(
+                        for: request.requestID
+                    )
+                    self.publishCurrentLocalNetworkAccessBlocked()
+                }
                 self.logPairingPhase(
                     "transport.waiting",
                     requestID: request.requestID,
@@ -922,8 +1741,10 @@ final class PeerDiscoveryService: ObservableObject {
                     detail: "role=initiator error=\(error.localizedDescription)"
                 )
                 self.publishStatus(
-                    "Waiting for \(peer.name)… If the receiving Mac shows a "
-                        + "firewall prompt, allow it, then select Retry pairing.",
+                    self.isLocalNetworkAccessBlocked
+                        ? LocalNetworkRecoveryGuidance.localizedMessage
+                        : "Waiting for \(peer.name)… If the receiving Mac shows a "
+                            + "firewall prompt, allow it, then select Retry pairing.",
                     context: statusContext
                 )
             default:
@@ -1251,46 +2072,100 @@ final class PeerDiscoveryService: ObservableObject {
                 switch state {
                 case .ready:
                     self.listenerIsReady = true
+                    _ = self.noteBlockedNetworkServiceReady(.listener)
                     self.noteNetworkServiceReady()
-                    self.publishStatus("Ready on the local network")
+                    if NetworkServiceReadyStatusPolicy
+                        .shouldPublishListenerReady(
+                            hasBlockedComponents:
+                                self.blockedNetworkRecoveryState.isBlocked
+                        ) {
+                        self.publishStatus("Ready on the local network")
+                    }
                 case .failed(let error):
                     self.listenerIsReady = false
-                    let retryPeer = self.activeOutboundPeer()
-                    let hadPairing = self
-                        .cancelUnfinishedPairingsForNetworkFailure()
-                    self.publishStatus(
-                        hadPairing
-                            ? self.pairingNetworkFailureMessage(
-                                detail: error.localizedDescription
-                            )
-                            : "Listening failed: \(error.localizedDescription)"
+                    let policyDenied = self.recordNetworkServiceError(
+                        component: .listener,
+                        state: "failed",
+                        error: error
                     )
-                    if hadPairing, let retryPeer {
-                        self.publishRetryAvailable(for: retryPeer)
+                    if policyDenied {
+                        if !self.hasPairingInFlightForNetworkCheck {
+                            self.publishStatus(
+                                String(localized: "macOS is blocking this local network connection.")
+                            )
+                        }
+                    } else {
+                        let retryPeer = self.activeOutboundPeer()
+                        let hadPairing = self
+                            .cancelUnfinishedPairingsForNetworkFailure()
+                        self.publishStatus(
+                            hadPairing
+                                ? self.pairingNetworkFailureMessage(
+                                    detail: error.localizedDescription
+                                )
+                                : "Listening failed: \(error.localizedDescription)"
+                        )
+                        if hadPairing, let retryPeer {
+                            self.publishRetryAvailable(for: retryPeer)
+                        }
                     }
                     self.listener?.cancel()
                     self.listener = nil
-                    self.scheduleNetworkRecovery()
+                    if !policyDenied {
+                        self.scheduleNetworkRecovery()
+                    }
                 case .waiting(let error):
                     self.listenerIsReady = false
-                    self.publishStatus(
-                        "Incoming pairing is waiting for the local network or "
-                            + "firewall approval: \(error.localizedDescription)"
+                    let policyDenied = self.recordNetworkServiceError(
+                        component: .listener,
+                        state: "waiting",
+                        error: error
                     )
+                    if policyDenied {
+                        if !self.hasPairingInFlightForNetworkCheck {
+                            self.publishStatus(
+                                String(localized: "macOS is blocking this local network connection.")
+                            )
+                        }
+                    } else {
+                        self.publishStatus(
+                            "Incoming pairing is waiting for the local network or "
+                                + "firewall approval: \(error.localizedDescription)"
+                        )
+                    }
                 default:
                     break
                 }
             }
-            listener.newConnectionHandler = { [weak self] connection in
-                self?.accept(connection)
+            listener.newConnectionHandler = { [weak self, weak listener] connection in
+                guard let self, let listener, self.listener === listener else {
+                    connection.cancel()
+                    return
+                }
+                self.accept(connection)
             }
             self.listener = listener
             listener.start(queue: queue)
         } catch {
             listenerIsReady = false
-            _ = cancelUnfinishedPairingsForNetworkFailure()
-            publishStatus("Could not start listener: \(error.localizedDescription)")
-            scheduleNetworkRecovery()
+            let policyDenied = recordNetworkServiceError(
+                component: .listener,
+                state: "start-failed",
+                error: error
+            )
+            if policyDenied {
+                if !hasPairingInFlightForNetworkCheck {
+                    publishStatus(
+                        String(localized: "macOS is blocking this local network connection.")
+                    )
+                }
+            } else {
+                _ = cancelUnfinishedPairingsForNetworkFailure()
+                publishStatus("Could not start listener: \(error.localizedDescription)")
+            }
+            if !policyDenied {
+                scheduleNetworkRecovery()
+            }
         }
     }
 
@@ -1363,6 +2238,10 @@ final class PeerDiscoveryService: ObservableObject {
                 $0.1.name.localizedCaseInsensitiveCompare($1.1.name)
                     == .orderedAscending
             }.prefix(Self.maximumDiscoveredPeers).map(\.1)
+            self.discoveredPeersByID = Dictionary(
+                uniqueKeysWithValues: discovered.map { ($0.identity.id, $0) }
+            )
+            self.resumeLocalNetworkCheckAfterDiscovery(timeoutExpired: false)
             let epoch = self.currentLifecycleEpoch()
             self.publishMain(epoch: epoch) { $0.peers = discovered }
         }
@@ -1373,28 +2252,63 @@ final class PeerDiscoveryService: ObservableObject {
             switch state {
             case .ready:
                 self.browserIsReady = true
-                if self.noteNetworkServiceReady() {
+                let recoveredBlockedBrowser = self
+                    .noteBlockedNetworkServiceReady(.browser)
+                let recoveredAfterFailure = self.noteNetworkServiceReady()
+                if NetworkServiceReadyStatusPolicy
+                    .shouldPublishBrowserRecovered(
+                        recoveredFromPolicyDenial: recoveredBlockedBrowser,
+                        recoveredAfterGenericFailure: recoveredAfterFailure,
+                        hasBlockedComponents:
+                            self.blockedNetworkRecoveryState.isBlocked
+                    ) {
                     self.publishStatus("Discovery recovered on the local network")
                 }
             case .failed(let error):
                 self.browserIsReady = false
-                let retryPeer = self.activeOutboundPeer()
-                let hadPairing = self
-                    .cancelUnfinishedPairingsForNetworkFailure()
-                self.publishStatus(
-                    hadPairing
-                        ? self.pairingNetworkFailureMessage(
-                            detail: error.localizedDescription
-                        )
-                        : "Discovery failed: \(error.localizedDescription)"
+                let policyDenied = self.recordNetworkServiceError(
+                    component: .browser,
+                    state: "failed",
+                    error: error
                 )
-                if hadPairing, let retryPeer {
-                    self.publishRetryAvailable(for: retryPeer)
+                if policyDenied {
+                    if !self.hasPairingInFlightForNetworkCheck {
+                        self.publishStatus(
+                            String(localized: "macOS is blocking this local network connection.")
+                        )
+                    }
+                } else {
+                    let retryPeer = self.activeOutboundPeer()
+                    let hadPairing = self
+                        .cancelUnfinishedPairingsForNetworkFailure()
+                    self.publishStatus(
+                        hadPairing
+                            ? self.pairingNetworkFailureMessage(
+                                detail: error.localizedDescription
+                            )
+                            : "Discovery failed: \(error.localizedDescription)"
+                    )
+                    if hadPairing, let retryPeer {
+                        self.publishRetryAvailable(for: retryPeer)
+                    }
                 }
                 self.browser = nil
-                self.scheduleNetworkRecovery()
-            case .waiting:
+                if !policyDenied {
+                    self.scheduleNetworkRecovery()
+                }
+            case .waiting(let error):
                 self.browserIsReady = false
+                let policyDenied = self.recordNetworkServiceError(
+                    component: .browser,
+                    state: "waiting",
+                    error: error
+                )
+                if policyDenied,
+                   !self.hasPairingInFlightForNetworkCheck {
+                    self.publishStatus(
+                        String(localized: "macOS is blocking this local network connection.")
+                    )
+                }
             default:
                 break
             }
@@ -1420,6 +2334,15 @@ final class PeerDiscoveryService: ObservableObject {
             guard let self, let connection else { return }
             switch state {
             case .ready:
+                let connectionID = ObjectIdentifier(connection)
+                if self.pairingTransportLocalNetworkState
+                    .recoveredFromInboundReady(
+                        connectionIsTracked:
+                            self.unauthenticatedConnections[connectionID]
+                                === connection
+                    ) {
+                    self.publishCurrentLocalNetworkAccessBlocked()
+                }
                 self.logPairingPhase(
                     "transport.ready",
                     detail: "role=responder"
@@ -1543,6 +2466,10 @@ final class PeerDiscoveryService: ObservableObject {
     }
 
     private func handle(_ message: PairingEnvelope, on connection: NWConnection) {
+        // A real pairing frame can arrive while a reachability check is
+        // pending. Cancel only the diagnostic probe; a frame-free TCP check
+        // from the peer must remain invisible to pairing state.
+        finishLocalNetworkCheckForPairing()
         logPairingPhase(
             "receive.\(message.kind.rawValue)",
             requestID: message.requestID,

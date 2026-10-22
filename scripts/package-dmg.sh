@@ -11,19 +11,21 @@ original_argument_count=$#
 usage() {
   cat >&2 <<'EOF'
 Usage: scripts/package-dmg.sh [--arch universal|arm64|x86_64]
-       [--sign SIGNING_IDENTITY] [--require-developer-id]
-       [--installer-sign INSTALLER_IDENTITY] [--pkg-only]
+       [--sign SIGNING_IDENTITY] [--require-developer-id] [--pkg]
+       [--installer-sign INSTALLER_IDENTITY] [--pkg-only | --build-only]
        [--use-shared-signing] [--notarization-config PATH]
 
+By default, creates an app-only DMG with MacKVM.app, an Applications shortcut,
+Finder Install MacKVM.command and Uninstall MacKVM.command helpers, and
+bilingual install and uninstall guides.
 Without --sign, the app is ad-hoc signed for local testing. Use a Developer ID
-Application identity and a Developer ID Installer identity before distributing
-outside your own Macs. Without --installer-sign, the local-testing package is
-unsigned.
+Application identity before distributing outside your own Macs.
 
 --use-shared-signing applies the installed Codex macOS signing helper to the
-finished app before the package is built. --pkg-only builds the app and package
-without composing a DMG; it is used to notarize the package before embedding it
-in the release DMG.
+finished app. --pkg opts into the legacy installer-package layout and requires
+a separate Developer ID Installer identity for a notarized release.
+--pkg-only builds the app and package without composing a DMG. --build-only
+builds and verifies the app without composing a DMG, for app notarization.
 EOF
 }
 
@@ -33,7 +35,9 @@ installer_signing_identity=""
 require_developer_id=false
 use_shared_signing=false
 notarization_config=""
+pkg_mode=false
 pkg_only=false
+build_only=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -66,7 +70,16 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --pkg-only)
+      pkg_mode=true
       pkg_only=true
+      shift
+      ;;
+    --pkg)
+      pkg_mode=true
+      shift
+      ;;
+    --build-only)
+      build_only=true
       shift
       ;;
     --require-developer-id)
@@ -111,8 +124,20 @@ if [[ "$require_developer_id" == true && -z "$signing_identity" ]]; then
   echo "--require-developer-id needs --sign 'Developer ID Application: …'" >&2
   exit 2
 fi
-if [[ "$require_developer_id" == true && -z "$installer_signing_identity" ]]; then
+if [[ "$require_developer_id" == true && "$pkg_mode" == true && -z "$installer_signing_identity" ]]; then
   echo "--require-developer-id needs --installer-sign 'Developer ID Installer: …'" >&2
+  exit 2
+fi
+if [[ -n "$installer_signing_identity" && "$pkg_mode" != true ]]; then
+  echo "--installer-sign requires --pkg." >&2
+  exit 2
+fi
+if [[ "$pkg_only" == true && "$build_only" == true ]]; then
+  echo "--pkg-only and --build-only cannot be used together." >&2
+  exit 2
+fi
+if [[ "$build_only" == true && "$pkg_mode" == true ]]; then
+  echo "--build-only is only available for the app-only layout." >&2
   exit 2
 fi
 if [[ -n "$installer_signing_identity" && "$installer_signing_identity" != "Developer ID Installer:"* ]]; then
@@ -136,9 +161,8 @@ else
   mackvm_enter_build_lock "$project_root" "$project_root/scripts/package-dmg.sh" "${original_arguments[@]}"
 fi
 
-# A DMG is one multi-architecture build batch. Clean its generated state once
-# here, then keep the architecture bundles while composing the image below.
-./scripts/clean-build.sh
+# Reuse the repository build cache and preserve existing dist artifacts. The
+# explicit architecture builds below replace only their own app bundles.
 
 if [[ "$requested_arch" == universal ]]; then
   # Keep the first app while adding the second architecture; otherwise the
@@ -191,6 +215,19 @@ fi
 
 version="$(plutil -extract CFBundleShortVersionString raw -o - \
   "$app_dir/Contents/Info.plist")"
+
+if [[ "$pkg_mode" != true ]]; then
+  if [[ "$build_only" == true ]]; then
+    echo "Built and verified app: $app_dir"
+    exit 0
+  fi
+  ./scripts/compose-dmg.sh \
+    --app "$app_dir" \
+    --version "$version" \
+    --arch "$requested_arch"
+  exit 0
+fi
+
 pkg_path="$project_root/dist/MacKVM-$version-$requested_arch.pkg"
 rm -f -- "$pkg_path" "$pkg_path.sha256" "$pkg_path.notary.json"
 pkgbuild_arguments=(

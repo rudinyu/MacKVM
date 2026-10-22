@@ -622,7 +622,7 @@ final class MonitorController: ObservableObject {
         }
     }
 
-    /// Latches the app's final local-route intent and returns completions for
+    /// Latches the app's final route intent and returns completions for
     /// cancelled normal routes. The caller must first mark any receiver-side
     /// input teardown as quitting, then invoke the returned completions. This
     /// prevents a cancelled monitor route from making that teardown look idle
@@ -664,6 +664,17 @@ final class MonitorController: ObservableObject {
             localInput,
             description: "this Mac",
             role: .local,
+            intent: .terminating,
+            completion: completion,
+            shouldWakeDisplayForKVMSwitch: true
+        )
+    }
+
+    func switchToRemoteForTermination(completion: @escaping () -> Void) {
+        switchInput(
+            remoteInput,
+            description: "the other device",
+            role: .remote,
             intent: .terminating,
             completion: completion,
             shouldWakeDisplayForKVMSwitch: true
@@ -1649,7 +1660,7 @@ struct DeferredAutomaticSwitchState {
     private(set) var isTerminating = false
     private var deferredAutomaticSwitch: DeferredAutomaticSwitch?
 
-    /// Cancels a normal deferred route before the terminating local route is
+    /// Cancels a normal deferred route before the terminating route is
     /// queued. Its completion means the request has resolved, not that DDC
     /// succeeded, so it must still run when the route is superseded.
     mutating func beginTermination() -> [() -> Void] {
@@ -1663,7 +1674,7 @@ struct DeferredAutomaticSwitchState {
 
     /// Keeps the newest normal route while resolving every superseded request.
     /// Once termination starts, normal routes are ignored and their completion
-    /// is resolved immediately; they cannot replace the final local route.
+    /// is resolved immediately; they cannot replace the terminating route.
     mutating func deferSwitch(
         input: MonitorInputSource,
         description: String,

@@ -735,6 +735,90 @@ final class MonitorControllerTests: XCTestCase {
         XCTAssertEqual(cancelledRouteCompletionCount, 1)
     }
 
+    func testTerminationCanPerformTheCapturedRemoteReturnRoute() {
+        withDefaults { defaults in
+            let ddc = FakeMonitorDDC(
+                displays: [testDisplay()],
+                currentInputValue: 17
+            )
+            let monitor = MonitorController(
+                defaults: defaults,
+                ddcOperations: ddc.operations
+            )
+            monitor.localInput = .hdmi1
+            monitor.remoteInput = .usbC
+            monitor.automationEnabled = true
+            monitor.displaySelector = testDisplay().selector
+            XCTAssertFalse(monitor.isDisplaySelectorVerified)
+
+            monitor.beginTermination()
+            let returnedToController = expectation(
+                description: "Deferred remote return selected for the controller"
+            )
+            monitor.switchToRemoteForTermination {
+                returnedToController.fulfill()
+            }
+            wait(for: [returnedToController], timeout: 5)
+
+            XCTAssertEqual(ddc.writeAttempts.map(\.input), [.usbC])
+        }
+    }
+
+    func testTerminationCancelsADeferredNormalRouteBeforeDiscoveryResumesIt() {
+        withDefaults { defaults in
+            let display = testDisplay()
+            let fakeDDC = FakeMonitorDDC(
+                displays: [display],
+                currentInputValue: 17
+            )
+            let discoveryStarted = expectation(
+                description: "DDC discovery started"
+            )
+            let releaseDiscovery = DispatchSemaphore(value: 0)
+            var operations = fakeDDC.operations
+            operations.discover = {
+                discoveryStarted.fulfill()
+                _ = releaseDiscovery.wait(timeout: .now() + 5)
+                return [display]
+            }
+            let monitor = MonitorController(
+                defaults: defaults,
+                ddcOperations: operations
+            )
+            monitor.localInput = .hdmi1
+            monitor.remoteInput = .usbC
+            monitor.displaySelector = display.selector
+            monitor.automationEnabled = true
+            let discoveryFinished = expectation(
+                description: "DDC discovery completed after termination began"
+            )
+            let observation = monitor.$status
+                .dropFirst()
+                .filter { $0.hasPrefix("Detected ") }
+                .prefix(1)
+                .sink { _ in discoveryFinished.fulfill() }
+
+            monitor.refreshDetectedDisplays()
+            wait(for: [discoveryStarted], timeout: 5)
+
+            let cancelledRouteCompleted = expectation(
+                description: "Deferred route cancellation resolved"
+            )
+            monitor.switchToRemote {
+                cancelledRouteCompleted.fulfill()
+            }
+            XCTAssertTrue(monitor.status.contains("Verifying"))
+
+            monitor.beginTermination().forEach { $0() }
+            wait(for: [cancelledRouteCompleted], timeout: 1)
+            releaseDiscovery.signal()
+            wait(for: [discoveryFinished], timeout: 5)
+            withExtendedLifetime(observation) {}
+
+            XCTAssertTrue(fakeDDC.writeAttempts.isEmpty)
+        }
+    }
+
     func testManualFallbackCompletesWithoutLaunchingAProcess() {
         withDefaults { defaults in
             let monitor = MonitorController(defaults: defaults)

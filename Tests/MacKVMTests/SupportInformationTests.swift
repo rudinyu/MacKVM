@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import XCTest
 @testable import MacKVM
 
@@ -67,5 +68,97 @@ final class SupportInformationTests: XCTestCase {
         XCTAssertTrue(output.contains("Friendly name: Office Mac"))
         XCTAssertTrue(output.contains("Status: Idle ready"))
         XCTAssertFalse(output.contains("macOS\n15.6"))
+    }
+
+    func testIncludesAuthoritativeNetworkAndSigningDiagnostics() {
+        let current = CodeSigningIdentity(
+            cdhash: "a1b2c3",
+            teamIdentifier: "TEAM123",
+            signingIdentifier: "com.example\nmackvm",
+            designatedRequirement: "identifier \"com.example.mackvm\" and anchor apple generic",
+            leafCertificateSHA256: "certificate-a",
+            isAdHoc: false
+        )
+        let previous = CodeSigningIdentity(
+            cdhash: "010203",
+            teamIdentifier: "TEAM123",
+            signingIdentifier: "com.example.mackvm",
+            designatedRequirement: "identifier \"com.example.mackvm\" and anchor apple generic",
+            leafCertificateSHA256: "certificate-a",
+            isAdHoc: false
+        )
+        let signing = CodeSigningIdentityDiagnostics(
+            current: current,
+            previous: previous,
+            comparisons: CodeSigningIdentityComparisons(
+                binaryChanged: true,
+                teamChanged: false,
+                signingIdentifierChanged: false,
+                requirementChanged: false,
+                certificateChanged: false
+            ),
+            error: nil
+        )
+        let browserError = NetworkServiceErrorDiagnostic(
+            component: .browser,
+            state: "waiting",
+            domain: "Network.NWError",
+            code: Int(kDNSServiceErr_PolicyDenied)
+        )
+        let listenerError = NetworkServiceErrorDiagnostic(
+            component: .listener,
+            state: "failed",
+            domain: "Network.NWError",
+            code: 57
+        )
+
+        let output = SupportInformationFormatter.make(
+            appVersion: "1.102.03",
+            appBuild: "100",
+            operatingSystem: "macOS 27",
+            localFriendlyName: "Office Mac",
+            localModel: "MacBookPro18,3",
+            localKeyFingerprint: "AA",
+            peers: [],
+            connectionStatus: "Idle",
+            connectedPeerID: nil,
+            localNetworkStatus: .blocked,
+            lastBrowserError: browserError,
+            lastListenerError: listenerError,
+            signingIdentity: signing
+        )
+
+        XCTAssertTrue(output.contains("App: 1.102.03 (build 100)"))
+        XCTAssertTrue(
+            output.contains("Status: Local Network access blocked by macOS")
+        )
+        XCTAssertTrue(
+            output.contains(
+                "Last browser error: state=waiting domain=Network.NWError code=\(kDNSServiceErr_PolicyDenied)"
+            )
+        )
+        XCTAssertTrue(output.contains("state=failed domain=Network.NWError code=57"))
+        XCTAssertTrue(
+            output.contains(
+                "Current identity: CDHash=a1b2c3 TeamID=TEAM123 SigningIdentifier=com.example mackvm"
+            )
+        )
+        XCTAssertTrue(
+            output.contains(
+                "Previous identity: CDHash=010203 TeamID=TEAM123 SigningIdentifier=com.example.mackvm"
+            )
+        )
+        XCTAssertTrue(
+            output.contains(
+                "Summary: Binary rebuilt; signing identity unchanged"
+            )
+        )
+        XCTAssertTrue(
+            output.contains(
+                "Comparison: binary=Changed team=Unchanged signingIdentifier=Unchanged requirement=Unchanged certificate=Unchanged"
+            )
+        )
+        XCTAssertFalse(output.contains("com.example\nmackvm"))
+        XCTAssertFalse(output.contains("private-key"))
     }
 }

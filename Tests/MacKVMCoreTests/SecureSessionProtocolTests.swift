@@ -267,6 +267,48 @@ final class SecureSessionProtocolTests: XCTestCase {
         )
     }
 
+    func testIncomingFallbackRequiresASelectedPeerAndLocallyBlockedPreferredAttempt() {
+        let firstID = UUID(
+            uuidString: "00000000-0000-0000-0000-000000000001"
+        )!
+        let secondID = UUID(
+            uuidString: "00000000-0000-0000-0000-000000000002"
+        )!
+
+        XCTAssertTrue(
+            SecureSessionCollisionPolicy.shouldAcceptIncomingFallback(
+                localID: firstID,
+                remoteID: secondID,
+                hasSelectedPeer: true,
+                preferredOutboundHasLocalNetworkDenial: true
+            )
+        )
+        XCTAssertFalse(
+            SecureSessionCollisionPolicy.shouldAcceptIncomingFallback(
+                localID: firstID,
+                remoteID: secondID,
+                hasSelectedPeer: false,
+                preferredOutboundHasLocalNetworkDenial: true
+            )
+        )
+        XCTAssertFalse(
+            SecureSessionCollisionPolicy.shouldAcceptIncomingFallback(
+                localID: firstID,
+                remoteID: secondID,
+                hasSelectedPeer: true,
+                preferredOutboundHasLocalNetworkDenial: false
+            )
+        )
+        XCTAssertFalse(
+            SecureSessionCollisionPolicy.shouldAcceptIncomingFallback(
+                localID: secondID,
+                remoteID: firstID,
+                hasSelectedPeer: true,
+                preferredOutboundHasLocalNetworkDenial: true
+            )
+        )
+    }
+
     private func makeFixture() -> Fixture {
         let sessionID = UUID()
         let initiatorSigningKey = P256.Signing.PrivateKey()

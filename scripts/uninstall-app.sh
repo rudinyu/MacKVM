@@ -20,8 +20,9 @@ Usage: scripts/uninstall-app.sh [--target-dir PATH] [--dry-run]
        scripts/uninstall-app.sh --purge --remove-firewall-rule [--yes] [--dry-run]
 
 Without --purge, removes only a validated MacKVM.app from /Applications (or
---target-dir). This advanced repository/CLI tool is not shipped in the release
-DMG. Regular release installs use MacKVM.pkg.
+--target-dir). The app-only release DMG includes this helper and an
+Uninstall MacKVM.command wrapper; this default keeps user data, trust, and privacy
+permissions.
 
 --purge removes the app plus MacKVM's two user preference domains, its exact
 device-identity Keychain item, and supported TCC permissions for this user.

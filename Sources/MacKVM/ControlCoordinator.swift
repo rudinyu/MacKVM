@@ -63,6 +63,7 @@ protocol ControlInputCapture: AnyObject {
     var hasInputMonitoringPermission: Bool { get }
     var isCapturing: Bool { get }
     var onEvent: ((RemoteInputEvent) -> Void)? { get set }
+    var onPermissionRevoked: (() -> Void)? { get set }
     var onEmergencyStop: (() -> Void)? { get set }
     var onSwitchControl: (() -> Void)? { get set }
     var onSwitchMonitor: (() -> Void)? { get set }
@@ -74,6 +75,9 @@ protocol ControlInputCapture: AnyObject {
 
 protocol ControlInputSink: AnyObject {
     var hasAccessibilityPermission: Bool { get }
+    var permissionFailureStatus: String { get }
+    var permissionDenialReason: String { get }
+    var permissionFailureEndReason: String { get }
     var onControlFailure: ((ControlInputFailure) -> Void)? { get set }
 
     func refreshPermission()
@@ -83,6 +87,20 @@ protocol ControlInputSink: AnyObject {
     /// Calls the completion after all input already queued for injection has
     /// run. The result is false when the sink is no longer accepting input.
     func awaitInputProcessing(completion: @escaping (Bool) -> Void)
+}
+
+extension ControlInputSink {
+    var permissionFailureStatus: String {
+        "Accessibility permission is required to control another device"
+    }
+
+    var permissionDenialReason: String {
+        "Denied remote control: Accessibility permission is missing"
+    }
+
+    var permissionFailureEndReason: String {
+        "Remote control ended because Accessibility is unavailable"
+    }
 }
 
 final class ControlCoordinator: ObservableObject {
@@ -171,6 +189,28 @@ final class ControlCoordinator: ObservableObject {
         initiallyEnabled: true
     )
 
+    /// Captures the app-owned display route that should be restored before
+    /// termination. The caller must read this before `stopForQuit` clears the
+    /// active session state. Manual routes and idle sessions are not owned by
+    /// MacKVM, so they deliberately produce no termination route.
+    var displayRouteRoleForTermination: DisplayRouteRole? {
+        if let request = activeInboundControlRequest,
+           isReceivingControl,
+           request.managesDisplayRoute {
+            return .remote
+        }
+        if let teardown = receiverTeardown,
+           teardown.request.managesDisplayRoute || teardown.restoreMonitor {
+            return .remote
+        }
+        guard activeControlManagesDisplayRoute else { return nil }
+        if state == .controlling
+            || (state == .suspended && activeControlDisplayAlreadyRemote) {
+            return .local
+        }
+        return nil
+    }
+
     init(
         localID: UUID,
         secureSession: any ControlSessionTransport,
@@ -209,6 +249,15 @@ final class ControlCoordinator: ObservableObject {
         }
         inputCapture.onEmergencyStop = { [weak self] in
             self?.stopControl(reason: "Emergency shortcut returned input locally")
+        }
+        inputCapture.onPermissionRevoked = { [weak self] in
+            guard let self,
+                  state == .controlling || state == .suspended else {
+                return
+            }
+            stopControl(
+                reason: "Control ended because required system-reported input access was lost"
+            )
         }
         inputCapture.onSwitchControl = { [weak self] in
             self?.toggleControlFromManualMonitorHotKey()
@@ -289,7 +338,7 @@ final class ControlCoordinator: ObservableObject {
         // grants the request.
         inputSink.refreshPermission()
         guard inputSink.hasAccessibilityPermission else {
-            status = "Accessibility permission is required to control another device"
+            status = inputSink.permissionFailureStatus
             return false
         }
         return true
@@ -463,7 +512,7 @@ final class ControlCoordinator: ObservableObject {
         guard inputSink.hasAccessibilityPermission else {
             rejectIncomingControlRequest(
                 request,
-                reason: "Denied remote control: Accessibility permission is missing"
+                reason: inputSink.permissionDenialReason
             )
             return
         }
@@ -539,9 +588,9 @@ final class ControlCoordinator: ObservableObject {
         completion()
     }
 
-    /// Stops every local control path before app termination. The final monitor
-    /// route belongs to the caller, so a receiver shutdown cannot queue its
-    /// usual remote-display route after the app has asked for the local route.
+    /// Stops every local control path before app termination. The app captures
+    /// any owned display route before calling this method, waits for input
+    /// teardown here, then performs the role-appropriate route itself.
     func stopForQuit(completion: @escaping () -> Void) {
         guard !isStoppingForQuit else { return }
         isStoppingForQuit = true
@@ -858,7 +907,7 @@ final class ControlCoordinator: ObservableObject {
                 kind: .controlDenied,
                 for: request
             )
-            status = "Denied remote control: Accessibility permission is missing"
+            status = inputSink.permissionDenialReason
             return
         }
         if state == .controlling || state == .suspended {
@@ -912,7 +961,7 @@ final class ControlCoordinator: ObservableObject {
         guard didStart else {
             rejectIncomingControlRequest(
                 request,
-                reason: "Denied remote control: Accessibility permission is missing"
+                reason: inputSink.permissionDenialReason
             )
             return
         }
@@ -1100,7 +1149,7 @@ final class ControlCoordinator: ObservableObject {
         let reason: String
         switch failure {
         case .accessibilityPermission:
-            reason = "Remote control ended because Accessibility is unavailable"
+            reason = inputSink.permissionFailureEndReason
         case .queueOverloaded:
             reason = "Remote control ended because the input queue was overloaded"
         case .keyboardLayoutMismatch:

@@ -1,11 +1,309 @@
 import Combine
 import CryptoKit
 import Foundation
+import Network
 import XCTest
 @testable import MacKVM
 @testable import MacKVMCore
 
 final class PeerDiscoveryServiceTests: XCTestCase {
+    func testOnlyTheSDKDNSServicePolicyDeniedErrorMarksAccessBlocked() {
+        let policyDenied = NWError.dns(
+            DNSServiceErrorType(kDNSServiceErr_PolicyDenied)
+        )
+        let otherDNSFailure = NWError.dns(
+            DNSServiceErrorType(kDNSServiceErr_NotPermitted)
+        )
+        let posixFailure = NWError.posix(.EACCES)
+
+        XCTAssertTrue(
+            NetworkServiceStatePolicy.isLocalNetworkPolicyDenied(policyDenied)
+        )
+        XCTAssertFalse(
+            NetworkServiceStatePolicy.isLocalNetworkPolicyDenied(otherDNSFailure)
+        )
+        XCTAssertFalse(
+            NetworkServiceStatePolicy.isLocalNetworkPolicyDenied(posixFailure)
+        )
+
+        let diagnostic = NetworkServiceErrorDiagnostic.capture(
+            component: .browser,
+            state: "waiting",
+            error: policyDenied
+        )
+        XCTAssertEqual(diagnostic.code, Int(kDNSServiceErr_PolicyDenied))
+        XCTAssertEqual(diagnostic.state, "waiting")
+        XCTAssertFalse(diagnostic.domain.isEmpty)
+    }
+
+    func testPairingTransportUsesCurrentPathAndDNSPolicyDenialsOnly() {
+        let policyDenied = NWError.dns(
+            DNSServiceErrorType(kDNSServiceErr_PolicyDenied)
+        )
+        let genericWaitingError = NWError.posix(.ENETUNREACH)
+
+        XCTAssertTrue(
+            NetworkServiceStatePolicy.isLocalNetworkAccessDenied(
+                error: genericWaitingError,
+                unsatisfiedReason: .localNetworkDenied
+            )
+        )
+        XCTAssertTrue(
+            NetworkServiceStatePolicy.isLocalNetworkAccessDenied(
+                error: policyDenied,
+                unsatisfiedReason: .notAvailable
+            )
+        )
+        XCTAssertFalse(
+            NetworkServiceStatePolicy.isLocalNetworkAccessDenied(
+                error: genericWaitingError,
+                unsatisfiedReason: .notAvailable
+            )
+        )
+    }
+
+    func testLocalNetworkBlockedStateCombinesServiceAndPairingTransportSources() {
+        XCTAssertFalse(
+            LocalNetworkAccessBlockedPolicy.isBlocked(
+                by: false,
+                false
+            )
+        )
+        XCTAssertTrue(
+            LocalNetworkAccessBlockedPolicy.isBlocked(
+                by: true,
+                false
+            )
+        )
+        XCTAssertTrue(
+            LocalNetworkAccessBlockedPolicy.isBlocked(
+                by: false,
+                true
+            )
+        )
+    }
+
+    func testStalePairingReadyCallbackCannotClearNewerTransportDenial() {
+        var state = PairingTransportLocalNetworkState()
+        let oldRequestID = UUID()
+        let currentRequestID = UUID()
+        state.recordDenial(for: oldRequestID)
+        state.recordDenial(for: currentRequestID)
+
+        XCTAssertFalse(
+            state.recovered(
+                by: oldRequestID,
+                currentRequestID: currentRequestID
+            )
+        )
+        XCTAssertTrue(state.isBlocked)
+        XCTAssertTrue(
+            state.recovered(
+                by: currentRequestID,
+                currentRequestID: currentRequestID
+            )
+        )
+        XCTAssertFalse(state.isBlocked)
+    }
+
+    func testPairingTransportDenialClearsAfterNetworkServicesRecoverOrStop() {
+        var state = PairingTransportLocalNetworkState()
+        state.recordDenial(for: UUID())
+
+        XCTAssertTrue(state.recoveredAfterNetworkServicesReady())
+        XCTAssertFalse(state.isBlocked)
+
+        state.recordDenial(for: UUID())
+        state.stop()
+        XCTAssertFalse(state.isBlocked)
+    }
+
+    func testTrackedInboundReadyClearsOnlyTransportBlockAndUntrackedReadyCannot() {
+        var networkRecovery = BlockedNetworkRecoveryState()
+        networkRecovery.recordPolicyDenial(for: .browser)
+        var transportState = PairingTransportLocalNetworkState()
+        transportState.recordDenial(for: UUID())
+
+        XCTAssertTrue(
+            transportState.recoveredFromInboundReady(
+                connectionIsTracked: true
+            )
+        )
+        XCTAssertFalse(transportState.isBlocked)
+        XCTAssertTrue(
+            LocalNetworkAccessBlockedPolicy.isBlocked(
+                by: networkRecovery.isBlocked,
+                transportState.isBlocked
+            )
+        )
+
+        transportState.recordDenial(for: UUID())
+        XCTAssertFalse(
+            transportState.recoveredFromInboundReady(
+                connectionIsTracked: false
+            )
+        )
+        XCTAssertTrue(transportState.isBlocked)
+    }
+
+    func testPairingProgressUsesLocalNetworkGuidanceOnlyWhenBlocked() {
+        XCTAssertEqual(
+            PairingProgressGuidance.resolve(localNetworkAccessBlocked: true),
+            .localNetwork
+        )
+        XCTAssertEqual(
+            PairingProgressGuidance.resolve(localNetworkAccessBlocked: false),
+            .firewall
+        )
+    }
+
+    func testBlockedRecoveryRetriesOnlyBlockedComponentsAndClearsByComponent() {
+        var recovery = BlockedNetworkRecoveryState()
+        recovery.recordPolicyDenial(for: .browser)
+        recovery.recordPolicyDenial(for: .listener)
+
+        XCTAssertTrue(recovery.isBlocked)
+        XCTAssertEqual(BlockedNetworkRecoveryState.retryInterval, 4)
+        XCTAssertFalse(recovery.recovered(component: .browser))
+        XCTAssertEqual(
+            recovery.beginRecoveryAttempts(
+                networkServicesStarted: false,
+                pairingIsInFlight: false
+            ),
+            []
+        )
+        XCTAssertEqual(
+            recovery.beginRecoveryAttempts(
+                networkServicesStarted: true,
+                pairingIsInFlight: true
+            ),
+            []
+        )
+
+        XCTAssertEqual(
+            recovery.beginRecoveryAttempts(
+                networkServicesStarted: true,
+                pairingIsInFlight: false
+            ),
+            [.browser, .listener]
+        )
+        XCTAssertTrue(recovery.recovered(component: .browser))
+        XCTAssertTrue(recovery.isBlocked)
+        XCTAssertFalse(recovery.recovered(component: .browser))
+
+        XCTAssertEqual(
+            recovery.beginRecoveryAttempts(
+                networkServicesStarted: true,
+                pairingIsInFlight: false
+            ),
+            [.listener]
+        )
+        XCTAssertTrue(recovery.recovered(component: .listener))
+        XCTAssertFalse(recovery.isBlocked)
+    }
+
+    func testBlockedRecoveryStopsAndFencesPendingReadyCallbacks() {
+        var recovery = BlockedNetworkRecoveryState()
+        recovery.recordPolicyDenial(for: .browser)
+        XCTAssertEqual(
+            recovery.beginRecoveryAttempts(
+                networkServicesStarted: true,
+                pairingIsInFlight: false
+            ),
+            [.browser]
+        )
+
+        recovery.stop()
+
+        XCTAssertFalse(recovery.isBlocked)
+        XCTAssertFalse(recovery.recovered(component: .browser))
+        XCTAssertEqual(
+            recovery.beginRecoveryAttempts(
+                networkServicesStarted: false,
+                pairingIsInFlight: false
+            ),
+            []
+        )
+    }
+
+    func testBlockedRecoveryKeepsRetryingUntilThatComponentRecovers() {
+        var recovery = BlockedNetworkRecoveryState()
+        recovery.recordPolicyDenial(for: .browser)
+
+        for _ in 0..<10 {
+            XCTAssertEqual(
+                recovery.beginRecoveryAttempts(
+                    networkServicesStarted: true,
+                    pairingIsInFlight: false
+                ),
+                [.browser]
+            )
+            // Model the fresh browser operation returning PolicyDenied.
+            recovery.recordPolicyDenial(for: .browser)
+            XCTAssertTrue(recovery.isBlocked)
+        }
+    }
+
+    func testUnrelatedReadyCallbackDoesNotClearBlockedComponent() {
+        var recovery = BlockedNetworkRecoveryState()
+        recovery.recordPolicyDenial(for: .browser)
+
+        XCTAssertFalse(recovery.recovered(component: .listener))
+        XCTAssertTrue(recovery.isBlocked)
+        XCTAssertEqual(
+            recovery.beginRecoveryAttempts(
+                networkServicesStarted: true,
+                pairingIsInFlight: false
+            ),
+            [.browser]
+        )
+        XCTAssertFalse(recovery.recovered(component: .listener))
+        XCTAssertTrue(recovery.isBlocked)
+        XCTAssertTrue(recovery.recovered(component: .browser))
+        XCTAssertFalse(recovery.isBlocked)
+    }
+
+    func testReadyStatusWaitsUntilAllDeniedComponentsRecover() {
+        XCTAssertFalse(
+            NetworkServiceReadyStatusPolicy.shouldPublishListenerReady(
+                hasBlockedComponents: true
+            )
+        )
+        XCTAssertTrue(
+            NetworkServiceReadyStatusPolicy.shouldPublishListenerReady(
+                hasBlockedComponents: false
+            )
+        )
+        XCTAssertFalse(
+            NetworkServiceReadyStatusPolicy.shouldPublishBrowserRecovered(
+                recoveredFromPolicyDenial: true,
+                recoveredAfterGenericFailure: false,
+                hasBlockedComponents: true
+            )
+        )
+        XCTAssertTrue(
+            NetworkServiceReadyStatusPolicy.shouldPublishBrowserRecovered(
+                recoveredFromPolicyDenial: true,
+                recoveredAfterGenericFailure: false,
+                hasBlockedComponents: false
+            )
+        )
+        XCTAssertTrue(
+            NetworkServiceReadyStatusPolicy.shouldPublishBrowserRecovered(
+                recoveredFromPolicyDenial: false,
+                recoveredAfterGenericFailure: true,
+                hasBlockedComponents: false
+            )
+        )
+        XCTAssertFalse(
+            NetworkServiceReadyStatusPolicy.shouldPublishBrowserRecovered(
+                recoveredFromPolicyDenial: false,
+                recoveredAfterGenericFailure: false,
+                hasBlockedComponents: false
+            )
+        )
+    }
+
     func testForgetPublishesAStatusWithoutTheForgottenPeerName() throws {
         let privateKey = P256.Signing.PrivateKey()
         let credentials = DeviceCredentials(

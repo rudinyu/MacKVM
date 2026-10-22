@@ -43,9 +43,9 @@
 <body>
   <main>
     <header>
-      <div class="badge">MacKVM 1.101.01（build 96）</div>
+      <div class="badge">MacKVM 1.102.04（build 101）</div>
       <h1>MacKVM 使用手冊</h1>
-      <p>本手冊說明原始碼版本 1.101.01（build 96）。此次僅調整封裝流程，不變更 app 版本或 build。正式散布流程會將 Developer ID Installer 簽署的 PKG 放入另行公證的 DMG；目前尚未產生或發布正式發行產物。</p>
+      <p>本手冊說明原始碼版本 1.102.04（build 101）。預設正式散布流程會以 Developer ID Application 簽署並公證 app、staple 後直接放入另行公證的 DMG。本機測試產物及其公證結果與 GitHub 發布分開確認。</p>
       <p class="lede">提供選單列入口與一般控制視窗，讓兩台 MacBook Pro 共用一組鍵盤、滑鼠與觸控板，並可選擇切換 BenQ MA270U 螢幕的 macOS app。</p>
       <p><a href="USER_MANUAL.html" lang="en">English Version</a> · <a href="USER_MANUAL.zh-TW.md">Markdown 版本</a></p>
     </header>
@@ -80,7 +80,7 @@
         <li>外接螢幕不是配對或遠端控制的必要條件；只有 DDC 切換與跨螢幕指標定位才需要。</li>
       </ul>
       <div class="notice">
-        <strong>首次開啟提示：</strong>本機測試 build 使用 ad-hoc 簽章；正式散布的 PKG 與 DMG 使用 Developer ID 簽章與 Apple 公證。若 macOS 阻擋本機測試版本，請在 Finder 對 <code>MacKVM.app</code> 按右鍵，選擇「打開」，再於提示視窗確認。
+        <strong>首次開啟提示：</strong>本機測試 build 使用 ad-hoc 簽章；正式散布 app 與 DMG 使用 Developer ID 簽章與 Apple 公證。若 macOS 阻擋本機測試版本，請在 Finder 對 <code>MacKVM.app</code> 按右鍵，選擇「打開」，再於提示視窗確認。
       </div>
       <p>自動 DDC/CI 在偵測到選定螢幕或路由已確認為遠端時保持顯示管線喚醒；螢幕消失且未確認為遠端時會釋放防止閒置睡眠的 assertion。「顯示遠端輸入時拔線」與手動 OSD 切換目前仍有歧義，可關閉自動 DDC/CI 或退出 App 以釋放保活。</p>
     </section>
@@ -88,22 +88,22 @@
     <section id="install">
       <h2>2. 安裝與啟動</h2>
       <ol>
-        <li>一般正式安裝時，請在 Finder 開啟散布用 DMG 並雙擊 <code>MacKVM.pkg</code>；macOS Installer 會將 app 安裝到 <code>/Applications</code>。</li>
+        <li>一般正式安裝時，請在 Finder 開啟 DMG 後雙擊 <code>Install MacKVM.command</code>，或將 <code>MacKVM.app</code> 拖到 Applications 捷徑；helper 會驗證並複製 app 至 <code>/Applications</code>。</li>
         <li>雙擊開啟。MacKVM 會顯示在 Dock 並提供一般控制視窗，也會在選單列顯示 KVM／雙螢幕圖示。</li>
         <li>可從 Dock 視窗或選單列圖示開啟控制。</li>
         <li>若希望登入後自動啟動，在選單中啟用 <strong>Launch MacKVM at Login</strong>。</li>
         <li>由登入項目自動啟動時會隱藏完整視窗以免搶走焦點；需要時可從選單列圖示或 Dock 重新開啟。</li>
       </ol>
-      <p>DMG 只含 <code>MacKVM.pkg</code> 與中英文安裝指南，不含獨立 app bundle 或 Finder 可執行的 <code>.command</code> 檔案。若要在 M5 Pro 上自行建置本機測試 app：</p>
+      <p>app-only DMG 內含 <code>MacKVM.app</code>、Applications 捷徑、可執行的 <code>Install MacKVM.command</code> 與 <code>Uninstall MacKVM.command</code>、共用 helper scripts，以及中英文安裝與解除安裝指南；不含 PKG。若要在 M5 Pro 上自行建置本機測試 app：</p>
       <pre><code>cd MacKVM
 ./scripts/build-app.sh --arch arm64
 ./scripts/build-app.sh --arch x86_64</code></pre>
       <p>建立本機測試 DMG，可使用：</p>
       <pre><code>./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist &amp;&amp; shasum -a 256 -c MacKVM-1.101.01-universal.dmg.sha256)</code></pre>
-      <p>本機測試 app 使用 ad-hoc 簽章，PKG 未簽署。套件與 DMG 各自產生 SHA-256 sidecar，驗證結果應顯示 <strong>OK</strong>。正式散布需以 Developer ID Application 簽署 app、以 Developer ID Installer 簽署 PKG，並分別公證 PKG 與外層 DMG。</p>
-      <p>正式散布請使用上述 release script；它會以 Developer ID Installer 簽署獨立 PKG，先提交、公證、staple 並驗證套件，再把同一份已 staple 的 PKG 放進另行簽署與公證的 DMG。兩個產物各自保有 checksum 與 submission metadata。</p>
+(cd dist &amp;&amp; shasum -a 256 -c MacKVM-1.102.04-universal.dmg.sha256)</code></pre>
+      <p>本機測試 app 使用 ad-hoc 簽章，DMG 不含 PKG。正式散布會以 Developer ID Application 簽署並公證 app 與 DMG。安裝 helper 會保留本機配對資料、金鑰、偏好設定與 TCC 權限記錄，不會重設或清除權限；保留記錄不保證 macOS 一定授權目前的 app，若無法使用權限請檢查系統設定。</p>
+      <p>release script 會將 Developer ID 簽署 app 壓成 ZIP 提交 Apple，待接受後 staple 並驗證 app bundle，再直接放入另行簽署與公證的 DMG。DMG 有自己的 checksum 與 submission metadata；app metadata 會放在 <code>dist/</code>。</p>
       <p>若要在 Mac App Store 以外正式散布，請先建立 notarytool Keychain profile，並把 profile 名稱與 Developer ID 身分設定在 <code>~/.config/codex/notarization.env</code>（權限 <code>0600</code>）。預設讀取共用 Codex 設定；完整 API key 設定也可使用。需要時仍可用 <code>--sign</code>、<code>--keychain-profile</code> 與 <code>--auth</code> 覆寫。</p>
       <pre><code>xcrun notarytool store-credentials "mackvm-notary" \
   --apple-id "YOUR_APPLE_ID" \
@@ -166,7 +166,7 @@
 
     <section id="permissions">
       <h2>6. 授權 macOS 權限</h2>
-      <p>MacKVM 需要兩台 Mac 都依序完成 <strong>Local Network</strong>、<strong>Input Monitoring</strong> 與 <strong>Accessibility</strong>。這可避免多個 macOS 權限提示重疊。</p>
+      <p>兩台 Mac 都應檢查本機網路與輸入存取。macOS 27 原本名為 Accessibility 的 App 授權頁改為<strong>裝置控制和資料取用</strong>；較廣的授權可能讓鍵盤可被監聽，而不另外列在輸入監控清單。可展開 MacKVM 的權限診斷查看獨立 API 結果；本機網路已檢視不代表已驗證授權。</p>
       <ol>
         <li>點擊選單列的 MacKVM 圖示，在 <strong>Set up this Mac</strong> 按 <strong>Enable Local Network</strong>。</li>
         <li>回應 macOS 的本機網路提示後，按 <strong>I handled the macOS prompt</strong> 才繼續下一步。</li>
@@ -174,7 +174,7 @@
         <li>三個必要步驟完成後，在 <strong>Control request notifications</strong> 按 <strong>Enable</strong>，並允許選用的通知。建議在第一次遠端控制前完成，避免通知授權提示佔用短暫的控制確認時間；只有按 Enable 才會跳出這個系統授權提示。</li>
         <li>從系統設定回到 MacKVM 時，狀態會自動重新整理；也可按 <strong>Refresh setup status</strong>。</li>
       </ol>
-      <p>如果之前按過拒絕、macOS 沒再跳出提示，請在目前步驟按 <strong>Settings</strong>，然後在系統設定中手動允許 MacKVM。完成本機網路步驟後，<strong>Review Local Network Settings</strong> 仍會保留；若找不到另一台裝置，請從這裡確認設定。Local Network 沒有公開的程式內授權查詢 API，所以畫面顯示的是「已檢視」，不是「已授權」。</p>
+      <p>如果之前按過拒絕、macOS 沒再跳出提示，請在目前步驟按 <strong>Settings</strong>，然後在系統設定中手動允許 MacKVM。完成本機網路步驟後，<strong>Review Local Network Settings</strong> 仍會保留；若找不到另一台裝置，請從這裡確認設定。按 Check Local Network Access 可對附近裝置測試一次新連線，並顯示結果與獨立的檢查時間；逾時或沒有裝置不能直接當成權限被拒絕。</p>
       <p>選單會跟隨 macOS 語言；目前提供 English 與繁體中文資源。三個必要權限的 macOS 說明文字也已翻譯。若曾經拒絕授權而沒有再次跳出提示，請使用對應的 <strong>Settings</strong> 按鈕。</p>
     </section>
 
@@ -241,7 +241,7 @@
         <li>使用 <strong>One keyboard on M5 Pro (USB-C)</strong> 時，把外接鍵盤與滑鼠接到 M5 Pro 或 MA270U USB hub。確認兩台 Mac 都可從本機鍵盤、滑鼠與觸控板發起控制，也都可以接收控制。</li>
         <li>若使用實體 USB switch，兩台都選 <strong>External USB switch (bidirectional)</strong>，先確認兩個 macOS 都看得到鍵盤與滑鼠，再測試雙向控制。</li>
         <li>觀察 MA270U OSD：USB-C 應顯示 M5 Pro，HDMI 1（或你選定的 HDMI 輸入）應顯示 Intel Mac。DDC/CI 失敗時，改用 OSD 手動切換並記錄診斷文字。</li>
-        <li>控制中測試 <strong>Return keyboard, mouse, and trackpad to [M5 Mac]</strong>、緊急快捷鍵、拔插網路與退出 app；確認本機輸入恢復，沒有按鍵、滑鼠按鈕或觸控板手勢狀態卡住。</li>
+        <li>控制中測試 <strong>Return keyboard, mouse, and trackpad to [M5 Mac]</strong>、緊急快捷鍵、拔插網路與退出 app；確認本機輸入恢復，沒有按鍵、滑鼠按鈕或觸控板手勢狀態卡住。Quit 會依工作階段角色，先將 App 管理的螢幕路由返回原主控，再結束；手動螢幕路由維持不變。</li>
       </ol>
     </section>
 
@@ -265,8 +265,8 @@
 
     <section id="uninstall">
       <h2>12. 解除安裝與重設權限</h2>
-      <p>一般手動解除安裝時，請先結束 MacKVM，再在 Finder 將「應用程式」中的 <code>MacKVM.app</code> 移到垃圾桶；若曾啟用登入時啟動，請到<strong>系統設定 &gt; 一般 &gt; 登入項目</strong>移除 MacKVM。此流程會保留使用者資料與隱私權限。</p>
-      <p><code>scripts/uninstall-app.sh</code> 僅供 repository／CLI 進階使用，不會放入 DMG。若使用此工具，請先結束 MacKVM，並在 repository 根目錄以目前登入的使用者執行，不要對整個 script 使用 <code>sudo</code>。</p>
+      <p>一般解除安裝時，請先結束 MacKVM，再雙擊 <code>Uninstall MacKVM.command</code>，或在 Finder 將「應用程式」中的 <code>MacKVM.app</code> 移到垃圾桶；若曾啟用登入時啟動，請到<strong>系統設定 &gt; 一般 &gt; 登入項目</strong>移除 MacKVM。此流程只移除 app，並保留本機資料與 TCC 記錄。</p>
+      <p>DMG 內含共用的 <code>scripts/uninstall-app.sh</code> helper，並透過 <code>Uninstall MacKVM.command</code> 執行。若使用清除指令，請先結束 MacKVM，並在 repository 或已掛載 DMG 根目錄以目前登入的使用者執行，不要對整個 script 使用 <code>sudo</code>。</p>
       <pre><code>./scripts/uninstall-app.sh --purge --dry-run
 ./scripts/uninstall-app.sh --purge</code></pre>
       <p>第一行只預覽；第二行會要求確認，再刪除 App、目前使用者的偏好設定、配對資料與身分私密金鑰，並要求只重設此 App 可重設的隱私權限，包含輔助使用與輸入監控。</p>
@@ -276,7 +276,7 @@
     </section>
 
     <footer>
-      <p>MacKVM 使用手冊 · 原始碼版本 1.101.01（build 96）· 最後更新 2026-10-12 · 正式散布的安裝檔須通過 Developer ID 簽章與 Apple 公證驗證。</p>
+      <p>MacKVM 使用手冊 · 原始碼版本 1.102.04（build 101）· 最後更新 2026-10-22 · 正式散布 app 與 DMG 須通過 Developer ID 簽章與 Apple 公證驗證。</p>
     </footer>
   </main>
 </body>

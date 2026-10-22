@@ -1,5 +1,6 @@
 import AppKit
 import Carbon
+import Combine
 import MacKVMCore
 import SwiftUI
 
@@ -240,6 +241,8 @@ private final class AppBootstrap: ObservableObject {
     let control: ControlCoordinator?
     let monitor: MonitorController?
     let controlRequestNotifier: ControlRequestNotifier?
+    let signingIdentityDiagnostics =
+        CodeSigningIdentityDiagnosticStore.captureCurrentProcess()
     let inputTopology = InputTopologyController()
     let launchAtLogin = LaunchAtLoginController()
     private let controlOwnershipHUD = ControlOwnershipHUDController()
@@ -255,6 +258,10 @@ private final class AppBootstrap: ObservableObject {
     /// would not prevent cross-scene double activation.
     @Published private(set) var combinedControlRequestInFlight = false
     @Published private(set) var combinedControlStatus: String?
+    @Published private(set) var lastPermissionCheckAt: Date?
+    @Published private(set) var localNetworkCheckResult: LocalNetworkCheckResult?
+    @Published private(set) var localNetworkCheckInProgress = false
+    @Published private(set) var lastLocalNetworkCheckAt: Date?
     private var combinedControlRequestGeneration: UInt64 = 0
     private var activeControlRequestAlert: NSAlert?
     /// Keep the full request identity and a presentation token. Request IDs
@@ -265,6 +272,15 @@ private final class AppBootstrap: ObservableObject {
     private var activeControlRequestAlertHostWindow: NSWindow?
     private var controlRequestAlertTimeout: DispatchWorkItem?
     private var terminationCleanupStarted = false
+    private var pendingLocalNetworkRecheck = false
+    private var lastLocalNetworkCheckStartedAt: Date?
+    private var localNetworkCheckGeneration: UUID?
+    private var localNetworkAccessObservation: AnyCancellable?
+    private var latestAuthenticatedPeerID: UUID?
+    private lazy var permissionRefreshMonitor = PermissionRefreshMonitor {
+        [weak self] in
+        self?.refreshPermissionStatus()
+    }
 
     init() {
         do {
@@ -337,6 +353,14 @@ private final class AppBootstrap: ObservableObject {
             // the idle and receiving sides without leaking it to other apps.
             errorMessage = nil
             canResetIdentity = false
+            localNetworkAccessObservation = discovery
+                .$localNetworkAccessBlocked
+                .removeDuplicates()
+                .dropFirst()
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] isBlocked in
+                    self?.discoveryNetworkBlockStateChanged(isBlocked)
+                }
             control.onOwnershipTransition = {
                 [weak self, weak control] transition in
                 guard let control else { return }
@@ -454,9 +478,23 @@ private final class AppBootstrap: ObservableObject {
                     self?.reviewIncomingControlRequest(requestID)
                 }
             }
-            if OnboardingDefaults.resolveLocalNetworkAccessReviewed(
-                hadExistingDeviceCredentials: hadExistingDeviceCredentials
-            ) {
+            let currentVersion = Bundle.main.object(
+                forInfoDictionaryKey: "CFBundleShortVersionString"
+            ) as? String ?? "Unknown"
+            let currentBuild = Bundle.main.object(
+                forInfoDictionaryKey: "CFBundleVersion"
+            ) as? String ?? "Unknown"
+            let isLocalNetworkAccessReviewed =
+                OnboardingDefaults.resolveLocalNetworkAccessReviewed(
+                    hadExistingDeviceCredentials:
+                        hadExistingDeviceCredentials,
+                    currentBuild: "\(currentVersion)(\(currentBuild))"
+                )
+            // Existing installations keep discovery running after an update
+            // even though the old review acknowledgement was invalidated.
+            // A new installation still waits for the first-run Local Network
+            // action before opening Bonjour services.
+            if isLocalNetworkAccessReviewed || hadExistingDeviceCredentials {
                 startNetworkServices()
             }
             MacKVMApplicationTermination.handler = { [weak self] completion in
@@ -641,6 +679,10 @@ private final class AppBootstrap: ObservableObject {
             return
         }
         terminationCleanupStarted = true
+        pendingLocalNetworkRecheck = false
+        localNetworkCheckGeneration = nil
+        localNetworkCheckInProgress = false
+        permissionRefreshMonitor.terminate()
         controlRequestNotifier?.clearAllControlRequestNotifications()
 
         guard let control, let monitor else {
@@ -650,6 +692,9 @@ private final class AppBootstrap: ObservableObject {
             return
         }
 
+        let terminationDisplayRole = control.displayRouteRoleForTermination
+            ?? (combinedControlRequestInFlight ? .local : nil)
+        cancelCombinedControlRequest()
         let cancelledMonitorRoutes = monitor.beginTermination()
         control.stopForQuit { [weak self] in
             guard let self else {
@@ -658,8 +703,20 @@ private final class AppBootstrap: ObservableObject {
             }
             self.discovery?.stop()
             self.secureSession?.stop()
-            monitor.switchToLocalForTermination {
+            let finishTermination: () -> Void = {
                 completion()
+            }
+            switch terminationDisplayRole {
+            case .some(.local):
+                monitor.switchToLocalForTermination(
+                    completion: finishTermination
+                )
+            case .some(.remote):
+                monitor.switchToRemoteForTermination(
+                    completion: finishTermination
+                )
+            case .some(.unknown), .none:
+                finishTermination()
             }
         }
         cancelledMonitorRoutes.forEach { $0() }
@@ -691,6 +748,143 @@ private final class AppBootstrap: ObservableObject {
         discovery.start()
         secureSession.start()
         networkServicesStarted = true
+    }
+
+    func beginPermissionStatusMonitoring(for surfaceID: UUID) {
+        permissionRefreshMonitor.surfaceAppeared(surfaceID)
+        consumePendingLocalNetworkRecheck()
+        checkLocalNetworkAccessIfNeeded()
+    }
+
+    func endPermissionStatusMonitoring(for surfaceID: UUID) {
+        permissionRefreshMonitor.surfaceDisappeared(surfaceID)
+    }
+
+    func applicationDidBecomeActive() {
+        permissionRefreshMonitor.applicationDidBecomeActive()
+        refreshPermissionStatus()
+        if pendingLocalNetworkRecheck {
+            consumePendingLocalNetworkRecheck()
+        } else {
+            checkLocalNetworkAccessIfNeeded()
+        }
+    }
+
+    func applicationWillResignActive() {
+        permissionRefreshMonitor.applicationWillResignActive()
+        if permissionRefreshMonitor.isPolling && networkServicesStarted {
+            pendingLocalNetworkRecheck = true
+        }
+    }
+
+    func refreshPermissionStatus() {
+        guard let inputCapture, let inputSink else { return }
+        PermissionOnboardingPolicy.refresh(
+            inputCapture: inputCapture,
+            inputSink: inputSink
+        )
+        lastPermissionCheckAt = Date()
+    }
+
+    private func discoveryNetworkBlockStateChanged(_ isBlocked: Bool) {
+        guard !terminationCleanupStarted else { return }
+        // A browser/listener denial supersedes an older peer probe or socket.
+        // Fence its callback and return the displayed status to unknown when
+        // that service later recovers; discovery recovery alone does not prove
+        // that every peer endpoint is reachable.
+        localNetworkCheckGeneration = nil
+        localNetworkCheckInProgress = false
+        localNetworkCheckResult = nil
+        lastLocalNetworkCheckAt = nil
+        lastLocalNetworkCheckStartedAt = nil
+        if !isBlocked {
+            checkLocalNetworkAccessIfNeeded()
+        }
+    }
+
+    func authenticatedConnectionDidChange(to peerID: UUID?) {
+        let isNewAuthenticatedPeer =
+            LocalNetworkStatusFreshnessPolicy.hasNewAuthenticatedPeer(
+                previousPeerID: latestAuthenticatedPeerID,
+                currentPeerID: peerID
+            )
+        latestAuthenticatedPeerID = peerID
+        guard isNewAuthenticatedPeer else { return }
+
+        // A new authenticated socket is fresher evidence than an older probe.
+        // Fence an in-flight result too, then probe the newly authenticated
+        // endpoint if a permission surface is still visible.
+        localNetworkCheckResult = nil
+        if localNetworkCheckInProgress {
+            localNetworkCheckGeneration = nil
+            localNetworkCheckInProgress = false
+            if permissionRefreshMonitor.isPolling && networkServicesStarted {
+                checkLocalNetworkAccess()
+            }
+        }
+    }
+
+    func checkLocalNetworkAccess() {
+        guard !terminationCleanupStarted,
+              !localNetworkCheckInProgress else {
+            return
+        }
+        guard let discovery else {
+            localNetworkCheckResult = .unavailable
+            return
+        }
+        if !networkServicesStarted {
+            startNetworkServices()
+        }
+
+        localNetworkCheckInProgress = true
+        localNetworkCheckResult = nil
+        let generation = UUID()
+        localNetworkCheckGeneration = generation
+        lastLocalNetworkCheckStartedAt = Date()
+        discovery.checkLocalNetworkAccess(
+            preferredPeerID: secureSession?.connectedPeerID
+        ) { [weak self, weak secureSession] result in
+            guard let self,
+                  self.localNetworkCheckGeneration == generation else {
+                return
+            }
+            self.localNetworkCheckGeneration = nil
+            self.localNetworkCheckInProgress = false
+            self.localNetworkCheckResult = result
+            self.lastLocalNetworkCheckAt = Date()
+            if result == .reachable {
+                secureSession?.retryPendingConnectionAfterSuccessfulLocalNetworkCheck()
+            }
+            self.consumePendingLocalNetworkRecheck()
+        }
+    }
+
+    fileprivate func checkLocalNetworkAccessIfNeeded() {
+        guard permissionRefreshMonitor.isPolling,
+              networkServicesStarted,
+              !localNetworkCheckInProgress else {
+            return
+        }
+        if let lastLocalNetworkCheckStartedAt,
+           Date().timeIntervalSince(lastLocalNetworkCheckStartedAt) < 5 {
+            return
+        }
+        checkLocalNetworkAccess()
+    }
+
+    func openLocalNetworkSettings() {
+        pendingLocalNetworkRecheck = PrivacySettings.open(.localNetwork)
+    }
+
+    private func consumePendingLocalNetworkRecheck() {
+        guard pendingLocalNetworkRecheck,
+              !localNetworkCheckInProgress,
+              permissionRefreshMonitor.applicationIsActive else {
+            return
+        }
+        pendingLocalNetworkRecheck = false
+        checkLocalNetworkAccess()
     }
 
     func beginLocalNetworkPermissionRequest() {
@@ -924,6 +1118,7 @@ private struct MacKVMMenuView: View {
     @Environment(\.openWindow) private var openWindow
     @AppStorage(OnboardingDefaults.localNetworkAccessReviewedKey)
     private var localNetworkAccessReviewed = false
+    @State private var permissionRefreshSurfaceID = UUID()
     @State private var supportCopyStatus: String?
     @State private var editingFriendlyNames: [UUID: String] = [:]
 
@@ -978,15 +1173,33 @@ private struct MacKVMMenuView: View {
         // leaving the return-to-local/quit control pinned at the bottom.
         .frame(width: Self.menuWidth, height: Self.menuHeight)
         .onAppear {
+            bootstrap.beginPermissionStatusMonitoring(
+                for: permissionRefreshSurfaceID
+            )
             refreshSetupState()
             monitor.refreshDetectedDisplays()
+        }
+        .onDisappear {
+            bootstrap.endPermissionStatusMonitoring(
+                for: permissionRefreshSurfaceID
+            )
         }
         .onReceive(
             NotificationCenter.default.publisher(
                 for: NSApplication.didBecomeActiveNotification
             )
         ) { _ in
-            refreshSetupState()
+            bootstrap.applicationDidBecomeActive()
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: NSApplication.willResignActiveNotification
+            )
+        ) { _ in
+            bootstrap.applicationWillResignActive()
+        }
+        .onReceive(secureSession.connectedPeerIDPublisher) { peerID in
+            bootstrap.authenticatedConnectionDidChange(to: peerID)
         }
     }
 
@@ -1032,25 +1245,65 @@ private struct MacKVMMenuView: View {
                         Text(item.permission.displayName)
                         Spacer()
                         setupStatus(for: item)
+                        if item.permission != .localNetwork,
+                           item.status != .complete {
+                            Button("Settings") {
+                                PrivacySettings.open(item.permission)
+                            }
+                            .font(.caption)
+                        }
                     }
-                    if item.status == .current {
+                    if item.permission == .localNetwork {
+                        if item.status == .current {
+                            setupAction(for: item.permission)
+                        }
+                    } else if item.status != .complete {
                         setupAction(for: item.permission)
                     }
                 }
             }
 
             if localNetworkAccessReviewed {
-                Button("Review Local Network Settings") {
-                    PrivacySettings.open(.localNetwork)
+                HStack {
+                    Button("Review Local Network Settings") {
+                        bootstrap.openLocalNetworkSettings()
+                    }
+                    .font(.caption)
+                    Button("Check Local Network Access") {
+                        bootstrap.checkLocalNetworkAccess()
+                    }
+                    .font(.caption)
+                    .disabled(bootstrap.localNetworkCheckInProgress)
                 }
-                .font(.caption)
-            Text("If nearby devices are not found, confirm MacKVM is allowed in Local Network settings. macOS does not let MacKVM verify that choice itself.")
+                Text("If nearby devices are not found, confirm MacKVM is allowed in Local Network settings. macOS does not let MacKVM verify that choice itself.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
 
+            if #available(macOS 27, *) {
+                Text("Device Control and Data Access can also provide keyboard event access, so a separate Input Monitoring row may not appear.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            DisclosureGroup("Permission diagnostics") {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Input capture check")
+                        .font(.caption2.weight(.semibold))
+                    Text(inputCapture.permissionSnapshot.diagnosticSummary)
+                        .font(.caption2.monospaced())
+                        .textSelection(.enabled)
+                    Text("Remote input check")
+                        .font(.caption2.weight(.semibold))
+                    Text(inputSink.permissionSnapshot.diagnosticSummary)
+                        .font(.caption2.monospaced())
+                        .textSelection(.enabled)
+                }
+                .foregroundStyle(.secondary)
+            }
+            .font(.caption2)
+
             if setupState.isReadyForInputSharing {
-                Label("Input permissions ready", systemImage: "checkmark.seal.fill")
+                Label("System reports input access", systemImage: "checkmark.seal.fill")
                     .font(.caption)
                     .foregroundStyle(.green)
             }
@@ -1073,29 +1326,116 @@ private struct MacKVMMenuView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Button("Refresh setup status") {
-                refreshSetupState()
+            HStack {
+                Button("Refresh setup status") {
+                    refreshSetupState(checkNetwork: true)
+                }
+                Spacer(minLength: 8)
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(permissionCheckTimestamp)
+                    Text(networkCheckTimestamp)
+                }
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
             }
-            .font(.caption)
         }
+    }
+
+    private var permissionCheckTimestamp: String {
+        guard let checkedAt = bootstrap.lastPermissionCheckAt else {
+            return String(localized: "Never checked")
+        }
+        let time = checkedAt.formatted(.dateTime.hour().minute().second())
+        return String(
+            format: String(localized: "Last checked: %@"),
+            time
+        )
+    }
+
+    private var networkCheckTimestamp: String {
+        guard let checkedAt = bootstrap.lastLocalNetworkCheckAt else {
+            return String(localized: "Never tested")
+        }
+        let time = checkedAt.formatted(.dateTime.hour().minute().second())
+        return String(
+            format: String(localized: "Last network check: %@"),
+            time
+        )
+    }
+
+    private var localNetworkSetupStatus: LocalNetworkSetupStatus {
+        LocalNetworkSetupStatus.resolve(
+            hasCurrentAuthenticatedConnection:
+                secureSession.connectedPeerID != nil,
+            isExplicitlyBlocked: secureSession.localNetworkAccessBlocked
+                || discovery.localNetworkAccessBlocked,
+            isChecking: bootstrap.localNetworkCheckInProgress,
+            latestCheckResult: bootstrap.localNetworkCheckResult
+        )
     }
 
     @ViewBuilder
     private func setupStatus(
         for item: PermissionOnboardingChecklistItem
     ) -> some View {
-        if item.permission == .localNetwork, item.status == .complete {
-            Label("Reviewed", systemImage: "checkmark.circle.fill")
-                .font(.caption)
-                .foregroundStyle(.green)
+        if item.permission == .localNetwork {
+            switch localNetworkSetupStatus {
+            case .working:
+                Label("Connection working", systemImage: "checkmark.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.green)
+            case .reachable:
+                Label("Network test succeeded", systemImage: "checkmark.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.green)
+            case .blocked:
+                Label("Local Network access blocked by macOS", systemImage: "xmark.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            case .checking:
+                Label("Checking Local Network Access", systemImage: "arrow.triangle.2.circlepath")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            case .unconfirmed:
+                Label("Network test could not be confirmed", systemImage: "questionmark.circle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            case .busy:
+                Label("Network check waiting for pairing to finish", systemImage: "clock")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            case .noPeer:
+                Label("No peer available to test", systemImage: "questionmark.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            case .unavailable:
+                Label("Network check unavailable", systemImage: "exclamationmark.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            case .unverified:
+                if item.status == .complete {
+                    Label("Reviewed; access not verified", systemImage: "info.circle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if item.status == .current {
+                    Label("Not reviewed", systemImage: "info.circle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                } else {
+                    Label("Waiting", systemImage: "clock")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
         } else {
             switch item.status {
             case .complete:
-                Label("Complete", systemImage: "checkmark.circle.fill")
+                Label("System reports access", systemImage: "checkmark.circle.fill")
                     .font(.caption)
                     .foregroundStyle(.green)
             case .current:
-                Label("Action needed", systemImage: "exclamationmark.circle.fill")
+                Label("Access not reported", systemImage: "exclamationmark.circle.fill")
                     .font(.caption)
                     .foregroundStyle(.orange)
             case .waiting:
@@ -1129,11 +1469,11 @@ private struct MacKVMMenuView: View {
                     .buttonStyle(.borderedProminent)
                 }
                 Button("Settings") {
-                    PrivacySettings.open(.localNetwork)
+                    bootstrap.openLocalNetworkSettings()
                 }
             }
         case .inputMonitoring, .accessibility:
-            HStack {
+            if !setupState.isComplete(permission) {
                 Button(permissionRequestTitle(for: permission)) {
                     _ = PermissionOnboardingPolicy.requestPermission(
                         permission,
@@ -1147,11 +1487,14 @@ private struct MacKVMMenuView: View {
                     ) {
                         PrivacySettings.open(.inputMonitoring)
                     }
+                    if PermissionOnboardingPolicy.shouldOpenAccessibilitySettingsAfterRequest(
+                        for: permission,
+                        accessibilityGranted: inputSink.hasAccessibilityPermission
+                    ) {
+                        PrivacySettings.open(.accessibility)
+                    }
                 }
                 .buttonStyle(.borderedProminent)
-                Button("Settings") {
-                    PrivacySettings.open(permission)
-                }
             }
         }
     }
@@ -1159,21 +1502,26 @@ private struct MacKVMMenuView: View {
     private func permissionRequestTitle(for permission: MacKVMPermission) -> String {
         switch permission {
         case .localNetwork:
-            String(localized: "Request Local Network")
+            return String(localized: "Request Local Network")
         case .inputMonitoring:
-            String(localized: "Request Input Monitoring")
+            return String(localized: "Request Input Monitoring")
         case .accessibility:
-            String(localized: "Request Accessibility")
+            if #available(macOS 27, *) {
+                return String(localized: "Request Device Control and Data Access")
+            }
+            return String(localized: "Request Accessibility")
         }
     }
 
-    private func refreshSetupState() {
-        PermissionOnboardingPolicy.refresh(
-            inputCapture: inputCapture,
-            inputSink: inputSink
-        )
+    private func refreshSetupState(checkNetwork: Bool = false) {
+        bootstrap.refreshPermissionStatus()
         if localNetworkAccessReviewed {
             bootstrap.startNetworkServices()
+        }
+        if checkNetwork {
+            bootstrap.checkLocalNetworkAccess()
+        } else if localNetworkAccessReviewed {
+            bootstrap.checkLocalNetworkAccessIfNeeded()
         }
     }
 
@@ -1231,12 +1579,20 @@ private struct MacKVMMenuView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Pairing with \(peerName)…")
                 .font(.subheadline.weight(.semibold))
-            Text(
-                "If macOS asks about the firewall, allow incoming connections "
-                    + "on the receiving Mac, then retry pairing."
-            )
+            switch PairingProgressGuidance.resolve(
+                localNetworkAccessBlocked:
+                    discovery.localNetworkAccessBlocked
+            ) {
+            case .localNetwork:
+                localNetworkBlockedGuidance
+            case .firewall:
+                Text(
+                    "If macOS asks about the firewall, allow incoming connections "
+                        + "on the receiving Mac, then retry pairing."
+                )
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            }
             HStack {
                 if canCancel {
                     Button("Cancel pairing") {
@@ -1254,6 +1610,18 @@ private struct MacKVMMenuView: View {
                     .buttonStyle(.borderedProminent)
                 }
             }
+        }
+    }
+
+    private var localNetworkBlockedGuidance: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(verbatim: LocalNetworkRecoveryGuidance.localizedMessage)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Button("Review Local Network Settings") {
+                bootstrap.openLocalNetworkSettings()
+            }
+            .font(.caption)
         }
     }
 
@@ -1308,11 +1676,17 @@ private struct MacKVMMenuView: View {
     }
 
     private var peerSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let localNetworkBlocked = LocalNetworkAccessBlockedPolicy.isBlocked(
+            by: secureSession.localNetworkAccessBlocked,
+            discovery.localNetworkAccessBlocked
+        )
+        return VStack(alignment: .leading, spacing: 8) {
             Text("Nearby devices")
                 .font(.subheadline.weight(.semibold))
 
-            if !bootstrap.networkServicesStarted {
+            if localNetworkBlocked && discovery.peers.isEmpty {
+                localNetworkBlockedGuidance
+            } else if !bootstrap.networkServicesStarted {
                 Text("Complete the Local Network step above to discover nearby devices.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -1399,9 +1773,13 @@ private struct MacKVMMenuView: View {
                     }
                 }
             }
-            localizedStatusText(secureSession.status)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+            if localNetworkBlocked && !discovery.peers.isEmpty {
+                localNetworkBlockedGuidance
+            } else if !localNetworkBlocked {
+                localizedStatusText(secureSession.status)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -1619,7 +1997,11 @@ private struct MacKVMMenuView: View {
             localKeyFingerprint: localFingerprint,
             peers: peerInfo,
             connectionStatus: secureSession.status,
-            connectedPeerID: secureSession.connectedPeerID
+            connectedPeerID: secureSession.connectedPeerID,
+            localNetworkStatus: localNetworkSetupStatus,
+            lastBrowserError: discovery.lastBrowserError,
+            lastListenerError: discovery.lastListenerError,
+            signingIdentity: bootstrap.signingIdentityDiagnostics
         )
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
@@ -1663,12 +2045,18 @@ private struct MacKVMMenuView: View {
                 granted: inputCapture.hasInputMonitoringPermission
             )
             permissionStatusRow(
-                title: "Accessibility",
+                title: MacKVMPermission.accessibility.displayName,
                 granted: inputSink.hasAccessibilityPermission
             )
-            Text("The controlling Mac needs Input Monitoring and Accessibility; the receiving Mac needs Accessibility.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+            if #available(macOS 27, *) {
+                Text("The controlling Mac needs system-reported keyboard event access and Device Control and Data Access. The receiving Mac needs Device Control and Data Access and system-reported event posting access.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("The controlling Mac needs system-reported keyboard event access and Accessibility. The receiving Mac needs Accessibility and system-reported event posting access.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
 
             if let request = control.pendingIncomingControlRequest {
                 incomingControlRequestSection(request)
@@ -2029,7 +2417,7 @@ private struct MacKVMMenuView: View {
             Text(LocalizedStringKey(title))
             Spacer()
             Label(
-                granted ? "Granted" : "Required",
+                granted ? "System reports access" : "Access not reported",
                 systemImage: granted
                     ? "checkmark.circle.fill"
                     : "exclamationmark.circle.fill"

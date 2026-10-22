@@ -14,10 +14,11 @@ usage() {
 Usage: scripts/install-app.sh [--source PATH] [--target-dir PATH]
        [--launch] [--dry-run]
 
-Installs a validated MacKVM.app into /Applications by default. This is a
-repository/CLI helper and is not shipped in the release DMG. Regular release
-installs use MacKVM.pkg. Existing app data, pairing keys, and macOS privacy
-permissions are not changed.
+Installs a validated MacKVM.app into /Applications by default. The app-only
+release DMG calls this helper from Install MacKVM.command; use --source to
+select the app bundle on the mounted image. The installer leaves pairing data
+and private keys intact and does not reset macOS privacy permissions. macOS
+decides whether an existing permission grant applies to the incoming app.
 EOF
 }
 
@@ -113,6 +114,20 @@ codesign --verify --deep --strict "$source_app" >/dev/null 2>&1 || {
   die "the source app has an invalid code signature: $source_app"
 }
 
+signature_team_identifier() {
+  local app_path="$1"
+  local display_output
+  display_output="$(codesign --display --verbose=4 "$app_path" 2>&1)" || return 1
+  printf '%s\n' "$display_output" | sed -n 's/^TeamIdentifier=//p' | head -n 1
+}
+
+designated_requirement() {
+  local app_path="$1"
+  local requirement_output
+  requirement_output="$(codesign -d -r- "$app_path" 2>&1)" || return 1
+  printf '%s\n' "$requirement_output" | sed -n 's/^designated => //p' | head -n 1
+}
+
 if [[ -e "$target_app" || -L "$target_app" ]]; then
   [[ ! -L "$target_app" ]] || die "refusing to replace a symlink at $target_app"
   [[ -f "$target_app/Contents/Info.plist" ]] || {
@@ -123,11 +138,39 @@ if [[ -e "$target_app" || -L "$target_app" ]]; then
   [[ "$existing_bundle_identifier" == "$expected_bundle_identifier" ]] || {
     die "existing target has an unexpected bundle identifier: $existing_bundle_identifier"
   }
+
+  existing_team_identifier="$(signature_team_identifier "$target_app")" || {
+    die "could not inspect the installed app's signing identity; it was left in place"
+  }
+  if [[ -n "$existing_team_identifier" && "$existing_team_identifier" != "not set" ]]; then
+    incoming_team_identifier="$(signature_team_identifier "$source_app")" || {
+      die "could not inspect the incoming app's signing identity; the installed app was left in place"
+    }
+    [[ "$incoming_team_identifier" == "$existing_team_identifier" ]] || {
+      die "the installed app is signed for Team ID $existing_team_identifier, but the incoming app is signed for ${incoming_team_identifier:-<unknown>}; install a build signed for the same Team ID. The installed app was left in place"
+    }
+
+    existing_requirement="$(designated_requirement "$target_app")" || {
+      die "could not inspect the installed app's macOS code-signing requirement; it was left in place"
+    }
+    incoming_requirement="$(designated_requirement "$source_app")" || {
+      die "could not inspect the incoming app's macOS code-signing requirement; the installed app was left in place"
+    }
+    [[ -n "$existing_requirement" && "$existing_requirement" == "$incoming_requirement" ]] || {
+      die "the incoming app has a different macOS code-signing requirement; install a build with the same signing requirement. The installed app was left in place"
+    }
+  fi
 fi
 
 target_binary="$target_app/Contents/MacOS/MacKVM"
-if [[ -x "$target_binary" ]] && pgrep -f "$target_binary" >/dev/null 2>&1; then
-  die "MacKVM is running; quit it before installing the new app"
+if [[ -x "$target_binary" ]]; then
+  command -v pgrep >/dev/null 2>&1 || die "Cannot verify that MacKVM is stopped because pgrep is unavailable."
+  if pgrep -f "$target_binary" >/dev/null 2>&1; then
+    die "MacKVM is running; quit it before installing the new app"
+  else
+    pgrep_status=$?
+  fi
+  [[ "$pgrep_status" -eq 1 ]] || die "Could not verify whether MacKVM is stopped (pgrep exit $pgrep_status)."
 fi
 
 echo "Source: $source_app"
@@ -204,7 +247,8 @@ if [[ -n "$backup_app" && -e "$backup_app" ]]; then
 fi
 
 echo "Installed MacKVM at $target_app"
-echo "Pairing data, private keys, and macOS privacy permissions were preserved."
+echo "Pairing data and private keys were left intact; macOS privacy permissions were not reset."
+echo "macOS decides whether existing privacy permission grants apply to the incoming app."
 if [[ "$launch_after_install" == true ]]; then
   open "$target_app"
 fi

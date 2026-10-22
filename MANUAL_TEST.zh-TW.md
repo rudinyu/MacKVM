@@ -31,40 +31,39 @@ Intel Mac 的 `/Applications`，再開啟各自架構的 app。
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.101.01-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.102.04-universal.dmg.sha256)
 ```
 
-前兩個指令會在本機建置並驗證 1.101.01（build 96）原始碼；checksum 指令會驗證 `dist` 中
-本機測試用 DMG。此次僅調整封裝流程，尚未產生或發布正式發行產物。本機 PKG 未簽署，
-不可用於正式散布。
+前兩個指令會在本機建置並驗證 1.102.04（build 101）原始碼；checksum 指令會驗證 `dist` 中
+本機測試用 DMG。目前尚未產生或發布正式發行產物。本機 app 與 DMG 使用 ad-hoc 簽章，不可
+用於正式散布；映像檔不含 PKG。
 
 預期 app 顯示 `arm64` 與 `x86_64`，並明確標示 ad-hoc 簽章僅供本機測試。checksum 應回報
-`OK`，封裝後 `dist/.staging` 應不存在。正式 release 必須使用 Developer ID Application 與
-Developer ID Installer 身分、hardened runtime、secure timestamp，並完成兩次 Apple 公證提交。
-預設會從 app 身分推導 Installer 身分，也可用 `--installer-sign` 覆寫。共用 Codex 設定提供
-app 簽章身分與 notary 認證；可用 `--sign` 與 `--keychain-profile` 覆寫。正式流程為：
+`OK`，封裝後 `dist/.staging` 應不存在。正式 release 需要 Developer ID Application 身分、
+hardened runtime、secure timestamp，並提交兩次 Apple 公證：一次提交 app，一次提交 DMG。
+app 簽章身分與 notary 認證由共用 Codex 設定提供；可用 `--sign`、`--keychain-profile` 與
+`--auth` 覆寫。正式流程為：
 
 ```sh
 ./scripts/package-notarized-dmg.sh --arch universal
 ```
 
-standalone `dist/MacKVM-1.101.01-universal.pkg` 必須先通過 Apple 公證、staple 與驗證，之後
-才會用來組成 DMG。檢查最後的正式產物：
+app 與 DMG 都必須通過 Apple 公證、staple 與驗證。檢查 app bundle 與最後的正式映像檔：
 
 ```sh
-pkgutil --check-signature dist/MacKVM-1.101.01-universal.pkg
-spctl --assess --type install --verbose=4 dist/MacKVM-1.101.01-universal.pkg
-xcrun stapler validate dist/MacKVM-1.101.01-universal.pkg
-xcrun stapler validate dist/MacKVM-1.101.01-universal.dmg
-(cd dist && shasum -a 256 -c MacKVM-1.101.01-universal.pkg.sha256)
-(cd dist && shasum -a 256 -c MacKVM-1.101.01-universal.dmg.sha256)
+codesign --verify --deep --strict --verbose=2 dist/universal/MacKVM.app
+spctl --assess --type execute --verbose=4 dist/universal/MacKVM.app
+xcrun stapler validate dist/universal/MacKVM.app
+xcrun stapler validate dist/MacKVM-1.102.04-universal.dmg
+(cd dist && shasum -a 256 -c MacKVM-1.102.04-universal.dmg.sha256)
 ```
 
-在 Finder 裝載正式 DMG，確認內容只有 `MacKVM.pkg`、`INSTALL.md` 與 `INSTALL.zh-TW.md`，
-沒有 `.command` 或重複的 loose app。雙擊 `MacKVM.pkg` 安裝，確認 `/Applications` 出現 MacKVM
-並可正常啟動。測試一般解除安裝時，先結束 MacKVM，再於 Finder 將「應用程式」中的 App
-移到垃圾桶，若有登入項目也一併移除；確認使用者資料與權限仍保留。不可在真實帳號使用
-CLI 清除工具。
+在 Finder 裝載正式 DMG，確認內含 `MacKVM.app`、`/Applications` 捷徑、兩個可執行 Finder 指令、
+共用安裝／解除安裝 helper，以及四份中英文指南；確認不含 PKG。雙擊 `Install MacKVM.command`
+安裝，確認 `/Applications` 出現 MacKVM 並可正常啟動。確認本機資料與 TCC 記錄沒有變更；
+另行記錄 macOS 是否授權目前的 app，若無法使用權限則檢查系統設定。安裝 helper 不會重設或清除權限。
+測試一般解除安裝時，先結束 MacKVM，再雙擊 `Uninstall MacKVM.command`；確認保存資料仍存在。
+不可在真實帳號使用 CLI 清除工具。
 
 ### 1.1 建置與執行 DDC 診斷工具
 
@@ -130,7 +129,46 @@ HDMI 1 使用 VCP 17（`0x11`）。其他型號使用自己的 mapping；螢幕�
 
 預期結果：權限提示不重疊；通知關閉時選單列顯示警示符號，但請求仍保留在選單。
 
+權限回歸驗收：
+
+- 本機網路在測試前應區分已檢視與已驗證；按 **Check Local Network Access** 後，顯示新連線的
+  測試結果與獨立的檢查時間。輸入權限輪詢不能更新網路檢查時間，先前的安全連線也不能蓋過新測試失敗。
+- 讓 MacKVM 視窗保持可見，在前景系統設定變更權限；輸入檢查應每兩秒更新，返回 App 時合併執行
+  一次網路重測。最後一個視窗／選單關閉後，輸入輪詢應停止。
+- macOS 27 同時檢查「裝置控制和資料取用」與「輸入監控」。App 的「系統回報可存取」
+  代表目前 API 結果，不代表系統的獨立輸入監控清單一定存在 MacKVM。
+- 展開權限診斷，在停用或移除授權前後重新整理，並完整退出再開啟一次；記錄 CG listen/post、
+  AX 與 IOHID 的結果。必要的 Core Graphics 操作被拒絕時，其他權限仍允許也不能開始控制。
+
 ## 4. 探索與配對
+
+Build 101 本機網路與簽章驗收（兩台 Mac）：
+
+1. 在「隱私權與安全性 → 本機網路」停用 MacKVM，再重新開啟 App。沒有 peer 時，約五秒內
+   檢查 **Nearby devices** 是否顯示被擋提示與設定按鈕，而非 **Searching…**；收到明確政策
+   拒絕時，設定檢查列也必須顯示被擋。
+2. 在配對期間停用權限，確認配對進度指出本機網路問題，而非只有一般防火牆說明。
+3. 重新允許權限，先等待自動恢復，再視需要退出重開；記錄探索與配對是否恢復，包括失敗情況。
+4. 從 1.101.01 升級後複製支援資訊，檢查執行檔、Team ID、簽章識別碼、designated requirement、
+   憑證指紋與逐欄比較。首次新增而沒有前次資料的欄位必須顯示未知；第二個完整記錄的 build
+   才能比較是否維持相同。這些比較本身不能判定隱私權限遺失原因，ad-hoc 結果須另外標示。
+5. 發生失敗時，保存狀態文字及以下指令輸出：
+
+   ```sh
+   log show --last 15m --info --predicate 'process == "MacKVM" AND category == "network-services"'
+   ```
+
+本機網路恢復驗收（需在實機變更系統設定）：
+
+- 不啟動其他 peer，停用 MacKVM 的本機網路權限，記錄掃描／廣播狀態及原始錯誤
+  domain/code。只有明確的政策拒絕才應顯示被 macOS 阻擋；逾時或一般網路錯誤不能誤判。
+- 重新允許後，不退出 MacKVM，確認掃描與廣播自動恢復；也測試所有 MacKVM 視窗關閉的情況。
+  重複停用／啟用，並確認在被擋時退出 App 會停止重試。
+- 從已審核的舊 build 升級，確認不沿用舊的審核值、會重新驗證網路，且配對憑證仍保留。
+  再開啟相同 build，確認不會重複執行升級遷移。
+- 在升級及權限拒絕前後複製支援資訊，確認包含 build、本機網路狀態、掃描／廣播最後錯誤、
+  本次與上次的 cdhash／Team ID。執行檔更新通常會改變 cdhash，不能單憑此判定簽章團隊改變。
+- 保存實際失敗操作的 DNS-SD 政策錯誤紀錄；只有 SDK 常數或注入測試，不算實機錯誤碼證據。
 
 1. 兩台都開啟 MacKVM，在 **Nearby devices** 看見對方。
 2. 任一台按 **Pair**，核對兩台相同的六位數驗證碼與對方名稱。
@@ -248,6 +286,10 @@ US 控制、德文接收為例，那會是「y」）；步驟 10 確認寄送端
 只有真的找不到對應字元的按鍵才會安全中止連線；電源鍵在任何情況下都不會傳送到
 接收端。
 
+Quit 回歸驗收：M5 控制 Intel 時，在 Intel 按 Quit，必須先釋放遠端輸入，並讓 App 管理的
+螢幕路由返回 M5；交換主控／接收角色後重測。主控端按 Quit 時回到該主控端；手動選擇且
+未由 App 管理的螢幕路由不能新增 DDC 切換。返回目標依工作階段角色決定，不以晶片或鍵盤是否連接推斷。
+
 ## 7. 配對資料與支援資訊
 
 1. 在 **Paired device information** 查看友善名稱與型號。
@@ -295,8 +337,8 @@ repository／CLI 進階清除工具，且指令需加上 `--target-dir "$HOME/Ap
 2. 用 `./scripts/uninstall-app.sh --purge --dry-run` 加上上述目標選項預覽。確認只列出測試
    App、兩個 MacKVM 偏好 domain、指定身分 Keychain 項目、App 快取／保存狀態與 App
    範圍的 TCC 重設，App／資料／權限都不變。App 執行時另確認 script 拒絕清理且不變更資料。
-3. 不加 `--purge` 只移除 App，再安裝同一測試 build。UUID／指紋、配對／設定與先前授予的
-   權限須保留。繼續前再次退出 App。
+3. 不加 `--purge` 只移除 App，再安裝同一測試 build。UUID／指紋、配對／設定與 TCC 記錄須維持
+   不變。另行記錄 macOS 是否授權目前的 app；保留記錄本身不保證 macOS 授權。繼續前再次退出 App。
 4. 啟動互動清除但拒絕 `DELETE` 確認，確認沒有變更；再明確確認一次清除。`--yes` 只用於
    受控的無人值守測試。逐項查看結果，確認存在時的指定偏好／金鑰／快取／保存狀態已移除，
    而其他資料與匯出的報告保留。

@@ -18,6 +18,21 @@ public enum SecureSessionCollisionPolicy {
             ? .initiator
             : .responder
     }
+
+    /// Allows an incoming fallback only after its sender has been authenticated
+    /// and pinned, when this Mac's preferred outbound path is blocked by Local
+    /// Network privacy and an explicit target is still selected. This helper
+    /// does not perform sender authentication or pin validation.
+    public static func shouldAcceptIncomingFallback(
+        localID: UUID,
+        remoteID: UUID,
+        hasSelectedPeer: Bool,
+        preferredOutboundHasLocalNetworkDenial: Bool
+    ) -> Bool {
+        preferredRole(localID: localID, remoteID: remoteID) == .initiator
+            && hasSelectedPeer
+            && preferredOutboundHasLocalNetworkDenial
+    }
 }
 
 public struct SecureSessionHandshake: Codable, Equatable, Sendable {

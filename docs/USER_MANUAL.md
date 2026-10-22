@@ -2,11 +2,10 @@
 
 # MacKVM user manual
 
-Source version: **1.101.01 (build 96)**. This packaging-only update does not
-change the app version or build. The distribution flow uses a standalone
-Developer ID Installer-signed PKG inside a separately notarized DMG. Local
-test builds are separate from distribution installers; no release artifact has
-been generated or published.
+Source version: **1.102.04 (build 101)**. The default distribution flow uses a
+Developer ID Application-signed app directly in a separately notarized DMG;
+the app is notarized and stapled before it is added to the image. Local test
+artifacts and their notarization results are separate from GitHub publication.
 
 MacKVM is a macOS app with a menu-bar entry and a full control window for
 sharing one keyboard, mouse, and trackpad, plus an optional BenQ MA270U display, between a
@@ -26,9 +25,10 @@ sharing one keyboard, mouse, and trackpad, plus an optional BenQ MA270U display,
 ## Install and build
 
 For a normal distribution install, open the release DMG and double-click
-`MacKVM.pkg`. The macOS Installer places the app in `/Applications`. The DMG
-contains the installer package and bilingual guides only; it has no loose app
-bundle or Finder-executable `.command` files.
+`Install MacKVM.command`, or drag `MacKVM.app` onto the Applications shortcut.
+The helper validates and copies the app to `/Applications`. The DMG also
+contains `Uninstall MacKVM.command`, the shared helper scripts, and separate
+bilingual installation and uninstallation guides. It contains no PKG.
 
 To build local test apps on the M5 Pro:
 
@@ -50,11 +50,26 @@ For a local-testing DMG:
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
 ```
 
-The local-testing app is ad-hoc signed and its PKG is unsigned. Distribution
-requires Developer ID Application signing for the app, Developer ID Installer
-signing for the PKG, and Apple notarization of the PKG and containing DMG.
+The local-testing app is ad-hoc signed. The DMG contains the app directly and
+does not create a PKG. Direct distribution signs and notarizes the app and
+DMG with Developer ID Application. The installer helper preserves local
+pairing data, keys, preferences, and TCC permission records; it does not reset
+or clear permissions. Preserved records do not guarantee that macOS will
+authorize the current app, so review System Settings if access is unavailable.
 
 ## First launch
+
+On macOS 27, use **Privacy & Security > Device Control and Data Access** for
+the permission called **Accessibility** on earlier versions. MacKVM reports
+the current event-listening and event-posting API results, not whether a
+standalone entry appears in the Input Monitoring list. Local Network review
+does not verify access. Use the Settings buttons and expandable permission
+diagnostics if the system settings and reported access appear inconsistent.
+
+When quitting an active app-managed display/control session, MacKVM returns
+input and the display to the original controlling Mac before it exits. The
+session's controlling/receiving roles determine the destination; attaching a
+keyboard or mouse alone does not select the controller.
 
 On each Mac open the KVM/display-sharing menu-bar icon or the MacKVM Dock/window
 entry and complete **Set up this Mac**:
@@ -65,6 +80,9 @@ entry and complete **Set up this Mac**:
 4. Optionally enable control request notifications and Launch MacKVM at Login.
 
 If a permission was previously denied, use the matching **Settings** button.
+Installing or upgrading does not clear TCC records; macOS may still require
+permission review and can retain a setting that does not authorize the current
+app.
 
 An external display is not required for pairing or remote input. It is only
 needed for automatic DDC input switching and cross-display pointer mapping.
@@ -208,21 +226,23 @@ private keys, passwords, credentials, and network endpoints.
 
 ## Uninstall and reset permissions
 
-For a normal uninstall, quit MacKVM, move `MacKVM.app` from **Applications**
-to the Trash in Finder, and remove it from **System Settings > General > Login
-Items** if **Launch MacKVM at Login** was enabled. This manual process leaves
-pairing data, private keys, preferences, and privacy permissions intact.
+For a normal uninstall, quit MacKVM and double-click
+`Uninstall MacKVM.command`, or move `MacKVM.app` from **Applications** to the
+Trash in Finder. Remove it from **System Settings > General > Login Items** if
+**Launch MacKVM at Login** was enabled. This removes only the app and leaves
+pairing data, private keys, preferences, and TCC records unchanged.
 
-The `scripts/uninstall-app.sh` tool is an advanced repository/CLI option only;
-it is not shipped in the DMG. Quit MacKVM before using its preview and explicit
-purge mode:
+The DMG includes the shared `scripts/uninstall-app.sh` helper through its
+`Uninstall MacKVM.command` wrapper. Quit MacKVM before using its preview and
+explicit purge mode, which permanently removes saved trust and identity data:
 
 ```sh
 ./scripts/uninstall-app.sh --purge --dry-run
 ./scripts/uninstall-app.sh --purge
 ```
 
-Run these from the repository root as the signed-in user, not with `sudo`.
+Run these from the repository root or mounted DMG root as the signed-in user,
+not with `sudo`.
 Purge deletes this user's pairing data, identity key, and preferences, removes
 the app, and requests an app-scoped reset of resettable privacy permissions
 including Accessibility and Input Monitoring. You must pair again after

@@ -19,7 +19,11 @@ enum SupportInformationFormatter {
         localKeyFingerprint: String,
         peers: [SupportPeerInfo],
         connectionStatus: String,
-        connectedPeerID: UUID?
+        connectedPeerID: UUID?,
+        localNetworkStatus: LocalNetworkSetupStatus = .unverified,
+        lastBrowserError: NetworkServiceErrorDiagnostic? = nil,
+        lastListenerError: NetworkServiceErrorDiagnostic? = nil,
+        signingIdentity: CodeSigningIdentityDiagnostics? = nil
     ) -> String {
         var lines = [
             "MacKVM Support Information",
@@ -35,6 +39,37 @@ enum SupportInformationFormatter {
             "Connection",
             "  Status: " + singleLine(connectionStatus),
             "  Connected peer: " + (connectedPeerID?.uuidString ?? "None"),
+            "",
+            "Local Network",
+            "  Status: " + singleLine(localNetworkStatus.supportLabel),
+            "  Last browser error: "
+                + (lastBrowserError.map { singleLine($0.supportDescription) }
+                    ?? "None"),
+            "  Last listener error: "
+                + (lastListenerError.map { singleLine($0.supportDescription) }
+                    ?? "None"),
+            "",
+            "Code signing",
+            "  Current identity: "
+                + (signingIdentity?.current.map {
+                    singleLine($0.supportDescription)
+                } ?? "Unavailable"),
+            "  Previous identity: "
+                + (signingIdentity?.previous.map {
+                    singleLine($0.supportDescription)
+                } ?? "None"),
+            "  Summary: "
+                + (signingIdentity.map {
+                    singleLine($0.changeDescription)
+                } ?? "Unavailable"),
+            "  Comparison: "
+                + (signingIdentity.map {
+                    singleLine($0.comparisons.supportDescription)
+                } ?? "Unavailable"),
+            "  Diagnostic error: "
+                + (signingIdentity?.error.map {
+                    singleLine($0.supportDescription)
+                } ?? "None"),
             "",
             "Paired devices"
         ]
