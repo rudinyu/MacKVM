@@ -281,6 +281,172 @@ final class CodeSigningIdentityDiagnosticsTests: XCTestCase {
         }
     }
 
+    func testSigningLogMessagesAreBoundedForDeveloperIDRequirement() throws {
+        let requirement = "identifier \"app.mackvm.MacKVM\" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = LYK4LV2859"
+        let current = identity(
+            cdhash: "0123456789abcdef0123456789abcdef01234567",
+            designatedRequirement: requirement,
+            certificate: String(repeating: "a", count: 64)
+        )
+        let previous = identity(
+            cdhash: "76543210fedcba9876543210fedcba9876543210",
+            designatedRequirement: requirement,
+            certificate: String(repeating: "b", count: 64)
+        )
+        let diagnostics = CodeSigningIdentityDiagnostics(
+            current: current,
+            previous: previous,
+            comparisons: CodeSigningIdentityComparisons(
+                binaryChanged: true,
+                teamChanged: false,
+                signingIdentifierChanged: false,
+                requirementChanged: false,
+                certificateChanged: true
+            ),
+            error: nil
+        )
+
+        let messages = CodeSigningIdentityDiagnosticLogMessageComposer.messages(
+            for: diagnostics
+        )
+        XCTAssertFalse(messages.isEmpty)
+        XCTAssertTrue(messages.allSatisfy { $0.utf8.count < 900 })
+
+        let summary = try XCTUnwrap(messages.first)
+        XCTAssertTrue(summary.hasPrefix("phase=signing-identity.summary "))
+        for field in [
+            "binary=Changed",
+            "team=Unchanged",
+            "signingIdentifier=Unchanged",
+            "requirement=Unchanged",
+            "certificate=Changed"
+        ] {
+            XCTAssertTrue(summary.contains(field), "Missing comparison field: \(field)")
+        }
+
+        let currentMetadata = try XCTUnwrap(
+            messages.first { $0.hasPrefix("phase=signing-identity.current ") }
+        )
+        XCTAssertTrue(currentMetadata.contains("CDHash="))
+        XCTAssertTrue(currentMetadata.contains("TeamID="))
+        XCTAssertTrue(currentMetadata.contains("SigningIdentifier="))
+        XCTAssertTrue(currentMetadata.contains("CertificateSHA256="))
+        XCTAssertTrue(currentMetadata.contains("Signature=Identified"))
+        XCTAssertFalse(currentMetadata.contains("Requirement="))
+
+        XCTAssertTrue(
+            messages.contains(
+                "phase=signing-identity.requirement current=\(requirement)"
+            )
+        )
+    }
+
+    func testPreviousLogContainsOnlyChangedFields() throws {
+        let previous = identity(
+            cdhash: "old-cdhash",
+            teamIdentifier: "TEAM123",
+            signingIdentifier: "com.example.mackvm",
+            designatedRequirement: "identifier \"com.example.mackvm\" and anchor apple generic",
+            certificate: "same-certificate"
+        )
+        let current = identity(
+            cdhash: "new-cdhash",
+            teamIdentifier: "TEAM123",
+            signingIdentifier: "com.example.mackvm",
+            designatedRequirement: "identifier \"com.example.mackvm\" and anchor apple generic",
+            certificate: "same-certificate"
+        )
+        let diagnostics = CodeSigningIdentityDiagnostics(
+            current: current,
+            previous: previous,
+            comparisons: CodeSigningIdentityComparisons(
+                binaryChanged: true,
+                teamChanged: false,
+                signingIdentifierChanged: false,
+                requirementChanged: false,
+                certificateChanged: false
+            ),
+            error: nil
+        )
+
+        let messages = CodeSigningIdentityDiagnosticLogMessageComposer.messages(
+            for: diagnostics
+        )
+        let previousMessages = messages.filter {
+            $0.hasPrefix("phase=signing-identity.previous ")
+        }
+        XCTAssertEqual(
+            previousMessages,
+            ["phase=signing-identity.previous CDHash=old-cdhash"]
+        )
+        XCTAssertFalse(messages.contains { $0.contains("previous=") })
+    }
+
+    func testLongUTF8RequirementIsChunkedAtScalarBoundaries() throws {
+        let requirement = String(repeating: "🍎", count: 800)
+        let diagnostics = CodeSigningIdentityDiagnostics(
+            current: identity(cdhash: "current", designatedRequirement: requirement),
+            previous: nil,
+            comparisons: .unknown,
+            error: nil
+        )
+
+        let messages = CodeSigningIdentityDiagnosticLogMessageComposer.messages(
+            for: diagnostics
+        )
+        XCTAssertTrue(messages.allSatisfy { $0.utf8.count < 900 })
+
+        let requirementMessages = messages.filter {
+            $0.hasPrefix("phase=signing-identity.requirement current=")
+        }
+        XCTAssertGreaterThan(requirementMessages.count, 1)
+        let reconstructed = requirementMessages.compactMap { message -> String? in
+            guard let prefixRange = message.range(of: " current=") else {
+                return nil
+            }
+            var payload = String(message[prefixRange.upperBound...])
+            if let markerRange = payload.range(of: " [part=") {
+                payload = String(payload[..<markerRange.lowerBound])
+            }
+            return payload
+        }.joined()
+        XCTAssertEqual(reconstructed, requirement)
+        XCTAssertFalse(requirementMessages.contains { $0.contains("�") })
+    }
+
+    func testReadFailureKeepsAnErrorSummaryWithoutDumpingPreviousRecord() {
+        let previous = identity(cdhash: "old-cdhash")
+        let diagnostics = CodeSigningIdentityDiagnostics(
+            current: nil,
+            previous: previous,
+            comparisons: .unknown,
+            error: CodeSigningDiagnosticError(
+                domain: "Security",
+                code: -1,
+                detail: String(repeating: "失敗", count: 500)
+            )
+        )
+
+        let messages = CodeSigningIdentityDiagnosticLogMessageComposer.messages(
+            for: diagnostics
+        )
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertLessThan(messages[0].utf8.count, 900)
+        XCTAssertTrue(messages[0].hasPrefix("phase=signing-identity.summary "))
+        XCTAssertTrue(messages[0].contains("error=domain=Security code=-1 detail="))
+        XCTAssertTrue(messages[0].contains("... [truncated]"))
+        XCTAssertFalse(messages[0].contains("phase=signing-identity.previous"))
+        for field in [
+            "binary=Unknown",
+            "team=Unknown",
+            "signingIdentifier=Unknown",
+            "requirement=Unknown",
+            "certificate=Unknown"
+        ] {
+            XCTAssertTrue(messages[0].contains(field))
+        }
+    }
+
     private enum ComparedField {
         case team
         case requirement

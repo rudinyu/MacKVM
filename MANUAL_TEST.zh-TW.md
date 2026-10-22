@@ -31,10 +31,10 @@ Intel Mac 的 `/Applications`，再開啟各自架構的 app。
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.102.04-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.102.05-universal.dmg.sha256)
 ```
 
-前兩個指令會在本機建置並驗證 1.102.04（build 101）原始碼；checksum 指令會驗證 `dist` 中
+前兩個指令會在本機建置並驗證 1.102.05（build 102）原始碼；checksum 指令會驗證 `dist` 中
 本機測試用 DMG。目前尚未產生或發布正式發行產物。本機 app 與 DMG 使用 ad-hoc 簽章，不可
 用於正式散布；映像檔不含 PKG。
 
@@ -54,8 +54,8 @@ app 與 DMG 都必須通過 Apple 公證、staple 與驗證。檢查 app bundle 
 codesign --verify --deep --strict --verbose=2 dist/universal/MacKVM.app
 spctl --assess --type execute --verbose=4 dist/universal/MacKVM.app
 xcrun stapler validate dist/universal/MacKVM.app
-xcrun stapler validate dist/MacKVM-1.102.04-universal.dmg
-(cd dist && shasum -a 256 -c MacKVM-1.102.04-universal.dmg.sha256)
+xcrun stapler validate dist/MacKVM-1.102.05-universal.dmg
+(cd dist && shasum -a 256 -c MacKVM-1.102.05-universal.dmg.sha256)
 ```
 
 在 Finder 裝載正式 DMG，確認內含 `MacKVM.app`、`/Applications` 捷徑、兩個可執行 Finder 指令、
@@ -142,7 +142,38 @@ HDMI 1 使用 VCP 17（`0x11`）。其他型號使用自己的 mapping；螢幕�
 
 ## 4. 探索與配對
 
-Build 101 本機網路與簽章驗收（兩台 Mac）：
+Build 102 路徑拒絕、log 與事件發送預檢驗收：
+
+先測試本機網路開關原本已開啟的舊版升級：服務已啟動時，在通訊驗證成功前應顯示中性的
+尚未驗證狀態與設定／重測入口，不應要求再次按 **I handled the macOS prompt**。
+探測或已驗證連線成功後，提示確認與 Settings 按鈕都應隱藏。再與關閉／重新允許權限後的
+成功流程比較，兩種流程必須顯示相同結果。僅出現設定按鈕不能視為 macOS 拒絕繼承授權的證據。
+
+1. 另一台 Mac 持續廣播 MacKVM 時，停用本機的本機網路權限，重新開啟 App 與視窗。
+   約十秒內記錄設定列及附近裝置狀態；特別記錄仍找得到 peer、但新連線探測被拒的情況。
+   保存以下輸出：
+
+   ```sh
+   log show --last 10m --predicate 'process == "MacKVM"' | grep 'Local network prohibited'
+   ```
+
+2. 不退出 App 就重新允許權限，記錄約十秒內是否清除被擋狀態並恢復已選取的待連線裝置；
+   若仍需重開，照實記錄。也測試沒有 peer 的情況：保留拒絕狀態、不空跑探測迴圈；再開啟
+   peer，確認會恢復自動重測。
+3. 配對期間重測權限拒絕，確認顯示本機網路說明，而非只有防火牆提示；重試不能打斷進行中的配對。
+4. App 執行時切換 Accessibility／裝置控制和資料取用，記錄 CG listen/post、AX trust 與
+   控制授予／拒絕結果。AX 可信但發送預檢為否時，必須先通過功能回送檢查，才能接收真正的
+   遠端輸入；檢查逾時或失敗必須拒絕，發送預檢正常時不能執行該檢查。
+5. 不加 `--info`，確認以下輸出包含帶逐欄比較的簽章摘要，以及權限快照變更：
+
+   ```sh
+   log show --last 5m --predicate 'process == "MacKVM"'
+   ```
+
+   檢查分開的本次簽章／requirement 訊息與有變更的前次欄位；完整資料以複製支援資訊為準。
+   notice log 仍受系統儲存上限限制。以上是實機驗收步驟，不代表 CI 已驗證此行為。
+
+Build 102 本機網路與簽章驗收（兩台 Mac）：
 
 1. 在「隱私權與安全性 → 本機網路」停用 MacKVM，再重新開啟 App。沒有 peer 時，約五秒內
    檢查 **Nearby devices** 是否顯示被擋提示與設定按鈕，而非 **Searching…**；收到明確政策

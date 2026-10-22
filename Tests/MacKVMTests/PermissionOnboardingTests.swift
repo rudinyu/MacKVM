@@ -401,6 +401,172 @@ final class PermissionOnboardingTests: XCTestCase {
         )
     }
 
+    func testOnlySuccessfulLocalNetworkEvidenceAdvancesTheSetupStep() {
+        XCTAssertTrue(LocalNetworkSetupStatus.working.hasPositiveOperationalEvidence)
+        XCTAssertTrue(LocalNetworkSetupStatus.reachable.hasPositiveOperationalEvidence)
+
+        let uncertainStatuses: [LocalNetworkSetupStatus] = [
+            .blocked,
+            .checking,
+            .unverified,
+            .unconfirmed,
+            .busy,
+            .noPeer,
+            .unavailable
+        ]
+        XCTAssertTrue(
+            uncertainStatuses.allSatisfy {
+                !$0.hasPositiveOperationalEvidence
+            }
+        )
+    }
+
+    func testReviewedUnknownOrBlockedAccessStillOffersSettingsAndCheck() {
+        let unknown = LocalNetworkSetupActionPresentation.resolve(
+            status: .unverified,
+            accessWasReviewed: true,
+            isAwaitingPromptResponse: false,
+            canAcknowledgeCurrentPrompt: false,
+            networkServicesStarted: true
+        )
+        XCTAssertTrue(unknown.showsSettingsAction)
+        XCTAssertTrue(unknown.showsCheckAction)
+        XCTAssertFalse(unknown.showsEnableAction)
+        XCTAssertFalse(unknown.showsPromptAcknowledgement)
+
+        let blocked = LocalNetworkSetupActionPresentation.resolve(
+            status: .blocked,
+            accessWasReviewed: true,
+            isAwaitingPromptResponse: true,
+            canAcknowledgeCurrentPrompt: false,
+            networkServicesStarted: true
+        )
+        XCTAssertTrue(blocked.showsSettingsAction)
+        XCTAssertTrue(blocked.showsCheckAction)
+        XCTAssertFalse(blocked.showsEnableAction)
+        XCTAssertFalse(blocked.showsPromptAcknowledgement)
+        XCTAssertFalse(blocked.showsAwaitingPromptHint)
+    }
+
+    func testUpgradedExistingInstallationWithStalePromptFlagUsesUnknownActions() {
+        let presentation = LocalNetworkSetupActionPresentation.resolve(
+            status: .unverified,
+            accessWasReviewed: false,
+            isAwaitingPromptResponse: true,
+            canAcknowledgeCurrentPrompt: false,
+            networkServicesStarted: true
+        )
+
+        XCTAssertTrue(presentation.showsSettingsAction)
+        XCTAssertTrue(presentation.showsCheckAction)
+        XCTAssertFalse(presentation.showsEnableAction)
+        XCTAssertFalse(presentation.showsPromptAcknowledgement)
+        XCTAssertFalse(presentation.showsAwaitingPromptHint)
+        XCTAssertEqual(
+            LocalNetworkSetupStatus.unverified.supportLabel,
+            "Access not verified"
+        )
+    }
+
+    func testUnconfirmedAndUnavailableResultsOfferSettingsAndCheck() {
+        let statuses: [LocalNetworkSetupStatus] = [
+            .checking,
+            .unverified,
+            .unconfirmed,
+            .busy,
+            .noPeer,
+            .unavailable
+        ]
+
+        for status in statuses {
+            let presentation = LocalNetworkSetupActionPresentation.resolve(
+                status: status,
+                accessWasReviewed: false,
+                isAwaitingPromptResponse: false,
+                canAcknowledgeCurrentPrompt: false,
+                networkServicesStarted: true
+            )
+
+            XCTAssertTrue(presentation.showsSettingsAction, "\(status)")
+            XCTAssertTrue(presentation.showsCheckAction, "\(status)")
+            XCTAssertFalse(presentation.showsEnableAction, "\(status)")
+            XCTAssertFalse(presentation.showsPromptAcknowledgement, "\(status)")
+        }
+    }
+
+    func testFreshUnreviewedSetupOffersEnableAndSettings() {
+        let presentation = LocalNetworkSetupActionPresentation.resolve(
+            status: .unverified,
+            accessWasReviewed: false,
+            isAwaitingPromptResponse: false,
+            canAcknowledgeCurrentPrompt: false,
+            networkServicesStarted: false
+        )
+
+        XCTAssertTrue(presentation.showsEnableAction)
+        XCTAssertTrue(presentation.showsSettingsAction)
+        XCTAssertFalse(presentation.showsCheckAction)
+        XCTAssertFalse(presentation.showsPromptAcknowledgement)
+    }
+
+    func testAwaitingPromptOffersAcknowledgementAndSettings() {
+        let presentation = LocalNetworkSetupActionPresentation.resolve(
+            status: .checking,
+            accessWasReviewed: false,
+            isAwaitingPromptResponse: true,
+            canAcknowledgeCurrentPrompt: true,
+            networkServicesStarted: true
+        )
+
+        XCTAssertFalse(presentation.showsEnableAction)
+        XCTAssertTrue(presentation.showsPromptAcknowledgement)
+        XCTAssertTrue(presentation.showsSettingsAction)
+        XCTAssertFalse(presentation.showsCheckAction)
+        XCTAssertTrue(presentation.showsAwaitingPromptHint)
+    }
+
+    func testPositiveEvidenceHidesActionsAndUnknownAfterRecoveryIsSafe() {
+        let upgradedInstallationAfterProbe =
+            LocalNetworkSetupActionPresentation.resolve(
+                status: .reachable,
+                accessWasReviewed: false,
+                isAwaitingPromptResponse: false,
+                canAcknowledgeCurrentPrompt: false,
+                networkServicesStarted: true
+            )
+        let freshInstallationAfterGrant =
+            LocalNetworkSetupActionPresentation.resolve(
+                status: .working,
+                accessWasReviewed: false,
+                isAwaitingPromptResponse: true,
+                canAcknowledgeCurrentPrompt: true,
+                networkServicesStarted: true
+            )
+        XCTAssertEqual(upgradedInstallationAfterProbe, .hidden)
+        XCTAssertEqual(freshInstallationAfterGrant, .hidden)
+        XCTAssertEqual(
+            upgradedInstallationAfterProbe,
+            freshInstallationAfterGrant
+        )
+
+        // Once the successful probe ends the old prompt workflow, a later
+        // inconclusive snapshot offers Settings/check without suggesting the
+        // user must toggle Local Network off and on or enable it again.
+        let laterUnknown = LocalNetworkSetupActionPresentation.resolve(
+            status: .unverified,
+            accessWasReviewed: false,
+            isAwaitingPromptResponse: false,
+            canAcknowledgeCurrentPrompt: false,
+            networkServicesStarted: true
+        )
+        XCTAssertFalse(laterUnknown.showsEnableAction)
+        XCTAssertFalse(laterUnknown.showsPromptAcknowledgement)
+        XCTAssertFalse(laterUnknown.showsAwaitingPromptHint)
+        XCTAssertTrue(laterUnknown.showsSettingsAction)
+        XCTAssertTrue(laterUnknown.showsCheckAction)
+        XCTAssertEqual(LocalNetworkSetupStatus.unverified.supportLabel, "Access not verified")
+    }
+
     func testNewAuthenticatedPeerInvalidatesOlderNetworkCheckEvidence() {
         let firstPeer = UUID()
         let secondPeer = UUID()

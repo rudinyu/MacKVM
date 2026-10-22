@@ -105,6 +105,18 @@ enum LocalNetworkSetupStatus: Equatable {
     case noPeer
     case unavailable
 
+    /// A live authenticated connection or a successful network probe is
+    /// positive operational evidence. This does not represent a persisted
+    /// macOS permission grant or review acknowledgement.
+    var hasPositiveOperationalEvidence: Bool {
+        switch self {
+        case .working, .reachable:
+            true
+        case .blocked, .checking, .unverified, .unconfirmed, .busy,
+             .noPeer, .unavailable:
+            false
+        }
+    }
 
     static func resolve(
         hasCurrentAuthenticatedConnection: Bool,
@@ -164,6 +176,96 @@ enum LocalNetworkSetupStatus: Equatable {
         case .unavailable:
             "Network check unavailable"
         }
+    }
+}
+
+/// Presents Local Network actions from current operational evidence and the
+/// onboarding workflow. The persisted review is history only: it can advance
+/// the checklist, but it cannot hide Settings or a manual network check.
+struct LocalNetworkSetupActionPresentation: Equatable {
+    var showsEnableAction: Bool
+    var showsPromptAcknowledgement: Bool
+    var showsSettingsAction: Bool
+    var showsCheckAction: Bool
+    var showsAwaitingPromptHint: Bool
+
+    var hasVisibleActions: Bool {
+        showsEnableAction
+            || showsPromptAcknowledgement
+            || showsSettingsAction
+            || showsCheckAction
+    }
+
+    static let hidden = Self(
+        showsEnableAction: false,
+        showsPromptAcknowledgement: false,
+        showsSettingsAction: false,
+        showsCheckAction: false,
+        showsAwaitingPromptHint: false
+    )
+
+    static func resolve(
+        status: LocalNetworkSetupStatus,
+        accessWasReviewed: Bool,
+        isAwaitingPromptResponse: Bool,
+        canAcknowledgeCurrentPrompt: Bool,
+        networkServicesStarted: Bool
+    ) -> Self {
+        // A working authenticated session or a successful endpoint probe is
+        // the only evidence that hides the Local Network setup actions.
+        guard !status.hasPositiveOperationalEvidence else { return .hidden }
+
+        // An authoritative denial always offers a way to revisit Settings and
+        // re-test. A stale prompt acknowledgement cannot override the denial.
+        if status == .blocked {
+            return Self(
+                showsEnableAction: false,
+                showsPromptAcknowledgement: false,
+                showsSettingsAction: true,
+                showsCheckAction: true,
+                showsAwaitingPromptHint: false
+            )
+        }
+
+        // The acknowledgement is specific to the current, unreviewed
+        // first-run prompt workflow. It is not a substitute for checking an
+        // existing installation whose services have already started.
+        if isAwaitingPromptResponse,
+           canAcknowledgeCurrentPrompt,
+           !accessWasReviewed {
+            return Self(
+                showsEnableAction: false,
+                showsPromptAcknowledgement: true,
+                showsSettingsAction: true,
+                showsCheckAction: false,
+                showsAwaitingPromptHint: true
+            )
+        }
+
+        // Bonjour is what triggers the macOS prompt. Offer that action only
+        // for a genuinely new, unreviewed setup whose services have not yet
+        // started. Existing installations and uncertain test results use the
+        // explicit Settings/check path instead of implying that permission is
+        // missing.
+        if status == .unverified,
+           !accessWasReviewed,
+           !networkServicesStarted {
+            return Self(
+                showsEnableAction: true,
+                showsPromptAcknowledgement: false,
+                showsSettingsAction: true,
+                showsCheckAction: false,
+                showsAwaitingPromptHint: false
+            )
+        }
+
+        return Self(
+            showsEnableAction: false,
+            showsPromptAcknowledgement: false,
+            showsSettingsAction: true,
+            showsCheckAction: true,
+            showsAwaitingPromptHint: false
+        )
     }
 }
 

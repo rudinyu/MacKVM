@@ -177,10 +177,13 @@
 "Keyboard, mouse, and trackpad sharing is already in progress." = "鍵盤、滑鼠與觸控板分享已在進行中。";
 "The display could not be switched; keyboard, mouse, and trackpad remain local." = "無法切換螢幕；鍵盤、滑鼠與觸控板仍留在本機。";
 "The other device did not accept keyboard, mouse, and trackpad control." = "另一台裝置未接受鍵盤、滑鼠與觸控板控制。";
-"The controlling Mac needs system-reported keyboard event access and Accessibility. The receiving Mac needs Accessibility and system-reported event posting access." = "控制端 Mac 需要系統回報的鍵盤事件存取權限及輔助使用權限。受控端 Mac 需要輔助使用權限及系統回報的事件傳送權限。";
-"The controlling Mac needs system-reported keyboard event access and Device Control and Data Access. The receiving Mac needs Device Control and Data Access and system-reported event posting access." = "控制端 Mac 需要系統回報的鍵盤事件存取權限及「裝置控制與資料存取」權限。受控端 Mac 需要「裝置控制與資料存取」權限及系統回報的事件傳送權限。";
+"The controlling Mac needs system-reported keyboard event access and Accessibility. The receiving Mac needs Accessibility and working event posting." = "控制端 Mac 需要系統回報的鍵盤事件存取權限及輔助使用權限。受控端 Mac 需要輔助使用權限，且事件傳送功能必須正常。";
+"The controlling Mac needs system-reported keyboard event access and Device Control and Data Access. The receiving Mac needs Device Control and Data Access and working event posting." = "控制端 Mac 需要系統回報的鍵盤事件存取權限及「裝置控制與資料存取」權限。受控端 Mac 需要「裝置控制與資料存取」權限，且事件傳送功能必須正常。";
 "System-reported event posting access is required" = "需要系統回報的事件傳送權限";
 "System-reported event posting access is required to control another device" = "需要系統回報的事件傳送權限才能控制另一台裝置";
+"Access not verified" = "存取權限尚未驗證";
+"macOS reports event posting as unavailable. Turn MacKVM off and on in Accessibility, or quit and reopen MacKVM" = "macOS 回報目前無法傳送事件。請在「輔助使用」中關閉再重新開啟 MacKVM，或結束後重新開啟 MacKVM。";
+"macOS reports event posting as unavailable. Turn MacKVM off and on in Device Control and Data Access, or quit and reopen MacKVM" = "macOS 回報目前無法傳送事件。請在「裝置控制與資料存取」中關閉再重新開啟 MacKVM，或結束後重新開啟 MacKVM。";
 "Device Control and Data Access permission is required" = "需要「裝置控制與資料存取」權限";
 "Device Control and Data Access permission is required to control another device" = "需要「裝置控制與資料存取」權限才能控制另一台裝置";
 "The control request could not be started; keyboard, mouse, and trackpad remain local." = "無法啟動控制請求；鍵盤、滑鼠與觸控板仍留在本機。";
@@ -235,6 +238,7 @@
 "Denied control: the other device's keyboard layout differs and its MacKVM version cannot remap it" = "已拒絕控制：另一台裝置的鍵盤配置不同，且其 MacKVM 版本無法重新對應按鍵";
 "Denied remote control: Accessibility permission is missing" = "已拒絕遠端控制：缺少輔助使用權限";
 "Denied remote control: System-reported event posting access is missing" = "已拒絕遠端控制：系統未回報可傳送事件";
+"Denied remote control: event posting failed functional validation" = "已拒絕遠端控制：事件傳送功能驗證失敗";
 "Denied remote control: Device Control and Data Access permission is missing" = "已拒絕遠端控制：缺少「裝置控制與資料存取」權限";
 "Remote control ended because system-reported event posting access is unavailable" = "系統未回報可傳送事件，遠端控制已結束";
 "Remote control ended because Device Control and Data Access is unavailable" = "「裝置控制與資料存取」權限不可用，遠端控制已結束";

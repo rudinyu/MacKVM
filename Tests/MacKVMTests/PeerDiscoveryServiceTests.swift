@@ -83,6 +83,39 @@ final class PeerDiscoveryServiceTests: XCTestCase {
         )
     }
 
+    func testLocalNetworkBlockedStateRetainsEveryIndependentSource() {
+        XCTAssertTrue(
+            LocalNetworkAccessBlockedPolicy.isBlocked(
+                by: true, false, false, false
+            )
+        )
+        XCTAssertTrue(
+            LocalNetworkAccessBlockedPolicy.isBlocked(
+                by: false, true, false, false
+            )
+        )
+        XCTAssertTrue(
+            LocalNetworkAccessBlockedPolicy.isBlocked(
+                by: false, false, true, false
+            )
+        )
+        XCTAssertTrue(
+            LocalNetworkAccessBlockedPolicy.isBlocked(
+                by: false, false, false, true
+            )
+        )
+        XCTAssertTrue(
+            LocalNetworkAccessBlockedPolicy.isBlocked(
+                by: false, false, true, true
+            )
+        )
+        XCTAssertFalse(
+            LocalNetworkAccessBlockedPolicy.isBlocked(
+                by: false, false, false, false
+            )
+        )
+    }
+
     func testStalePairingReadyCallbackCannotClearNewerTransportDenial() {
         var state = PairingTransportLocalNetworkState()
         let oldRequestID = UUID()
@@ -116,6 +149,15 @@ final class PeerDiscoveryServiceTests: XCTestCase {
         state.recordDenial(for: UUID())
         state.stop()
         XCTAssertFalse(state.isBlocked)
+    }
+
+    func testSuccessfulConnectionProbeAlsoClearsPairingTransportDenial() {
+        var state = PairingTransportLocalNetworkState()
+        state.recordDenial(for: UUID())
+
+        XCTAssertTrue(state.recoveredAfterSuccessfulLocalNetworkProbe())
+        XCTAssertFalse(state.isBlocked)
+        XCTAssertFalse(state.recoveredAfterSuccessfulLocalNetworkProbe())
     }
 
     func testTrackedInboundReadyClearsOnlyTransportBlockAndUntrackedReadyCannot() {

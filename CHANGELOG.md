@@ -4,6 +4,31 @@
 
 ## Unreleased
 
+### MacKVM 1.102.05 (build 102) — path denial recovery and durable diagnostics
+
+- Include connection-probe Local Network denial in the shared blocked state.
+  While a peer is available and pairing is idle, re-probe a blocked path every
+  four seconds; a successful probe clears the corresponding transport/probe
+  sources and retries the selected pending secure connection. Unknown or
+  missing-peer results do not count as recovery.
+- Move permission snapshots and startup signing diagnostics to notice-level
+  logging, and split public signing metadata into short messages with the
+  comparison summary first. Info-level messages normally remain in memory;
+  notice-level retention is still subject to the system's storage limits.
+- A controller and its session hotkey tap use listening access plus
+  Accessibility without requiring local event-posting preflight. A receiver
+  with trusted Accessibility but a negative posting preflight must pass a
+  bounded functional loopback check before receiving control; an unsuccessful
+  check denies input. The healthy posting path skips the check.
+- Hide the Local Network prompt acknowledgement and Settings action after a
+  successful network test or a current authenticated connection, without
+  persisting a global permission grant. Existing installations show neutral
+  Settings/check actions while unverified, instead of repeating the first-run
+  prompt acknowledgement after an upgrade.
+- Connection-level **Local network prohibited** has been observed in the
+  supplied logs; DNS-SD PolicyDenied has not. Real-device recovery, loopback
+  behavior, pairing, and input acceptance remain pending.
+
 ### MacKVM 1.102.04 (build 101) — Local Network guidance and signing diagnostics
 
 - Show the combined discovery/session Local Network denial in the nearby-device
@@ -15,8 +40,9 @@
   without the added fields remain unknown, and ad-hoc signing is labelled.
 - Retain build-aware review invalidation and component-specific automatic
   recovery while access is blocked. Automated policy tests do not establish
-  that the reported two-Mac pairing failure is fixed; physical acceptance and
-  an observed DNS-SD PolicyDenied log remain pending.
+  that the reported two-Mac pairing failure is fixed; physical acceptance remains
+  pending. Connection-level Local network prohibited was observed; DNS-SD
+  PolicyDenied was not observed.
 
 ### MacKVM 1.102.03 (build 100) — live permission status and Local Network retry
 

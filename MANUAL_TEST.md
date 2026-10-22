@@ -33,10 +33,10 @@ Local packaging check (from the M5 Pro) is also available:
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.102.04-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.102.05-universal.dmg.sha256)
 ```
 
-The first two commands build and verify the 1.102.04 (build 101) source locally;
+The first two commands build and verify the 1.102.05 (build 102) source locally;
 the checksum command verifies the local-testing DMG produced in `dist`. This
 update has not generated or published a release artifact. The local app and
 DMG are ad-hoc signed and not for distribution; the image contains no PKG.
@@ -61,8 +61,8 @@ and final release image:
 codesign --verify --deep --strict --verbose=2 dist/universal/MacKVM.app
 spctl --assess --type execute --verbose=4 dist/universal/MacKVM.app
 xcrun stapler validate dist/universal/MacKVM.app
-xcrun stapler validate dist/MacKVM-1.102.04-universal.dmg
-(cd dist && shasum -a 256 -c MacKVM-1.102.04-universal.dmg.sha256)
+xcrun stapler validate dist/MacKVM-1.102.05-universal.dmg
+(cd dist && shasum -a 256 -c MacKVM-1.102.05-universal.dmg.sha256)
 ```
 
 Mount the release DMG in Finder. Confirm it contains `MacKVM.app`, the
@@ -217,7 +217,50 @@ Expected:
 
 ## 4. Discovery and pairing
 
-Build 101 Local Network and signing acceptance (two Macs):
+Build 102 path-denial, logging, and posting-preflight acceptance:
+
+Before denial testing, upgrade an installation whose Local Network switch is
+already on. Running services must show a neutral unverified state and
+Settings/check actions until communication succeeds, without requiring **I
+handled the macOS prompt** again. Once a probe or authenticated connection
+succeeds, both prompt acknowledgement and Settings actions must disappear.
+Compare this with granting access after an off/on toggle: both successful
+paths must produce the same UI. Visible setup buttons alone are not evidence
+that macOS rejected the inherited grant.
+
+1. With another Mac advertising MacKVM, disable this Mac's Local Network
+   access, relaunch, and open its window. Within about ten seconds, record the
+   setup row and Nearby devices state, including whether a fresh connection
+   check reports a denial while discovery still finds the peer. Capture:
+
+   ```sh
+   log show --last 10m --predicate 'process == "MacKVM"' | grep 'Local network prohibited'
+   ```
+
+2. Allow access without relaunching. Record whether the blocked state clears
+   and the selected pending secure connection recovers within about ten seconds.
+   If a relaunch is still required, record that instead of marking acceptance.
+   Repeat with no peer available: retain the denial without running an empty
+   probe loop, then start the peer and check recovery resumes.
+3. Repeat denial during a pairing attempt. Verify Local Network guidance replaces
+   the generic firewall hint; retries must not disrupt the active pairing.
+4. Toggle Accessibility/Device Control and Data Access while MacKVM runs. Record
+   CG listen/post, AX trust, and whether remote control is refused or granted.
+   For trusted AX with negative posting preflight, verify a successful functional
+   probe is required before any actual remote input is accepted; a timeout or
+   failed probe must deny control. Normal posting access must skip the probe.
+5. Without `--info`, confirm the signing summary contains the per-field
+   comparisons and permission snapshot changes are present:
+
+   ```sh
+   log show --last 5m --predicate 'process == "MacKVM"'
+   ```
+
+   Check the separate current/requirement messages and changed previous fields;
+   copy support information for the full metadata. Notice logs remain subject
+   to system storage limits. These steps are physical acceptance, not CI results.
+
+Build 102 Local Network and signing acceptance (two Macs):
 
 1. Disable MacKVM in Privacy & Security > Local Network and relaunch it. With
    no peer available, check within about five seconds that **Nearby devices**

@@ -43,9 +43,9 @@
 <body>
   <main>
     <header>
-      <div class="badge">MacKVM 1.102.04（build 101）</div>
+      <div class="badge">MacKVM 1.102.05（build 102）</div>
       <h1>MacKVM 使用手冊</h1>
-      <p>本手冊說明原始碼版本 1.102.04（build 101）。預設正式散布流程會以 Developer ID Application 簽署並公證 app、staple 後直接放入另行公證的 DMG。本機測試產物及其公證結果與 GitHub 發布分開確認。</p>
+      <p>本手冊說明原始碼版本 1.102.05（build 102）。預設正式散布流程會以 Developer ID Application 簽署並公證 app、staple 後直接放入另行公證的 DMG。本機測試產物及其公證結果與 GitHub 發布分開確認。</p>
       <p class="lede">提供選單列入口與一般控制視窗，讓兩台 MacBook Pro 共用一組鍵盤、滑鼠與觸控板，並可選擇切換 BenQ MA270U 螢幕的 macOS app。</p>
       <p><a href="USER_MANUAL.html" lang="en">English Version</a> · <a href="USER_MANUAL.zh-TW.md">Markdown 版本</a></p>
     </header>
@@ -101,7 +101,7 @@
       <p>建立本機測試 DMG，可使用：</p>
       <pre><code>./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist &amp;&amp; shasum -a 256 -c MacKVM-1.102.04-universal.dmg.sha256)</code></pre>
+(cd dist &amp;&amp; shasum -a 256 -c MacKVM-1.102.05-universal.dmg.sha256)</code></pre>
       <p>本機測試 app 使用 ad-hoc 簽章，DMG 不含 PKG。正式散布會以 Developer ID Application 簽署並公證 app 與 DMG。安裝 helper 會保留本機配對資料、金鑰、偏好設定與 TCC 權限記錄，不會重設或清除權限；保留記錄不保證 macOS 一定授權目前的 app，若無法使用權限請檢查系統設定。</p>
       <p>release script 會將 Developer ID 簽署 app 壓成 ZIP 提交 Apple，待接受後 staple 並驗證 app bundle，再直接放入另行簽署與公證的 DMG。DMG 有自己的 checksum 與 submission metadata；app metadata 會放在 <code>dist/</code>。</p>
       <p>若要在 Mac App Store 以外正式散布，請先建立 notarytool Keychain profile，並把 profile 名稱與 Developer ID 身分設定在 <code>~/.config/codex/notarization.env</code>（權限 <code>0600</code>）。預設讀取共用 Codex 設定；完整 API key 設定也可使用。需要時仍可用 <code>--sign</code>、<code>--keychain-profile</code> 與 <code>--auth</code> 覆寫。</p>
@@ -276,7 +276,7 @@
     </section>
 
     <footer>
-      <p>MacKVM 使用手冊 · 原始碼版本 1.102.04（build 101）· 最後更新 2026-10-22 · 正式散布 app 與 DMG 須通過 Developer ID 簽章與 Apple 公證驗證。</p>
+      <p>MacKVM 使用手冊 · 原始碼版本 1.102.05（build 102）· 最後更新 2026-10-22 · 正式散布 app 與 DMG 須通過 Developer ID 簽章與 Apple 公證驗證。</p>
     </footer>
   </main>
 </body>

@@ -75,6 +75,7 @@ protocol ControlInputCapture: AnyObject {
 
 protocol ControlInputSink: AnyObject {
     var hasAccessibilityPermission: Bool { get }
+    var requiresFunctionalPermissionProbe: Bool { get }
     var permissionFailureStatus: String { get }
     var permissionDenialReason: String { get }
     var permissionFailureEndReason: String { get }
@@ -82,6 +83,10 @@ protocol ControlInputSink: AnyObject {
 
     func refreshPermission()
     func beginRemoteControl(completion: @escaping (Bool) -> Void)
+    func beginRemoteControl(
+        stalePostingPermissionValidated: Bool,
+        completion: @escaping (Bool) -> Void
+    )
     func endRemoteControl(completion: @escaping () -> Void)
     func receive(_ input: RemoteInputEvent)
     /// Calls the completion after all input already queued for injection has
@@ -90,6 +95,15 @@ protocol ControlInputSink: AnyObject {
 }
 
 extension ControlInputSink {
+    var requiresFunctionalPermissionProbe: Bool { false }
+
+    func beginRemoteControl(
+        stalePostingPermissionValidated: Bool,
+        completion: @escaping (Bool) -> Void
+    ) {
+        beginRemoteControl(completion: completion)
+    }
+
     var permissionFailureStatus: String {
         "Accessibility permission is required to control another device"
     }
@@ -148,6 +162,7 @@ final class ControlCoordinator: ObservableObject {
     private let seamlessControlAuthorized: (UUID) -> Bool
     private let clipboardSyncEnabled: (UUID) -> Bool
     private let clipboardSync: any ClipboardSyncManaging
+    private let remoteInputPermissionProbe: any RuntimePermissionProbing
     private var machine = ControlSessionStateMachine()
     private var connectionObservation: AnyCancellable?
     private var requestTimeout: DispatchWorkItem?
@@ -173,6 +188,10 @@ final class ControlCoordinator: ObservableObject {
             isPreparingIncomingControl = preparingIncomingControlRequest != nil
         }
     }
+    private var incomingAuthorizationGeneration: UInt64 = 0
+    private var preparingIncomingAuthorizationGeneration: UInt64?
+    private var pendingRemoteInputPermissionProbe:
+        (generation: UInt64, operation: any RuntimePermissionProbeResource)?
     private var receiverTeardown: ReceiverTeardown?
     private var transientRemoteInputTeardownCompletions: [() -> Void] = []
     private var pendingHeartbeatAcknowledgements:
@@ -188,6 +207,10 @@ final class ControlCoordinator: ObservableObject {
         capacity: BoundedAdmissionGate.defaultCapacity,
         initiallyEnabled: true
     )
+
+    deinit {
+        pendingRemoteInputPermissionProbe?.operation.cancel()
+    }
 
     /// Captures the app-owned display route that should be restored before
     /// termination. The caller must read this before `stopForQuit` clears the
@@ -220,7 +243,9 @@ final class ControlCoordinator: ObservableObject {
         keyboardLayoutIdentifier: @escaping () -> String? = { nil },
         seamlessControlAuthorized: @escaping (UUID) -> Bool = { _ in false },
         clipboardSyncEnabled: @escaping (UUID) -> Bool = { _ in false },
-        clipboardSync: any ClipboardSyncManaging = PasteboardClipboardSyncService()
+        clipboardSync: any ClipboardSyncManaging = PasteboardClipboardSyncService(),
+        remoteInputPermissionProbe: any RuntimePermissionProbing =
+            CoreGraphicsRemoteInputPermissionProbe()
     ) {
         self.localID = localID
         self.secureSession = secureSession
@@ -231,6 +256,7 @@ final class ControlCoordinator: ObservableObject {
         self.seamlessControlAuthorized = seamlessControlAuthorized
         self.clipboardSyncEnabled = clipboardSyncEnabled
         self.clipboardSync = clipboardSync
+        self.remoteInputPermissionProbe = remoteInputPermissionProbe
         // Treat the initial publisher value as describing the gate's initial
         // generation. If authentication races that first nil delivery, the
         // nil event must not invalidate the newer authenticated generation.
@@ -334,8 +360,8 @@ final class ControlCoordinator: ObservableObject {
         // The controlling Mac uses an active CGEvent tap so local events can
         // be suppressed while they are forwarded. macOS requires
         // Accessibility for that active filter in addition to Input
-        // Monitoring; the receiving Mac performs the same preflight before it
-        // grants the request.
+        // Monitoring. The receiving Mac checks Accessibility and functionally
+        // validates event posting when its preflight looks stale.
         inputSink.refreshPermission()
         guard inputSink.hasAccessibilityPermission else {
             status = inputSink.permissionFailureStatus
@@ -521,14 +547,28 @@ final class ControlCoordinator: ObservableObject {
             return
         }
 
+        let authorizationGeneration = beginIncomingAuthorizationGeneration()
         preparingIncomingControlRequest = request
+        preparingIncomingAuthorizationGeneration = authorizationGeneration
         status = "Preparing to receive remote control…"
-        inputSink.beginRemoteControl { [weak self] didStart in
-            self?.completeIncomingControlAcceptance(
-                request,
-                didStart: didStart
+        if inputSink.requiresFunctionalPermissionProbe {
+            let operation = remoteInputPermissionProbe.start {
+                [weak self] passed in
+                DispatchQueue.main.async {
+                    self?.completeIncomingPermissionProbe(
+                        for: request,
+                        generation: authorizationGeneration,
+                        passed: passed
+                    )
+                }
+            }
+            pendingRemoteInputPermissionProbe = (
+                authorizationGeneration,
+                operation
             )
+            return
         }
+        beginRemoteInput(for: request, generation: authorizationGeneration)
     }
 
     /// Denies the exact incoming request currently shown by the UI.
@@ -542,6 +582,20 @@ final class ControlCoordinator: ObservableObject {
         rejectIncomingControlRequest(
             request,
             reason: "The incoming control request was denied"
+        )
+    }
+
+    /// Fences a pending consent or stale-permission probe synchronously before
+    /// trust revocation is queued on the secure-session transport.
+    func cancelIncomingControlRequestForRevokedPeer(_ peerID: UUID) {
+        guard let request = preparingIncomingControlRequest
+                ?? pendingIncomingControlRequest,
+              request.peerID == peerID else {
+            return
+        }
+        cancelIncomingControlRequest(
+            request,
+            reason: "Control request expired because the paired Mac was forgotten"
         )
     }
 
@@ -627,6 +681,7 @@ final class ControlCoordinator: ObservableObject {
             sendResponse(kind: .controlDenied, for: request)
         }
         if let request = preparingIncomingControlRequest {
+            invalidateIncomingAuthorization()
             preparingIncomingControlRequest = nil
             sendResponse(kind: .controlDenied, for: request)
         }
@@ -948,20 +1003,46 @@ final class ControlCoordinator: ObservableObject {
 
     private func completeIncomingControlAcceptance(
         _ request: IncomingControlRequest,
+        generation: UInt64,
+        stalePostingPermissionValidated: Bool,
         didStart: Bool
     ) {
-        guard preparingIncomingControlRequest?.id == request.id else {
+        guard isLiveIncomingAuthorization(
+            request,
+            generation: generation
+        ) else {
             if didStart {
                 endTransientRemoteInput()
             }
             return
         }
         preparingIncomingControlRequest = nil
+        preparingIncomingAuthorizationGeneration = nil
 
         guard didStart else {
             rejectIncomingControlRequest(
                 request,
+                reason: inputSink.requiresFunctionalPermissionProbe
+                    ? inputSink.permissionFailureStatus
+                    : inputSink.permissionDenialReason
+            )
+            return
+        }
+        inputSink.refreshPermission()
+        guard inputSink.hasAccessibilityPermission else {
+            endTransientRemoteInput()
+            rejectIncomingControlRequest(
+                request,
                 reason: inputSink.permissionDenialReason
+            )
+            return
+        }
+        guard !inputSink.requiresFunctionalPermissionProbe
+                || stalePostingPermissionValidated else {
+            endTransientRemoteInput()
+            rejectIncomingControlRequest(
+                request,
+                reason: inputSink.permissionFailureStatus
             )
             return
         }
@@ -990,6 +1071,92 @@ final class ControlCoordinator: ObservableObject {
         )
         notifyOwnershipTransition(.inboundControl(peerID: request.peerID))
         status = "Remote control granted to the other device"
+    }
+
+    private func beginIncomingAuthorizationGeneration() -> UInt64 {
+        pendingRemoteInputPermissionProbe?.operation.cancel()
+        pendingRemoteInputPermissionProbe = nil
+        incomingAuthorizationGeneration &+= 1
+        return incomingAuthorizationGeneration
+    }
+
+    private func invalidateIncomingAuthorization() {
+        incomingAuthorizationGeneration &+= 1
+        preparingIncomingAuthorizationGeneration = nil
+        pendingRemoteInputPermissionProbe?.operation.cancel()
+        pendingRemoteInputPermissionProbe = nil
+    }
+
+    private func isLiveIncomingAuthorization(
+        _ request: IncomingControlRequest,
+        generation: UInt64
+    ) -> Bool {
+        !isStoppingForQuit
+            && !isRemoteInputTearingDown
+            && incomingAuthorizationGeneration == generation
+            && preparingIncomingAuthorizationGeneration == generation
+            && preparingIncomingControlRequest == request
+            && secureSession.connectedPeerID == request.peerID
+    }
+
+    private func completeIncomingPermissionProbe(
+        for request: IncomingControlRequest,
+        generation: UInt64,
+        passed: Bool
+    ) {
+        guard isLiveIncomingAuthorization(request, generation: generation) else {
+            if pendingRemoteInputPermissionProbe?.generation == generation {
+                pendingRemoteInputPermissionProbe?.operation.cancel()
+                pendingRemoteInputPermissionProbe = nil
+            }
+            return
+        }
+        if pendingRemoteInputPermissionProbe?.generation == generation {
+            pendingRemoteInputPermissionProbe = nil
+        }
+
+        inputSink.refreshPermission()
+        guard inputSink.hasAccessibilityPermission else {
+            rejectIncomingControlRequest(
+                request,
+                reason: inputSink.permissionDenialReason
+            )
+            return
+        }
+        let stalePostingStillReported = inputSink.requiresFunctionalPermissionProbe
+        guard !stalePostingStillReported || passed else {
+            rejectIncomingControlRequest(
+                request,
+                reason: inputSink.permissionFailureStatus
+            )
+            return
+        }
+        beginRemoteInput(
+            for: request,
+            generation: generation,
+            stalePostingPermissionValidated: stalePostingStillReported && passed
+        )
+    }
+
+    private func beginRemoteInput(
+        for request: IncomingControlRequest,
+        generation: UInt64,
+        stalePostingPermissionValidated: Bool = false
+    ) {
+        guard isLiveIncomingAuthorization(request, generation: generation) else {
+            return
+        }
+        inputSink.beginRemoteControl(
+            stalePostingPermissionValidated: stalePostingPermissionValidated
+        ) { [weak self] didStart in
+            self?.completeIncomingControlAcceptance(
+                request,
+                generation: generation,
+                stalePostingPermissionValidated:
+                    stalePostingPermissionValidated,
+                didStart: didStart
+            )
+        }
     }
 
     private func handleControlGranted(message: ControlMessage) {
@@ -1100,6 +1267,7 @@ final class ControlCoordinator: ObservableObject {
         if let request = pendingIncomingControlRequest {
             resolvePendingIncomingControlRequest(request)
         }
+        invalidateIncomingAuthorization()
         preparingIncomingControlRequest = nil
         if wasControlling && sessionManagedDisplayRoute {
             onControllingStopped?()
@@ -1144,6 +1312,13 @@ final class ControlCoordinator: ObservableObject {
     private func remoteInputSinkFailed(_ failure: ControlInputFailure) {
         guard let request = activeInboundControlRequest,
               isReceivingControl else {
+            if case .accessibilityPermission = failure,
+               let request = preparingIncomingControlRequest {
+                rejectIncomingControlRequest(
+                    request,
+                    reason: inputSink.permissionDenialReason
+                )
+            }
             return
         }
         let reason: String
@@ -1219,6 +1394,7 @@ final class ControlCoordinator: ObservableObject {
         incomingRequestTimeout = nil
         resolvePendingIncomingControlRequest(request)
         if preparingIncomingControlRequest?.id == request.id {
+            invalidateIncomingAuthorization()
             preparingIncomingControlRequest = nil
             endTransientRemoteInput()
         }
@@ -1249,6 +1425,7 @@ final class ControlCoordinator: ObservableObject {
         incomingRequestTimeout = nil
         resolvePendingIncomingControlRequest(request)
         if preparingIncomingControlRequest?.id == request.id {
+            invalidateIncomingAuthorization()
             preparingIncomingControlRequest = nil
             endTransientRemoteInput()
         }

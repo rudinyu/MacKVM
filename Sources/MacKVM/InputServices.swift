@@ -16,8 +16,175 @@ enum KeyboardLayoutIdentifier {
     }
 }
 
-private enum InjectedEventMarker {
+enum InjectedEventMarker {
     static let value: Int64 = 0x4D_4B_56_4D
+    private static let permissionProbePrefix: Int64 = 0x4D_4B_50_52_0000_0000
+    private static let permissionProbePrefixMask =
+        Int64(bitPattern: 0xFF_FF_FF_FF_0000_0000)
+
+    static func permissionProbeValue() -> Int64 {
+        permissionProbePrefix | Int64(UInt32.random(in: 1...UInt32.max))
+    }
+
+    static func isInjected(userData: Int64) -> Bool {
+        userData == value
+            || userData & permissionProbePrefixMask == permissionProbePrefix
+    }
+}
+
+final class CoreGraphicsRemoteInputPermissionProbe: RuntimePermissionProbing {
+    private let probe: FunctionalRemoteInputPermissionProbe
+
+    init() {
+        probe = FunctionalRemoteInputPermissionProbe(
+            driver: CoreGraphicsPermissionProbeDriver(),
+            marker: InjectedEventMarker.permissionProbeValue
+        )
+    }
+
+    func start(
+        completion: @escaping (Bool) -> Void
+    ) -> any RuntimePermissionProbeResource {
+        probe.start(completion: completion)
+    }
+}
+
+private final class CoreGraphicsPermissionProbeDriver:
+    RuntimePermissionProbeDriver {
+    func installListenOnlyTap(
+        onEventUserData: @escaping (Int64) -> Void
+    ) -> (any RuntimePermissionProbeResource)? {
+        guard Thread.isMainThread else { return nil }
+        return CoreGraphicsPermissionProbeTap(onEventUserData: onEventUserData)
+    }
+
+    func postZeroDeltaMouseMove(userData: Int64) -> Bool {
+        guard Thread.isMainThread,
+              let location = CGEvent(source: nil)?.location,
+              let event = CGEvent(
+                mouseEventSource: nil,
+                mouseType: .mouseMoved,
+                mouseCursorPosition: location,
+                mouseButton: .left
+              ) else {
+            return false
+        }
+        event.setIntegerValueField(.mouseEventDeltaX, value: 0)
+        event.setIntegerValueField(.mouseEventDeltaY, value: 0)
+        event.setIntegerValueField(.eventSourceUserData, value: userData)
+        event.post(tap: .cghidEventTap)
+        return true
+    }
+
+    func scheduleTimeout(
+        after delay: TimeInterval,
+        handler: @escaping () -> Void
+    ) -> any RuntimePermissionProbeResource {
+        CoreGraphicsPermissionProbeTimer(delay: delay, handler: handler)
+    }
+}
+
+private final class CoreGraphicsPermissionProbeTap:
+    RuntimePermissionProbeResource {
+    private final class Context {
+        let handler: (Int64) -> Void
+
+        init(handler: @escaping (Int64) -> Void) {
+            self.handler = handler
+        }
+    }
+
+    private var tap: CFMachPort?
+    private var source: CFRunLoopSource?
+    private var context: Context?
+
+    init?(onEventUserData: @escaping (Int64) -> Void) {
+        guard Thread.isMainThread else { return nil }
+        let context = Context(handler: onEventUserData)
+        let userInfo = Unmanaged.passUnretained(context).toOpaque()
+        guard let tap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .headInsertEventTap,
+            options: .listenOnly,
+            eventsOfInterest: CGEventMask(1) << CGEventType.mouseMoved.rawValue,
+            callback: Self.callback,
+            userInfo: userInfo
+        ) else {
+            return nil
+        }
+        guard let source = CFMachPortCreateRunLoopSource(
+            kCFAllocatorDefault,
+            tap,
+            0
+        ) else {
+            CFMachPortInvalidate(tap)
+            return nil
+        }
+        self.context = context
+        self.tap = tap
+        self.source = source
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+        CGEvent.tapEnable(tap: tap, enable: true)
+    }
+
+    func cancel() {
+        if Thread.isMainThread {
+            cleanup()
+        } else {
+            // Keep the tap and its callback context alive until the source is
+            // removed. The owning probe operation releases this resource as
+            // soon as cancel returns, which may otherwise free userInfo while
+            // the run-loop source still points at it.
+            DispatchQueue.main.async { [self] in
+                cleanup()
+            }
+        }
+    }
+
+    private func cleanup() {
+        if let source {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
+        }
+        if let tap {
+            CGEvent.tapEnable(tap: tap, enable: false)
+            CFMachPortInvalidate(tap)
+        }
+        tap = nil
+        source = nil
+        context = nil
+    }
+
+    private static let callback: CGEventTapCallBack = {
+        _, type, event, userInfo in
+        guard type == .mouseMoved,
+              let userInfo else {
+            return Unmanaged.passUnretained(event)
+        }
+        let context = Unmanaged<Context>
+            .fromOpaque(userInfo)
+            .takeUnretainedValue()
+        context.handler(
+            event.getIntegerValueField(.eventSourceUserData)
+        )
+        return Unmanaged.passUnretained(event)
+    }
+}
+
+private final class CoreGraphicsPermissionProbeTimer:
+    RuntimePermissionProbeResource {
+    private let workItem: DispatchWorkItem
+
+    init(delay: TimeInterval, handler: @escaping () -> Void) {
+        workItem = DispatchWorkItem(block: handler)
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + max(0, delay),
+            execute: workItem
+        )
+    }
+
+    func cancel() {
+        workItem.cancel()
+    }
 }
 
 /// A deliberately uncommon, four-modifier shortcut for toggling the
@@ -745,8 +912,9 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
         type: CGEventType,
         event: CGEvent
     ) -> Bool {
-        guard event.getIntegerValueField(.eventSourceUserData)
-                != InjectedEventMarker.value else {
+        guard !InjectedEventMarker.isInjected(
+            userData: event.getIntegerValueField(.eventSourceUserData)
+        ) else {
             return false
         }
         if isMonitorSwitchShortcut(type: type, event: event) {
@@ -910,8 +1078,9 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
         type: CGEventType,
         event: CGEvent
     ) -> Bool {
-        guard event.getIntegerValueField(.eventSourceUserData)
-                != InjectedEventMarker.value else {
+        guard !InjectedEventMarker.isInjected(
+            userData: event.getIntegerValueField(.eventSourceUserData)
+        ) else {
             return false
         }
         let isSwitchShortcut = isSwitchShortcut(type: type, event: event)
@@ -1242,6 +1411,10 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
         permissionSnapshot.canInjectRemoteInput
     }
 
+    var requiresFunctionalPermissionProbe: Bool {
+        permissionSnapshot.postAccessLooksStale
+    }
+
     var permissionFailureStatus: String {
         permissionSnapshot.remoteControlPermissionFailureStatus
     }
@@ -1265,6 +1438,7 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
     private let eventSource = CGEventSource(stateID: .privateState)
     private var hasPublishedInputActivity = false
     private var isAcceptingRemoteInput = false
+    private var stalePostingPermissionValidatedForSession = false
     private var pressedKeyCodes: Set<UInt16> = []
     private var pressedMouseButtons: Set<Int> = []
     private var pressedMediaKeys: [MediaKey: UInt64] = [:]
@@ -1316,17 +1490,20 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
         // behind the teardown after the grant is revoked in System Settings.
         invalidateInputAdmission()
         queue.async { [weak self] in
-            guard let self, isAcceptingRemoteInput else { return }
-            isAcceptingRemoteInput = false
-            capsLockRemoteInputPolicy.reset()
-            let released = releaseAllInputsOnQueue()
-            hasPublishedInputActivity = false
-            publish(
-                permissionSnapshot: snapshot,
-                status: released
-                    ? snapshot.remoteInputPermissionFailureStatus
-                    : "Remote control ended; input release will be retried"
-            )
+            guard let self else { return }
+            if isAcceptingRemoteInput {
+                isAcceptingRemoteInput = false
+                stalePostingPermissionValidatedForSession = false
+                capsLockRemoteInputPolicy.reset()
+                let released = releaseAllInputsOnQueue()
+                hasPublishedInputActivity = false
+                publish(
+                    permissionSnapshot: snapshot,
+                    status: released
+                        ? snapshot.remoteInputPermissionFailureStatus
+                        : "Remote control ended; input release will be retried"
+                )
+            }
             DispatchQueue.main.async { [weak self] in
                 self?.onControlFailure?(.accessibilityPermission)
             }
@@ -1353,6 +1530,16 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
     func beginRemoteControl(
         completion: @escaping (Bool) -> Void
     ) {
+        beginRemoteControl(
+            stalePostingPermissionValidated: false,
+            completion: completion
+        )
+    }
+
+    func beginRemoteControl(
+        stalePostingPermissionValidated: Bool,
+        completion: @escaping (Bool) -> Void
+    ) {
         queue.async { [weak self] in
             guard let self else {
                 DispatchQueue.main.async {
@@ -1361,7 +1548,12 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
                 return
             }
             let permissionSnapshot = permissionSnapshotProvider.currentSnapshot()
-            guard permissionSnapshot.canInjectRemoteInput else {
+            let permissionCheck =
+                permissionSnapshotProvider.currentRemoteInputPermission()
+            guard permissionCheck.isAuthorized(
+                stalePostingPermissionValidated:
+                    stalePostingPermissionValidated
+            ) else {
                 invalidateInputAdmission()
                 publish(
                     permissionSnapshot: permissionSnapshot,
@@ -1383,6 +1575,9 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
                 return
             }
             isAcceptingRemoteInput = true
+            stalePostingPermissionValidatedForSession =
+                stalePostingPermissionValidated
+                && !permissionCheck.canPostCoreGraphicsEvents
             beginInputAdmission()
             capsLockRemoteInputPolicy.reset()
             droppedKeyUps.removeAll()
@@ -1411,6 +1606,7 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
                 return
             }
             isAcceptingRemoteInput = false
+            stalePostingPermissionValidatedForSession = false
             capsLockRemoteInputPolicy.reset()
             let released = releaseAllInputsOnQueue()
             hasPublishedInputActivity = false
@@ -1440,8 +1636,12 @@ final class RemoteInputSink: ObservableObject, ControlInputSink {
                   isAcceptingRemoteInput else { return }
             let permissionCheck =
                 permissionSnapshotProvider.currentRemoteInputPermission()
-            guard permissionCheck.isAuthorized else {
+            guard permissionCheck.isAuthorized(
+                stalePostingPermissionValidated:
+                    stalePostingPermissionValidatedForSession
+            ) else {
                 isAcceptingRemoteInput = false
+                stalePostingPermissionValidatedForSession = false
                 invalidateInputAdmission()
                 releaseAllInputsOnQueue()
                 let permissionSnapshot =

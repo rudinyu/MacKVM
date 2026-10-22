@@ -244,6 +244,262 @@ struct CodeSigningIdentityDiagnostics: Equatable, Sendable {
     }
 }
 
+enum CodeSigningIdentityDiagnosticLogMessageComposer {
+    static let maximumMessageByteCount = 899
+
+    private static let signingIdentityPhase = "phase=signing-identity"
+
+    static func messages(
+        for diagnostics: CodeSigningIdentityDiagnostics
+    ) -> [String] {
+        var messages = [summaryMessage(for: diagnostics)]
+
+        if let current = diagnostics.current {
+            messages.append(contentsOf: currentMetadataMessages(current))
+            messages.append(contentsOf: requirementMessages(
+                current.designatedRequirementDescription,
+                label: "current"
+            ))
+        }
+
+        if let previous = diagnostics.previous,
+           let current = diagnostics.current {
+            messages.append(contentsOf: previousDifferenceMessages(
+                previous: previous,
+                current: current,
+                comparisons: diagnostics.comparisons
+            ))
+        }
+
+        return messages
+    }
+
+    private static func summaryMessage(
+        for diagnostics: CodeSigningIdentityDiagnostics
+    ) -> String {
+        let prefix = [
+            "\(signingIdentityPhase).summary",
+            "comparison=\(diagnostics.comparisons.supportDescription)",
+            "summary=\(singleLine(diagnostics.changeDescription))",
+            "error="
+        ].joined(separator: " ")
+        let error = diagnostics.error?.supportDescription ?? "None"
+        let availableBytes = max(0, maximumMessageByteCount - prefix.utf8.count)
+        return prefix + boundedSingleLine(error, maximumBytes: availableBytes)
+    }
+
+    private static func currentMetadataMessages(
+        _ identity: CodeSigningIdentity
+    ) -> [String] {
+        let fields = [
+            ("CDHash", singleLine(identity.cdhash)),
+            (
+                "TeamID",
+                fieldDescription(
+                    identity.teamIdentifier,
+                    wasRead: identity.teamIdentifierWasRead
+                )
+            ),
+            (
+                "SigningIdentifier",
+                fieldDescription(
+                    identity.signingIdentifier,
+                    wasRead: identity.signingIdentifierWasRead
+                )
+            ),
+            (
+                "CertificateSHA256",
+                fieldDescription(
+                    identity.leafCertificateSHA256,
+                    wasRead: identity.leafCertificateWasRead
+                )
+            ),
+            ("Signature", identity.signatureDescription)
+        ]
+        let prefix = "\(signingIdentityPhase).current"
+        let combined = prefix + " " + fields
+            .map { "\($0.0)=\($0.1)" }
+            .joined(separator: " ")
+        guard combined.utf8.count > maximumMessageByteCount else {
+            return [combined]
+        }
+
+        // Real signing metadata is short. If an unexpected value is large,
+        // retain it in bounded per-field records rather than dropping it.
+        return fields.flatMap { field in
+            valueMessages(
+                prefix: "\(prefix).\(field.0)=",
+                value: field.1
+            )
+        }
+    }
+
+    private static func requirementMessages(
+        _ requirement: String,
+        label: String
+    ) -> [String] {
+        valueMessages(
+            prefix: "\(signingIdentityPhase).requirement \(label)=",
+            value: requirement
+        )
+    }
+
+    private static func previousDifferenceMessages(
+        previous: CodeSigningIdentity,
+        current: CodeSigningIdentity,
+        comparisons: CodeSigningIdentityComparisons
+    ) -> [String] {
+        var fields: [(String, String)] = []
+        if comparisons.binaryChanged == true {
+            fields.append(("CDHash", previous.cdhash))
+        }
+        if comparisons.teamChanged == true {
+            fields.append((
+                "TeamID",
+                fieldDescription(
+                    previous.teamIdentifier,
+                    wasRead: previous.teamIdentifierWasRead
+                )
+            ))
+        }
+        if comparisons.signingIdentifierChanged == true {
+            fields.append((
+                "SigningIdentifier",
+                fieldDescription(
+                    previous.signingIdentifier,
+                    wasRead: previous.signingIdentifierWasRead
+                )
+            ))
+        }
+        if !comparisons.adHocRequirementIgnored,
+           comparisons.requirementChanged == true {
+            fields.append((
+                "Requirement",
+                previous.designatedRequirementDescription
+            ))
+        }
+        if comparisons.certificateChanged == true {
+            fields.append((
+                "CertificateSHA256",
+                fieldDescription(
+                    previous.leafCertificateSHA256,
+                    wasRead: previous.leafCertificateWasRead
+                )
+            ))
+        }
+        if let previousIsAdHoc = previous.isAdHoc,
+           let currentIsAdHoc = current.isAdHoc,
+           previousIsAdHoc != currentIsAdHoc {
+            fields.append(("Signature", previous.signatureDescription))
+        }
+
+        return fields.flatMap { field in
+            let prefix = "\(signingIdentityPhase).previous \(field.0)="
+            return valueMessages(prefix: prefix, value: field.1)
+        }
+    }
+
+    private static func valueMessages(
+        prefix: String,
+        value: String
+    ) -> [String] {
+        let value = singleLine(value)
+        let complete = prefix + value
+        guard complete.utf8.count > maximumMessageByteCount else {
+            return [complete]
+        }
+
+        // Leave room for long field names and the part marker. Splitting on
+        // Unicode scalars preserves valid UTF-8 even for non-ASCII input.
+        let chunks = splitUTF8(value, maximumChunkBytes: 600)
+        return chunks.enumerated().map { index, chunk in
+            "\(prefix)\(chunk) [part=\(index + 1)/\(chunks.count)]"
+        }
+    }
+
+    private static func splitUTF8(
+        _ value: String,
+        maximumChunkBytes: Int
+    ) -> [String] {
+        guard !value.isEmpty else { return [""] }
+
+        var chunks: [String] = []
+        var chunk = ""
+        var chunkByteCount = 0
+        for scalar in value.unicodeScalars {
+            let scalarString = String(scalar)
+            let scalarByteCount = scalarString.utf8.count
+            if chunkByteCount > 0,
+               chunkByteCount + scalarByteCount > maximumChunkBytes {
+                chunks.append(chunk)
+                chunk = ""
+                chunkByteCount = 0
+            }
+            chunk.append(scalarString)
+            chunkByteCount += scalarByteCount
+        }
+        if !chunk.isEmpty {
+            chunks.append(chunk)
+        }
+        return chunks
+    }
+
+    private static func boundedSingleLine(
+        _ value: String,
+        maximumBytes: Int
+    ) -> String {
+        let value = singleLine(value)
+        guard value.utf8.count > maximumBytes else { return value }
+        let marker = "... [truncated]"
+        guard maximumBytes >= marker.utf8.count else {
+            return prefixByUTF8(value, maximumBytes: maximumBytes)
+        }
+        return prefixByUTF8(
+            value,
+            maximumBytes: maximumBytes - marker.utf8.count
+        ) + marker
+    }
+
+    private static func prefixByUTF8(
+        _ value: String,
+        maximumBytes: Int
+    ) -> String {
+        var prefix = ""
+        var byteCount = 0
+        for scalar in value.unicodeScalars {
+            let scalarString = String(scalar)
+            let scalarByteCount = scalarString.utf8.count
+            guard byteCount + scalarByteCount <= maximumBytes else { break }
+            prefix.append(scalarString)
+            byteCount += scalarByteCount
+        }
+        return prefix
+    }
+
+    private static func fieldDescription(
+        _ value: String?,
+        wasRead: Bool
+    ) -> String {
+        guard let value else { return wasRead ? "Absent" : "Unavailable" }
+        return singleLine(value)
+    }
+
+    private static func singleLine(_ value: String) -> String {
+        value.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+}
+
+fileprivate extension CodeSigningIdentity {
+    var designatedRequirementDescription: String {
+        guard let designatedRequirement else {
+            return designatedRequirementWasRead ? "Absent" : "Unavailable"
+        }
+        return designatedRequirement
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+    }
+}
+
 enum CodeSigningIdentityReader {
     static func readCurrentProcess() -> Result<CodeSigningIdentity, CodeSigningDiagnosticError> {
         var code: SecCode?
@@ -553,11 +809,15 @@ enum CodeSigningIdentityDiagnosticStore {
     }
 
     private static func log(_ diagnostics: CodeSigningIdentityDiagnostics) {
-        let summary = diagnostics.supportDescription
-        if diagnostics.error == nil {
-            logger.info("phase=signing-identity \(summary, privacy: .public)")
-        } else {
-            logger.error("phase=signing-identity \(summary, privacy: .public)")
+        let messages = CodeSigningIdentityDiagnosticLogMessageComposer.messages(
+            for: diagnostics
+        )
+        for (index, message) in messages.enumerated() {
+            if index == 0, diagnostics.error != nil {
+                logger.error("\(message, privacy: .public)")
+            } else {
+                logger.notice("\(message, privacy: .public)")
+            }
         }
     }
 

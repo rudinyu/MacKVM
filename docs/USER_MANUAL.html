@@ -43,10 +43,10 @@
 <body>
   <main>
     <header>
-      <div class="badge">MacKVM 1.102.04 (build 101)</div>
+      <div class="badge">MacKVM 1.102.05 (build 102)</div>
       <h1>MacKVM User Manual</h1>
       <p class="lede">A macOS app with a KVM menu-bar entry and full control window for sharing one keyboard, mouse, and trackpad, plus an optional BenQ MA270U display, between two MacBook Pro computers.</p>
-      <p>This manual describes source version 1.102.04 (build 101). The default distribution flow signs and notarizes the app with Developer ID Application, staples it, then places it directly in a separately notarized DMG. Local test artifacts and their notarization results are separate from GitHub publication.</p>
+      <p>This manual describes source version 1.102.05 (build 102). The default distribution flow signs and notarizes the app with Developer ID Application, staples it, then places it directly in a separately notarized DMG. Local test artifacts and their notarization results are separate from GitHub publication.</p>
       <p><a href="USER_MANUAL.zh-TW.html" lang="zh-Hant">繁體中文版</a> · <a href="USER_MANUAL.md">Markdown version</a></p>
     </header>
 
@@ -98,7 +98,7 @@
       <p>Create and verify a DMG:</p>
       <pre><code>./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist &amp;&amp; shasum -a 256 -c MacKVM-1.102.04-universal.dmg.sha256)</code></pre>
+(cd dist &amp;&amp; shasum -a 256 -c MacKVM-1.102.05-universal.dmg.sha256)</code></pre>
       <p>The local-testing app is ad-hoc signed and the DMG contains no PKG. Direct distribution uses Developer ID Application signing and Apple notarization for the app and DMG. The install helper preserves local pairing data, keys, preferences, and TCC permission records; it does not reset or clear permissions. Preserved records do not guarantee that macOS authorizes the current app, so review System Settings if access is unavailable.</p>
       <p>For direct distribution outside the Mac App Store, create a notarytool Keychain profile once and add its name plus your Developer ID identity to <code>~/.config/codex/notarization.env</code> (mode <code>0600</code>). Complete API-key settings are also supported. The release script reads these shared settings by default; command-line values remain available as overrides.</p>
       <pre><code>xcrun notarytool store-credentials "mackvm-notary" \
@@ -244,7 +244,7 @@
     </section>
 
     <footer>
-      <p>MacKVM User Manual · Source version 1.102.04 (build 101) · Updated 2026-10-22 · Distribution apps and DMGs require Developer ID signature and Apple notarization verification.</p>
+      <p>MacKVM User Manual · Source version 1.102.05 (build 102) · Updated 2026-10-22 · Distribution apps and DMGs require Developer ID signature and Apple notarization verification.</p>
     </footer>
   </main>
 </body>

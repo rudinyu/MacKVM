@@ -7,7 +7,7 @@ between two computers on the same local network. A Windows receiver companion
 is included in this repository. Monitor input switching is optional and uses
 native DDC/CI where the display supports it.
 
-Current macOS source: **1.102.04 (build 101)**. It adds opt-in plain-text
+Current macOS source: **1.102.05 (build 102)**. It adds opt-in plain-text
 clipboard synchronization with WindowsKVM and a brief, non-activating HUD when
 keyboard ownership changes. The current WindowsKVM source is **1.03.00
 (build 114)**, with matching per-peer clipboard consent and a control-status
@@ -212,7 +212,7 @@ Applications shortcut, executable `Install MacKVM.command` and
 uninstallation guides. No PKG is created. Verify the DMG from `dist`:
 
 ```sh
-(cd dist && shasum -a 256 -c MacKVM-1.102.04-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.102.05-universal.dmg.sha256)
 ```
 
 For direct distribution outside the Mac App Store, use the separate notarized

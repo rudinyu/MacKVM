@@ -72,6 +72,198 @@ final class ControlCoordinatorTests: XCTestCase {
         )
     }
 
+    func testStalePostingProbeGatesManualAndAutomaticAcceptance() {
+        let manual = makeFixture()
+        manual.sink.requiresFunctionalPermissionProbe = true
+        let manualRequestID = UUID()
+        manual.transport.deliver(controlMessage(.requestControl, manualRequestID))
+        drainMainQueue()
+        manual.coordinator.acceptIncomingControlRequest(manualRequestID)
+
+        XCTAssertEqual(manual.permissionProbe.startCount, 1)
+        XCTAssertEqual(manual.sink.beginCount, 0)
+        XCTAssertFalse(manual.coordinator.isReceivingControl)
+        manual.permissionProbe.deliverNext(true)
+        drainMainQueue()
+
+        XCTAssertTrue(manual.coordinator.isReceivingControl)
+        XCTAssertEqual(manual.sink.beginCount, 1)
+        XCTAssertTrue(manual.sink.lastStalePostingPermissionValidated)
+
+        let automatic = makeFixture(seamlessControlAuthorized: true)
+        automatic.sink.requiresFunctionalPermissionProbe = true
+        let automaticRequestID = UUID()
+        automatic.transport.deliver(
+            controlMessage(.requestControl, automaticRequestID)
+        )
+        drainMainQueue()
+
+        XCTAssertEqual(automatic.permissionProbe.startCount, 1)
+        XCTAssertEqual(automatic.sink.beginCount, 0)
+        XCTAssertFalse(automatic.coordinator.isReceivingControl)
+        automatic.permissionProbe.deliverNext(true)
+        drainMainQueue()
+
+        XCTAssertTrue(automatic.coordinator.isReceivingControl)
+        XCTAssertEqual(automatic.sink.beginCount, 1)
+        XCTAssertTrue(automatic.sink.lastStalePostingPermissionValidated)
+    }
+
+    func testStalePostingProbeFailureDeniesWithRecoveryMessage() {
+        let fixture = makeFixture()
+        fixture.sink.requiresFunctionalPermissionProbe = true
+        fixture.sink.permissionFailureStatus =
+            "macOS reports event posting as unavailable. Turn MacKVM off and on in Accessibility, or quit and reopen MacKVM"
+        let requestID = UUID()
+        fixture.transport.deliver(controlMessage(.requestControl, requestID))
+        drainMainQueue()
+        fixture.coordinator.acceptIncomingControlRequest(requestID)
+        fixture.permissionProbe.deliverNext(false)
+        drainMainQueue()
+
+        XCTAssertFalse(fixture.coordinator.isReceivingControl)
+        XCTAssertEqual(fixture.sink.beginCount, 0)
+        XCTAssertEqual(fixture.coordinator.status, fixture.sink.permissionFailureStatus)
+        XCTAssertEqual(
+            fixture.transport.sentMessages.last,
+            controlMessage(.controlDenied, requestID)
+        )
+    }
+
+    func testHealthyPermissionPathNeverCallsFunctionalProbe() {
+        for seamless in [false, true] {
+            let fixture = makeFixture(seamlessControlAuthorized: seamless)
+            let requestID = UUID()
+            fixture.transport.deliver(controlMessage(.requestControl, requestID))
+            drainMainQueue()
+            if !seamless {
+                fixture.coordinator.acceptIncomingControlRequest(requestID)
+            }
+            drainMainQueue()
+
+            XCTAssertEqual(fixture.permissionProbe.startCount, 0)
+            XCTAssertTrue(fixture.coordinator.isReceivingControl)
+        }
+    }
+
+    func testLateStalePostingProbePassCannotGrantAfterDisconnect() {
+        let fixture = makeFixture()
+        fixture.sink.requiresFunctionalPermissionProbe = true
+        let requestID = UUID()
+        fixture.transport.deliver(controlMessage(.requestControl, requestID))
+        drainMainQueue()
+        fixture.coordinator.acceptIncomingControlRequest(requestID)
+        XCTAssertEqual(fixture.permissionProbe.startCount, 1)
+
+        fixture.transport.disconnect()
+        drainMainQueue()
+        fixture.permissionProbe.deliverNext(true)
+        drainMainQueue()
+
+        XCTAssertGreaterThanOrEqual(fixture.permissionProbe.cancelCount, 1)
+        XCTAssertEqual(fixture.sink.beginCount, 0)
+        XCTAssertFalse(fixture.coordinator.isReceivingControl)
+        XCTAssertFalse(
+            fixture.transport.sentMessages.contains {
+                $0.kind == .controlGranted && $0.requestID == requestID
+            }
+        )
+    }
+
+    func testForgettingPeerCancelsPendingProbeBeforeTransportDisconnect() {
+        let fixture = makeFixture()
+        fixture.sink.requiresFunctionalPermissionProbe = true
+        let requestID = UUID()
+        let peerID = fixture.transport.connectedPeerID!
+        fixture.transport.deliver(controlMessage(.requestControl, requestID))
+        drainMainQueue()
+        fixture.coordinator.acceptIncomingControlRequest(requestID)
+
+        fixture.coordinator.cancelIncomingControlRequestForRevokedPeer(peerID)
+        fixture.permissionProbe.deliverNext(true)
+        drainMainQueue()
+
+        XCTAssertGreaterThanOrEqual(fixture.permissionProbe.cancelCount, 1)
+        XCTAssertEqual(fixture.sink.beginCount, 0)
+        XCTAssertFalse(fixture.coordinator.isReceivingControl)
+        XCTAssertFalse(
+            fixture.transport.sentMessages.contains {
+                $0.kind == .controlGranted && $0.requestID == requestID
+            }
+        )
+    }
+
+    func testDisconnectAfterProbePassCleansUpLateInputSinkStart() {
+        let fixture = makeFixture()
+        fixture.sink.requiresFunctionalPermissionProbe = true
+        fixture.sink.completesBeginImmediately = false
+        let requestID = UUID()
+        fixture.transport.deliver(controlMessage(.requestControl, requestID))
+        drainMainQueue()
+        fixture.coordinator.acceptIncomingControlRequest(requestID)
+        fixture.permissionProbe.deliverNext(true)
+        drainMainQueue()
+        XCTAssertEqual(fixture.sink.beginCount, 1)
+
+        fixture.transport.disconnect()
+        drainMainQueue()
+        fixture.sink.completeBegin(didStart: true)
+        drainMainQueue()
+
+        XCTAssertGreaterThanOrEqual(fixture.sink.endCount, 1)
+        XCTAssertFalse(fixture.coordinator.isReceivingControl)
+        XCTAssertFalse(
+            fixture.transport.sentMessages.contains {
+                $0.kind == .controlGranted && $0.requestID == requestID
+            }
+        )
+    }
+
+    func testAccessibilityRevocationCancelsPendingProbeAndLatePassCannotGrant() {
+        let fixture = makeFixture()
+        fixture.sink.requiresFunctionalPermissionProbe = true
+        let requestID = UUID()
+        fixture.transport.deliver(controlMessage(.requestControl, requestID))
+        drainMainQueue()
+        fixture.coordinator.acceptIncomingControlRequest(requestID)
+
+        fixture.sink.hasAccessibilityPermission = false
+        fixture.sink.onControlFailure?(.accessibilityPermission)
+        drainMainQueue()
+        fixture.permissionProbe.deliverNext(true)
+        drainMainQueue()
+
+        XCTAssertGreaterThanOrEqual(fixture.permissionProbe.cancelCount, 1)
+        XCTAssertEqual(fixture.sink.beginCount, 0)
+        XCTAssertFalse(fixture.coordinator.isReceivingControl)
+        XCTAssertFalse(
+            fixture.transport.sentMessages.contains {
+                $0.kind == .controlGranted && $0.requestID == requestID
+            }
+        )
+    }
+
+    func testHealthyPathThatBecomesStaleBeforeGrantIsDenied() {
+        let fixture = makeFixture()
+        fixture.sink.completesBeginImmediately = false
+        let requestID = UUID()
+        fixture.transport.deliver(controlMessage(.requestControl, requestID))
+        drainMainQueue()
+        fixture.coordinator.acceptIncomingControlRequest(requestID)
+        XCTAssertEqual(fixture.sink.beginCount, 1)
+        XCTAssertEqual(fixture.permissionProbe.startCount, 0)
+
+        fixture.sink.requiresFunctionalPermissionProbe = true
+        fixture.sink.completeBegin(didStart: true)
+        drainMainQueue()
+
+        XCTAssertFalse(fixture.coordinator.isReceivingControl)
+        XCTAssertEqual(
+            fixture.transport.sentMessages.last,
+            controlMessage(.controlDenied, requestID)
+        )
+    }
+
     func testHeartbeatAcknowledgementWaitsForInputPathProgress() {
         let fixture = makeFixture(seamlessControlAuthorized: true)
         let requestID = UUID()
@@ -1560,6 +1752,7 @@ final class ControlCoordinatorTests: XCTestCase {
         let capture = FakeInputCapture()
         let sink = FakeInputSink()
         let clipboard = FakeClipboardSync()
+        let permissionProbe = ControlledPermissionProbe()
         let coordinator = ControlCoordinator(
             localID: localID,
             secureSession: transport,
@@ -1568,7 +1761,8 @@ final class ControlCoordinatorTests: XCTestCase {
             keyboardLayoutIdentifier: { keyboardLayoutIdentifier },
             seamlessControlAuthorized: { _ in seamlessControlAuthorized },
             clipboardSyncEnabled: { _ in clipboardSyncEnabled },
-            clipboardSync: clipboard
+            clipboardSync: clipboard,
+            remoteInputPermissionProbe: permissionProbe
         )
         drainMainQueue()
         transport.sentMessages.removeAll()
@@ -1579,7 +1773,8 @@ final class ControlCoordinatorTests: XCTestCase {
             transport: transport,
             capture: capture,
             sink: sink,
-            clipboard: clipboard
+            clipboard: clipboard,
+            permissionProbe: permissionProbe
         )
     }
 
@@ -1608,6 +1803,57 @@ private struct Fixture {
     let capture: FakeInputCapture
     let sink: FakeInputSink
     let clipboard: FakeClipboardSync
+    let permissionProbe: ControlledPermissionProbe
+}
+
+private final class ControlledPermissionProbe: RuntimePermissionProbing {
+    private var pending: [ControlledPermissionProbeOperation] = []
+    private(set) var startCount = 0
+    private(set) var cancelCount = 0
+
+    func start(
+        completion: @escaping (Bool) -> Void
+    ) -> any RuntimePermissionProbeResource {
+        startCount += 1
+        let operation = ControlledPermissionProbeOperation(
+            completion: completion,
+            onCancel: { [weak self] in self?.cancelCount += 1 }
+        )
+        pending.append(operation)
+        return operation
+    }
+
+    func deliverNext(_ result: Bool) {
+        guard !pending.isEmpty else { return }
+        pending.removeFirst().deliver(result)
+    }
+}
+
+private final class ControlledPermissionProbeOperation:
+    RuntimePermissionProbeResource {
+    private let completion: (Bool) -> Void
+    private let onCancel: () -> Void
+    private var isCancelled = false
+
+    init(
+        completion: @escaping (Bool) -> Void,
+        onCancel: @escaping () -> Void
+    ) {
+        self.completion = completion
+        self.onCancel = onCancel
+    }
+
+    func cancel() {
+        guard !isCancelled else { return }
+        isCancelled = true
+        onCancel()
+    }
+
+    func deliver(_ result: Bool) {
+        // Deliberately allow a callback after cancellation to exercise the
+        // coordinator's generation and live-request fence.
+        completion(result)
+    }
 }
 
 private final class FakeClipboardSync: ClipboardSyncManaging {
@@ -1728,6 +1974,9 @@ private final class FakeInputCapture: ControlInputCapture {
 
 private final class FakeInputSink: ControlInputSink {
     var hasAccessibilityPermission = true
+    var requiresFunctionalPermissionProbe = false
+    var permissionFailureStatus = "Accessibility permission is required"
+    private(set) var lastStalePostingPermissionValidated = false
     var onControlFailure: ((ControlInputFailure) -> Void)?
     var completesBeginImmediately = true
     var completesEndImmediately = true
@@ -1743,7 +1992,19 @@ private final class FakeInputSink: ControlInputSink {
     func refreshPermission() {}
 
     func beginRemoteControl(completion: @escaping (Bool) -> Void) {
+        beginRemoteControl(
+            stalePostingPermissionValidated: false,
+            completion: completion
+        )
+    }
+
+    func beginRemoteControl(
+        stalePostingPermissionValidated: Bool,
+        completion: @escaping (Bool) -> Void
+    ) {
         beginCount += 1
+        lastStalePostingPermissionValidated =
+            stalePostingPermissionValidated
         if completesBeginImmediately {
             completion(true)
         } else {

@@ -177,10 +177,13 @@
 "Keyboard, mouse, and trackpad sharing is already in progress." = "Keyboard, mouse, and trackpad sharing is already in progress.";
 "The display could not be switched; keyboard, mouse, and trackpad remain local." = "The display could not be switched; keyboard, mouse, and trackpad remain local.";
 "The other device did not accept keyboard, mouse, and trackpad control." = "The other device did not accept keyboard, mouse, and trackpad control.";
-"The controlling Mac needs system-reported keyboard event access and Accessibility. The receiving Mac needs Accessibility and system-reported event posting access." = "The controlling Mac needs system-reported keyboard event access and Accessibility. The receiving Mac needs Accessibility and system-reported event posting access.";
-"The controlling Mac needs system-reported keyboard event access and Device Control and Data Access. The receiving Mac needs Device Control and Data Access and system-reported event posting access." = "The controlling Mac needs system-reported keyboard event access and Device Control and Data Access. The receiving Mac needs Device Control and Data Access and system-reported event posting access.";
+"The controlling Mac needs system-reported keyboard event access and Accessibility. The receiving Mac needs Accessibility and working event posting." = "The controlling Mac needs system-reported keyboard event access and Accessibility. The receiving Mac needs Accessibility and working event posting.";
+"The controlling Mac needs system-reported keyboard event access and Device Control and Data Access. The receiving Mac needs Device Control and Data Access and working event posting." = "The controlling Mac needs system-reported keyboard event access and Device Control and Data Access. The receiving Mac needs Device Control and Data Access and working event posting.";
 "System-reported event posting access is required" = "System-reported event posting access is required";
 "System-reported event posting access is required to control another device" = "System-reported event posting access is required to control another device";
+"Access not verified" = "Access not verified";
+"macOS reports event posting as unavailable. Turn MacKVM off and on in Accessibility, or quit and reopen MacKVM" = "macOS reports event posting as unavailable. Turn MacKVM off and on in Accessibility, or quit and reopen MacKVM";
+"macOS reports event posting as unavailable. Turn MacKVM off and on in Device Control and Data Access, or quit and reopen MacKVM" = "macOS reports event posting as unavailable. Turn MacKVM off and on in Device Control and Data Access, or quit and reopen MacKVM";
 "Device Control and Data Access permission is required" = "Device Control and Data Access permission is required";
 "Device Control and Data Access permission is required to control another device" = "Device Control and Data Access permission is required to control another device";
 "The control request could not be started; keyboard, mouse, and trackpad remain local." = "The control request could not be started; keyboard, mouse, and trackpad remain local.";
@@ -227,6 +230,7 @@
 "Denied control: the other device's keyboard layout differs and its MacKVM version cannot remap it" = "Denied control: the other device's keyboard layout differs and its MacKVM version cannot remap it";
 "Denied remote control: Accessibility permission is missing" = "Denied remote control: Accessibility permission is missing";
 "Denied remote control: System-reported event posting access is missing" = "Denied remote control: System-reported event posting access is missing";
+"Denied remote control: event posting failed functional validation" = "Denied remote control: event posting failed functional validation";
 "Denied remote control: Device Control and Data Access permission is missing" = "Denied remote control: Device Control and Data Access permission is missing";
 "Remote control ended because system-reported event posting access is unavailable" = "Remote control ended because system-reported event posting access is unavailable";
 "Remote control ended because Device Control and Data Access is unavailable" = "Remote control ended because Device Control and Data Access is unavailable";

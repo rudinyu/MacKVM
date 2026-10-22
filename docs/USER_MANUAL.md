@@ -2,7 +2,7 @@
 
 # MacKVM user manual
 
-Source version: **1.102.04 (build 101)**. The default distribution flow uses a
+Source version: **1.102.05 (build 102)**. The default distribution flow uses a
 Developer ID Application-signed app directly in a separately notarized DMG;
 the app is notarized and stapled before it is added to the image. Local test
 artifacts and their notarization results are separate from GitHub publication.

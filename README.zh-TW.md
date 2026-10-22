@@ -5,7 +5,7 @@
 MacKVM 是原生 macOS 應用程式，可在同一本機網路上的兩台電腦間共享鍵盤、滑鼠與觸控板。
 此 repo 也包含 Windows 接收端。螢幕輸入切換是選用功能，並透過相容螢幕的原生 DDC/CI 控制。
 
-目前 macOS 原始碼版本：**1.102.04（build 101）**，新增與 WindowsKVM 互通的選用純文字剪貼簿同步，
+目前 macOS 原始碼版本：**1.102.05（build 102）**，新增與 WindowsKVM 互通的選用純文字剪貼簿同步，
 以及鍵盤控制權切換時短暫顯示的非啟用狀態 HUD。WindowsKVM 目前原始碼版本為 **1.03.00（build 114）**，
 提供逐台設定的剪貼簿同意與控制狀態提示。剪貼簿功能須由雙方明確啟用，且只在控制權授予後同步；
 未協商此功能的舊版 peer 仍可相容。預設發行映像檔會直接放入已簽署的 app、Applications 捷徑、Finder
@@ -153,7 +153,7 @@ xcrun notarytool store-credentials "mackvm-notary" \
 不會建立 PKG。從 `dist` 驗證 DMG：
 
 ```sh
-(cd dist && shasum -a 256 -c MacKVM-1.102.04-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.102.05-universal.dmg.sha256)
 ```
 
 預設正式發行流程會以 Developer ID Application 簽署 app，提交 app 至 Apple，staple 並驗證 ticket，

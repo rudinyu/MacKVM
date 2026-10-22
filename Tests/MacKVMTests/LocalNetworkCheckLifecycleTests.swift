@@ -70,6 +70,141 @@ final class LocalNetworkCheckLifecycleTests: XCTestCase {
         )
     }
 
+    func testProbeDenialPublishesAndInconclusiveResultsRetainBlockedState() throws {
+        let localKey = P256.Signing.PrivateKey()
+        let credentials = DeviceCredentials(
+            identity: PeerIdentity(
+                name: "Local Mac",
+                signingPublicKey: localKey.publicKey.x963Representation
+            ),
+            privateKey: localKey,
+            wasLoadedFromStorage: false
+        )
+        let suiteName = "LocalNetworkProbeStateTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let registry = PairingRegistry(
+            testDefaults: defaults,
+            storageKey: "pairedPeers",
+            persistenceApplicationID: suiteName
+        )
+        let service = PeerDiscoveryService(
+            credentials: credentials,
+            registry: registry
+        )
+
+        recordProbeResult(.blocked, on: service)
+        XCTAssertTrue(service.localNetworkAccessBlocked)
+
+        recordProbeResult(.noPeer, on: service)
+        XCTAssertTrue(service.localNetworkAccessBlocked)
+        recordProbeResult(.unconfirmed, on: service)
+        XCTAssertTrue(service.localNetworkAccessBlocked)
+
+        recordProbeResult(.reachable, on: service)
+        XCTAssertFalse(service.localNetworkAccessBlocked)
+    }
+
+    func testRecoveryTimerPausesForPairingAndResumesWithADiscoveredPeer() {
+        var recovery = LocalNetworkProbeRecoveryState()
+        XCTAssertEqual(LocalNetworkProbeRecoveryState.retryInterval, 4)
+        XCTAssertEqual(
+            recovery.reconcile(
+                isBlocked: false,
+                networkServicesStarted: true,
+                hasDiscoveredPeer: true
+            ),
+            .none
+        )
+        XCTAssertEqual(
+            recovery.reconcile(
+                isBlocked: true,
+                networkServicesStarted: false,
+                hasDiscoveredPeer: true
+            ),
+            .none
+        )
+        XCTAssertEqual(
+            recovery.reconcile(
+                isBlocked: true,
+                networkServicesStarted: true,
+                hasDiscoveredPeer: false
+            ),
+            .none
+        )
+
+        guard case let .schedule(firstGeneration) = recovery.reconcile(
+            isBlocked: true,
+            networkServicesStarted: true,
+            hasDiscoveredPeer: true
+        ) else {
+            return XCTFail("A blocked source with a peer should schedule recovery")
+        }
+        XCTAssertTrue(
+            LocalNetworkProbeRecoveryState.shouldStartProbe(
+                isBlocked: true,
+                networkServicesStarted: true,
+                pairingIsInFlight: false,
+                hasDiscoveredPeer: true,
+                probeIsInFlight: false
+            )
+        )
+        XCTAssertTrue(recovery.beginRetry(generation: firstGeneration))
+        XCTAssertFalse(
+            LocalNetworkProbeRecoveryState.shouldStartProbe(
+                isBlocked: true,
+                networkServicesStarted: true,
+                pairingIsInFlight: true,
+                hasDiscoveredPeer: true,
+                probeIsInFlight: false
+            )
+        )
+        XCTAssertFalse(
+            LocalNetworkProbeRecoveryState.shouldStartProbe(
+                isBlocked: true,
+                networkServicesStarted: true,
+                pairingIsInFlight: false,
+                hasDiscoveredPeer: true,
+                probeIsInFlight: true
+            )
+        )
+
+        guard case let .schedule(pausedGeneration) = recovery.reconcile(
+            isBlocked: true,
+            networkServicesStarted: true,
+            hasDiscoveredPeer: true
+        ) else {
+            return XCTFail("Recovery should remain scheduled while pairing pauses it")
+        }
+        XCTAssertEqual(
+            recovery.reconcile(
+                isBlocked: true,
+                networkServicesStarted: true,
+                hasDiscoveredPeer: false
+            ),
+            .cancel
+        )
+        XCTAssertFalse(recovery.beginRetry(generation: pausedGeneration))
+
+        guard case let .schedule(resumedGeneration) = recovery.reconcile(
+            isBlocked: true,
+            networkServicesStarted: true,
+            hasDiscoveredPeer: true
+        ) else {
+            return XCTFail("Discovery of a peer should resume recovery")
+        }
+        XCTAssertEqual(recovery.stop(), .cancel)
+        XCTAssertFalse(recovery.beginRetry(generation: resumedGeneration))
+        XCTAssertEqual(
+            recovery.reconcile(
+                isBlocked: true,
+                networkServicesStarted: false,
+                hasDiscoveredPeer: true
+            ),
+            .none
+        )
+    }
+
     func testPendingInboundConnectionMakesNetworkCheckBusy() {
         XCTAssertTrue(
             LocalNetworkCheckPolicy.hasPairingInFlight(
@@ -224,5 +359,16 @@ final class LocalNetworkCheckLifecycleTests: XCTestCase {
             contextIsClosing: contextIsClosing,
             connectionState: state
         )
+    }
+
+    private func recordProbeResult(
+        _ result: LocalNetworkCheckResult,
+        on service: PeerDiscoveryService
+    ) {
+        let published = expectation(description: "Probe result published")
+        service.recordLocalNetworkProbeResultForTesting(result) {
+            published.fulfill()
+        }
+        wait(for: [published], timeout: 1)
     }
 }
