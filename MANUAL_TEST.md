@@ -33,12 +33,12 @@ Local packaging check (from the M5 Pro) is also available:
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.102.05-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.102.07-universal.dmg.sha256)
 ```
 
-The first two commands build and verify the 1.102.05 (build 102) source locally;
-the checksum command verifies the local-testing DMG produced in `dist`. This
-update has not generated or published a release artifact. The local app and
+The first two commands build and verify the 1.102.07 (build 104) source locally;
+the checksum command verifies the local-testing DMG produced in `dist`. These
+commands do not perform Apple notarization or GitHub publication. The local app and
 DMG are ad-hoc signed and not for distribution; the image contains no PKG.
 
 Expected: the app reports both `arm64` and `x86_64`, and an ad-hoc signature
@@ -61,8 +61,8 @@ and final release image:
 codesign --verify --deep --strict --verbose=2 dist/universal/MacKVM.app
 spctl --assess --type execute --verbose=4 dist/universal/MacKVM.app
 xcrun stapler validate dist/universal/MacKVM.app
-xcrun stapler validate dist/MacKVM-1.102.05-universal.dmg
-(cd dist && shasum -a 256 -c MacKVM-1.102.05-universal.dmg.sha256)
+xcrun stapler validate dist/MacKVM-1.102.07-universal.dmg
+(cd dist && shasum -a 256 -c MacKVM-1.102.07-universal.dmg.sha256)
 ```
 
 Mount the release DMG in Finder. Confirm it contains `MacKVM.app`, the
@@ -217,7 +217,43 @@ Expected:
 
 ## 4. Discovery and pairing
 
-Build 102 path-denial, logging, and posting-preflight acceptance:
+Build 104 saved-pairing recovery acceptance (the previously packaged build 103
+DMG does not include these fixes):
+
+1. Keep the existing pairing on both Macs. Disable Local Network on one Mac,
+   launch MacKVM, select the saved peer, and restore access without quitting.
+   Repeat with the roles reversed. Discovery and the secure session must
+   recover without Forget or a new pairing code.
+2. While an outbound connection is waiting or retrying, use **Cancel** and
+   **Retry**. Cancel must stop that attempt without removing trust or switching
+   the monitor; Retry must retry the same saved peer, preserving any handshake
+   already in progress on a ready transport. An
+   already authenticated session must not be replaced by these actions.
+3. After a successful network check, keep the setup window open and make the
+   peer unavailable. The old success must expire or be invalidated, and the
+   result must update without reopening the window. Restore the peer and check
+   that success returns without repeated prompt acknowledgements.
+4. Run this acceptance on build 104 (1.102.07) on both Macs. Record each Mac's
+   exact build, the operation order, network status, and
+   secure-session phase logs. A successful pairing-endpoint test alone does
+   not establish that the secure session authenticated. These physical tests
+   remain pending even when the automated recovery tests pass.
+
+UI hang regression acceptance (requires real Macs; automated tests do not
+establish these results):
+
+- On macOS 27, disable MacKVM's Local Network access before launch. Launch
+  MacKVM with no peer available, then repeat with a peer advertising. Confirm
+  the window/menu remain responsive and denied access produces bounded retries.
+- On Intel macOS 26, leave Local Network enabled, press its Settings button,
+  and return to MacKVM repeatedly. Repeat while connected to a paired Mac.
+  Confirm MacKVM remains responsive while System Settings opens and closes;
+  save a new sample if CPU or memory grows continuously.
+- On the M5 Mac, click Connection using the same peer and permission state
+  that produced the hang report. Confirm connection-state changes leave the
+  app responsive; repeat after disconnecting and reopening its window.
+
+Build 103 path-denial, logging, and posting-preflight acceptance:
 
 Before denial testing, upgrade an installation whose Local Network switch is
 already on. Running services must show a neutral unverified state and
@@ -260,7 +296,7 @@ that macOS rejected the inherited grant.
    copy support information for the full metadata. Notice logs remain subject
    to system storage limits. These steps are physical acceptance, not CI results.
 
-Build 102 Local Network and signing acceptance (two Macs):
+Build 103 Local Network and signing acceptance (two Macs):
 
 1. Disable MacKVM in Privacy & Security > Local Network and relaunch it. With
    no peer available, check within about five seconds that **Nearby devices**

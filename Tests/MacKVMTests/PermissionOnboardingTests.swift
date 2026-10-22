@@ -597,6 +597,279 @@ final class PermissionOnboardingTests: XCTestCase {
         )
     }
 
+    func testLocalNetworkPermissionLifecycleIgnoresNilAndPeerReplays() {
+        let peerID = UUID()
+        var lifecycle = LocalNetworkPermissionLifecycleState()
+        let initialState = lifecycle
+
+        XCTAssertEqual(
+            lifecycle.authenticatedConnectionDidChange(to: nil),
+            .unchanged
+        )
+        XCTAssertEqual(lifecycle, initialState)
+
+        XCTAssertTrue(
+            lifecycle.beginPermissionRequest(networkServicesStarted: false)
+        )
+        XCTAssertTrue(lifecycle.isAwaitingResponse)
+        XCTAssertTrue(lifecycle.canAcknowledgeCurrentPrompt)
+        XCTAssertFalse(
+            lifecycle.beginPermissionRequest(networkServicesStarted: false)
+        )
+
+        XCTAssertEqual(
+            lifecycle.authenticatedConnectionDidChange(to: peerID),
+            .connected(peerID)
+        )
+        XCTAssertFalse(lifecycle.isAwaitingResponse)
+        XCTAssertFalse(lifecycle.canAcknowledgeCurrentPrompt)
+
+        let connectedState = lifecycle
+        XCTAssertEqual(
+            lifecycle.authenticatedConnectionDidChange(to: peerID),
+            .unchanged
+        )
+        XCTAssertEqual(lifecycle, connectedState)
+        XCTAssertFalse(lifecycle.completePermissionRequest())
+
+        XCTAssertEqual(
+            lifecycle.authenticatedConnectionDidChange(to: nil),
+            .disconnected
+        )
+        let disconnectedState = lifecycle
+        XCTAssertEqual(
+            lifecycle.authenticatedConnectionDidChange(to: nil),
+            .unchanged
+        )
+        XCTAssertEqual(lifecycle, disconnectedState)
+        XCTAssertEqual(
+            lifecycle.authenticatedConnectionDidChange(to: peerID),
+            .connected(peerID)
+        )
+    }
+
+    func testReachableLocalNetworkEvidenceExpiresAndCanBeRefreshed() {
+        let peerID = UUID()
+        let startedAt = Date(timeIntervalSince1970: 2_000)
+        var evidence = LocalNetworkCheckEvidence()
+        evidence.record(.reachable, at: startedAt, peerID: peerID)
+
+        XCTAssertEqual(
+            evidence.currentResult(
+                now: startedAt.addingTimeInterval(
+                    LocalNetworkCheckEvidence.reachableEvidenceLifetime - 1
+                ),
+                availablePeerIDs: [peerID]
+            ),
+            .reachable
+        )
+        XCTAssertNil(
+            evidence.currentResult(
+                now: startedAt.addingTimeInterval(
+                    LocalNetworkCheckEvidence.reachableEvidenceLifetime
+                ),
+                availablePeerIDs: [peerID]
+            )
+        )
+
+        XCTAssertTrue(
+            evidence.expireReachableEvidence(
+                now: startedAt.addingTimeInterval(
+                    LocalNetworkCheckEvidence.reachableEvidenceLifetime
+                ),
+                availablePeerIDs: [peerID]
+            )
+        )
+        XCTAssertNil(evidence.result)
+        XCTAssertEqual(evidence.checkedAt, startedAt)
+        XCTAssertFalse(
+            evidence.expireReachableEvidence(
+                now: startedAt.addingTimeInterval(90),
+                availablePeerIDs: [peerID]
+            )
+        )
+
+        let refreshedAt = startedAt.addingTimeInterval(90)
+        evidence.record(.reachable, at: refreshedAt, peerID: peerID)
+        XCTAssertEqual(
+            evidence.currentResult(
+                now: refreshedAt,
+                availablePeerIDs: [peerID]
+            ),
+            .reachable
+        )
+    }
+
+    func testPeerLossAndAuthenticatedDisconnectInvalidateReachabilityEvidence() {
+        let peerID = UUID()
+        let startedAt = Date(timeIntervalSince1970: 3_000)
+        var evidence = LocalNetworkCheckEvidence()
+        evidence.record(.reachable, at: startedAt, peerID: peerID)
+
+        XCTAssertFalse(
+            evidence.invalidateIfPeerUnavailable(
+                availablePeerIDs: [peerID]
+            )
+        )
+        XCTAssertTrue(
+            evidence.invalidateIfPeerUnavailable(availablePeerIDs: [])
+        )
+        XCTAssertNil(evidence.currentResult(
+            now: startedAt,
+            availablePeerIDs: []
+        ))
+        XCTAssertEqual(evidence.checkedAt, startedAt)
+
+        evidence.record(.reachable, at: startedAt, peerID: peerID)
+        var connectionState = LocalNetworkPermissionLifecycleState(
+            latestAuthenticatedPeerID: peerID
+        )
+        let disconnect = connectionState.authenticatedConnectionDidChange(
+            to: nil
+        )
+        XCTAssertEqual(disconnect, .disconnected)
+        XCTAssertTrue(evidence.invalidate(for: disconnect))
+        XCTAssertNil(evidence.currentResult(
+            now: startedAt,
+            availablePeerIDs: [peerID]
+        ))
+        XCTAssertFalse(evidence.invalidate(for: .unchanged))
+    }
+
+    func testLateDiscoveryCheckCompletionCannotOverwritePeerSpecificSuccess() {
+        let peerID = UUID()
+        let actualProbeAt = Date(timeIntervalSince1970: 3_500)
+        var evidence = LocalNetworkCheckEvidence()
+        evidence.record(.reachable, at: actualProbeAt, peerID: peerID)
+
+        XCTAssertFalse(
+            evidence.recordManualCheckCompletion(
+                .reachable,
+                at: actualProbeAt.addingTimeInterval(0.1)
+            )
+        )
+        XCTAssertEqual(evidence.result, .reachable)
+        XCTAssertEqual(evidence.peerID, peerID)
+        XCTAssertEqual(evidence.checkedAt, actualProbeAt)
+        XCTAssertEqual(
+            evidence.currentResult(
+                now: actualProbeAt.addingTimeInterval(1),
+                availablePeerIDs: [peerID]
+            ),
+            .reachable
+        )
+    }
+
+    func testAutomaticNetworkChecksRespectFreshEvidenceAndActiveWork() {
+        let start = Date(timeIntervalSince1970: 4_000)
+        func shouldStart(
+            hasAuthenticatedConnection: Bool = false,
+            hasPairing: Bool = false,
+            hasPendingConnection: Bool = false,
+            hasFreshReachableEvidence: Bool = false
+        ) -> Bool {
+            LocalNetworkCheckLifecyclePolicy.shouldStartAutomaticCheck(
+                isPolling: true,
+                networkServicesStarted: true,
+                checkInProgress: false,
+                lastStartedAt: start,
+                now: start.addingTimeInterval(
+                    LocalNetworkCheckLifecyclePolicy
+                        .minimumAutomaticCheckInterval
+                ),
+                hasActiveAuthenticatedConnection: hasAuthenticatedConnection,
+                hasActivePairing: hasPairing,
+                hasPendingConnectionAttempt: hasPendingConnection,
+                hasFreshReachableEvidence: hasFreshReachableEvidence
+            )
+        }
+
+        XCTAssertFalse(shouldStart(hasAuthenticatedConnection: true))
+        XCTAssertFalse(shouldStart(hasPairing: true))
+        XCTAssertFalse(shouldStart(hasPendingConnection: true))
+        XCTAssertFalse(shouldStart(hasFreshReachableEvidence: true))
+        XCTAssertTrue(shouldStart())
+
+        XCTAssertTrue(
+            LocalNetworkCheckLifecyclePolicy.canRunManualCheck(
+                hasActiveAuthenticatedConnection: false,
+                hasActivePairing: false,
+                hasPendingConnectionAttempt: true
+            )
+        )
+        XCTAssertFalse(
+            LocalNetworkCheckLifecyclePolicy.canRunManualCheck(
+                hasActiveAuthenticatedConnection: true,
+                hasActivePairing: false,
+                hasPendingConnectionAttempt: false
+            )
+        )
+        XCTAssertFalse(
+            LocalNetworkCheckLifecyclePolicy.canRunManualCheck(
+                hasActiveAuthenticatedConnection: false,
+                hasActivePairing: true,
+                hasPendingConnectionAttempt: false
+            )
+        )
+    }
+
+    @MainActor
+    func testRepeatedSettingsActivationKeepsAutomaticCheckRateLimit() {
+        let scheduler = ManualPermissionRefreshScheduler()
+        var refreshCount = 0
+        let monitor = PermissionRefreshMonitor(
+            interval: 2,
+            scheduler: scheduler
+        ) {
+            refreshCount += 1
+        }
+        monitor.surfaceAppeared(UUID())
+        monitor.surfaceAppeared(UUID())
+        let start = Date(timeIntervalSince1970: 1_000)
+
+        XCTAssertTrue(
+            LocalNetworkCheckLifecyclePolicy.shouldStartAutomaticCheck(
+                isPolling: monitor.isPolling,
+                networkServicesStarted: true,
+                checkInProgress: false,
+                lastStartedAt: nil,
+                now: start
+            )
+        )
+
+        for _ in 0 ..< 6 {
+            monitor.applicationWillResignActive()
+            monitor.applicationWillResignActive()
+            monitor.applicationDidBecomeActive()
+            monitor.applicationDidBecomeActive()
+            XCTAssertFalse(
+                LocalNetworkCheckLifecyclePolicy.shouldStartAutomaticCheck(
+                    isPolling: monitor.isPolling,
+                    networkServicesStarted: true,
+                    checkInProgress: false,
+                    lastStartedAt: start,
+                    now: start.addingTimeInterval(1)
+                )
+            )
+        }
+
+        XCTAssertEqual(scheduler.activeTimerCount, 1)
+        XCTAssertEqual(refreshCount, 0)
+        scheduler.fireActiveTimers()
+        XCTAssertEqual(refreshCount, 1)
+        XCTAssertTrue(
+            LocalNetworkCheckLifecyclePolicy.shouldStartAutomaticCheck(
+                isPolling: monitor.isPolling,
+                networkServicesStarted: true,
+                checkInProgress: false,
+                lastStartedAt: start,
+                now: start.addingTimeInterval(
+                    LocalNetworkCheckLifecyclePolicy.minimumAutomaticCheckInterval
+                )
+            )
+        )
+    }
+
     @MainActor
     func testVisiblePermissionRefreshContinuesWhileApplicationIsInactive() {
         let scheduler = ManualPermissionRefreshScheduler()

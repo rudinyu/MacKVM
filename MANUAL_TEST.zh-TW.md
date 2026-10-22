@@ -31,11 +31,11 @@ Intel Mac 的 `/Applications`，再開啟各自架構的 app。
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.102.05-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.102.07-universal.dmg.sha256)
 ```
 
-前兩個指令會在本機建置並驗證 1.102.05（build 102）原始碼；checksum 指令會驗證 `dist` 中
-本機測試用 DMG。目前尚未產生或發布正式發行產物。本機 app 與 DMG 使用 ad-hoc 簽章，不可
+前兩個指令會在本機建置並驗證 1.102.07（build 104）原始碼；checksum 指令會驗證 `dist` 中
+本機測試用 DMG。這些指令不會執行 Apple 公證或發布 GitHub Release。本機 app 與 DMG 使用 ad-hoc 簽章，不可
 用於正式散布；映像檔不含 PKG。
 
 預期 app 顯示 `arm64` 與 `x86_64`，並明確標示 ad-hoc 簽章僅供本機測試。checksum 應回報
@@ -54,8 +54,8 @@ app 與 DMG 都必須通過 Apple 公證、staple 與驗證。檢查 app bundle 
 codesign --verify --deep --strict --verbose=2 dist/universal/MacKVM.app
 spctl --assess --type execute --verbose=4 dist/universal/MacKVM.app
 xcrun stapler validate dist/universal/MacKVM.app
-xcrun stapler validate dist/MacKVM-1.102.05-universal.dmg
-(cd dist && shasum -a 256 -c MacKVM-1.102.05-universal.dmg.sha256)
+xcrun stapler validate dist/MacKVM-1.102.07-universal.dmg
+(cd dist && shasum -a 256 -c MacKVM-1.102.07-universal.dmg.sha256)
 ```
 
 在 Finder 裝載正式 DMG，確認內含 `MacKVM.app`、`/Applications` 捷徑、兩個可執行 Finder 指令、
@@ -142,7 +142,31 @@ HDMI 1 使用 VCP 17（`0x11`）。其他型號使用自己的 mapping；螢幕�
 
 ## 4. 探索與配對
 
-Build 102 路徑拒絕、log 與事件發送預檢驗收：
+Build 104 既有配對恢復驗收（先前打包的 build 103 DMG 不包含這些修正）：
+
+1. 保留兩台 Mac 的既有配對。在其中一台停用本機網路、啟動 MacKVM、選取已配對裝置，
+   再允許本機網路，全程不退出 App。交換兩台角色重測；探索及加密連線應能恢復，
+   不需要 Forget 或重新輸入配對碼。
+2. 連線等待或重試時，操作 **Cancel** 及 **Retry**。Cancel 應停止該次連線，保留配對且不切換
+   螢幕；Retry 應重試同一個已配對裝置，並保留已就緒傳輸上正在進行的握手。
+   已完成驗證的連線不應被這些操作替換。
+3. 網路測試成功後保持設定視窗開啟，讓對方裝置無法連線。舊成功結果應到期或失效，
+   不必重開視窗就能更新。恢復對方裝置後，應能重新取得成功結果，且不重複要求確認系統提示。
+4. 兩台 Mac 都使用 build 104（1.102.07）執行本驗收。記錄兩台的確切 build、完整操作順序、
+   網路狀態及加密連線 phase log。配對端點測試成功本身
+   不代表加密連線已通過驗證。自動恢復測試通過後，以上實機驗收仍待執行。
+
+UI hang 回歸驗收（需要實機，自動化測試不能代替以下結果）：
+
+- macOS 27 在啟動前先停用 MacKVM 本機網路權限，分別測試沒有 peer，以及另一台持續廣播
+  的情況。視窗／選單應保持可操作，權限被拒時的重試必須有間隔。
+- Intel macOS 26 保持本機網路開啟，按對應的 Settings，再回到 MacKVM，重複數次；另在
+  已連上配對 Mac 的情況重測。系統設定開啟／關閉期間，MacKVM 應保持可操作；若 CPU 或
+  記憶體持續上升，保存新的取樣報告。
+- M5 Mac 使用回報 hang 時相同的 peer 與權限狀態按 Connection，確認連線狀態變更時 App
+  保持可操作；斷線並重新開啟視窗後再測一次。
+
+Build 103 路徑拒絕、log 與事件發送預檢驗收：
 
 先測試本機網路開關原本已開啟的舊版升級：服務已啟動時，在通訊驗證成功前應顯示中性的
 尚未驗證狀態與設定／重測入口，不應要求再次按 **I handled the macOS prompt**。
@@ -173,7 +197,7 @@ Build 102 路徑拒絕、log 與事件發送預檢驗收：
    檢查分開的本次簽章／requirement 訊息與有變更的前次欄位；完整資料以複製支援資訊為準。
    notice log 仍受系統儲存上限限制。以上是實機驗收步驟，不代表 CI 已驗證此行為。
 
-Build 102 本機網路與簽章驗收（兩台 Mac）：
+Build 103 本機網路與簽章驗收（兩台 Mac）：
 
 1. 在「隱私權與安全性 → 本機網路」停用 MacKVM，再重新開啟 App。沒有 peer 時，約五秒內
    檢查 **Nearby devices** 是否顯示被擋提示與設定按鈕，而非 **Searching…**；收到明確政策

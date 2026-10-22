@@ -4,6 +4,29 @@
 
 ## Unreleased
 
+### MacKVM 1.102.07 (build 104) — saved-pairing network recovery
+
+- Recover secure Bonjour services after Local Network denial, including when
+  no outbound connection exists yet; keep independent service failures eligible
+  for recovery.
+- Provide Cancel and Retry for pending connections without removing the saved
+  pairing. Keep authenticated sessions and deliberate disconnects protected.
+- Expire or invalidate stale network-test success and refresh visible setup
+  status so an old result does not keep recovery actions hidden.
+- Add regression coverage and two-Mac acceptance steps. These changes are not
+  included in the previously packaged build 103 DMG. Physical permission
+  recovery and saved-pairing acceptance on build 104 remain pending.
+
+### MacKVM 1.102.06 (build 103) — UI lifecycle subscription fix
+
+- Observe connection and application focus notifications once in the shared
+  bootstrap instead of recreating those subscriptions in each view.
+- Ignore repeated peer states and completed permission-prompt events before
+  publishing UI state. Preserve the automatic network-check interval.
+- Add regression coverage and manual acceptance steps for Connection/Settings
+  hangs. The reported hangs have not yet been reproduced or confirmed fixed
+  on the affected M5 and Intel Macs.
+
 ### MacKVM 1.102.05 (build 102) — path denial recovery and durable diagnostics
 
 - Include connection-probe Local Network denial in the shared blocked state.

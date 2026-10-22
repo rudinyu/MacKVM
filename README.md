@@ -7,15 +7,17 @@ between two computers on the same local network. A Windows receiver companion
 is included in this repository. Monitor input switching is optional and uses
 native DDC/CI where the display supports it.
 
-Current macOS source: **1.102.05 (build 102)**. It adds opt-in plain-text
-clipboard synchronization with WindowsKVM and a brief, non-activating HUD when
-keyboard ownership changes. The current WindowsKVM source is **1.03.00
-(build 114)**, with matching per-peer clipboard consent and a control-status
-prompt. Clipboard sync requires both peers to opt in and an active control
-grant; legacy peers that do not negotiate the feature remain compatible. The
-default distribution image contains the signed app directly, an Applications
-shortcut, Finder install/uninstall commands, and bilingual guides; it needs a
-Developer ID Application identity and its own notarized DMG.
+Current macOS source: **1.102.07 (build 104)**. This release improves
+recovery for saved pairings after Local Network access changes and adds Cancel
+and Retry actions for pending connections. Physical two-Mac recovery acceptance
+is still pending. The app also retains the opt-in plain-text clipboard sync and
+brief, non-activating ownership HUD from earlier builds. The current WindowsKVM
+source is **1.03.00 (build 114)**, with matching per-peer clipboard consent
+and a control-status prompt. Clipboard sync requires both peers to opt in and
+an active control grant; legacy peers that do not negotiate the feature remain
+compatible. The default distribution image contains the signed app directly,
+an Applications shortcut, Finder install/uninstall commands, and bilingual
+guides; it needs a Developer ID Application identity and its own notarized DMG.
 
 The current MVP provides:
 
@@ -212,7 +214,7 @@ Applications shortcut, executable `Install MacKVM.command` and
 uninstallation guides. No PKG is created. Verify the DMG from `dist`:
 
 ```sh
-(cd dist && shasum -a 256 -c MacKVM-1.102.05-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.102.07-universal.dmg.sha256)
 ```
 
 For direct distribution outside the Mac App Store, use the separate notarized

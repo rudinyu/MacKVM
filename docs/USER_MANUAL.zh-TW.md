@@ -2,7 +2,7 @@
 
 # MacKVM 使用手冊
 
-原始碼版本：**1.102.05（build 102）**。預設正式散布流程會以 Developer ID Application 簽署 app，
+原始碼版本：**1.102.07（build 104）**。預設正式散布流程會以 Developer ID Application 簽署 app，
 先公證並 staple，再直接放入另行公證的 DMG。本機測試產物及其公證結果與 GitHub 發布分開確認。
 
 MacKVM 是 macOS app，提供選單列入口與一般控制視窗，讓 14 吋 M5 Pro MacBook Pro

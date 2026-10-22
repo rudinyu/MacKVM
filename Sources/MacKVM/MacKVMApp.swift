@@ -249,13 +249,16 @@ private final class AppBootstrap: ObservableObject {
     let errorMessage: String?
     let canResetIdentity: Bool
     @Published private(set) var networkServicesStarted = false
-    /// Shared by the menu-bar scene and the normal window so the Local
-    /// Network acknowledgement step cannot diverge between two surfaces.
-    @Published private(set) var awaitingLocalNetworkResponse = false
-    /// Only an Enable action taken by a fresh first-run workflow may show the
-    /// prompt acknowledgement. A stale awaiting bit cannot turn an existing
-    /// installation's unknown status into an acknowledgement step.
-    @Published private(set) var canAcknowledgeCurrentLocalNetworkPrompt = false
+    /// Shared lifecycle state makes prompt transitions idempotent across the
+    /// menu-bar scene, the normal window, and replayed connection events.
+    @Published private(set) var localNetworkPermissionLifecycleState =
+        LocalNetworkPermissionLifecycleState()
+    var awaitingLocalNetworkResponse: Bool {
+        localNetworkPermissionLifecycleState.isAwaitingResponse
+    }
+    var canAcknowledgeCurrentLocalNetworkPrompt: Bool {
+        localNetworkPermissionLifecycleState.canAcknowledgeCurrentPrompt
+    }
     @Published private(set) var recoveryMessage: String?
     /// Shared by the menu-bar scene and the normal window. Both surfaces can
     /// invoke the combined DDC-and-control action, so a view-local `@State`
@@ -263,9 +266,18 @@ private final class AppBootstrap: ObservableObject {
     @Published private(set) var combinedControlRequestInFlight = false
     @Published private(set) var combinedControlStatus: String?
     @Published private(set) var lastPermissionCheckAt: Date?
-    @Published private(set) var localNetworkCheckResult: LocalNetworkCheckResult?
     @Published private(set) var localNetworkCheckInProgress = false
-    @Published private(set) var lastLocalNetworkCheckAt: Date?
+    @Published private(set) var localNetworkCheckEvidence =
+        LocalNetworkCheckEvidence()
+    var localNetworkCheckResult: LocalNetworkCheckResult? {
+        localNetworkCheckEvidence.currentResult(
+            now: Date(),
+            availablePeerIDs: discoveredPeerIDs
+        )
+    }
+    var lastLocalNetworkCheckAt: Date? {
+        localNetworkCheckEvidence.checkedAt
+    }
     private var combinedControlRequestGeneration: UInt64 = 0
     private var activeControlRequestAlert: NSAlert?
     /// Keep the full request identity and a presentation token. Request IDs
@@ -280,10 +292,12 @@ private final class AppBootstrap: ObservableObject {
     private var lastLocalNetworkCheckStartedAt: Date?
     private var localNetworkCheckGeneration: UUID?
     private var localNetworkAccessObservation: AnyCancellable?
-    private var latestAuthenticatedPeerID: UUID?
+    private var lifecycleObservations = Set<AnyCancellable>()
     private lazy var permissionRefreshMonitor = PermissionRefreshMonitor {
         [weak self] in
-        self?.refreshPermissionStatus()
+        guard let self else { return }
+        self.refreshPermissionStatus()
+        self.checkLocalNetworkAccessIfNeeded()
     }
 
     init() {
@@ -365,6 +379,36 @@ private final class AppBootstrap: ObservableObject {
                 .sink { [weak self] isBlocked in
                     self?.discoveryNetworkBlockStateChanged(isBlocked)
                 }
+            secureSession.connectedPeerIDPublisher
+                .removeDuplicates()
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] peerID in
+                    self?.authenticatedConnectionDidChange(to: peerID)
+                }
+                .store(in: &lifecycleObservations)
+            discovery.$peers
+                .map { Set($0.map(\.identity.id)) }
+                .removeDuplicates()
+                .dropFirst()
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] peerIDs in
+                    self?.discoveredPeersDidChange(peerIDs)
+                }
+                .store(in: &lifecycleObservations)
+            NotificationCenter.default
+                .publisher(for: NSApplication.didBecomeActiveNotification)
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] _ in
+                    self?.applicationDidBecomeActive()
+                }
+                .store(in: &lifecycleObservations)
+            NotificationCenter.default
+                .publisher(for: NSApplication.willResignActiveNotification)
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] _ in
+                    self?.applicationWillResignActive()
+                }
+                .store(in: &lifecycleObservations)
             control.onOwnershipTransition = {
                 [weak self, weak control] transition in
                 guard let control else { return }
@@ -469,9 +513,11 @@ private final class AppBootstrap: ObservableObject {
                 )
             }
             discovery.onLocalNetworkAccessRecovered = {
-                [weak self, weak secureSession] in
-                self?.localNetworkAccessProbeDidSucceed()
-                secureSession?.retryPendingConnectionAfterSuccessfulLocalNetworkCheck()
+                [weak self, weak secureSession] peerID in
+                self?.localNetworkAccessProbeDidSucceed(peerID: peerID)
+                secureSession?.retryPendingConnectionAfterSuccessfulLocalNetworkCheck(
+                    for: peerID
+                )
             }
             // A notification action can arrive before the menu is opened.
             // Start native DDC/CI discovery here so the saved selector is
@@ -774,9 +820,8 @@ private final class AppBootstrap: ObservableObject {
         refreshPermissionStatus()
         if pendingLocalNetworkRecheck {
             consumePendingLocalNetworkRecheck()
-        } else {
-            checkLocalNetworkAccessIfNeeded()
         }
+        checkLocalNetworkAccessIfNeeded()
     }
 
     func applicationWillResignActive() {
@@ -795,6 +840,58 @@ private final class AppBootstrap: ObservableObject {
         lastPermissionCheckAt = Date()
     }
 
+    private var discoveredPeerIDs: Set<UUID> {
+        Set(discovery?.peers.map(\.identity.id) ?? [])
+    }
+
+    private var hasPairingActivityForNetworkCheck: Bool {
+        guard let discovery else { return false }
+        return discovery.pairingActivity.isActive
+            || discovery.pendingPairingConfirmation != nil
+            || !discovery.pendingRequests.isEmpty
+    }
+
+    var canRunLocalNetworkCheck: Bool {
+        !terminationCleanupStarted
+            && LocalNetworkCheckLifecyclePolicy.canRunManualCheck(
+                hasActiveAuthenticatedConnection:
+                    secureSession?.connectedPeerID != nil,
+                hasActivePairing: hasPairingActivityForNetworkCheck,
+                hasPendingConnectionAttempt:
+                    secureSession?.connectingPeerID != nil
+            )
+    }
+
+    private func invalidateLocalNetworkCheckEvidence() {
+        var evidence = localNetworkCheckEvidence
+        guard evidence.invalidate() else { return }
+        localNetworkCheckEvidence = evidence
+    }
+
+    private func expireLocalNetworkCheckEvidenceIfNeeded(now: Date) {
+        var evidence = localNetworkCheckEvidence
+        guard evidence.expireReachableEvidence(
+            now: now,
+            availablePeerIDs: discoveredPeerIDs
+        ) else {
+            return
+        }
+        localNetworkCheckEvidence = evidence
+    }
+
+    private func discoveredPeersDidChange(_ peerIDs: Set<UUID>) {
+        guard !terminationCleanupStarted else { return }
+        var evidence = localNetworkCheckEvidence
+        guard evidence.invalidateIfPeerUnavailable(
+            availablePeerIDs: peerIDs
+        ) else {
+            return
+        }
+        localNetworkCheckEvidence = evidence
+        lastLocalNetworkCheckStartedAt = nil
+        checkLocalNetworkAccessIfNeeded()
+    }
+
     private func discoveryNetworkBlockStateChanged(_ isBlocked: Bool) {
         guard !terminationCleanupStarted else { return }
         if !isBlocked {
@@ -808,8 +905,7 @@ private final class AppBootstrap: ObservableObject {
             }
             localNetworkCheckGeneration = nil
             localNetworkCheckInProgress = false
-            localNetworkCheckResult = nil
-            lastLocalNetworkCheckAt = nil
+            invalidateLocalNetworkCheckEvidence()
             lastLocalNetworkCheckStartedAt = nil
             checkLocalNetworkAccessIfNeeded()
             return
@@ -820,52 +916,59 @@ private final class AppBootstrap: ObservableObject {
         // session is positive operational evidence.
         localNetworkCheckGeneration = nil
         localNetworkCheckInProgress = false
-        localNetworkCheckResult = nil
-        lastLocalNetworkCheckAt = nil
+        invalidateLocalNetworkCheckEvidence()
         lastLocalNetworkCheckStartedAt = nil
     }
 
-    private func localNetworkAccessProbeDidSucceed() {
-        guard !terminationCleanupStarted else { return }
-        localNetworkCheckResult = .reachable
-        lastLocalNetworkCheckAt = Date()
+    private func localNetworkAccessProbeDidSucceed(peerID: UUID?) {
+        guard !terminationCleanupStarted,
+              secureSession?.connectedPeerID == nil,
+              !hasPairingActivityForNetworkCheck,
+              let peerID,
+              discoveredPeerIDs.contains(peerID) else {
+            return
+        }
+        let now = Date()
+        var evidence = localNetworkCheckEvidence
+        evidence.record(
+            .reachable,
+            at: now,
+            peerID: peerID
+        )
+        localNetworkCheckEvidence = evidence
+        lastLocalNetworkCheckStartedAt = now
         completeLocalNetworkPermissionRequest()
     }
 
     func authenticatedConnectionDidChange(to peerID: UUID?) {
-        if peerID != nil {
-            // A live authenticated session ends any old prompt workflow, but
-            // does not write the onboarding review acknowledgement.
-            completeLocalNetworkPermissionRequest()
+        var lifecycleState = localNetworkPermissionLifecycleState
+        let connectionChange =
+            lifecycleState.authenticatedConnectionDidChange(to: peerID)
+        guard connectionChange != .unchanged else { return }
+        localNetworkPermissionLifecycleState = lifecycleState
+        var evidence = localNetworkCheckEvidence
+        if evidence.invalidate(for: connectionChange) {
+            localNetworkCheckEvidence = evidence
         }
-        let isNewAuthenticatedPeer =
-            LocalNetworkStatusFreshnessPolicy.hasNewAuthenticatedPeer(
-                previousPeerID: latestAuthenticatedPeerID,
-                currentPeerID: peerID
-            )
-        latestAuthenticatedPeerID = peerID
-        guard isNewAuthenticatedPeer else { return }
 
-        // A new authenticated socket is fresher evidence than an older probe.
-        // Fence an in-flight result too, then probe the newly authenticated
-        // endpoint if a permission surface is still visible.
-        localNetworkCheckResult = nil
-        if localNetworkCheckInProgress {
-            localNetworkCheckGeneration = nil
-            localNetworkCheckInProgress = false
-            if permissionRefreshMonitor.isPolling && networkServicesStarted {
-                checkLocalNetworkAccess()
-            }
-        }
+        // The session transition itself is the fresh operational evidence.
+        // Fence any older probe and avoid opening another TCP connection while
+        // a secure session is active or has just disconnected.
+        localNetworkCheckGeneration = nil
+        localNetworkCheckInProgress = false
+        lastLocalNetworkCheckStartedAt = nil
     }
 
     func checkLocalNetworkAccess() {
         guard !terminationCleanupStarted,
-              !localNetworkCheckInProgress else {
+              !localNetworkCheckInProgress,
+              canRunLocalNetworkCheck else {
             return
         }
         guard let discovery else {
-            localNetworkCheckResult = .unavailable
+            var evidence = localNetworkCheckEvidence
+            evidence.record(.unavailable, at: Date(), peerID: nil)
+            localNetworkCheckEvidence = evidence
             return
         }
         if !networkServicesStarted {
@@ -873,12 +976,13 @@ private final class AppBootstrap: ObservableObject {
         }
 
         localNetworkCheckInProgress = true
-        localNetworkCheckResult = nil
+        invalidateLocalNetworkCheckEvidence()
         let generation = UUID()
         localNetworkCheckGeneration = generation
+        let preferredPeerID = secureSession?.connectingPeerID
         lastLocalNetworkCheckStartedAt = Date()
         discovery.checkLocalNetworkAccess(
-            preferredPeerID: secureSession?.connectedPeerID
+            preferredPeerID: preferredPeerID
         ) { [weak self] result in
             guard let self,
                   self.localNetworkCheckGeneration == generation else {
@@ -886,25 +990,38 @@ private final class AppBootstrap: ObservableObject {
             }
             self.localNetworkCheckGeneration = nil
             self.localNetworkCheckInProgress = false
-            self.localNetworkCheckResult = result
-            self.lastLocalNetworkCheckAt = Date()
+            let checkedAt = Date()
             if result == .reachable {
                 self.completeLocalNetworkPermissionRequest()
+                // This completion can follow a discovery wait and does not
+                // carry the peer actually probed. The peer-specific recovery
+                // callback records successful evidence without guessing.
+            } else {
+                var evidence = self.localNetworkCheckEvidence
+                evidence.recordManualCheckCompletion(result, at: checkedAt)
+                self.localNetworkCheckEvidence = evidence
             }
             self.consumePendingLocalNetworkRecheck()
         }
     }
 
     fileprivate func checkLocalNetworkAccessIfNeeded() {
-        guard permissionRefreshMonitor.isPolling,
-              networkServicesStarted,
-              !localNetworkCheckInProgress else {
-            return
-        }
-        if let lastLocalNetworkCheckStartedAt,
-           Date().timeIntervalSince(lastLocalNetworkCheckStartedAt) < 5 {
-            return
-        }
+        let now = Date()
+        expireLocalNetworkCheckEvidenceIfNeeded(now: now)
+        guard LocalNetworkCheckLifecyclePolicy.shouldStartAutomaticCheck(
+            isPolling: permissionRefreshMonitor.isPolling,
+            networkServicesStarted: networkServicesStarted,
+            checkInProgress: localNetworkCheckInProgress,
+            lastStartedAt: lastLocalNetworkCheckStartedAt,
+            now: now,
+            hasActiveAuthenticatedConnection:
+                secureSession?.connectedPeerID != nil,
+            hasActivePairing: hasPairingActivityForNetworkCheck,
+            hasPendingConnectionAttempt:
+                secureSession?.connectingPeerID != nil,
+            hasFreshReachableEvidence:
+                localNetworkCheckResult == .reachable
+        ) else { return }
         checkLocalNetworkAccess()
     }
 
@@ -923,15 +1040,20 @@ private final class AppBootstrap: ObservableObject {
     }
 
     func beginLocalNetworkPermissionRequest() {
-        guard !networkServicesStarted else { return }
-        canAcknowledgeCurrentLocalNetworkPrompt = true
-        awaitingLocalNetworkResponse = true
+        var lifecycleState = localNetworkPermissionLifecycleState
+        guard lifecycleState.beginPermissionRequest(
+            networkServicesStarted: networkServicesStarted
+        ) else {
+            return
+        }
+        localNetworkPermissionLifecycleState = lifecycleState
         startNetworkServices()
     }
 
     func completeLocalNetworkPermissionRequest() {
-        awaitingLocalNetworkResponse = false
-        canAcknowledgeCurrentLocalNetworkPrompt = false
+        var lifecycleState = localNetworkPermissionLifecycleState
+        guard lifecycleState.completePermissionRequest() else { return }
+        localNetworkPermissionLifecycleState = lifecycleState
     }
 
     func forget(peerID: UUID) {
@@ -1223,23 +1345,6 @@ private struct MacKVMMenuView: View {
                 for: permissionRefreshSurfaceID
             )
         }
-        .onReceive(
-            NotificationCenter.default.publisher(
-                for: NSApplication.didBecomeActiveNotification
-            )
-        ) { _ in
-            bootstrap.applicationDidBecomeActive()
-        }
-        .onReceive(
-            NotificationCenter.default.publisher(
-                for: NSApplication.willResignActiveNotification
-            )
-        ) { _ in
-            bootstrap.applicationWillResignActive()
-        }
-        .onReceive(secureSession.connectedPeerIDPublisher) { peerID in
-            bootstrap.authenticatedConnectionDidChange(to: peerID)
-        }
     }
 
     private var header: some View {
@@ -1499,7 +1604,10 @@ private struct MacKVMMenuView: View {
                     Button("Check Local Network Access") {
                         bootstrap.checkLocalNetworkAccess()
                     }
-                    .disabled(bootstrap.localNetworkCheckInProgress)
+                    .disabled(
+                        bootstrap.localNetworkCheckInProgress
+                            || !bootstrap.canRunLocalNetworkCheck
+                    )
                 }
             }
             if presentation.showsAwaitingPromptHint {
@@ -1740,15 +1848,7 @@ private struct MacKVMMenuView: View {
                             Label("Paired", systemImage: "checkmark.shield.fill")
                                 .font(.caption)
                                 .foregroundStyle(.green)
-                            if secureSession.connectedPeerID == peer.identity.id {
-                                Button("Disconnect") {
-                                    secureSession.disconnect()
-                                }
-                            } else {
-                                Button("Connect") {
-                                    secureSession.connect(to: peer.identity.id)
-                                }
-                            }
+                            secureConnectionControls(for: peer.identity.id)
                             Button("Forget", role: .destructive) {
                                 bootstrap.forget(peerID: peer.identity.id)
                             }
@@ -1780,11 +1880,7 @@ private struct MacKVMMenuView: View {
                         )
                             .font(.caption.monospaced())
                         Spacer()
-                        if secureSession.connectedPeerID == peerID {
-                            Button("Disconnect") {
-                                secureSession.disconnect()
-                            }
-                        }
+                        secureConnectionControls(for: peerID)
                         Button("Forget", role: .destructive) {
                             bootstrap.forget(peerID: peerID)
                         }
@@ -1814,6 +1910,29 @@ private struct MacKVMMenuView: View {
                 localizedStatusText(secureSession.status)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func secureConnectionControls(for peerID: UUID) -> some View {
+        if secureSession.connectedPeerID == peerID {
+            Button("Disconnect") {
+                secureSession.disconnect()
+            }
+        } else if secureSession.connectingPeerID == peerID {
+            Label("Connecting…", systemImage: "arrow.triangle.2.circlepath")
+                .font(.caption)
+            Button("Cancel") {
+                secureSession.cancelConnectionAttempt(to: peerID)
+            }
+            Button("Retry") {
+                secureSession.connect(to: peerID)
+            }
+            .buttonStyle(.borderedProminent)
+        } else {
+            Button("Connect") {
+                secureSession.connect(to: peerID)
             }
         }
     }
@@ -2063,6 +2182,10 @@ private struct MacKVMMenuView: View {
         if let connectedPeerID = secureSession.connectedPeerID,
            !visiblePeerIDs.contains(connectedPeerID) {
             unavailable.insert(connectedPeerID)
+        }
+        if let connectingPeerID = secureSession.connectingPeerID,
+           !visiblePeerIDs.contains(connectingPeerID) {
+            unavailable.insert(connectingPeerID)
         }
         return unavailable.sorted {
             $0.uuidString.localizedStandardCompare($1.uuidString)

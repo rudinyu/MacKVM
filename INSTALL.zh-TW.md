@@ -5,7 +5,7 @@
 本指南適用於目標雙 Mac 配置：14 吋 Apple Silicon M5 Pro MacBook Pro 以 USB-C
 連接 BenQ MA270U，以及 2019 16 吋 Intel MacBook Pro 以 HDMI 連接螢幕。
 
-原始碼版本：**1.102.05（build 102）**。以下內容說明如何封裝目前的 source checkout；個別產物
+原始碼版本：**1.102.07（build 104）**。以下內容說明如何封裝目前的 source checkout；個別產物
 是否已發布到 GitHub，需另外確認。
 
 ## 需求
@@ -104,7 +104,7 @@ transport 與 VCP `0x60` 輸入狀態。唯讀報告可保存為：
 ./scripts/verify-release.sh \
   --app dist/universal/MacKVM.app \
   --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.102.05-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.102.07-universal.dmg.sha256)
 ```
 
 本機測試 app 使用 ad-hoc 簽章。DMG 內含 `MacKVM.app`、Applications 捷徑、可執行的

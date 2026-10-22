@@ -279,6 +279,203 @@ enum LocalNetworkStatusFreshnessPolicy {
     }
 }
 
+/// Shared state for the Local Network prompt and authenticated-session
+/// lifecycle. Keeping the last peer beside the prompt flags lets the app
+/// publish only meaningful transitions, even if a publisher replays its
+/// current value to a replacement observer.
+struct LocalNetworkPermissionLifecycleState: Equatable {
+    enum ConnectionChange: Equatable {
+        case unchanged
+        case disconnected
+        case connected(UUID)
+    }
+
+    private(set) var latestAuthenticatedPeerID: UUID?
+    private(set) var isAwaitingResponse = false
+    private(set) var canAcknowledgeCurrentPrompt = false
+
+    init(latestAuthenticatedPeerID: UUID? = nil) {
+        self.latestAuthenticatedPeerID = latestAuthenticatedPeerID
+    }
+
+    @discardableResult
+    mutating func beginPermissionRequest(
+        networkServicesStarted: Bool
+    ) -> Bool {
+        guard !networkServicesStarted,
+              !isAwaitingResponse || !canAcknowledgeCurrentPrompt else {
+            return false
+        }
+        isAwaitingResponse = true
+        canAcknowledgeCurrentPrompt = true
+        return true
+    }
+
+    @discardableResult
+    mutating func completePermissionRequest() -> Bool {
+        guard isAwaitingResponse || canAcknowledgeCurrentPrompt else {
+            return false
+        }
+        isAwaitingResponse = false
+        canAcknowledgeCurrentPrompt = false
+        return true
+    }
+
+    @discardableResult
+    mutating func authenticatedConnectionDidChange(
+        to peerID: UUID?
+    ) -> ConnectionChange {
+        guard peerID != latestAuthenticatedPeerID else { return .unchanged }
+        let previousPeerID = latestAuthenticatedPeerID
+        latestAuthenticatedPeerID = peerID
+
+        guard let peerID else { return .disconnected }
+        guard LocalNetworkStatusFreshnessPolicy.hasNewAuthenticatedPeer(
+            previousPeerID: previousPeerID,
+            currentPeerID: peerID
+        ) else {
+            return .unchanged
+        }
+        completePermissionRequest()
+        return .connected(peerID)
+    }
+}
+
+/// A successful TCP probe is temporary, peer-specific evidence. It is useful
+/// for setup guidance, but it must not outlive the endpoint it tested or be
+/// mistaken for an authenticated secure session.
+struct LocalNetworkCheckEvidence: Equatable {
+    static let reachableEvidenceLifetime: TimeInterval = 60
+
+    private(set) var result: LocalNetworkCheckResult?
+    private(set) var checkedAt: Date?
+    private(set) var peerID: UUID?
+
+    mutating func record(
+        _ result: LocalNetworkCheckResult,
+        at checkedAt: Date,
+        peerID: UUID?
+    ) {
+        self.result = result
+        self.checkedAt = checkedAt
+        self.peerID = result == .reachable ? peerID : nil
+    }
+
+    /// The manual check completion omits the peer selected after a discovery
+    /// wait. Positive evidence comes from the peer-specific recovery callback;
+    /// never replace that evidence with an unassociated completion result.
+    @discardableResult
+    mutating func recordManualCheckCompletion(
+        _ result: LocalNetworkCheckResult,
+        at checkedAt: Date
+    ) -> Bool {
+        guard result != .reachable else { return false }
+        record(result, at: checkedAt, peerID: nil)
+        return true
+    }
+
+    @discardableResult
+    mutating func invalidate() -> Bool {
+        guard result != nil || peerID != nil else { return false }
+        result = nil
+        peerID = nil
+        return true
+    }
+
+    @discardableResult
+    mutating func invalidate(
+        for connectionChange: LocalNetworkPermissionLifecycleState.ConnectionChange
+    ) -> Bool {
+        switch connectionChange {
+        case .unchanged:
+            return false
+        case .disconnected, .connected:
+            return invalidate()
+        }
+    }
+
+    @discardableResult
+    mutating func invalidateIfPeerUnavailable(
+        availablePeerIDs: Set<UUID>
+    ) -> Bool {
+        guard result == .reachable,
+              let peerID,
+              !availablePeerIDs.contains(peerID) else {
+            return false
+        }
+        return invalidate()
+    }
+
+    @discardableResult
+    mutating func expireReachableEvidence(
+        now: Date,
+        availablePeerIDs: Set<UUID>
+    ) -> Bool {
+        guard result == .reachable,
+              currentResult(
+                now: now,
+                availablePeerIDs: availablePeerIDs
+              ) == nil else {
+            return false
+        }
+        return invalidate()
+    }
+
+    func currentResult(
+        now: Date,
+        availablePeerIDs: Set<UUID>
+    ) -> LocalNetworkCheckResult? {
+        guard result == .reachable else { return result }
+        guard let checkedAt else { return nil }
+        let age = now.timeIntervalSince(checkedAt)
+        guard age >= 0, age < Self.reachableEvidenceLifetime else {
+            return nil
+        }
+        guard let peerID, availablePeerIDs.contains(peerID) else { return nil }
+        return .reachable
+    }
+}
+
+enum LocalNetworkCheckLifecyclePolicy {
+    static let minimumAutomaticCheckInterval: TimeInterval = 5
+
+    static func canRunManualCheck(
+        hasActiveAuthenticatedConnection: Bool,
+        hasActivePairing: Bool,
+        hasPendingConnectionAttempt: Bool
+    ) -> Bool {
+        // A manual probe can recover a pending outbound connection, so that
+        // state deliberately does not disable the user's Check action.
+        _ = hasPendingConnectionAttempt
+        return !hasActiveAuthenticatedConnection && !hasActivePairing
+    }
+
+    static func shouldStartAutomaticCheck(
+        isPolling: Bool,
+        networkServicesStarted: Bool,
+        checkInProgress: Bool,
+        lastStartedAt: Date?,
+        now: Date,
+        hasActiveAuthenticatedConnection: Bool = false,
+        hasActivePairing: Bool = false,
+        hasPendingConnectionAttempt: Bool = false,
+        hasFreshReachableEvidence: Bool = false
+    ) -> Bool {
+        guard isPolling,
+              networkServicesStarted,
+              !checkInProgress,
+              !hasActiveAuthenticatedConnection,
+              !hasActivePairing,
+              !hasPendingConnectionAttempt,
+              !hasFreshReachableEvidence else {
+            return false
+        }
+        guard let lastStartedAt else { return true }
+        return now.timeIntervalSince(lastStartedAt)
+            >= minimumAutomaticCheckInterval
+    }
+}
+
 @MainActor
 protocol PermissionRefreshTimerToken: AnyObject {
     func invalidate()

@@ -73,6 +73,8 @@
 "Paired" = "Paired";
 "Disconnect" = "Disconnect";
 "Connect" = "Connect";
+"Connecting…" = "Connecting…";
+"Retry" = "Retry";
 "Forget" = "Forget";
 "Retry Forget" = "Retry Forget";
 "Saved pairing removal needs another attempt" = "Saved pairing removal needs another attempt";

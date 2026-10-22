@@ -96,6 +96,28 @@ enum SecureSessionNetworkCheckRetryPolicy {
     }
 }
 
+enum SecureSessionAttemptCancellationPolicy {
+    static func shouldCancel(
+        selectedPeerID: UUID,
+        desiredPeerID: UUID?,
+        pendingPeerID: UUID?,
+        activePeerID: UUID?,
+        hasUnauthenticatedContext: Bool
+    ) -> Bool {
+        guard activePeerID != selectedPeerID else { return false }
+        return desiredPeerID == selectedPeerID
+            || pendingPeerID == selectedPeerID
+            || hasUnauthenticatedContext
+    }
+}
+
+enum SecureNetworkServiceState {
+    case ready
+    case waiting(NWError)
+    case failed(NWError)
+    case cancelled
+}
+
 enum SecureSessionHandshakeAdmissionPolicy {
     static func acceptsPinnedInitiator(
         localID: UUID,
@@ -235,9 +257,12 @@ enum SecureSessionDisconnectPolicy {
 
 final class SecureSessionService: ObservableObject, ControlSessionTransport {
     @Published private(set) var connectedPeerID: UUID?
+    @Published private(set) var connectingPeerID: UUID?
     @Published private(set) var status = "Secure session idle"
     @Published private(set) var isReconnecting = false
     @Published private(set) var localNetworkAccessBlocked = false
+    @Published private(set) var lastListenerError: NetworkServiceErrorDiagnostic?
+    @Published private(set) var lastBrowserError: NetworkServiceErrorDiagnostic?
 
     var onPayload: ((Data) -> Void)?
     var onAuthenticated: (() -> UInt64)?
@@ -307,6 +332,11 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
     let localModel: String
     private var listener: NWListener?
     private var browser: NWBrowser?
+    private var networkServiceEpochs: [NetworkServiceComponent: UInt64] = [:]
+    private var activeNetworkServiceEpochs: [NetworkServiceComponent: UInt64] = [:]
+    private var readyNetworkServices = Set<NetworkServiceComponent>()
+    private var policyDeniedNetworkServices = Set<NetworkServiceComponent>()
+    private var transportNetworkAccessBlocked = false
     private var networkRecoveryWorkItem: DispatchWorkItem?
     private var networkRecoveryAttempt = 0
     private var networkRecoveryGeneration: UInt64 = 0
@@ -323,9 +353,15 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
     private var networkPathSatisfied = true
     private var powerLifecycleObserver: SystemPowerLifecycleObserver?
     private var isSystemSleeping = false
+    private var secureServicesStarted = false
     private var systemSleepLatchWorkItem: DispatchWorkItem?
     private var desiredPeerID: UUID?
     private var pendingConnectPeerID: UUID?
+    private var selectedConnectingPeerID: UUID?
+    /// Cancellation suppresses a queued pairing-completion callback from
+    /// recreating an attempt the user just canceled. A newer pairing
+    /// generation or a fresh explicit Connect clears this short-lived gate.
+    private var cancelledConnectPairingGenerations: [UUID: UInt64] = [:]
     /// Older peers cannot understand the encrypted disconnect marker. Keep
     /// them from immediately recreating a session after a local Disconnect;
     /// an explicit Connect or a newer pairing generation clears this gate.
@@ -341,6 +377,11 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
     private let powerNotificationCenterOverride: NotificationCenter?
     private let networkServicesEnabled: Bool
     private let systemSleepLatchTimeout: TimeInterval
+    private let networkServiceStartHandlerForTesting:
+        ((NetworkServiceComponent) -> Void)?
+    private let networkServiceCancelHandlerForTesting:
+        ((NetworkServiceComponent) -> Void)?
+    private let networkRecoveryDelayForTesting: ((Int) -> TimeInterval)?
 
     /// Builds the parameters used by the secure listener and outbound
     /// secure-session attempts. Discovery does not need keepalives, but every
@@ -365,7 +406,12 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         powerNotificationCenter: NotificationCenter? = nil,
         networkServicesEnabled: Bool = true,
         systemSleepLatchTimeout: TimeInterval =
-            SecureSessionService.defaultSystemSleepLatchTimeout
+            SecureSessionService.defaultSystemSleepLatchTimeout,
+        networkServiceStartHandlerForTesting:
+            ((NetworkServiceComponent) -> Void)? = nil,
+        networkServiceCancelHandlerForTesting:
+            ((NetworkServiceComponent) -> Void)? = nil,
+        networkRecoveryDelayForTesting: ((Int) -> TimeInterval)? = nil
     ) {
         self.credentials = credentials
         self.registry = registry
@@ -373,6 +419,11 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         self.powerNotificationCenterOverride = powerNotificationCenter
         self.networkServicesEnabled = networkServicesEnabled
         self.systemSleepLatchTimeout = systemSleepLatchTimeout
+        self.networkServiceStartHandlerForTesting =
+            networkServiceStartHandlerForTesting
+        self.networkServiceCancelHandlerForTesting =
+            networkServiceCancelHandlerForTesting
+        self.networkRecoveryDelayForTesting = networkRecoveryDelayForTesting
     }
 
     func start() {
@@ -386,6 +437,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             guard let self else { return }
             // A previous run must never leave the sleep guards latched on.
             clearSystemSleepLatch()
+            secureServicesStarted = true
             startPowerLifecycleObserver(
                 notificationCenter: powerNotificationCenter
             )
@@ -398,12 +450,15 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         queue.async { [weak self] in
             guard let self else { return }
             powerLifecycleObserver = nil
+            secureServicesStarted = false
             clearSystemSleepLatch()
             connectionEpoch.advance()
             desiredPeerID = nil
             pendingConnectPeerID = nil
+            publishConnectingPeer(nil)
             locallyDisconnectedPeerIDs.removeAll()
             locallyDisconnectedPeerGenerations.removeAll()
+            cancelledConnectPairingGenerations.removeAll()
             cancelReconnect(resetAttempt: true)
             networkRecoveryGeneration &+= 1
             networkRecoveryWorkItem?.cancel()
@@ -411,6 +466,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             networkRecoveryAttempt = 0
             pathMonitor?.cancel()
             pathMonitor = nil
+            invalidateNetworkServiceGenerations()
             listener?.cancel()
             browser?.cancel()
             let oldContexts = Array(contexts.values)
@@ -421,6 +477,10 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             }
             listener = nil
             browser = nil
+            readyNetworkServices.removeAll()
+            policyDeniedNetworkServices.removeAll()
+            transportNetworkAccessBlocked = false
+            publishLocalNetworkAccessBlockedState()
             peersByID.removeAll()
             peerCandidateIndices.removeAll()
             preferredPeerEndpoints.removeAll()
@@ -445,11 +505,19 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
     /// Network.framework waiting/preparing states after a successful explicit
     /// Local Network check. An authenticated session, incoming work, close,
     /// or deliberate Disconnect is never changed by this recovery path.
-    func retryPendingConnectionAfterSuccessfulLocalNetworkCheck() {
+    func retryPendingConnectionAfterSuccessfulLocalNetworkCheck(
+        for successfulProbePeerID: UUID? = nil
+    ) {
         queue.async { [weak self] in
-            guard let self,
-                  let peerID = self.desiredPeerID,
-                  let context = self.contexts.values.first,
+            guard let self, !self.isSystemSleeping else { return }
+            self.publishLocalNetworkAccessBlocked(false)
+            self.refreshUnhealthyNetworkServicesAfterSuccessfulProbe()
+            guard let peerID = self.desiredPeerID,
+                  successfulProbePeerID == nil
+                    || successfulProbePeerID == peerID,
+                  let context = self.contexts.values.first(where: {
+                      $0.expectedPeer?.id == peerID
+                  }),
                   SecureSessionNetworkCheckRetryPolicy
                     .shouldRestartPendingOutbound(
                         isSystemSleeping: self.isSystemSleeping,
@@ -476,7 +544,6 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                 context: context
             )
             self.cancelReconnect(resetAttempt: true)
-            self.connectionEpoch.advance()
             context.suppressesReconnect = true
             context.connection.cancel()
             self.remove(context)
@@ -484,6 +551,174 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             // cannot create a connection after Disconnect because that path
             // clears it before a check result can be applied.
             self.connectOnQueue(to: peerID)
+        }
+    }
+
+    /// Cancels only this peer's unauthenticated outbound attempt and retry
+    /// intent. Pairing trust, active sessions, incoming work, and attempts for
+    /// another peer are left intact.
+    func cancelConnectionAttempt(to peerID: UUID) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            let activePeerID = self.activeContextID
+                .flatMap { self.contexts[$0]?.expectedPeer?.id }
+            let pendingContexts = self.contexts.values.filter {
+                $0.expectedPeer?.id == peerID
+                    && !$0.isAuthenticated
+                    && !$0.isClosing
+            }
+            guard SecureSessionAttemptCancellationPolicy.shouldCancel(
+                selectedPeerID: peerID,
+                desiredPeerID: self.desiredPeerID,
+                pendingPeerID: self.pendingConnectPeerID,
+                activePeerID: activePeerID,
+                hasUnauthenticatedContext: !pendingContexts.isEmpty
+            ) else {
+                self.logSecurePhase(
+                    activePeerID == peerID
+                        ? "connect.cancel-ignored-active-session"
+                        : "connect.cancel-ignored-unselected-peer",
+                    peerID: peerID
+                )
+                return
+            }
+
+            if self.desiredPeerID == peerID {
+                self.desiredPeerID = nil
+                self.cancelReconnect(resetAttempt: true)
+            }
+            if self.pendingConnectPeerID == peerID {
+                self.pendingConnectPeerID = nil
+            }
+            self.cancelledConnectPairingGenerations[peerID] =
+                self.registry.generation(for: peerID)
+            self.publishConnectingPeer(
+                self.desiredPeerID ?? self.pendingConnectPeerID
+            )
+            pendingContexts.forEach { context in
+                context.suppressesReconnect = true
+                context.connection.cancel()
+                self.remove(context)
+            }
+            self.logSecurePhase("connect.cancelled", peerID: peerID)
+            if self.desiredPeerID == nil, self.pendingConnectPeerID == nil {
+                self.publishStatus("Secure session idle")
+            }
+        }
+    }
+
+    /// Queue-confined entry point for deterministic service lifecycle tests.
+    /// The injected starter records lifecycle transitions without opening a
+    /// Bonjour socket or prompting for Local Network access.
+    func startNetworkServicesForTesting() {
+        queue.sync {
+            secureServicesStarted = true
+            startMissingNetworkServices()
+        }
+    }
+
+    func reportNetworkServiceStateForTesting(
+        _ state: SecureNetworkServiceState,
+        for component: NetworkServiceComponent,
+        generation suppliedGeneration: UInt64? = nil
+    ) {
+        queue.sync {
+            guard let generation = suppliedGeneration
+                    ?? activeNetworkServiceEpochs[component] else {
+                return
+            }
+            handleNetworkServiceState(
+                component,
+                generation: generation,
+                state: state
+            )
+        }
+    }
+
+    func currentNetworkServiceGenerationForTesting(
+        _ component: NetworkServiceComponent
+    ) -> UInt64? {
+        queue.sync { activeNetworkServiceEpochs[component] }
+    }
+
+    func isConnectionAttemptCancelledForTesting(to peerID: UUID) -> Bool {
+        queue.sync { isConnectionAttemptCancelled(for: peerID) }
+    }
+
+    func installUnauthenticatedContextForTesting(
+        to peer: PeerIdentity,
+        localRole: SecureSessionRole = .initiator
+    ) {
+        queue.sync {
+            let endpoint = NWEndpoint.hostPort(
+                host: "127.0.0.1",
+                port: NWEndpoint.Port(rawValue: 1)!
+            )
+            let connection = NWConnection(to: endpoint, using: .tcp)
+            let context = SessionConnectionContext(
+                connection: connection,
+                expectedPeer: peer,
+                localRole: localRole,
+                maximumPacketsPerSecond:
+                    Self.maximumInboundPacketsPerSecond,
+                maximumBytesPerSecond:
+                    Self.maximumInboundBytesPerSecond
+            )
+            context.epoch = connectionEpoch.current()
+            context.peerEpoch = peerEpochs.current(for: peer.id)
+            install(context)
+        }
+    }
+
+    func hasUnauthenticatedContextForTesting(to peerID: UUID) -> Bool {
+        queue.sync {
+            contexts.values.contains {
+                $0.expectedPeer?.id == peerID && !$0.isAuthenticated
+            }
+        }
+    }
+
+    func installAuthenticatedContextForTesting(to peer: PeerIdentity) {
+        queue.sync {
+            let endpoint = NWEndpoint.hostPort(
+                host: "127.0.0.1",
+                port: NWEndpoint.Port(rawValue: 1)!
+            )
+            let connection = NWConnection(to: endpoint, using: .tcp)
+            let context = SessionConnectionContext(
+                connection: connection,
+                expectedPeer: peer,
+                localRole: .responder,
+                maximumPacketsPerSecond:
+                    Self.maximumInboundPacketsPerSecond,
+                maximumBytesPerSecond:
+                    Self.maximumInboundBytesPerSecond
+            )
+            context.epoch = connectionEpoch.current()
+            context.peerEpoch = peerEpochs.current(for: peer.id)
+            context.isAuthenticated = true
+            install(context)
+            activeContextID = ObjectIdentifier(context)
+            pendingConnectPeerID = nil
+            reconnectAttempt = 0
+            cancelReconnect(resetAttempt: false)
+            publishConnection(
+                peerID: peer.id,
+                status: "Encrypted session connected to \(peer.name)"
+            )
+        }
+    }
+
+    func setTransportLocalNetworkAccessBlockedForTesting(_ blocked: Bool) {
+        queue.sync { publishLocalNetworkAccessBlocked(blocked) }
+    }
+
+    func publishAuthenticatedPeerForTesting(_ peerID: UUID) {
+        queue.sync {
+            publishConnection(
+                peerID: peerID,
+                status: "Encrypted session connected"
+            )
         }
     }
 
@@ -527,6 +762,25 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                 return
             }
             if automaticPairing,
+               let cancelledGeneration =
+                    self.cancelledConnectPairingGenerations[peerID] {
+                let isFreshPairing = pairingGeneration.map {
+                    $0 > cancelledGeneration
+                } ?? false
+                if isFreshPairing {
+                    self.cancelledConnectPairingGenerations.removeValue(
+                        forKey: peerID
+                    )
+                } else {
+                    logSecurePhase(
+                        "connect.ignored-cancelled-pairing-callback",
+                        peerID: peerID,
+                        detail: "cancelled-generation=\(cancelledGeneration)"
+                    )
+                    return
+                }
+            }
+            if automaticPairing,
                locallyDisconnectedPeerIDs.contains(peerID) {
                 let isFreshPairing = pairingGeneration.map {
                     $0 > (self.locallyDisconnectedPeerGenerations[peerID] ?? 0)
@@ -552,12 +806,22 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             if hasClosingContext {
                 desiredPeerID = peerID
                 pendingConnectPeerID = peerID
+                publishConnectingPeer(peerID)
                 cancelReconnect(resetAttempt: true)
                 logSecurePhase(
                     "connect.queued-while-disconnecting",
                     peerID: peerID
                 )
                 publishStatus("Waiting for the secure session to close…")
+                return
+            }
+            if !automaticPairing,
+               desiredPeerID == peerID,
+               activeContextID == nil,
+               retrySelectedPendingConnection(to: peerID) {
+                locallyDisconnectedPeerIDs.remove(peerID)
+                locallyDisconnectedPeerGenerations.removeValue(forKey: peerID)
+                cancelledConnectPairingGenerations.removeValue(forKey: peerID)
                 return
             }
             // A pairing completion can race with the automatic secure
@@ -586,6 +850,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                            where: { $0.expectedPeer?.id == peerID }
                        ) {
                         desiredPeerID = peerID
+                        publishConnectingPeer(peerID)
                         cancelReconnect(resetAttempt: true)
                         logSecurePhase(
                             "connect.intent-recorded-pending-handshake",
@@ -610,6 +875,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                 }
                 pendingConnectPeerID = nil
                 desiredPeerID = peerID
+                publishConnectingPeer(nil)
                 cancelReconnect(resetAttempt: true)
                 logSecurePhase(
                     "connect.intent-recorded-active-session",
@@ -629,10 +895,12 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                 locallyDisconnectedPeerGenerations.removeValue(
                     forKey: peerID
                 )
+                cancelledConnectPairingGenerations.removeValue(forKey: peerID)
             }
             pendingConnectPeerID = nil
             logSecurePhase("connect.requested", peerID: peerID)
             desiredPeerID = peerID
+            publishConnectingPeer(peerID)
             cancelReconnect(resetAttempt: true)
             // Secure Bonjour intentionally filters out identities that are not
             // pinned yet. Pairing can therefore finish after the last browser
@@ -667,6 +935,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             networkRecoveryWorkItem = nil
             networkRecoveryAttempt = 0
             connectionEpoch.advance()
+            invalidateNetworkServiceGenerations()
 
             let oldContexts = Array(contexts.values)
             let hadActiveContext = activeContextID != nil
@@ -691,8 +960,6 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                 self.remove($0)
             }
 
-            listener?.cancel()
-            browser?.cancel()
             listener = nil
             browser = nil
             peersByID.removeAll()
@@ -806,6 +1073,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             let previouslyDesiredPeerID = desiredPeerID
             desiredPeerID = nil
             pendingConnectPeerID = nil
+            publishConnectingPeer(nil)
             cancelReconnect(resetAttempt: true)
             connectionEpoch.advance()
             // Disconnect is a session-wide local safety action. Cancel every
@@ -905,6 +1173,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             logSecurePhase("trust.revoke.cleanup.begin", peerID: peerID)
             if desiredPeerID == peerID {
                 desiredPeerID = nil
+                publishConnectingPeer(nil)
                 cancelReconnect(resetAttempt: true)
             }
             peerEpochs.advance(for: peerID)
@@ -1186,6 +1455,72 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         connection.start(queue: queue)
     }
 
+    /// A repeated explicit Connect for the selected peer is a retry request.
+    /// It may replace only that peer's unauthenticated outbound attempt; a
+    /// ready handshake, incoming connection, active session, or different
+    /// peer's context remains untouched.
+    private func retrySelectedPendingConnection(to peerID: UUID) -> Bool {
+        guard !isSystemSleeping,
+              activeContextID == nil,
+              !contexts.values.contains(where: {
+                  $0.localRole == .initiator
+                      && $0.expectedPeer?.id != peerID
+              }) else {
+            return false
+        }
+
+        cancelReconnect(resetAttempt: true)
+        pendingConnectPeerID = nil
+        publishConnectingPeer(peerID)
+
+        if let context = contexts.values.first(where: {
+            $0.expectedPeer?.id == peerID
+                && $0.localRole == .initiator
+                && !$0.isAuthenticated
+                && !$0.isClosing
+        }) {
+            switch context.connection.state {
+            case .setup, .waiting, .preparing, .failed, .cancelled:
+                logSecurePhase(
+                    "connect.retrying-pending-outbound",
+                    peerID: peerID,
+                    context: context
+                )
+                context.suppressesReconnect = true
+                context.connection.cancel()
+                remove(context)
+            case .ready:
+                // The signed handshake is already in flight. Keep it and
+                // retain the selected peer indicator instead of racing a
+                // second connection against it.
+                return true
+            @unknown default:
+                return true
+            }
+        }
+
+        if peersByID[peerID]?.isEmpty != false {
+            refreshBrowserOnQueue()
+        }
+        connectOnQueue(to: peerID)
+        return true
+    }
+
+    /// Must be called on the secure-session queue. A canceled request remains
+    /// fenced until an explicit Connect or newer pairing generation supplies
+    /// fresh user intent for the same trusted peer.
+    private func isConnectionAttemptCancelled(for peerID: UUID) -> Bool {
+        guard let cancelledGeneration =
+                cancelledConnectPairingGenerations[peerID] else {
+            return false
+        }
+        guard registry.generation(for: peerID) > cancelledGeneration else {
+            return true
+        }
+        cancelledConnectPairingGenerations.removeValue(forKey: peerID)
+        return false
+    }
+
     private func startPathMonitor() {
         guard pathMonitor == nil else { return }
         let monitor = NWPathMonitor()
@@ -1210,23 +1545,42 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
     /// listener and browser failures are independent, so one surviving
     /// component must not prevent recovery of the other.
     private func startMissingNetworkServices() {
-        if listener == nil {
-            startListener()
-        }
-        if browser == nil {
-            startBrowser()
+        guard secureServicesStarted,
+              !isSystemSleeping,
+              networkServicesEnabled || networkServiceStartHandlerForTesting != nil
+        else { return }
+        for component in NetworkServiceComponent.allCases
+        where activeNetworkServiceEpochs[component] == nil {
+            if networkServiceStartHandlerForTesting != nil {
+                startInjectedNetworkServiceForTesting(component)
+            } else {
+                switch component {
+                case .listener:
+                    startListener()
+                case .browser:
+                    startBrowser()
+                }
+            }
         }
     }
 
     private func scheduleNetworkRecovery() {
-        guard !isSystemSleeping,
+        guard secureServicesStarted,
+              !isSystemSleeping,
               networkRecoveryWorkItem == nil else { return }
-        let delay = min(pow(2.0, Double(networkRecoveryAttempt)), 30.0)
+        let defaultDelay = min(pow(2.0, Double(networkRecoveryAttempt)), 30.0)
+        let delay = max(
+            0,
+            networkRecoveryDelayForTesting?(networkRecoveryAttempt)
+                ?? defaultDelay
+        )
         networkRecoveryAttempt = min(networkRecoveryAttempt + 1, 5)
         networkRecoveryGeneration &+= 1
         let recoveryGeneration = networkRecoveryGeneration
         let workItem = DispatchWorkItem { [weak self] in
             guard let self,
+                  self.secureServicesStarted,
+                  !self.isSystemSleeping,
                   self.networkRecoveryGeneration == recoveryGeneration,
                   self.networkRecoveryWorkItem != nil else {
                 return
@@ -1240,7 +1594,9 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
 
     @discardableResult
     private func noteNetworkServiceReady() -> Bool {
-        guard listener != nil, browser != nil else { return false }
+        guard readyNetworkServices.isSuperset(
+            of: Set(NetworkServiceComponent.allCases)
+        ) else { return false }
         let recoveredAfterFailure = networkRecoveryAttempt > 0
             || networkRecoveryWorkItem != nil
         networkRecoveryAttempt = 0
@@ -1248,6 +1604,168 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         networkRecoveryWorkItem?.cancel()
         networkRecoveryWorkItem = nil
         return recoveredAfterFailure
+    }
+
+    private func beginNetworkServiceGeneration(
+        for component: NetworkServiceComponent
+    ) -> UInt64 {
+        let generation = networkServiceEpochs[component, default: 0] &+ 1
+        networkServiceEpochs[component] = generation
+        activeNetworkServiceEpochs[component] = generation
+        readyNetworkServices.remove(component)
+        return generation
+    }
+
+    private func isCurrentNetworkService(
+        _ component: NetworkServiceComponent,
+        generation: UInt64
+    ) -> Bool {
+        secureServicesStarted
+            && !isSystemSleeping
+            && activeNetworkServiceEpochs[component] == generation
+    }
+
+    @discardableResult
+    private func retireNetworkService(
+        _ component: NetworkServiceComponent,
+        generation: UInt64
+    ) -> Bool {
+        guard activeNetworkServiceEpochs[component] == generation else {
+            return false
+        }
+        activeNetworkServiceEpochs.removeValue(forKey: component)
+        networkServiceEpochs[component] = generation &+ 1
+        readyNetworkServices.remove(component)
+        switch component {
+        case .listener:
+            listener?.cancel()
+            listener = nil
+        case .browser:
+            browser?.cancel()
+            browser = nil
+        }
+        networkServiceCancelHandlerForTesting?(component)
+        return true
+    }
+
+    private func invalidateNetworkServiceGenerations() {
+        for component in NetworkServiceComponent.allCases {
+            guard let generation = activeNetworkServiceEpochs[component] else {
+                continue
+            }
+            _ = retireNetworkService(component, generation: generation)
+        }
+    }
+
+    private func startInjectedNetworkServiceForTesting(
+        _ component: NetworkServiceComponent
+    ) {
+        guard secureServicesStarted,
+              !isSystemSleeping,
+              activeNetworkServiceEpochs[component] == nil,
+              let handler = networkServiceStartHandlerForTesting else {
+            return
+        }
+        _ = beginNetworkServiceGeneration(for: component)
+        handler(component)
+    }
+
+    private func recordNetworkServiceError(
+        _ component: NetworkServiceComponent,
+        state: String,
+        error: NWError
+    ) -> Bool {
+        let diagnostic = NetworkServiceErrorDiagnostic.capture(
+            component: component,
+            state: state,
+            error: error
+        )
+        let policyDenied = NetworkServiceStatePolicy
+            .isLocalNetworkPolicyDenied(error)
+        if policyDenied {
+            policyDeniedNetworkServices.insert(component)
+            publishLocalNetworkAccessBlockedState()
+        }
+        MacKVMLogger.secureSession.error(
+            "phase=network-service.error component=\(component.rawValue, privacy: .public) state=\(state, privacy: .public) errorDomain=\(diagnostic.domain, privacy: .public) errorCode=\(diagnostic.code, privacy: .public) policyDenied=\(policyDenied, privacy: .public)"
+        )
+        DispatchQueue.main.async { [weak self] in
+            switch component {
+            case .listener:
+                self?.lastListenerError = diagnostic
+            case .browser:
+                self?.lastBrowserError = diagnostic
+            }
+        }
+        return policyDenied
+    }
+
+    private func handleNetworkServiceState(
+        _ component: NetworkServiceComponent,
+        generation: UInt64,
+        state: SecureNetworkServiceState
+    ) {
+        guard isCurrentNetworkService(component, generation: generation) else {
+            return
+        }
+        switch state {
+        case .ready:
+            readyNetworkServices.insert(component)
+            policyDeniedNetworkServices.remove(component)
+            publishLocalNetworkAccessBlockedState()
+            if noteNetworkServiceReady(), component == .browser {
+                publishStatus("Secure discovery recovered")
+            }
+        case .waiting(let error):
+            readyNetworkServices.remove(component)
+            let policyDenied = recordNetworkServiceError(
+                component,
+                state: "waiting",
+                error: error
+            )
+            guard policyDenied else { return }
+            publishStatus(
+                component == .listener
+                    ? "Secure listener failed: \(error.localizedDescription)"
+                    : "Secure discovery failed: \(error.localizedDescription)"
+            )
+            _ = retireNetworkService(component, generation: generation)
+            scheduleNetworkRecovery()
+        case .failed(let error):
+            _ = recordNetworkServiceError(
+                component,
+                state: "failed",
+                error: error
+            )
+            publishStatus(
+                component == .listener
+                    ? "Secure listener failed: \(error.localizedDescription)"
+                    : "Secure discovery failed: \(error.localizedDescription)"
+            )
+            _ = retireNetworkService(component, generation: generation)
+            scheduleNetworkRecovery()
+        case .cancelled:
+            guard retireNetworkService(component, generation: generation) else {
+                return
+            }
+            scheduleNetworkRecovery()
+        }
+    }
+
+    private func refreshUnhealthyNetworkServicesAfterSuccessfulProbe() {
+        guard secureServicesStarted,
+              !isSystemSleeping,
+              networkServicesEnabled || networkServiceStartHandlerForTesting != nil,
+              NetworkServiceComponent.allCases.contains(where: {
+                  activeNetworkServiceEpochs[$0] == nil
+              }) else {
+            return
+        }
+        networkRecoveryGeneration &+= 1
+        networkRecoveryWorkItem?.cancel()
+        networkRecoveryWorkItem = nil
+        networkRecoveryAttempt = 0
+        startMissingNetworkServices()
     }
 
     private func retryConnectionIfNeeded() {
@@ -1258,6 +1776,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
               !contexts.values.contains(where: { $0.localRole == .initiator }) else {
             return
         }
+        publishConnectingPeer(desiredPeerID)
         scheduleReconnect()
     }
 
@@ -1272,6 +1791,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         }
         let delay = reconnectBackoff.delay(forAttempt: reconnectAttempt)
         reconnectAttempt += 1
+        publishConnectingPeer(peerID)
         publishReconnecting(true)
         publishStatus(
             delay == 0
@@ -1325,7 +1845,10 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
     }
 
     private func startListener() {
-        guard networkServicesEnabled else { return }
+        guard networkServicesEnabled,
+              secureServicesStarted,
+              !isSystemSleeping else { return }
+        let generation = beginNetworkServiceGeneration(for: .listener)
         do {
             // Keep the secure listener aligned with the peer-to-peer Bonjour
             // browser and outbound connector so AWDL endpoints can accept
@@ -1342,23 +1865,52 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                     "key": credentials.identity.signingPublicKey.base64EncodedString()
                 ])
             )
-            listener.newConnectionHandler = { [weak self] connection in
-                self?.accept(connection)
+            listener.newConnectionHandler = { [weak self, weak listener] connection in
+                guard let self, let listener,
+                      self.listener === listener,
+                      self.isCurrentNetworkService(
+                          .listener,
+                          generation: generation
+                      ) else {
+                    connection.cancel()
+                    return
+                }
+                self.accept(connection)
             }
             listener.stateUpdateHandler = { [weak self, weak listener] state in
+                guard let self, let listener,
+                      self.listener === listener,
+                      self.isCurrentNetworkService(
+                          .listener,
+                          generation: generation
+                      ) else {
+                    return
+                }
                 switch state {
                 case .ready:
-                    self?.noteNetworkServiceReady()
-                case .failed(let error):
-                    guard let self else { return }
-                    self.publishStatus(
-                        "Secure listener failed: \(error.localizedDescription)"
+                    self.handleNetworkServiceState(
+                        .listener,
+                        generation: generation,
+                        state: .ready
                     )
-                    if self.listener === listener {
-                        listener?.cancel()
-                        self.listener = nil
-                        self.scheduleNetworkRecovery()
-                    }
+                case .waiting(let error):
+                    self.handleNetworkServiceState(
+                        .listener,
+                        generation: generation,
+                        state: .waiting(error)
+                    )
+                case .failed(let error):
+                    self.handleNetworkServiceState(
+                        .listener,
+                        generation: generation,
+                        state: .failed(error)
+                    )
+                case .cancelled:
+                    self.handleNetworkServiceState(
+                        .listener,
+                        generation: generation,
+                        state: .cancelled
+                    )
                 default:
                     break
                 }
@@ -1366,13 +1918,17 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             self.listener = listener
             listener.start(queue: queue)
         } catch {
+            _ = retireNetworkService(.listener, generation: generation)
             publishStatus("Could not start secure listener: \(error.localizedDescription)")
             scheduleNetworkRecovery()
         }
     }
 
     private func startBrowser() {
-        guard networkServicesEnabled else { return }
+        guard networkServicesEnabled,
+              secureServicesStarted,
+              !isSystemSleeping else { return }
+        let generation = beginNetworkServiceGeneration(for: .browser)
         let parameters = NWParameters.tcp
         parameters.includePeerToPeer = true
         let browser = NWBrowser(
@@ -1380,7 +1936,11 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             using: parameters
         )
         browser.browseResultsChangedHandler = { [weak self, weak browser] results, _ in
-            guard let self, self.browser === browser else { return }
+            guard let self, let browser,
+                  self.isCurrentNetworkService(
+                      .browser,
+                      generation: generation
+                  ), self.browser === browser else { return }
             let candidates = results.lazy.compactMap {
                 (result) -> (PeerAdvertisement, SecureServicePeer)? in
                 guard case let .bonjour(txtRecord) = result.metadata,
@@ -1435,20 +1995,38 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             retryConnectionIfNeeded()
         }
         browser.stateUpdateHandler = { [weak self, weak browser] state in
+            guard let self, let browser,
+                  self.isCurrentNetworkService(
+                      .browser,
+                      generation: generation
+                  ), self.browser === browser else {
+                return
+            }
             switch state {
             case .ready:
-                if let self, self.noteNetworkServiceReady() {
-                    self.publishStatus("Secure discovery recovered")
-                }
-            case .failed(let error):
-                guard let self else { return }
-                self.publishStatus(
-                    "Secure discovery failed: \(error.localizedDescription)"
+                self.handleNetworkServiceState(
+                    .browser,
+                    generation: generation,
+                    state: .ready
                 )
-                if self.browser === browser {
-                    self.browser = nil
-                    self.scheduleNetworkRecovery()
-                }
+            case .waiting(let error):
+                self.handleNetworkServiceState(
+                    .browser,
+                    generation: generation,
+                    state: .waiting(error)
+                )
+            case .failed(let error):
+                self.handleNetworkServiceState(
+                    .browser,
+                    generation: generation,
+                    state: .failed(error)
+                )
+            case .cancelled:
+                self.handleNetworkServiceState(
+                    .browser,
+                    generation: generation,
+                    state: .cancelled
+                )
             default:
                 break
             }
@@ -1458,9 +2036,17 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
     }
 
     private func refreshBrowserOnQueue() {
-        browser?.cancel()
-        browser = nil
-        startBrowser()
+        if let generation = activeNetworkServiceEpochs[.browser] {
+            _ = retireNetworkService(.browser, generation: generation)
+        } else {
+            browser?.cancel()
+            browser = nil
+        }
+        if networkServiceStartHandlerForTesting != nil {
+            startInjectedNetworkServiceForTesting(.browser)
+        } else {
+            startBrowser()
+        }
     }
 
     private func accept(_ connection: NWConnection) {
@@ -1491,6 +2077,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             switch state {
             case .ready:
                 self.cancelTransportLivenessTimeout(for: context)
+                self.publishLocalNetworkAccessBlocked(false)
                 self.logSecurePhase("transport.ready", context: context)
                 scheduleTimeout(
                     for: context,
@@ -1756,6 +2343,15 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                     )
                     throw SecureSessionError.invalidHandshake
                 }
+                guard !isConnectionAttemptCancelled(for: peer.id) else {
+                    context.suppressesReconnect = true
+                    logSecurePhase(
+                        "handshake.responder.rejected-cancelled-attempt",
+                        peerID: peer.id,
+                        context: context
+                    )
+                    throw SecureSessionError.invalidHandshake
+                }
                 context.isAuthenticated = true
                 context.handshakeTimeout?.cancel()
                 activeContextID = ObjectIdentifier(context)
@@ -1806,6 +2402,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         // but it must not erase the user's newer Connect request.
         if desiredPeerID == peerID, pendingConnectPeerID != peerID {
             desiredPeerID = nil
+            publishConnectingPeer(nil)
             cancelReconnect(resetAttempt: true)
         }
         let wasActive = activeContextID == ObjectIdentifier(context)
@@ -1990,6 +2587,15 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             // incoming peer and defer reconnect until this handshake settles.
             context.expectedPeer = handshake.sender
             context.peerEpoch = peerEpochs.current(for: handshake.sender.id)
+            guard !isConnectionAttemptCancelled(for: handshake.sender.id) else {
+                context.suppressesReconnect = true
+                logSecurePhase(
+                    "handshake.responder.rejected-cancelled-attempt",
+                    peerID: handshake.sender.id,
+                    context: context
+                )
+                throw SecureSessionError.invalidHandshake
+            }
             if contexts.values.contains(where: {
                 $0 !== context
                     && $0.isClosing
@@ -2530,6 +3136,13 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         )
         if !startedPendingConnect && shouldRetry && !preferredIncomingPending {
             retryConnectionIfNeeded()
+        } else if !startedPendingConnect,
+                  !shouldRetry,
+                  let peerID,
+                  selectedConnectingPeerID == peerID,
+                  desiredPeerID != peerID,
+                  pendingConnectPeerID != peerID {
+            publishConnectingPeer(desiredPeerID ?? pendingConnectPeerID)
         }
         logSecurePhase(
             "context.removed",
@@ -2805,8 +3418,22 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
     }
 
     private func publishLocalNetworkAccessBlocked(_ blocked: Bool) {
+        transportNetworkAccessBlocked = blocked
+        publishLocalNetworkAccessBlockedState()
+    }
+
+    private func publishLocalNetworkAccessBlockedState() {
+        let blocked = transportNetworkAccessBlocked
+            || !policyDeniedNetworkServices.isEmpty
         DispatchQueue.main.async { [weak self] in
             self?.localNetworkAccessBlocked = blocked
+        }
+    }
+
+    private func publishConnectingPeer(_ peerID: UUID?) {
+        selectedConnectingPeerID = peerID
+        DispatchQueue.main.async { [weak self] in
+            self?.connectingPeerID = peerID
         }
     }
 
@@ -2815,12 +3442,13 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         status: String,
         admissionGeneration: UInt64? = nil
     ) {
+        if peerID != nil {
+            publishLocalNetworkAccessBlocked(false)
+            publishConnectingPeer(nil)
+        }
         DispatchQueue.main.async { [weak self] in
             self?.connectedPeerID = peerID
             self?.status = status
-            if peerID != nil {
-                self?.localNetworkAccessBlocked = false
-            }
             self?.connectionPublicationSubject.send(
                 ControlConnectionPublication(
                     peerID: peerID,

@@ -6,7 +6,7 @@ This guide installs MacKVM on the target two-Mac setup: a 14-inch Apple
 Silicon M5 Pro MacBook Pro connected to a BenQ MA270U over USB-C, and a 2019
 16-inch Intel MacBook Pro connected over HDMI.
 
-Source version: **1.102.05 (build 102)**. These instructions describe packaging this
+Source version: **1.102.07 (build 104)**. These instructions describe packaging this
 source checkout; they do not identify whether a particular artifact has been
 published on GitHub.
 
@@ -120,7 +120,7 @@ Create an app-only universal DMG for local testing:
 ./scripts/verify-release.sh \
   --app dist/universal/MacKVM.app \
   --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.102.05-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.102.07-universal.dmg.sha256)
 ```
 
 The local-testing app is ad-hoc signed. The DMG contains `MacKVM.app`, an

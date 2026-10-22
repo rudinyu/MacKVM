@@ -3,7 +3,7 @@
 [Architecture](ARCHITECTURE.md) · [Installation guide](INSTALL.md) ·
 [Security status](SECURITY.md) · [繁體中文](ROADMAP.zh-TW.md)
 
-This roadmap is written against the MacKVM 1.102.05 (build 102) and WindowsKVM
+This roadmap is written against the MacKVM 1.102.07 (build 104) and WindowsKVM
 1.03.00 (build 114) source trees. Every gap below was confirmed in code rather
 than inferred from the documentation, and each item records the files a change
 would start from.

@@ -73,6 +73,8 @@
 "Paired" = "已配對";
 "Disconnect" = "中斷連線";
 "Connect" = "連線";
+"Connecting…" = "正在連線…";
+"Retry" = "重試";
 "Forget" = "忘記此裝置";
 "Retry Forget" = "重試忘記配對";
 "Saved pairing removal needs another attempt" = "需要再次嘗試移除已儲存的配對";
