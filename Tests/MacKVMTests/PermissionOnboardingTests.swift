@@ -904,6 +904,33 @@ final class PermissionOnboardingTests: XCTestCase {
     }
 
     @MainActor
+    func testMainWindowVisibilityStopsAndResumesPermissionRefresh() {
+        let scheduler = ManualPermissionRefreshScheduler()
+        var refreshCount = 0
+        let monitor = PermissionRefreshMonitor(
+            interval: 2,
+            scheduler: scheduler
+        ) {
+            refreshCount += 1
+        }
+        let mainWindowSurface = UUID()
+
+        monitor.setSurfaceVisibility(mainWindowSurface, isVisible: true)
+        XCTAssertTrue(monitor.isPolling)
+        XCTAssertEqual(scheduler.activeTimerCount, 1)
+
+        monitor.setSurfaceVisibility(mainWindowSurface, isVisible: false)
+        XCTAssertFalse(monitor.isPolling)
+        XCTAssertEqual(scheduler.activeTimerCount, 0)
+
+        monitor.setSurfaceVisibility(mainWindowSurface, isVisible: true)
+        XCTAssertTrue(monitor.isPolling)
+        XCTAssertEqual(scheduler.activeTimerCount, 1)
+        scheduler.fireActiveTimers()
+        XCTAssertEqual(refreshCount, 1)
+    }
+
+    @MainActor
     func testTerminationStopsVisiblePermissionRefresh() {
         let scheduler = ManualPermissionRefreshScheduler()
         var refreshCount = 0

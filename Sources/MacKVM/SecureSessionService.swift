@@ -61,6 +61,30 @@ enum LocalNetworkAccessRecoveryPolicy {
     }
 }
 
+private struct NetworkPathSignature: Equatable {
+    let status: String
+    let unsatisfiedReason: String
+    let isExpensive: Bool
+    let isConstrained: Bool
+    let usesWiFi: Bool
+    let usesWiredEthernet: Bool
+    let usesCellular: Bool
+    let usesLoopback: Bool
+    let usesOther: Bool
+
+    init(_ path: NWPath) {
+        status = String(describing: path.status)
+        unsatisfiedReason = String(describing: path.unsatisfiedReason)
+        isExpensive = path.isExpensive
+        isConstrained = path.isConstrained
+        usesWiFi = path.usesInterfaceType(.wifi)
+        usesWiredEthernet = path.usesInterfaceType(.wiredEthernet)
+        usesCellular = path.usesInterfaceType(.cellular)
+        usesLoopback = path.usesInterfaceType(.loopback)
+        usesOther = path.usesInterfaceType(.other)
+    }
+}
+
 enum SecureSessionNetworkCheckRetryPolicy {
     static func shouldRestartPendingOutbound(
         isSystemSleeping: Bool,
@@ -267,6 +291,9 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
     var onPayload: ((Data) -> Void)?
     var onAuthenticated: (() -> UInt64)?
     var onHeartbeat: ((SecureSessionHeartbeatAcknowledgement) -> Void)?
+    /// Emitted after the monitor's initial sample and only when the observed
+    /// network-path signature changes.
+    var onNetworkPathChanged: (() -> Void)?
 
     private let connectionPublicationSubject =
         PassthroughSubject<ControlConnectionPublication, Never>()
@@ -351,6 +378,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         ConnectionAdmissionLimiter.unauthenticatedConnectionLimiter()
     private var pathMonitor: NWPathMonitor?
     private var networkPathSatisfied = true
+    private var lastObservedNetworkPathSignature: NetworkPathSignature?
     private var powerLifecycleObserver: SystemPowerLifecycleObserver?
     private var isSystemSleeping = false
     private var secureServicesStarted = false
@@ -466,6 +494,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             networkRecoveryAttempt = 0
             pathMonitor?.cancel()
             pathMonitor = nil
+            lastObservedNetworkPathSignature = nil
             invalidateNetworkServiceGenerations()
             listener?.cancel()
             browser?.cancel()
@@ -1526,15 +1555,23 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         let monitor = NWPathMonitor()
         monitor.pathUpdateHandler = { [weak self] path in
             guard let self else { return }
-            networkPathSatisfied = path.status == .satisfied
-            guard !isSystemSleeping else { return }
-            if networkPathSatisfied {
-                retryConnectionIfNeeded()
+            let signature = NetworkPathSignature(path)
+            let pathChanged = self.lastObservedNetworkPathSignature.map {
+                $0 != signature
+            } ?? false
+            self.lastObservedNetworkPathSignature = signature
+            if pathChanged {
+                self.onNetworkPathChanged?()
+            }
+            self.networkPathSatisfied = path.status == .satisfied
+            guard !self.isSystemSleeping else { return }
+            if self.networkPathSatisfied {
+                self.retryConnectionIfNeeded()
             } else {
-                reconnectWorkItem?.cancel()
-                reconnectWorkItem = nil
-                publishReconnecting(true)
-                publishStatus("Network unavailable; waiting to reconnect")
+                self.reconnectWorkItem?.cancel()
+                self.reconnectWorkItem = nil
+                self.publishReconnecting(true)
+                self.publishStatus("Network unavailable; waiting to reconnect")
             }
         }
         pathMonitor = monitor

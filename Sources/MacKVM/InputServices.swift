@@ -868,6 +868,11 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
             status = "Input Monitoring permission is required"
             return
         }
+        guard !suppressingLocalEvents
+                || permissionSnapshot.canStartOutboundControl else {
+            status = permissionSnapshot.remoteControlPermissionFailureStatus
+            return
+        }
         guard eventTap == nil else { return }
         capsLockCapturePolicy.reset()
 

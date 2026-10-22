@@ -18,7 +18,7 @@ struct MacKVMApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            appContent
+            appContent(isMainWindow: false)
         } label: {
             if let control = bootstrap.control {
                 MacKVMMenuBarLabel(control: control)
@@ -32,13 +32,13 @@ struct MacKVMApp: App {
         // window and Dock entry available instead of forcing every action
         // through the menu-bar item.
         Window("MacKVM", id: "main") {
-            appContent
+            appContent(isMainWindow: true)
         }
         .defaultSize(width: 440, height: 760)
     }
 
     @ViewBuilder
-    private var appContent: some View {
+    private func appContent(isMainWindow: Bool) -> some View {
         if let discovery = bootstrap.discovery,
            let secureSession = bootstrap.secureSession,
            let inputCapture = bootstrap.inputCapture,
@@ -52,6 +52,7 @@ struct MacKVMApp: App {
                 inputSink: inputSink,
                 control: control,
                 monitor: monitor,
+                tracksPermissionRefreshSurface: !isMainWindow,
                 inputTopology: bootstrap.inputTopology,
                 launchAtLogin: bootstrap.launchAtLogin,
                 bootstrap: bootstrap
@@ -76,6 +77,8 @@ struct MacKVMApp: App {
 private final class MacKVMApplicationDelegate: NSObject, NSApplicationDelegate {
     private var terminationInProgress = false
     private var launchedAsLoginItem = false
+    private var mainWindowVisibilityObservers: [NSObjectProtocol] = []
+    private var terminationAttempt: ApplicationTerminationAttempt?
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         // Login Items deliver the initial kAEOpenApplication event before a
@@ -87,13 +90,19 @@ private final class MacKVMApplicationDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        observeMainWindowVisibility()
+        if let window = mainWindow() {
+            publishMainWindowVisibility(for: window)
+        }
         guard launchedAsLoginItem else { return }
         // Login-item startup should restore the background service without
         // stealing focus or opening a full control window. The menu-bar item
         // remains available, and a Dock activation can reopen the window.
         DispatchQueue.main.async { [weak self] in
-            guard self?.launchedAsLoginItem == true else { return }
-            self?.mainWindow()?.orderOut(nil)
+            guard let self, self.launchedAsLoginItem,
+                  let window = self.mainWindow() else { return }
+            window.orderOut(nil)
+            self.publishMainWindowVisibility(for: window)
         }
     }
 
@@ -105,19 +114,53 @@ private final class MacKVMApplicationDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.async { [weak self, weak sender] in
             guard let window = self?.mainWindow() else { return }
             window.makeKeyAndOrderFront(nil)
+            self?.publishMainWindowVisibility(for: window)
             sender?.activate(ignoringOtherApps: true)
         }
         return true
     }
 
     private func mainWindow() -> NSWindow? {
-        NSApplication.shared.windows.first {
-            $0.identifier?.rawValue == "main"
-                || ($0.title == "MacKVM"
-                    && $0.canBecomeKey
-                    && $0.identifier?.rawValue
-                        != MacKVMWindowIdentifiers.controlRequestHost.rawValue)
+        NSApplication.shared.windows.first(where: isMainWindow)
+    }
+
+    private func isMainWindow(_ window: NSWindow) -> Bool {
+        window.identifier?.rawValue == "main"
+            || (window.title == "MacKVM"
+                && window.canBecomeKey
+                && window.identifier?.rawValue
+                    != MacKVMWindowIdentifiers.controlRequestHost.rawValue)
+    }
+
+    private func observeMainWindowVisibility() {
+        guard mainWindowVisibilityObservers.isEmpty else { return }
+        let center = NotificationCenter.default
+        for name in [NSWindow.didChangeOcclusionStateNotification] {
+            mainWindowVisibilityObservers.append(
+                center.addObserver(
+                    forName: name,
+                    object: nil,
+                    queue: .main
+                ) { [weak self] notification in
+                    guard let self,
+                          let window = notification.object as? NSWindow,
+                          self.isMainWindow(window) else {
+                        return
+                    }
+                    MainActor.assumeIsolated {
+                        self.publishMainWindowVisibility(for: window)
+                    }
+                }
+            )
         }
+    }
+
+    @MainActor
+    private func publishMainWindowVisibility(for window: NSWindow) {
+        MacKVMApplicationWindowVisibility.update(
+            isVisible: window.isVisible
+                && window.occlusionState.contains(.visible)
+        )
     }
 
     func applicationShouldTerminate(
@@ -129,17 +172,113 @@ private final class MacKVMApplicationDelegate: NSObject, NSApplicationDelegate {
         }
 
         terminationInProgress = true
-        handler { [weak self, weak sender] in
-            // The bootstrap-error handler completes synchronously. Defer the
-            // reply until after this delegate returns `.terminateLater`, or
-            // AppKit may treat the reply as occurring before deferred
-            // termination was registered and leave the app running.
+        let attempt = ApplicationTerminationAttempt { [weak self, weak sender] shouldTerminate in
+            // Defer even synchronous cleanup completion until after this
+            // delegate returns `.terminateLater`, or AppKit may treat the
+            // reply as occurring before deferred termination was registered.
             DispatchQueue.main.async {
                 self?.terminationInProgress = false
-                sender?.reply(toApplicationShouldTerminate: true)
+                self?.terminationAttempt = nil
+                sender?.reply(toApplicationShouldTerminate: shouldTerminate)
             }
         }
+        terminationAttempt = attempt
+        attempt.start(cleanup: handler)
         return .terminateLater
+    }
+}
+
+@MainActor
+private enum MacKVMApplicationWindowVisibility {
+    private(set) static var mainWindowIsVisible = false
+    static var onMainWindowVisibilityChanged: ((Bool) -> Void)?
+
+    static func update(isVisible: Bool) {
+        guard mainWindowIsVisible != isVisible else { return }
+        mainWindowIsVisible = isVisible
+        onMainWindowVisibilityChanged?(isVisible)
+    }
+}
+
+final class ApplicationTerminationAttempt {
+    typealias TimeoutScheduler = (
+        TimeInterval,
+        @escaping () -> Void
+    ) -> (() -> Void)
+
+    static let defaultTimeoutInterval: TimeInterval = 6
+
+    private let scheduleTimeout: TimeoutScheduler
+    private let reply: (Bool) -> Void
+    private let stateLock = NSLock()
+    private var cancelTimeout: (() -> Void)?
+    private var hasStarted = false
+    private var replyWasSent = false
+
+    var hasReplied: Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return replyWasSent
+    }
+
+    init(
+        timeoutInterval: TimeInterval = defaultTimeoutInterval,
+        scheduleTimeout: @escaping TimeoutScheduler = {
+            interval, action in
+            let workItem = DispatchWorkItem(block: action)
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + interval,
+                execute: workItem
+            )
+            return { workItem.cancel() }
+        },
+        reply: @escaping (Bool) -> Void
+    ) {
+        self.timeoutInterval = timeoutInterval
+        self.scheduleTimeout = scheduleTimeout
+        self.reply = reply
+    }
+
+    private let timeoutInterval: TimeInterval
+
+    func start(cleanup: (@escaping () -> Void) -> Void) {
+        stateLock.lock()
+        let shouldStart = !hasStarted
+        hasStarted = true
+        stateLock.unlock()
+        guard shouldStart else { return }
+
+        let cancel = scheduleTimeout(timeoutInterval) { [weak self] in
+            self?.finish(shouldTerminate: true)
+        }
+        stateLock.lock()
+        let timeoutAlreadyFired = replyWasSent
+        if !timeoutAlreadyFired {
+            cancelTimeout = cancel
+        }
+        stateLock.unlock()
+        if timeoutAlreadyFired {
+            cancel()
+        }
+
+        cleanup { [weak self] in
+            self?.finish(shouldTerminate: true)
+        }
+    }
+
+    private func finish(shouldTerminate: Bool) {
+        stateLock.lock()
+        guard !replyWasSent else {
+            stateLock.unlock()
+            return
+        }
+        replyWasSent = true
+        let cancel = cancelTimeout
+        cancelTimeout = nil
+        stateLock.unlock()
+
+        cancel?()
+        reply(shouldTerminate)
     }
 }
 
@@ -293,6 +432,7 @@ private final class AppBootstrap: ObservableObject {
     private var localNetworkCheckGeneration: UUID?
     private var localNetworkAccessObservation: AnyCancellable?
     private var lifecycleObservations = Set<AnyCancellable>()
+    private let mainWindowPermissionRefreshSurfaceID = UUID()
     private lazy var permissionRefreshMonitor = PermissionRefreshMonitor {
         [weak self] in
         guard let self else { return }
@@ -314,6 +454,9 @@ private final class AppBootstrap: ObservableObject {
                 credentials: credentials,
                 registry: registry
             )
+            secureSession.onNetworkPathChanged = { [weak discovery] in
+                discovery?.networkEnvironmentDidChange()
+            }
             let inputCapture = InputCaptureService()
             let inputSink = RemoteInputSink()
             let monitor = MonitorController()
@@ -570,6 +713,13 @@ private final class AppBootstrap: ObservableObject {
                 completion()
             }
         }
+        MacKVMApplicationWindowVisibility.onMainWindowVisibilityChanged = {
+            [weak self] isVisible in
+            self?.setMainWindowPermissionRefreshVisibility(isVisible)
+        }
+        setMainWindowPermissionRefreshVisibility(
+            MacKVMApplicationWindowVisibility.mainWindowIsVisible
+        )
     }
 
     func requestTermination() {
@@ -815,8 +965,16 @@ private final class AppBootstrap: ObservableObject {
         permissionRefreshMonitor.surfaceDisappeared(surfaceID)
     }
 
+    private func setMainWindowPermissionRefreshVisibility(_ isVisible: Bool) {
+        permissionRefreshMonitor.setSurfaceVisibility(
+            mainWindowPermissionRefreshSurfaceID,
+            isVisible: isVisible
+        )
+    }
+
     func applicationDidBecomeActive() {
         permissionRefreshMonitor.applicationDidBecomeActive()
+        discovery?.networkEnvironmentDidChange()
         refreshPermissionStatus()
         if pendingLocalNetworkRecheck {
             consumePendingLocalNetworkRecheck()
@@ -888,8 +1046,7 @@ private final class AppBootstrap: ObservableObject {
             return
         }
         localNetworkCheckEvidence = evidence
-        lastLocalNetworkCheckStartedAt = nil
-        checkLocalNetworkAccessIfNeeded()
+        checkLocalNetworkAccessIfNeeded(eventDriven: true)
     }
 
     private func discoveryNetworkBlockStateChanged(_ isBlocked: Bool) {
@@ -906,8 +1063,7 @@ private final class AppBootstrap: ObservableObject {
             localNetworkCheckGeneration = nil
             localNetworkCheckInProgress = false
             invalidateLocalNetworkCheckEvidence()
-            lastLocalNetworkCheckStartedAt = nil
-            checkLocalNetworkAccessIfNeeded()
+            checkLocalNetworkAccessIfNeeded(eventDriven: true)
             return
         }
         // A browser/listener denial supersedes an older peer probe or socket.
@@ -917,7 +1073,7 @@ private final class AppBootstrap: ObservableObject {
         localNetworkCheckGeneration = nil
         localNetworkCheckInProgress = false
         invalidateLocalNetworkCheckEvidence()
-        lastLocalNetworkCheckStartedAt = nil
+        checkLocalNetworkAccessIfNeeded(eventDriven: true)
     }
 
     private func localNetworkAccessProbeDidSucceed(peerID: UUID?) {
@@ -959,7 +1115,7 @@ private final class AppBootstrap: ObservableObject {
         lastLocalNetworkCheckStartedAt = nil
     }
 
-    func checkLocalNetworkAccess() {
+    func checkLocalNetworkAccess(isAutomatic: Bool = false) {
         guard !terminationCleanupStarted,
               !localNetworkCheckInProgress,
               canRunLocalNetworkCheck else {
@@ -982,6 +1138,7 @@ private final class AppBootstrap: ObservableObject {
         let preferredPeerID = secureSession?.connectingPeerID
         lastLocalNetworkCheckStartedAt = Date()
         discovery.checkLocalNetworkAccess(
+            isAutomatic: isAutomatic,
             preferredPeerID: preferredPeerID
         ) { [weak self] result in
             guard let self,
@@ -1005,7 +1162,9 @@ private final class AppBootstrap: ObservableObject {
         }
     }
 
-    fileprivate func checkLocalNetworkAccessIfNeeded() {
+    fileprivate func checkLocalNetworkAccessIfNeeded(
+        eventDriven: Bool = false
+    ) {
         let now = Date()
         expireLocalNetworkCheckEvidenceIfNeeded(now: now)
         guard LocalNetworkCheckLifecyclePolicy.shouldStartAutomaticCheck(
@@ -1020,9 +1179,10 @@ private final class AppBootstrap: ObservableObject {
             hasPendingConnectionAttempt:
                 secureSession?.connectingPeerID != nil,
             hasFreshReachableEvidence:
-                localNetworkCheckResult == .reachable
+                localNetworkCheckResult == .reachable,
+            eventDriven: eventDriven
         ) else { return }
-        checkLocalNetworkAccess()
+        checkLocalNetworkAccess(isAutomatic: true)
     }
 
     func openLocalNetworkSettings() {
@@ -1036,7 +1196,8 @@ private final class AppBootstrap: ObservableObject {
             return
         }
         pendingLocalNetworkRecheck = false
-        checkLocalNetworkAccess()
+        discovery?.networkEnvironmentDidChange()
+        checkLocalNetworkAccess(isAutomatic: true)
     }
 
     func beginLocalNetworkPermissionRequest() {
@@ -1273,6 +1434,7 @@ private struct MacKVMMenuView: View {
     @ObservedObject var inputSink: RemoteInputSink
     @ObservedObject var control: ControlCoordinator
     @ObservedObject var monitor: MonitorController
+    let tracksPermissionRefreshSurface: Bool
     @ObservedObject var inputTopology: InputTopologyController
     @ObservedObject var launchAtLogin: LaunchAtLoginController
     @ObservedObject var bootstrap: AppBootstrap
@@ -1334,16 +1496,20 @@ private struct MacKVMMenuView: View {
         // leaving the return-to-local/quit control pinned at the bottom.
         .frame(width: Self.menuWidth, height: Self.menuHeight)
         .onAppear {
-            bootstrap.beginPermissionStatusMonitoring(
-                for: permissionRefreshSurfaceID
-            )
+            if tracksPermissionRefreshSurface {
+                bootstrap.beginPermissionStatusMonitoring(
+                    for: permissionRefreshSurfaceID
+                )
+            }
             refreshSetupState()
             monitor.refreshDetectedDisplays()
         }
         .onDisappear {
-            bootstrap.endPermissionStatusMonitoring(
-                for: permissionRefreshSurfaceID
-            )
+            if tracksPermissionRefreshSurface {
+                bootstrap.endPermissionStatusMonitoring(
+                    for: permissionRefreshSurfaceID
+                )
+            }
         }
     }
 

@@ -233,6 +233,27 @@ final class RuntimePermissionSnapshotTests: XCTestCase {
         XCTAssertFalse(capture.isCapturing)
     }
 
+    func testSuppressingCaptureRequiresAccessibilityInAdditionToListenAccess() {
+        let permissionSnapshot = snapshot(
+            canListen: true,
+            canPost: true,
+            accessibilityTrusted: false,
+            hidListen: .granted,
+            hidPost: .granted
+        )
+        let provider = MutablePermissionProvider(snapshot: permissionSnapshot)
+        let capture = InputCaptureService(permissionSnapshotProvider: provider)
+
+        capture.startCapture(suppressingLocalEvents: true)
+
+        XCTAssertTrue(capture.hasInputMonitoringPermission)
+        XCTAssertFalse(capture.isCapturing)
+        XCTAssertEqual(
+            capture.status,
+            permissionSnapshot.remoteControlPermissionFailureStatus
+        )
+    }
+
     func testRemoteInputSinkRejectsControlWhenCGPostAccessIsNotReported() {
         let provider = MutablePermissionProvider(snapshot: snapshot(
             canListen: true,

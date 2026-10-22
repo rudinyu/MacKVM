@@ -438,6 +438,7 @@ struct LocalNetworkCheckEvidence: Equatable {
 
 enum LocalNetworkCheckLifecyclePolicy {
     static let minimumAutomaticCheckInterval: TimeInterval = 5
+    static let minimumEventDrivenCheckInterval: TimeInterval = 1.5
 
     static func canRunManualCheck(
         hasActiveAuthenticatedConnection: Bool,
@@ -459,7 +460,8 @@ enum LocalNetworkCheckLifecyclePolicy {
         hasActiveAuthenticatedConnection: Bool = false,
         hasActivePairing: Bool = false,
         hasPendingConnectionAttempt: Bool = false,
-        hasFreshReachableEvidence: Bool = false
+        hasFreshReachableEvidence: Bool = false,
+        eventDriven: Bool = false
     ) -> Bool {
         guard isPolling,
               networkServicesStarted,
@@ -471,8 +473,11 @@ enum LocalNetworkCheckLifecyclePolicy {
             return false
         }
         guard let lastStartedAt else { return true }
+        let minimumInterval = eventDriven
+            ? minimumEventDrivenCheckInterval
+            : minimumAutomaticCheckInterval
         return now.timeIntervalSince(lastStartedAt)
-            >= minimumAutomaticCheckInterval
+            >= minimumInterval
     }
 }
 
@@ -548,13 +553,20 @@ final class PermissionRefreshMonitor {
     }
 
     func surfaceAppeared(_ id: UUID) {
-        guard !isTerminating else { return }
-        visibleSurfaces.insert(id)
-        updateTimer()
+        setSurfaceVisibility(id, isVisible: true)
     }
 
     func surfaceDisappeared(_ id: UUID) {
-        visibleSurfaces.remove(id)
+        setSurfaceVisibility(id, isVisible: false)
+    }
+
+    func setSurfaceVisibility(_ id: UUID, isVisible: Bool) {
+        guard !isTerminating else { return }
+        if isVisible {
+            visibleSurfaces.insert(id)
+        } else {
+            visibleSurfaces.remove(id)
+        }
         updateTimer()
     }
 

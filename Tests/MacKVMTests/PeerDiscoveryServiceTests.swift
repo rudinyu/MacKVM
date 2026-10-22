@@ -286,6 +286,43 @@ final class PeerDiscoveryServiceTests: XCTestCase {
         }
     }
 
+    func testBlockedRecoveryBackoffCapsAndResetsOnComponentRecovery() {
+        var recovery = BlockedNetworkRecoveryState()
+        recovery.recordPolicyDenial(for: .browser)
+        let expectedIntervals: [TimeInterval] = [4, 8, 16, 32, 60, 60]
+
+        XCTAssertEqual(
+            recovery.beginRecoveryAttempts(
+                networkServicesStarted: true,
+                pairingIsInFlight: true
+            ),
+            []
+        )
+        XCTAssertEqual(recovery.nextRetryInterval(), 4)
+
+        for interval in expectedIntervals {
+            XCTAssertEqual(recovery.nextRetryInterval(), interval)
+            XCTAssertEqual(
+                recovery.beginRecoveryAttempts(
+                    networkServicesStarted: true,
+                    pairingIsInFlight: false
+                ),
+                [.browser]
+            )
+            recovery.recordPolicyDenial(for: .browser)
+        }
+
+        XCTAssertEqual(
+            recovery.beginRecoveryAttempts(
+                networkServicesStarted: true,
+                pairingIsInFlight: false
+            ),
+            [.browser]
+        )
+        XCTAssertTrue(recovery.recovered(component: .browser))
+        XCTAssertEqual(recovery.nextRetryInterval(), 4)
+    }
+
     func testUnrelatedReadyCallbackDoesNotClearBlockedComponent() {
         var recovery = BlockedNetworkRecoveryState()
         recovery.recordPolicyDenial(for: .browser)

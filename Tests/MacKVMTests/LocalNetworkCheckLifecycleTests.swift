@@ -205,6 +205,68 @@ final class LocalNetworkCheckLifecycleTests: XCTestCase {
         )
     }
 
+    func testProbeRecoveryBackoffCapsAndResetsWhenRecoveryBecomesIneligible() {
+        var recovery = LocalNetworkProbeRecoveryState()
+        let expectedIntervals: [TimeInterval] = [4, 8, 16, 32, 60, 60]
+
+        for interval in expectedIntervals {
+            guard case let .schedule(generation) = recovery.reconcile(
+                isBlocked: true,
+                networkServicesStarted: true,
+                hasDiscoveredPeer: true
+            ) else {
+                return XCTFail("Eligible recovery should schedule a probe")
+            }
+            XCTAssertEqual(recovery.nextRetryInterval(), interval)
+            XCTAssertTrue(recovery.beginRetry(generation: generation))
+            XCTAssertFalse(
+                LocalNetworkProbeRecoveryState.shouldStartProbe(
+                    isBlocked: true,
+                    networkServicesStarted: true,
+                    pairingIsInFlight: true,
+                    hasDiscoveredPeer: true,
+                    probeIsInFlight: false
+                )
+            )
+            // A timer deferred by pairing is not an attempted probe.
+            XCTAssertEqual(recovery.nextRetryInterval(), interval)
+            XCTAssertTrue(
+                LocalNetworkProbeRecoveryState.shouldStartProbe(
+                    isBlocked: true,
+                    networkServicesStarted: true,
+                    pairingIsInFlight: false,
+                    hasDiscoveredPeer: true,
+                    probeIsInFlight: false
+                )
+            )
+            recovery.recordRetryAttempt()
+        }
+
+        guard case let .schedule(lastGeneration) = recovery.reconcile(
+            isBlocked: true,
+            networkServicesStarted: true,
+            hasDiscoveredPeer: true
+        ) else {
+            return XCTFail("Capped recovery should schedule another probe")
+        }
+        XCTAssertEqual(recovery.nextRetryInterval(), 60)
+        XCTAssertEqual(
+            recovery.reconcile(
+                isBlocked: true,
+                networkServicesStarted: true,
+                hasDiscoveredPeer: false
+            ),
+            .cancel
+        )
+        XCTAssertFalse(recovery.beginRetry(generation: lastGeneration))
+        XCTAssertEqual(recovery.nextRetryInterval(), 4)
+
+        recovery.recordRetryAttempt()
+        XCTAssertEqual(recovery.nextRetryInterval(), 8)
+        recovery.stop()
+        XCTAssertEqual(recovery.nextRetryInterval(), 4)
+    }
+
     func testPendingInboundConnectionMakesNetworkCheckBusy() {
         XCTAssertTrue(
             LocalNetworkCheckPolicy.hasPairingInFlight(
@@ -248,6 +310,62 @@ final class LocalNetworkCheckLifecycleTests: XCTestCase {
                 availablePeerIDs: available
             ),
             pairedFallback
+        )
+    }
+
+    func testAutomaticDiscoveryWaitPreservesReadyBrowser() {
+        XCTAssertFalse(
+            LocalNetworkCheckPolicy.shouldRefreshBrowserForDiscoveryWait(
+                isAutomatic: true,
+                browserExists: true,
+                browserIsReady: true
+            )
+        )
+    }
+
+    func testAutomaticDiscoveryWaitRefreshesMissingOrNotReadyBrowser() {
+        XCTAssertTrue(
+            LocalNetworkCheckPolicy.shouldRefreshBrowserForDiscoveryWait(
+                isAutomatic: true,
+                browserExists: false,
+                browserIsReady: false
+            )
+        )
+        XCTAssertTrue(
+            LocalNetworkCheckPolicy.shouldRefreshBrowserForDiscoveryWait(
+                isAutomatic: true,
+                browserExists: true,
+                browserIsReady: false
+            )
+        )
+        XCTAssertTrue(
+            LocalNetworkCheckPolicy.shouldRefreshBrowserForDiscoveryWait(
+                isAutomatic: true,
+                browserExists: true,
+                browserIsReady: false,
+                listenerExists: false
+            )
+        )
+    }
+
+    func testManualDiscoveryWaitRefreshesEvenWhenBrowserIsReady() {
+        XCTAssertTrue(
+            LocalNetworkCheckPolicy.shouldRefreshBrowserForDiscoveryWait(
+                isAutomatic: false,
+                browserExists: true,
+                browserIsReady: true
+            )
+        )
+    }
+
+    func testManualDiscoveryWaitKeepsMissingServiceRecoveryBehavior() {
+        XCTAssertFalse(
+            LocalNetworkCheckPolicy.shouldRefreshBrowserForDiscoveryWait(
+                isAutomatic: false,
+                browserExists: true,
+                browserIsReady: true,
+                listenerExists: false
+            )
         )
     }
 

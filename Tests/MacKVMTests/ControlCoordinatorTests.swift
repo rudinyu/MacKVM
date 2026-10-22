@@ -394,6 +394,42 @@ final class ControlCoordinatorTests: XCTestCase {
         XCTAssertEqual(fixture.transport.sentMessages.last?.requestID, requestID)
     }
 
+    func testPermissionRevokedDuringCaptureStartDoesNotSendEndControlTwice() throws {
+        let fixture = makeFixture()
+        var requestCompletion: Bool?
+        var controllingStartedCount = 0
+        fixture.coordinator.onControllingStarted = {
+            controllingStartedCount += 1
+        }
+        XCTAssertTrue(
+            fixture.coordinator.requestControl {
+                requestCompletion = $0
+            }
+        )
+        let requestID = try XCTUnwrap(
+            fixture.transport.sentMessages.last?.requestID
+        )
+        fixture.capture.onStartCapture = {
+            fixture.capture.hasInputMonitoringPermission = false
+            fixture.capture.onPermissionRevoked?()
+        }
+
+        fixture.transport.deliver(controlMessage(.controlGranted, requestID))
+        drainMainQueue()
+
+        XCTAssertEqual(fixture.coordinator.state, .connected)
+        XCTAssertFalse(fixture.capture.isCapturing)
+        XCTAssertGreaterThanOrEqual(fixture.capture.stopCount, 1)
+        XCTAssertEqual(
+            fixture.transport.sentMessages.filter {
+                $0.kind == .endControl && $0.requestID == requestID
+            }.count,
+            1
+        )
+        XCTAssertEqual(controllingStartedCount, 0)
+        XCTAssertEqual(requestCompletion, false)
+    }
+
     func testSwitchHotKeyStartsControlWhenConnected() {
         let fixture = makeFixture()
 
@@ -1951,6 +1987,7 @@ private final class FakeInputCapture: ControlInputCapture {
     var onEmergencyStop: (() -> Void)?
     var onSwitchControl: (() -> Void)?
     var onSwitchMonitor: (() -> Void)?
+    var onStartCapture: (() -> Void)?
     private(set) var startCount = 0
     private(set) var stopCount = 0
 
@@ -1959,6 +1996,7 @@ private final class FakeInputCapture: ControlInputCapture {
     func startCapture(suppressingLocalEvents: Bool) {
         startCount += 1
         isCapturing = true
+        onStartCapture?()
     }
 
     func stopCapture() {

@@ -1163,11 +1163,39 @@ final class ControlCoordinator: ObservableObject {
         guard state == .suspended else { return }
         requestTimeout?.cancel()
         requestTimeout = nil
+        let grantedRequestID = activeOutboundRequestID
+        let grantedPeerID = secureSession.connectedPeerID
         do {
             state = try machine.handle(.controlGranted)
             inputCapture.startCapture(suppressingLocalEvents: true)
-            guard inputCapture.isCapturing else {
-                let requestID = activeOutboundRequestID
+            let grantIsStillCurrent = {
+                grantedRequestID != nil
+                    && grantedPeerID != nil
+                    && self.state == .controlling
+                    && self.activeOutboundRequestID == grantedRequestID
+                    && self.secureSession.connectedPeerID == grantedPeerID
+            }
+            guard grantIsStillCurrent() else {
+                inputCapture.stopCapture()
+                completeActiveControlRequest(false)
+                return
+            }
+
+            // Starting a suppressing event tap crosses a system-permission
+            // boundary. Re-read both required grants after creation so a
+            // revocation during startup cannot be treated as a live session.
+            inputCapture.refreshPermission()
+            inputSink.refreshPermission()
+            guard grantIsStillCurrent() else {
+                inputCapture.stopCapture()
+                completeActiveControlRequest(false)
+                return
+            }
+            guard inputCapture.isCapturing,
+                  inputCapture.hasInputMonitoringPermission,
+                  inputSink.hasAccessibilityPermission else {
+                inputCapture.stopCapture()
+                let requestID = grantedRequestID
                 _ = try? machine.handle(.stopControl)
                 state = machine.state
                 activeOutboundRequestID = nil

@@ -4,18 +4,29 @@
 
 ## Unreleased
 
-### MacKVM 1.102.07 (build 104) — saved-pairing network recovery
+### MacKVM 1.102.07 (build 104) — Local Network recovery and lifecycle fixes
 
-- Recover secure Bonjour services after Local Network denial, including when
-  no outbound connection exists yet; keep independent service failures eligible
-  for recovery.
-- Provide Cancel and Retry for pending connections without removing the saved
-  pairing. Keep authenticated sessions and deliberate disconnects protected.
-- Expire or invalidate stale network-test success and refresh visible setup
-  status so an old result does not keep recovery actions hidden.
-- Add regression coverage and two-Mac acceptance steps. These changes are not
-  included in the previously packaged build 103 DMG. Physical permission
-  recovery and saved-pairing acceptance on build 104 remain pending.
+- Recover secure Bonjour services independently after Local Network denial,
+  with exponential retries from 4 to 60 seconds and immediate backoff resets
+  after path, app-activity, manual-check, or service-ready changes. Ready
+  browsers stay alive during automatic checks so discovered peers are retained;
+  explicit manual checks can still refresh discovery.
+- Add structured transport and deferred-check diagnostics to confirm whether
+  bare TCP probes are being counted as active pairing; the pairing-count
+  behavior remains unchanged pending logs from the affected Macs.
+  Event-driven network checks use a shorter 1.5-second throttle than timer
+  checks.
+- Revalidate control state after input capture starts, stop a tap if permission
+  revocation reenters during startup, and require both listening and
+  Accessibility access before outbound capture can begin.
+- Stop permission polling while a Login Item has hidden its window and resume
+  it when the window is visible. Add a six-second watchdog to guarantee app
+  termination completes if a shutdown callback stalls.
+- Add regression tests for retry backoff/reset, automatic discovery retention,
+  event-driven throttling, permission revocation during capture, and bounded
+  termination. These macOS-only changes do not modify WindowsKVM or the shared
+  wire format. Physical permission-transition and two-Mac acceptance remain
+  pending.
 
 ### MacKVM 1.102.06 (build 103) — UI lifecycle subscription fix
 
