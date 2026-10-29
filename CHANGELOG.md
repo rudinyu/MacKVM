@@ -4,6 +4,18 @@
 
 ## Unreleased
 
+### MacKVM 1.102.08 (build 105) — Pairing consent attempt binding
+
+- Bind each incoming Accept/Decline prompt to a fresh local attempt ID instead
+  of relying on the sender-selected wire request UUID. Before responding, the
+  service verifies the current attempt, peer ID/public key, and displayed
+  verification code, then consumes the decision once.
+- Fence deferred send callbacks and UI cleanup to the exact connection and
+  attempt so stale actions cannot affect a retry that reuses a wire ID.
+- Add regression coverage for same-peer/same-key/same-code request-ID reuse and
+  a replacement with a different key. Physical two-Mac pairing acceptance
+  remains pending.
+
 ### MacKVM 1.102.07 (build 104) — Local Network recovery and lifecycle fixes
 
 - Recover secure Bonjour services independently after Local Network denial,

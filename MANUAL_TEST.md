@@ -33,10 +33,10 @@ Local packaging check (from the M5 Pro) is also available:
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.102.07-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.102.08-universal.dmg.sha256)
 ```
 
-The first two commands build and verify the 1.102.07 (build 104) source locally;
+The first two commands build and verify the 1.102.08 (build 105) source locally;
 the checksum command verifies the local-testing DMG produced in `dist`. These
 commands do not perform Apple notarization or GitHub publication. The local app and
 DMG are ad-hoc signed and not for distribution; the image contains no PKG.
@@ -61,8 +61,8 @@ and final release image:
 codesign --verify --deep --strict --verbose=2 dist/universal/MacKVM.app
 spctl --assess --type execute --verbose=4 dist/universal/MacKVM.app
 xcrun stapler validate dist/universal/MacKVM.app
-xcrun stapler validate dist/MacKVM-1.102.07-universal.dmg
-(cd dist && shasum -a 256 -c MacKVM-1.102.07-universal.dmg.sha256)
+xcrun stapler validate dist/MacKVM-1.102.08-universal.dmg
+(cd dist && shasum -a 256 -c MacKVM-1.102.08-universal.dmg.sha256)
 ```
 
 Mount the release DMG in Finder. Confirm it contains `MacKVM.app`, the

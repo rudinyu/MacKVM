@@ -31,10 +31,10 @@ Intel Mac 的 `/Applications`，再開啟各自架構的 app。
 ```sh
 ./scripts/package-dmg.sh --arch universal
 ./scripts/verify-release.sh --app dist/universal/MacKVM.app --arch universal
-(cd dist && shasum -a 256 -c MacKVM-1.102.07-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.102.08-universal.dmg.sha256)
 ```
 
-前兩個指令會在本機建置並驗證 1.102.07（build 104）原始碼；checksum 指令會驗證 `dist` 中
+前兩個指令會在本機建置並驗證 1.102.08（build 105）原始碼；checksum 指令會驗證 `dist` 中
 本機測試用 DMG。這些指令不會執行 Apple 公證或發布 GitHub Release。本機 app 與 DMG 使用 ad-hoc 簽章，不可
 用於正式散布；映像檔不含 PKG。
 
@@ -54,8 +54,8 @@ app 與 DMG 都必須通過 Apple 公證、staple 與驗證。檢查 app bundle 
 codesign --verify --deep --strict --verbose=2 dist/universal/MacKVM.app
 spctl --assess --type execute --verbose=4 dist/universal/MacKVM.app
 xcrun stapler validate dist/universal/MacKVM.app
-xcrun stapler validate dist/MacKVM-1.102.07-universal.dmg
-(cd dist && shasum -a 256 -c MacKVM-1.102.07-universal.dmg.sha256)
+xcrun stapler validate dist/MacKVM-1.102.08-universal.dmg
+(cd dist && shasum -a 256 -c MacKVM-1.102.08-universal.dmg.sha256)
 ```
 
 在 Finder 裝載正式 DMG，確認內含 `MacKVM.app`、`/Applications` 捷徑、兩個可執行 Finder 指令、

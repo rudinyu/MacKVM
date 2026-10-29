@@ -189,7 +189,7 @@ final class PairingSecurityBoundaryTests: XCTestCase {
         XCTAssertEqual(provisional.trackedRequestIDs.count, 5)
         XCTAssertEqual(fixture.service.pendingPairingConfirmation?.id, requestID)
         let pendingRequest = try XCTUnwrap(fixture.service.pendingRequests.first {
-            $0.id == incoming.requestID
+            $0.requestID == incoming.requestID
         })
         fixture.service.respond(to: pendingRequest, accepted: true)
         fixture.service.waitForQueuedWorkForTesting()
@@ -287,16 +287,16 @@ final class PairingSecurityBoundaryTests: XCTestCase {
         drainMainQueue()
 
         let pending = try XCTUnwrap(fixture.service.pendingRequests.first {
-            $0.id == incoming.request.requestID
+            $0.requestID == incoming.request.requestID
         })
-        XCTAssertTrue(fixture.service.pairingRequestStateForTesting().trackedRequestIDs.contains(pending.id))
+        XCTAssertTrue(fixture.service.pairingRequestStateForTesting().trackedRequestIDs.contains(pending.requestID))
         fixture.service.respond(to: pending, accepted: true)
         fixture.service.waitForQueuedWorkForTesting()
         drainMainQueue()
 
         let state = fixture.service.pairingRequestStateForTesting()
         XCTAssertNil(state.outboundRequestID)
-        XCTAssertEqual(state.trackedRequestIDs, [pending.id])
+        XCTAssertEqual(state.trackedRequestIDs, [pending.requestID])
         XCTAssertTrue(fixture.service.pendingRequests.isEmpty)
     }
 
@@ -317,9 +317,9 @@ final class PairingSecurityBoundaryTests: XCTestCase {
                 fixture.service.waitForQueuedWorkForTesting()
                 // Sending over an unstarted test transport has no delivery
                 // callback; retire it as the real decline callback would.
-                fixture.service.expirePairingRequestForTesting(requestID: pending.id)
+                fixture.service.expirePairingRequestForTesting(requestID: pending.requestID)
             } else if outcome == "timeout" {
-                fixture.service.expirePairingRequestForTesting(requestID: pending.id)
+                fixture.service.expirePairingRequestForTesting(requestID: pending.requestID)
             } else {
                 let decline = try authenticated(
                     .decision(to: incoming.request, from: target.peer, accepted: false),
@@ -330,7 +330,7 @@ final class PairingSecurityBoundaryTests: XCTestCase {
 
             let state = fixture.service.pairingRequestStateForTesting()
             assertOutgoingPreserved(fixture.service, requestID: outboundID, target: target.peer,
-                                    state: state, incomingRequestID: pending.id)
+                                    state: state, incomingRequestID: pending.requestID)
             XCTAssertTrue(fixture.service.pendingRequests.isEmpty)
         }
     }
@@ -358,6 +358,146 @@ final class PairingSecurityBoundaryTests: XCTestCase {
         XCTAssertTrue(state.trackedRequestIDs.contains(newOutboundID))
         XCTAssertEqual(fixture.service.pendingPairingConfirmation?.id, newOutboundID)
         XCTAssertEqual(fixture.service.activeVerificationCode, "123456")
+    }
+
+    func testStaleAcceptAndDeclineCannotAffectReusedIncomingRequestID() throws {
+        let fixture = try Fixture(localID: higherID)
+        let target = makePeer(id: lowerID)
+        let requestID = UUID()
+        let initiatorContribution = PairingVerificationCode.makeContribution()
+        let responderContribution = PairingVerificationCode.makeContribution()
+        let firstTranscript = try requestAndReveal(
+            from: target,
+            requestID: requestID,
+            contribution: initiatorContribution
+        )
+
+        fixture.service.setNextLocalContributionForTesting(responderContribution)
+        _ = fixture.service.handleIncomingPairingRequestForTesting(firstTranscript.request)
+        _ = fixture.service.handleIncomingPairingRequestForTesting(firstTranscript.reveal)
+        drainMainQueue()
+        let stalePrompt = try XCTUnwrap(fixture.service.pendingRequests.first {
+            $0.requestID == requestID
+        })
+        let firstAttemptToken = stalePrompt.id
+
+        // Retire A synchronously, but deliberately leave its queued main-thread
+        // cleanup pending while B reuses the exact wire ID and transcript.
+        fixture.service.expirePairingRequestForTesting(requestID: requestID)
+        let replacementTranscript = try requestAndReveal(
+            from: target,
+            requestID: requestID,
+            contribution: initiatorContribution
+        )
+        fixture.service.setNextLocalContributionForTesting(responderContribution)
+        _ = fixture.service.handleIncomingPairingRequestForTesting(replacementTranscript.request)
+        _ = fixture.service.handleIncomingPairingRequestForTesting(replacementTranscript.reveal)
+
+        // These are the two actions the old SwiftUI prompt could still submit
+        // while B's prompt is being published on the main queue.
+        fixture.service.respond(to: stalePrompt, accepted: true)
+        fixture.service.respond(to: stalePrompt, accepted: false)
+        fixture.service.waitForQueuedWorkForTesting()
+        drainMainQueue()
+
+        let replacementPrompt = try XCTUnwrap(fixture.service.pendingRequests.first {
+            $0.requestID == requestID
+        })
+        XCTAssertEqual(replacementPrompt.peer.id, stalePrompt.peer.id)
+        XCTAssertEqual(
+            replacementPrompt.peer.signingPublicKey,
+            stalePrompt.peer.signingPublicKey
+        )
+        XCTAssertEqual(replacementPrompt.verificationCode, stalePrompt.verificationCode)
+        XCTAssertNotEqual(replacementPrompt.id, firstAttemptToken)
+        XCTAssertEqual(
+            fixture.service.pairingResponseStateForTesting(requestID: requestID).attemptToken,
+            replacementPrompt.id
+        )
+        XCTAssertFalse(
+            fixture.service.pairingResponseStateForTesting(requestID: requestID).locallyAccepted
+        )
+        XCTAssertFalse(fixture.registry.contains(target.peer.id))
+        XCTAssertEqual(
+            fixture.service.pairingRequestStateForTesting().trackedRequestIDs,
+            [requestID]
+        )
+
+        // B's own prompt remains actionable. The opposite second click is
+        // ignored after this accepted action consumes the live token.
+        fixture.service.respond(to: replacementPrompt, accepted: true)
+        fixture.service.respond(to: replacementPrompt, accepted: false)
+        fixture.service.waitForQueuedWorkForTesting()
+        drainMainQueue()
+
+        XCTAssertTrue(
+            fixture.service.pairingResponseStateForTesting(requestID: requestID).locallyAccepted
+        )
+        XCTAssertEqual(
+            fixture.service.pairingResponseStateForTesting(requestID: requestID).attemptToken,
+            replacementPrompt.id
+        )
+        XCTAssertTrue(
+            fixture.service.pairingRequestStateForTesting().trackedRequestIDs.contains(requestID)
+        )
+        XCTAssertTrue(fixture.service.pendingRequests.isEmpty)
+        // Local consent alone is not the signed completion proof required for
+        // durable trust.
+        XCTAssertFalse(fixture.registry.contains(target.peer.id))
+    }
+
+    func testStalePromptWithChangedPeerKeyCannotAffectReplacement() throws {
+        let fixture = try Fixture(localID: higherID)
+        let firstPeer = makePeer(id: lowerID)
+        let replacementPeer = makePeer(id: lowerID)
+        let requestID = UUID()
+        let responderContribution = PairingVerificationCode.makeContribution()
+        let contribution = PairingVerificationCode.makeContribution()
+        let firstTranscript = try requestAndReveal(
+            from: firstPeer,
+            requestID: requestID,
+            contribution: contribution
+        )
+
+        fixture.service.setNextLocalContributionForTesting(responderContribution)
+        _ = fixture.service.handleIncomingPairingRequestForTesting(firstTranscript.request)
+        _ = fixture.service.handleIncomingPairingRequestForTesting(firstTranscript.reveal)
+        drainMainQueue()
+        let stalePrompt = try XCTUnwrap(fixture.service.pendingRequests.first {
+            $0.requestID == requestID
+        })
+        fixture.service.expirePairingRequestForTesting(requestID: requestID)
+
+        let replacementTranscript = try requestAndReveal(
+            from: replacementPeer,
+            requestID: requestID,
+            contribution: contribution
+        )
+        fixture.service.setNextLocalContributionForTesting(responderContribution)
+        _ = fixture.service.handleIncomingPairingRequestForTesting(replacementTranscript.request)
+        _ = fixture.service.handleIncomingPairingRequestForTesting(replacementTranscript.reveal)
+        fixture.service.respond(to: stalePrompt, accepted: true)
+        fixture.service.respond(to: stalePrompt, accepted: false)
+        fixture.service.waitForQueuedWorkForTesting()
+        drainMainQueue()
+
+        let replacementPrompt = try XCTUnwrap(fixture.service.pendingRequests.first {
+            $0.requestID == requestID
+        })
+        XCTAssertEqual(replacementPrompt.peer.id, stalePrompt.peer.id)
+        XCTAssertNotEqual(
+            replacementPrompt.peer.signingPublicKey,
+            stalePrompt.peer.signingPublicKey
+        )
+        XCTAssertNotEqual(replacementPrompt.id, stalePrompt.id)
+        XCTAssertFalse(
+            fixture.service.pairingResponseStateForTesting(requestID: requestID).locallyAccepted
+        )
+        XCTAssertFalse(fixture.registry.contains(replacementPeer.peer.id))
+        XCTAssertEqual(
+            fixture.service.pairingRequestStateForTesting().trackedRequestIDs,
+            [requestID]
+        )
     }
 
     func testExplicitOutgoingCancelAlsoRemovesLinkedProvisionalRequest() throws {
@@ -537,10 +677,11 @@ final class PairingSecurityBoundaryTests: XCTestCase {
     }
 
     private func requestAndReveal(
-        from peer: (peer: PeerIdentity, key: P256.Signing.PrivateKey)
+        from peer: (peer: PeerIdentity, key: P256.Signing.PrivateKey),
+        requestID: UUID = UUID(),
+        contribution: Data? = nil
     ) throws -> (request: PairingEnvelope, reveal: PairingEnvelope) {
-        let requestID = UUID()
-        let contribution = PairingVerificationCode.makeContribution()
+        let contribution = contribution ?? PairingVerificationCode.makeContribution()
         let request = PairingEnvelope.request(
             from: peer.peer, requestID: requestID,
             commitment: PairingVerificationCode.commitment(

@@ -21,9 +21,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.102.07</string>
+	<string>1.102.08</string>
 	<key>CFBundleVersion</key>
-	<string>104</string>
+	<string>105</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
 	<key>NSBonjourServices</key>

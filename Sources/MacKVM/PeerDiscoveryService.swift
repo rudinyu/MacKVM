@@ -15,7 +15,11 @@ struct DiscoveredPeer: Identifiable {
 }
 
 struct PendingPairingRequest: Identifiable {
+    /// Local identity for this exact incoming attempt. The wire request ID
+    /// can be reused after a connection is retired, while SwiftUI may still
+    /// hold the previous prompt value.
     let id: UUID
+    let requestID: UUID
     let peer: PeerIdentity
     let verificationCode: String
 }
@@ -726,6 +730,11 @@ final class PeerDiscoveryService: ObservableObject {
     private var requestConnections: [UUID: NWConnection] = [:]
     private var unauthenticatedConnections: [ObjectIdentifier: NWConnection] = [:]
     private var requestMessages: [UUID: PairingEnvelope] = [:]
+    // Incoming prompts are bound to a fresh local attempt token. Wire UUIDs
+    // identify protocol messages, but are not sufficient to identify a UI
+    // consent action after a connection has been replaced.
+    private var pendingPairingAttemptTokens: [UUID: UUID] = [:]
+    private var consumedPairingAttemptTokens: Set<UUID> = []
     private var requestTargets: [UUID: PeerIdentity] = [:]
     // The model is learned only from a signed pairing message. Bonjour's TXT
     // model remains a discovery hint and is never persisted as trust metadata.
@@ -800,6 +809,7 @@ final class PeerDiscoveryService: ObservableObject {
     private var provisionalCollisionOutboundRequestIDs: [UUID: UUID] = [:]
     #if DEBUG
     private var beforeTrustRollbackForTesting: (() -> Void)?
+    private var nextLocalContributionForTesting: Data?
     private var networkRecoveryMissingComponentsForTesting:
         Set<NetworkServiceComponent>?
     private var networkRecoveryPairingOverrideForTesting: Bool?
@@ -885,6 +895,12 @@ final class PeerDiscoveryService: ObservableObject {
         )
         pairingActivity = .awaitingConfirmation(peerID: peer.id, peerName: peer.name)
         status = "Waiting for code confirmation"
+    }
+
+    func setNextLocalContributionForTesting(_ contribution: Data) {
+        queue.sync {
+            nextLocalContributionForTesting = contribution
+        }
     }
 
     func handleIncomingPairingRequestForTesting(
@@ -1036,6 +1052,18 @@ final class PeerDiscoveryService: ObservableObject {
 
     func pairingRequestStateForTesting() -> (outboundRequestID: UUID?, trackedRequestIDs: Set<UUID>) {
         queue.sync { (activeOutboundRequestID, Set(requestMessages.keys)) }
+    }
+
+    func pairingResponseStateForTesting(requestID: UUID) -> (
+        locallyAccepted: Bool,
+        attemptToken: UUID?
+    ) {
+        queue.sync {
+            (
+                locallyAcceptedRequestIDs.contains(requestID),
+                pendingPairingAttemptTokens[requestID]
+            )
+        }
     }
 
     func finishPairingTransportForTesting(requestID: UUID) {
@@ -1294,6 +1322,8 @@ final class PeerDiscoveryService: ObservableObject {
             self.requestConnections.removeAll()
             self.unauthenticatedConnections.removeAll()
             self.requestMessages.removeAll()
+            self.pendingPairingAttemptTokens.removeAll()
+            self.consumedPairingAttemptTokens.removeAll()
             self.requestTargets.removeAll()
             self.provisionalCollisionOutboundRequestIDs.removeAll()
             self.requestPeerModels.removeAll()
@@ -2465,32 +2495,42 @@ final class PeerDiscoveryService: ObservableObject {
         to pending: PendingPairingRequest,
         accepted: Bool
     ) {
-        guard let connection = requestConnections[pending.id],
-              let request = requestMessages[pending.id] else {
-            publishStatus("The pairing request has expired")
-            removePendingRequest(id: pending.id)
+        let requestID = pending.requestID
+        guard pendingPairingAttemptTokens[requestID] == pending.id,
+              !consumedPairingAttemptTokens.contains(pending.id),
+              let connection = requestConnections[requestID],
+              let request = requestMessages[requestID],
+              request.sender.id == pending.peer.id,
+              request.sender.signingPublicKey == pending.peer.signingPublicKey,
+              let peerContribution = peerContributions[requestID],
+              let localContribution = localContributions[requestID],
+              pending.verificationCode == PairingVerificationCode.make(
+                  requestID: requestID,
+                  initiatorPublicKey: request.sender.signingPublicKey,
+                  responderPublicKey: identity.signingPublicKey,
+                  initiatorContribution: peerContribution,
+                  responderContribution: localContribution
+              ) else {
+            // Only remove the captured UI attempt. In particular, do not let
+            // a stale prompt's shared wire ID retire or otherwise affect a
+            // replacement connection.
+            removePendingRequest(attemptID: pending.id)
             return
         }
+        // Accept and Decline are both one-shot actions. The network queue
+        // serializes competing clicks, so consume the token before either
+        // branch can send data or mutate pairing state.
+        consumedPairingAttemptTokens.insert(pending.id)
+
         if accepted,
-           let outboundRequestID = provisionalCollisionOutboundRequestIDs[pending.id] {
+           let outboundRequestID = provisionalCollisionOutboundRequestIDs[requestID] {
             let currentGeneration = registry.generation(for: pending.peer.id)
-            guard request.sender.id == pending.peer.id,
-                  request.sender.signingPublicKey == pending.peer.signingPublicKey,
-                  let peerContribution = peerContributions[pending.id],
-                  let localContribution = localContributions[pending.id],
-                  pending.verificationCode == PairingVerificationCode.make(
-                      requestID: pending.id,
-                      initiatorPublicKey: request.sender.signingPublicKey,
-                      responderPublicKey: identity.signingPublicKey,
-                      initiatorContribution: peerContribution,
-                      responderContribution: localContribution
-                  ),
-                  requestForgetGenerations.current(for: pending.id) == currentGeneration,
+            guard requestForgetGenerations.current(for: requestID) == currentGeneration,
                   PairingRequestPolicy.acceptsDiscoveredPeer(
                       request.sender,
                       pinnedPublicKey: registry.publicKey(for: pending.peer.id)
                   ) else {
-                finish(requestID: pending.id)
+                finish(requestID: requestID)
                 return
             }
             if activeOutboundRequestID == outboundRequestID {
@@ -2499,23 +2539,23 @@ final class PeerDiscoveryService: ObservableObject {
                         == pending.peer.signingPublicKey,
                       requestForgetGenerations.current(for: outboundRequestID)
                         == currentGeneration else {
-                    finish(requestID: pending.id)
+                    finish(requestID: requestID)
                     return
                 }
                 // Only local consent can retire this specific selected request.
                 // A later outbound request must never be cancelled by an old
                 // provisional prompt, even when it targets the same peer.
-                provisionalCollisionOutboundRequestIDs.removeValue(forKey: pending.id)
+                provisionalCollisionOutboundRequestIDs.removeValue(forKey: requestID)
                 finish(requestID: outboundRequestID, userCancelledPersistence: true)
             } else {
-                provisionalCollisionOutboundRequestIDs.removeValue(forKey: pending.id)
+                provisionalCollisionOutboundRequestIDs.removeValue(forKey: requestID)
             }
         }
-        let statusContext = pairingStatusContext(for: pending.id)
+        let statusContext = pairingStatusContext(for: requestID)
 
         logPairingPhase(
             accepted ? "user.accept" : "user.decline",
-            requestID: pending.id,
+            requestID: requestID,
             peerID: pending.peer.id,
             detail: "role=responder"
         )
@@ -2526,16 +2566,20 @@ final class PeerDiscoveryService: ObservableObject {
             accepted: accepted,
             senderModel: localModel
         )
-        send(response, over: connection) { [weak self] sent in
+        send(response, over: connection, reportsError: false) { [weak self] sent in
             guard let self else { return }
+            guard self.requestConnections[requestID] === connection,
+                  self.pendingPairingAttemptTokens[requestID] == pending.id else {
+                return
+            }
             guard sent else {
                 self.logPairingPhase(
                     "decision.send.failed",
-                    requestID: pending.id,
+                    requestID: requestID,
                     peerID: pending.peer.id,
                     detail: "role=responder"
                 )
-                self.finish(requestID: pending.id)
+                self.finish(requestID: requestID)
                 self.publishStatus(
                     self.pairingTransportFailureMessage(
                         peerName: pending.peer.name,
@@ -2547,12 +2591,12 @@ final class PeerDiscoveryService: ObservableObject {
             }
             self.logPairingPhase(
                 "decision.send.confirmed",
-                requestID: pending.id,
+                requestID: requestID,
                 peerID: pending.peer.id,
                 detail: "role=responder"
             )
             if !accepted {
-                self.finish(requestID: pending.id)
+                self.finish(requestID: requestID)
             }
         }
         if accepted {
@@ -2562,10 +2606,10 @@ final class PeerDiscoveryService: ObservableObject {
             // decision at the same time. A failed send still tears down the
             // request above, and persistence remains gated by the peer's
             // signed decision, both completions, and acknowledgement.
-            locallyAcceptedRequestIDs.insert(pending.id)
-            beginCompletionIfMutuallyAccepted(requestID: pending.id)
+            locallyAcceptedRequestIDs.insert(requestID)
+            beginCompletionIfMutuallyAccepted(requestID: requestID)
         }
-        removePendingRequest(id: pending.id)
+        removePendingRequest(attemptID: pending.id)
         publishStatus(
             accepted
                 ? "Accepted here; completing pairing with \(pending.peer.name)…"
@@ -3192,7 +3236,17 @@ final class PeerDiscoveryService: ObservableObject {
                 }
                 provisionalCollisionOutboundRequestIDs[message.requestID] = outboundRequestID
             }
-            let localContribution = PairingVerificationCode.makeContribution()
+            let localContribution: Data
+            #if DEBUG
+            if let contribution = nextLocalContributionForTesting {
+                localContribution = contribution
+                nextLocalContributionForTesting = nil
+            } else {
+                localContribution = PairingVerificationCode.makeContribution()
+            }
+            #else
+            localContribution = PairingVerificationCode.makeContribution()
+            #endif
             unauthenticatedConnections.removeValue(
                 forKey: ObjectIdentifier(connection)
             )
@@ -3202,6 +3256,7 @@ final class PeerDiscoveryService: ObservableObject {
             )
             requestConnections[message.requestID] = connection
             requestMessages[message.requestID] = message
+            pendingPairingAttemptTokens[message.requestID] = UUID()
             if message.supportsCompletionClose == true {
                 peerSupportsCompletionCloseRequestIDs.insert(message.requestID)
             }
@@ -3278,6 +3333,7 @@ final class PeerDiscoveryService: ObservableObject {
 
         case .reveal:
             guard let request = requestMessages[message.requestID],
+                  let attemptID = pendingPairingAttemptTokens[message.requestID],
                   request.sender.id == message.sender.id,
                   request.sender.signingPublicKey == message.sender.signingPublicKey,
                   let commitment = peerCommitments[message.requestID],
@@ -3329,10 +3385,11 @@ final class PeerDiscoveryService: ObservableObject {
             scheduleTimeout(for: connection, phase: .userDecision)
             let statusContext = pairingStatusContext(for: message.requestID)
             publishPairingMain(context: statusContext) { service in
-                if !service.pendingRequests.contains(where: { $0.id == message.requestID }) {
+                if !service.pendingRequests.contains(where: { $0.id == attemptID }) {
                     service.pendingRequests.append(
                         PendingPairingRequest(
-                            id: message.requestID,
+                            id: attemptID,
+                            requestID: message.requestID,
                             peer: message.sender,
                             verificationCode: verificationCode
                         )
@@ -3982,6 +4039,13 @@ final class PeerDiscoveryService: ObservableObject {
         cancelConnection: Bool = true,
         userCancelledPersistence: Bool = false
     ) {
+        let pendingAttemptID = pendingPairingAttemptTokens.removeValue(
+            forKey: requestID
+        )
+        if let pendingAttemptID {
+            consumedPairingAttemptTokens.remove(pendingAttemptID)
+            removePendingRequest(attemptID: pendingAttemptID)
+        }
         if userCancelledPersistence {
             let provisionalRequestIDs = provisionalCollisionOutboundRequestIDs
                 .filter { $0.value == requestID }.map(\.key)
@@ -4061,7 +4125,6 @@ final class PeerDiscoveryService: ObservableObject {
         locallyAcknowledgedByPeerRequestIDs.remove(requestID)
         pairingPersistenceRecordedRequestIDs.remove(requestID)
         peerFinishedSendingRequestIDs.remove(requestID)
-        removePendingRequest(id: requestID)
     }
 
     private func removeConnection(_ connection: NWConnection) {
@@ -4249,8 +4312,8 @@ final class PeerDiscoveryService: ObservableObject {
         queue.asyncAfter(deadline: .now() + seconds, execute: timeout)
     }
 
-    private func removePendingRequest(id: UUID) {
-        publishMain { $0.pendingRequests.removeAll { $0.id == id } }
+    private func removePendingRequest(attemptID: UUID) {
+        publishMain { $0.pendingRequests.removeAll { $0.id == attemptID } }
     }
 
     private func pairingStatusContext(
