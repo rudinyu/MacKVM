@@ -75,6 +75,37 @@ dist\windows\x64\WindowsKVM.exe
 dist\windows\arm64\WindowsKVM.exe
 ```
 
+Each architecture directory also contains `MacKVM-LICENSE.txt`, an exact
+copy of the repository's root MIT license, plus the exact
+`LICENSE.TXT` and `THIRD-PARTY-NOTICES.TXT` from the resolved
+`Microsoft.NETCore.App.Runtime.win-x64` or `.win-arm64` package selected by
+the publish. The package ID and version appear in each staged filename. The
+script resolves the runtime pack by cross-checking the app's generated
+`.deps.json` target and dependency against `includedFrameworks` in its
+`.runtimeconfig.json`, then reads that exact package from NuGet's global
+packages directory. It does not infer runtime packs from `project.assets.json`
+or guess or fetch a versioned notice file. Publishing fails with a diagnostic
+if the runtime package, license, or third-party notices cannot be resolved.
+`DOTNET-LIBRARY-LICENSE.txt` points to Microsoft's separate terms for runtime
+components bundled in the Windows single-file executable; it links to the full
+terms and is not a copy or substitute for them.
+
+The Windows executable is a self-contained single-file .NET application.
+MacKVM's MIT license does not replace the terms for bundled .NET components:
+some Windows runtime components embedded in single-file applications, including
+CoreCLR, are covered by Microsoft's [.NET Library License](https://dotnet.microsoft.com/en-us/dotnet_library_license.htm),
+and the runtime has separate third-party notices. See Microsoft's [Windows
+.NET licensing information](https://github.com/dotnet/core/blob/main/license-information-windows.md).
+The .NET SDK is a build prerequisite and is not included in the application.
+
+When the app target in the generated `.deps.json` depends on the Windows SDK
+runtime pack and its selected target lists runtime assemblies, those assembly
+names are treated as included by the publish. Each architecture directory gets
+`WINDOWS-SDK-REFERENCE.txt` with the exact package version, listed assembly
+names, and license URL from that package's metadata. A Windows SDK targeting
+reference present only as a build-time asset does not trigger this attribution.
+The applicable terms are at the [Windows SDK license URL](https://aka.ms/WinSDKLicenseURL).
+
 Each direct publish starts clean. The default `dist` directory and the
 temporary Windows publish state are removed before the first target is built;
 `-Architecture both` performs that cleanup once and then keeps the x64 output
@@ -101,8 +132,11 @@ or input injection on a real Windows desktop.
 
 Windows executables can also be cross-published directly from macOS. Install a
 .NET 8 SDK or newer, then run the separate macOS-native script from the
-repository root. The macOS `file` utility is used to verify that each output is
-a Windows PE executable of the requested architecture:
+repository root. Python 3 is also required; its standard library reads the
+generated app `.deps.json` and `.runtimeconfig.json` to resolve runtime notices
+from the exact NuGet package versions selected by the publish. The macOS
+`file` utility verifies that each output is a Windows PE executable of the
+requested architecture:
 
 ```sh
 ./scripts/build-windows-macos.sh
@@ -117,6 +151,10 @@ script:
 dist/windows/x64/WindowsKVM.exe
 dist/windows/arm64/WindowsKVM.exe
 ```
+
+The same MacKVM MIT license, resolved .NET runtime license and third-party
+notices, and conditional Windows SDK reference attribution are staged in each
+architecture directory as described above.
 
 Default builds clean `dist` once before publishing. A custom output must be a
 strict child of `dist/` (not `dist` itself) and cleans only that destination,

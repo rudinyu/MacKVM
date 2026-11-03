@@ -67,6 +67,26 @@ dist\windows\x64\WindowsKVM.exe
 dist\windows\arm64\WindowsKVM.exe
 ```
 
+每個架構目錄也會包含 `MacKVM-LICENSE.txt`，內容是 repository 根目錄 MIT 授權的原樣副本；另會包含
+從此次 publish 實際解析出的 `Microsoft.NETCore.App.Runtime.win-x64` 或 `.win-arm64` 套件複製的
+`LICENSE.TXT` 與 `THIRD-PARTY-NOTICES.TXT`。檔名會標示套件識別碼與版本。腳本會交叉比對 app 的
+`.deps.json` target/dependency 與 `.runtimeconfig.json` 中 `includedFrameworks` 的版本，再從 NuGet
+global packages 目錄讀取該版本的 runtime 套件。它不會從 `project.assets.json` 推測 runtime pack，也不會猜測
+版本或下載任意版本的 notice；若無法解析 runtime 套件、授權檔或第三方 notices，publish 會以診斷訊息失敗。
+`DOTNET-LIBRARY-LICENSE.txt` 會連結 Windows single-file executable 內 .NET runtime 元件所適用的 Microsoft
+條款；此檔是條款參考，不是完整授權文字，也不能取代完整條款。
+
+Windows executable 是 self-contained single-file .NET application。MacKVM 的 MIT 授權不會取代內含
+.NET 元件的授權條款：Windows single-file application 內的部分 runtime 元件（包含 CoreCLR）適用
+Microsoft [.NET Library License](https://dotnet.microsoft.com/en-us/dotnet_library_license.htm)，runtime
+也有獨立的第三方 notices。請參閱 Microsoft 的 [Windows .NET 授權資訊](https://github.com/dotnet/core/blob/main/license-information-windows.md)。
+.NET SDK 是建置工具，不會包含在應用程式中。
+
+若產生的 `.deps.json` app target 依賴 Windows SDK runtime pack，且選取的 target 列出 runtime assemblies，腳本
+會依該清單將 assemblies 視為 publish 內含項目。每個架構目錄都會產生 `WINDOWS-SDK-REFERENCE.txt`，記錄
+精確套件版本、列出的 assembly 名稱，以及該套件 metadata 提供的授權 URL。只有 build-time asset 的
+Windows SDK targeting reference 不會觸發此歸屬說明。適用條款請見 [Windows SDK 授權網址](https://aka.ms/WinSDKLicenseURL)。
+
 每次直接 publish 都會從乾淨狀態開始。第一個目標建置前會移除預設的 `dist` 與 Windows
 暫存 publish 狀態；`-Architecture both` 只清理一次，再保留 x64 輸出並建置 arm64。自訂
 `-OutputDirectory` 則只會清理該輸出目錄。
@@ -89,8 +109,10 @@ reference graph 中的每個 project，避免 `net8.0` protocol library 與
 ## 從 macOS cross-publish
 
 也可以直接從 macOS cross-publish Windows executable。請先安裝 .NET 8 SDK 或更新版本，
-再於 repository 根目錄執行另一支 macOS 原生腳本。腳本使用 macOS 內建的 `file` 工具，
-驗證輸出為 Windows PE executable，且架構符合指定目標：
+並備妥 Python 3（只使用標準函式庫讀取此次 publish 的 app `.deps.json` 與 `.runtimeconfig.json`，
+解析該次 publish 選用的 runtime 套件版本與授權資訊），
+再於 repository 根目錄執行另一支 macOS 原生腳本。腳本使用 macOS 內建的 `file` 工具，驗證輸出為
+Windows PE executable，且架構符合指定目標：
 
 ```sh
 ./scripts/build-windows-macos.sh
@@ -104,6 +126,9 @@ reference graph 中的每個 project，避免 `net8.0` protocol library 與
 dist/windows/x64/WindowsKVM.exe
 dist/windows/arm64/WindowsKVM.exe
 ```
+
+每個架構目錄也會依前述規則放入 MacKVM MIT 授權、解析出的 .NET runtime 授權與第三方 notices；若
+app `.deps.json` 的 target 確實依賴 Windows SDK runtime pack 並列出其 assemblies，也會加入版本與授權資訊 sidecar。
 
 使用預設輸出時，腳本會在 publish 前清理一次 `dist`。自訂輸出必須是 `dist/` 底下的子目錄
 （不能直接指定 `dist`），且只會清理該目的目錄，例如：
