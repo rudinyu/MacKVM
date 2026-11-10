@@ -156,7 +156,7 @@ Windows 桌面驗收；系統匣 UI、原生對話框、熱鍵、`SendInput`、�
 .\WindowsKVM.exe --version
 ```
 
-目前 UI 測試 build 應顯示 `WindowsKVM 1.03.00 (build 114)`。回報捲動破圖與下拉清單問題時使用的是歷史版本 **1.02.09（build 89）Beta 3**。
+目前 UI 測試 build 應顯示 `WindowsKVM 1.03.01 (build 115)`。回報捲動破圖與下拉清單問題時使用的是歷史版本 **1.02.09（build 89）Beta 3**。
 Advanced 通知與 Physical input 標籤分別為 **Available** 與 **Remote input to this PC**；選擇行為不變。
 實體 Windows 與 HiDPI 視覺驗收仍待完成。替換前請先退出舊的系統匣 receiver；啟動後確認此版本及
 **WindowsKVM** 視窗標題。
@@ -282,7 +282,7 @@ identity。請先在所有曾信任這台 Windows 的 Mac 忘記舊 peer，再�
 該 script 只移除指定的 Mac App 與目前帳號的資料，不會解除安裝 WindowsKVM，也不會修改
 `%LOCALAPPDATA%\MacKVM` 或 Windows 端信任。Mac 成功清除並重裝後，請在 Windows 對
 舊 Mac 按 **Forget paired Mac**，再配對它新產生的身分。WindowsKVM 仍是
-原始碼版本 1.03.00（build 114），新增經協商的純文字剪貼簿同步與控制狀態提示。
+原始碼版本 1.03.01（build 115），新增經協商的純文字剪貼簿同步與控制狀態提示。
 
 在開發主機可執行 protocol 與 desktop regression self-test：
 

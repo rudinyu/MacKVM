@@ -233,6 +233,22 @@ final class SecureSessionSleepLifecycleTests: XCTestCase {
         service.resumeAfterWake()
     }
 
+    func testStopCompletionRunsAfterSecureSessionQueueCleanup() throws {
+        let service = try makeService()
+        service.connect(to: UUID())
+        let stopped = expectation(description: "Secure session stopped")
+
+        service.stop {
+            let snapshot = service.sleepLifecycleSnapshot
+            XCTAssertNil(snapshot.desiredPeerID)
+            XCTAssertFalse(snapshot.hasScheduledReconnect)
+            XCTAssertFalse(snapshot.isSystemSleeping)
+            stopped.fulfill()
+        }
+
+        wait(for: [stopped], timeout: 1)
+    }
+
     // MARK: - Workspace notification wiring
 
     func testWorkspaceNotificationsDriveTheSessionLifecycle() throws {

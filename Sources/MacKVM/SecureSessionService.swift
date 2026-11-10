@@ -474,9 +474,8 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         }
     }
 
-    func stop() {
-        queue.async { [weak self] in
-            guard let self else { return }
+    func stop(completion: (() -> Void)? = nil) {
+        queue.async { [self] in
             powerLifecycleObserver = nil
             secureServicesStarted = false
             clearSystemSleepLatch()
@@ -522,6 +521,9 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                 publishStatus("Secure session stopped")
             } else {
                 publishConnection(peerID: nil, status: "Secure session stopped")
+            }
+            if let completion {
+                DispatchQueue.main.async(execute: completion)
             }
         }
     }

@@ -93,9 +93,32 @@ final class PeerDiscoveryMixedRecoveryTests: XCTestCase {
         XCTAssertTrue(stopped.restartedComponents.isEmpty)
     }
 
-    func testSuccessfulProbePublishesItsPeerIDBeforeClearingProbeState() throws {
+    func testStopCompletionRunsAfterDiscoveryQueueCleanup() throws {
         let service = try makeService()
+        service.prepareNetworkRecoveryForTesting(missingComponents: [])
+        service.failNetworkServiceForTesting(.listener, policyDenied: false)
+        let stopped = expectation(description: "Discovery stopped")
+
+        service.stop {
+            let snapshot = service.networkRecoverySnapshotForTesting()
+            XCTAssertFalse(snapshot.generalRetryScheduled)
+            XCTAssertFalse(snapshot.blockedRetryScheduled)
+            XCTAssertEqual(service.verifiedInboundConnectionCountForTesting(), 0)
+            stopped.fulfill()
+        }
+
+        wait(for: [stopped], timeout: 1)
+    }
+
+    func testSuccessfulProbePublishesItsPeerIDBeforeClearingProbeState() throws {
         let expectedPeerID = UUID()
+        let peerKey = P256.Signing.PrivateKey()
+        let peer = PeerIdentity(
+            id: expectedPeerID,
+            name: "Paired Recovery Mac",
+            signingPublicKey: peerKey.publicKey.x963Representation
+        )
+        let service = try makeService(pairedPeers: [peer])
         let recovered = expectation(description: "Recovered peer identity")
         service.onLocalNetworkAccessRecovered = { peerID in
             XCTAssertEqual(peerID, expectedPeerID)
@@ -171,7 +194,9 @@ final class PeerDiscoveryMixedRecoveryTests: XCTestCase {
         stop(service)
     }
 
-    private func makeService() throws -> PeerDiscoveryService {
+    private func makeService(
+        pairedPeers: [PeerIdentity] = []
+    ) throws -> PeerDiscoveryService {
         let privateKey = P256.Signing.PrivateKey()
         let credentials = DeviceCredentials(
             identity: PeerIdentity(
@@ -191,6 +216,7 @@ final class PeerDiscoveryMixedRecoveryTests: XCTestCase {
             storageKey: "pairedPeers",
             persistenceApplicationID: suiteName
         )
+        pairedPeers.forEach { registry.add($0) }
         return PeerDiscoveryService(credentials: credentials, registry: registry)
     }
 

@@ -4,6 +4,26 @@
 
 ## Unreleased
 
+### MacKVM 1.102.09 (build 106) — Pairing admission, recovery, and shutdown fixes
+
+- Restrict automatic Local Network recovery checks to paired peers, so an
+  unpaired peer's reachability cannot clear the blocked state. Keep explicit
+  manual checks available for unpaired peers. Add regression coverage for
+  paired-peer selection and unpaired reachability.
+- Count inbound pairing as in flight only after a signed request is verified;
+  add regression coverage for verified request tracking and cleanup.
+- Limit unauthenticated connections per source and close connections that do
+  not complete the handshake before their timeout. Add regression tests for
+  per-source admission limits and timeout cleanup.
+- Wait for discovery and secure-session cleanup before continuing app shutdown,
+  with a bounded timeout. Add regression coverage for service cleanup and the
+  shutdown completion barrier.
+
+### WindowsKVM 1.03.01 (build 115) — Version metadata rebuild
+
+- Rebuild alongside the MacKVM 1.102.09 update with updated WindowsKVM version
+  metadata only; this release contains no Windows behavior changes.
+
 ### MacKVM 1.102.08 (build 105) — Pairing consent attempt binding
 
 - Bind each incoming Accept/Decline prompt to a fresh local attempt ID instead

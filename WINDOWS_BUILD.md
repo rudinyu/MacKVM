@@ -185,7 +185,7 @@ Confirm the executable before starting a test:
 .\WindowsKVM.exe --version
 ```
 
-The current UI test build reports `WindowsKVM 1.03.00 (build 114)`. This is
+The current UI test build reports `WindowsKVM 1.03.01 (build 115)`. This is
 newer than the historical **1.02.09 (build 89) Beta 3** used
 in the reported scrolling and dropdown tests. In Advanced mode, the
 control-notification status is **Available** and the Physical input choice is
@@ -362,7 +362,7 @@ For deliberate Mac-side removal, see the
 only the selected Mac app and its current account's data; it does not uninstall
 WindowsKVM or change `%LOCALAPPDATA%\MacKVM` or Windows-side trust. After a
 successful Mac purge and reinstall, use **Forget paired Mac** for the old Mac
-on Windows, then Pair its newly generated identity again. WindowsKVM is at source version 1.03.00 (build 114), with negotiated
+on Windows, then Pair its newly generated identity again. WindowsKVM is at source version 1.03.01 (build 115), with negotiated
 plain-text clipboard sync and a control-status prompt.
 
 The protocol and desktop regression self-tests can be run on a development

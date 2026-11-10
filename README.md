@@ -7,13 +7,13 @@ between two computers on the same local network. A Windows receiver companion
 is included in this repository. Monitor input switching is optional and uses
 native DDC/CI where the display supports it.
 
-Current macOS source: **1.102.08 (build 105)**. Incoming pairing consent is
+Current macOS source: **1.102.09 (build 106)**. Incoming pairing consent is
 bound to the exact local attempt, peer identity, signing key, and verification
 code so a stale prompt cannot act on a retry that reuses a wire request ID.
 Physical two-Mac pairing acceptance is still pending. The app also retains the
 opt-in plain-text clipboard sync and
 brief, non-activating ownership HUD from earlier builds. The current WindowsKVM
-source is **1.03.00 (build 114)**, with matching per-peer clipboard consent
+source is **1.03.01 (build 115)**, with matching per-peer clipboard consent
 and a control-status prompt. Clipboard sync requires both peers to opt in and
 an active control grant; legacy peers that do not negotiate the feature remain
 compatible. The default distribution image contains the signed app directly,
@@ -215,7 +215,7 @@ Applications shortcut, executable `Install MacKVM.command` and
 uninstallation guides. No PKG is created. Verify the DMG from `dist`:
 
 ```sh
-(cd dist && shasum -a 256 -c MacKVM-1.102.08-universal.dmg.sha256)
+(cd dist && shasum -a 256 -c MacKVM-1.102.09-universal.dmg.sha256)
 ```
 
 For direct distribution outside the Mac App Store, use the separate notarized

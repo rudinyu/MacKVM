@@ -88,6 +88,13 @@ final class LocalNetworkCheckLifecycleTests: XCTestCase {
             storageKey: "pairedPeers",
             persistenceApplicationID: suiteName
         )
+        let peerKey = P256.Signing.PrivateKey()
+        let peerID = UUID()
+        registry.add(PeerIdentity(
+            id: peerID,
+            name: "Paired Remote Mac",
+            signingPublicKey: peerKey.publicKey.x963Representation
+        ))
         let service = PeerDiscoveryService(
             credentials: credentials,
             registry: registry
@@ -101,8 +108,51 @@ final class LocalNetworkCheckLifecycleTests: XCTestCase {
         recordProbeResult(.unconfirmed, on: service)
         XCTAssertTrue(service.localNetworkAccessBlocked)
 
-        recordProbeResult(.reachable, on: service)
+        recordProbeResult(.reachable, on: service, peerID: peerID)
         XCTAssertFalse(service.localNetworkAccessBlocked)
+    }
+
+    func testManualReachabilityFromUnpairedPeerDoesNotClearRecoveryState() throws {
+        let localKey = P256.Signing.PrivateKey()
+        let credentials = DeviceCredentials(
+            identity: PeerIdentity(
+                name: "Local Mac",
+                signingPublicKey: localKey.publicKey.x963Representation
+            ),
+            privateKey: localKey,
+            wasLoadedFromStorage: false
+        )
+        let suiteName = "UnpairedLocalNetworkProbeTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let registry = PairingRegistry(
+            testDefaults: defaults,
+            storageKey: "pairedPeers",
+            persistenceApplicationID: suiteName
+        )
+        let service = PeerDiscoveryService(
+            credentials: credentials,
+            registry: registry
+        )
+        let unpairedPeerID = UUID()
+        var recoveredPeerID: UUID?
+        service.onLocalNetworkAccessRecovered = { peerID in
+            recoveredPeerID = peerID
+        }
+
+        recordProbeResult(.blocked, on: service)
+        XCTAssertTrue(service.localNetworkAccessBlocked)
+        let finished = expectation(description: "Manual probe completed")
+        service.recordLocalNetworkProbeResultForTesting(
+            .reachable,
+            peerID: unpairedPeerID
+        ) {
+            finished.fulfill()
+        }
+
+        wait(for: [finished], timeout: 1)
+        XCTAssertTrue(service.localNetworkAccessBlocked)
+        XCTAssertNil(recoveredPeerID)
     }
 
     func testRecoveryTimerPausesForPairingAndResumesWithADiscoveredPeer() {
@@ -280,6 +330,122 @@ final class LocalNetworkCheckLifecycleTests: XCTestCase {
         )
     }
 
+    func testInboundConnectionCountsOnlyAfterVerifiedPairingFrame() throws {
+        let localKey = P256.Signing.PrivateKey()
+        let credentials = DeviceCredentials(
+            identity: PeerIdentity(
+                name: "Local Mac",
+                signingPublicKey: localKey.publicKey.x963Representation
+            ),
+            privateKey: localKey,
+            wasLoadedFromStorage: false
+        )
+        let suiteName = "VerifiedInboundPairingTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let registry = PairingRegistry(
+            testDefaults: defaults,
+            storageKey: "pairedPeers",
+            persistenceApplicationID: suiteName
+        )
+        let service = PeerDiscoveryService(
+            credentials: credentials,
+            registry: registry
+        )
+        _ = service.installEmptyInboundConnectionForTesting()
+        XCTAssertEqual(service.verifiedInboundConnectionCountForTesting(), 0)
+        XCTAssertFalse(service.pairingIsInFlightForNetworkCheckForTesting())
+
+        let peerKey = P256.Signing.PrivateKey()
+        let peer = PeerIdentity(
+            name: "Remote Mac",
+            signingPublicKey: peerKey.publicKey.x963Representation
+        )
+        let request = PairingEnvelope.request(
+            from: peer,
+            commitment: Data(repeating: 1, count: SHA256.Digest.byteCount)
+        )
+        let attackerKey = P256.Signing.PrivateKey()
+        let invalidSignature = try PairingWireCodec.encode(
+            request,
+            signingWith: attackerKey
+        )
+        _ = service.handleIncomingPairingFramesForTesting(
+            invalidSignature,
+            connectionEnded: true
+        )
+        XCTAssertEqual(service.verifiedInboundConnectionCountForTesting(), 0)
+
+        let verifiedFrame = try PairingWireCodec.encode(
+            request,
+            signingWith: peerKey
+        )
+        let verifiedState = service.handleIncomingPairingFramesForTesting(
+            verifiedFrame
+        )
+        XCTAssertEqual(verifiedState.verifiedInboundConnectionCount, 1)
+        XCTAssertTrue(verifiedState.pairingIsInFlight)
+        let verifiedRequestID = try XCTUnwrap(
+            verifiedState.trackedRequestIDs.first
+        )
+        service.expirePairingRequestForTesting(requestID: verifiedRequestID)
+        XCTAssertEqual(service.verifiedInboundConnectionCountForTesting(), 0)
+        XCTAssertFalse(service.pairingIsInFlightForNetworkCheckForTesting())
+
+        let nextRequest = PairingEnvelope.request(
+            from: peer,
+            requestID: UUID(),
+            commitment: Data(repeating: 2, count: SHA256.Digest.byteCount)
+        )
+        let nextRequestState = service.handleIncomingPairingFramesForTesting(
+            try PairingWireCodec.encode(nextRequest, signingWith: peerKey)
+        )
+        XCTAssertEqual(nextRequestState.verifiedInboundConnectionCount, 1)
+
+        let stopped = expectation(description: "Verified connection state cleared")
+        service.stop {
+            XCTAssertEqual(service.verifiedInboundConnectionCountForTesting(), 0)
+            stopped.fulfill()
+        }
+        wait(for: [stopped], timeout: 1)
+    }
+
+    func testInboundTransportTimeoutIsScheduledBeforeStartAndRemovesUnreadySocket() throws {
+        let localKey = P256.Signing.PrivateKey()
+        let credentials = DeviceCredentials(
+            identity: PeerIdentity(
+                name: "Local Mac",
+                signingPublicKey: localKey.publicKey.x963Representation
+            ),
+            privateKey: localKey,
+            wasLoadedFromStorage: false
+        )
+        let suiteName = "InboundTimeoutTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let registry = PairingRegistry(
+            testDefaults: defaults,
+            storageKey: "pairedPeers",
+            persistenceApplicationID: suiteName
+        )
+        let service = PeerDiscoveryService(
+            credentials: credentials,
+            registry: registry
+        )
+        let expired = expectation(description: "Unready inbound timeout expired")
+
+        service.verifyInboundTimeoutForTesting(after: 0.02) {
+            scheduledBeforeStart, removedAfterTimeout in
+            XCTAssertTrue(scheduledBeforeStart)
+            XCTAssertTrue(removedAfterTimeout)
+            expired.fulfill()
+        }
+
+        wait(for: [expired], timeout: 1)
+        service.stop()
+        service.waitForQueuedWorkForTesting()
+    }
+
     func testPreferredPeerIsUsedOnlyWhenItsEndpointIsKnown() {
         let preferred = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
         let pairedFallback = UUID(
@@ -310,6 +476,40 @@ final class LocalNetworkCheckLifecycleTests: XCTestCase {
                 availablePeerIDs: available
             ),
             pairedFallback
+        )
+        XCTAssertEqual(
+            LocalNetworkCheckPolicy.preferredPeerID(
+                requestedPeerID: preferred,
+                pairedPeerIDs: [pairedFallback],
+                availablePeerIDs: available,
+                allowUnpairedFallback: false
+            ),
+            pairedFallback
+        )
+        XCTAssertNil(
+            LocalNetworkCheckPolicy.preferredPeerID(
+                requestedPeerID: preferred,
+                pairedPeerIDs: [],
+                availablePeerIDs: available,
+                allowUnpairedFallback: false
+            )
+        )
+        XCTAssertEqual(
+            LocalNetworkCheckPolicy.preferredPeerID(
+                requestedPeerID: UUID(),
+                pairedPeerIDs: [pairedFallback],
+                availablePeerIDs: available,
+                allowUnpairedFallback: false
+            ),
+            pairedFallback
+        )
+        XCTAssertNil(
+            LocalNetworkCheckPolicy.preferredPeerID(
+                requestedPeerID: nil,
+                pairedPeerIDs: [],
+                availablePeerIDs: available,
+                allowUnpairedFallback: false
+            )
         )
     }
 
@@ -481,10 +681,14 @@ final class LocalNetworkCheckLifecycleTests: XCTestCase {
 
     private func recordProbeResult(
         _ result: LocalNetworkCheckResult,
-        on service: PeerDiscoveryService
+        on service: PeerDiscoveryService,
+        peerID: UUID? = nil
     ) {
         let published = expectation(description: "Probe result published")
-        service.recordLocalNetworkProbeResultForTesting(result) {
+        service.recordLocalNetworkProbeResultForTesting(
+            result,
+            peerID: peerID
+        ) {
             published.fulfill()
         }
         wait(for: [published], timeout: 1)

@@ -505,17 +505,28 @@ enum LocalNetworkCheckPolicy {
     static func preferredPeerID(
         requestedPeerID: UUID?,
         pairedPeerIDs: Set<UUID>,
-        availablePeerIDs: [UUID]
+        availablePeerIDs: [UUID],
+        allowUnpairedFallback: Bool = true
     ) -> UUID? {
         let available = Set(availablePeerIDs)
-        if let requestedPeerID {
-            return available.contains(requestedPeerID) ? requestedPeerID : nil
-        }
-        return availablePeerIDs
+        let pairedAvailablePeerIDs = availablePeerIDs
             .filter(pairedPeerIDs.contains)
             .sorted { $0.uuidString < $1.uuidString }
-            .first
-            ?? availablePeerIDs.sorted { $0.uuidString < $1.uuidString }.first
+        if let requestedPeerID {
+            if available.contains(requestedPeerID) {
+                if pairedPeerIDs.contains(requestedPeerID)
+                    || allowUnpairedFallback {
+                    return requestedPeerID
+                }
+            } else if allowUnpairedFallback {
+                return nil
+            }
+            return pairedAvailablePeerIDs.first
+        }
+        return pairedAvailablePeerIDs.first
+            ?? (allowUnpairedFallback
+                ? availablePeerIDs.sorted { $0.uuidString < $1.uuidString }.first
+                : nil)
     }
 
     /// Manual checks rebuild discovery so a click always gets a fresh Bonjour
@@ -729,6 +740,9 @@ final class PeerDiscoveryService: ObservableObject {
         PairingTransportLocalNetworkState()
     private var requestConnections: [UUID: NWConnection] = [:]
     private var unauthenticatedConnections: [ObjectIdentifier: NWConnection] = [:]
+    private var verifiedInboundPairingConnectionIDs = Set<ObjectIdentifier>()
+    private var perSourceAdmissionLimiter =
+        PerSourceConnectionAdmissionLimiter()
     private var requestMessages: [UUID: PairingEnvelope] = [:]
     // Incoming prompts are bound to a fresh local attempt token. Wire UUIDs
     // identify protocol messages, but are not sufficient to identify a UI
@@ -834,6 +848,7 @@ final class PeerDiscoveryService: ObservableObject {
     private var localNetworkDiscoveryCompletion:
         ((LocalNetworkCheckResult) -> Void)?
     private var localNetworkDiscoveryPreferredPeerID: UUID?
+    private var localNetworkDiscoveryAllowsUnpairedFallback = true
     private var receiveBuffers: [ObjectIdentifier: Data] = [:]
     private var connectionTimeouts: [ObjectIdentifier: DispatchWorkItem] = [:]
     private var admissionLimiter =
@@ -920,18 +935,80 @@ final class PeerDiscoveryService: ObservableObject {
     }
 
     func handleIncomingPairingFramesForTesting(
-        _ frames: Data
-    ) -> (outboundRequestID: UUID?, trackedRequestIDs: Set<UUID>) {
+        _ frames: Data,
+        connectionEnded: Bool = false
+    ) -> (
+        outboundRequestID: UUID?,
+        trackedRequestIDs: Set<UUID>,
+        verifiedInboundConnectionCount: Int,
+        pairingIsInFlight: Bool
+    ) {
         queue.sync {
             let connection = NWConnection(host: "127.0.0.1", port: 9, using: .tcp)
             let connectionID = ObjectIdentifier(connection)
             unauthenticatedConnections[connectionID] = connection
             receiveBuffers[connectionID] = frames
             drainBufferedFrames(
-                on: connection, connectionEnded: false,
+                on: connection, connectionEnded: connectionEnded,
                 remainingMessageBudget: Self.maximumPairingMessagesPerReceive
             )
-            return (activeOutboundRequestID, Set(requestMessages.keys))
+            return (
+                activeOutboundRequestID,
+                Set(requestMessages.keys),
+                verifiedInboundPairingConnectionIDs.count,
+                hasPairingInFlightForNetworkCheck
+            )
+        }
+    }
+
+    func installEmptyInboundConnectionForTesting() -> ObjectIdentifier {
+        queue.sync {
+            let connection = NWConnection(
+                host: "127.0.0.1",
+                port: 9,
+                using: .tcp
+            )
+            let connectionID = ObjectIdentifier(connection)
+            unauthenticatedConnections[connectionID] = connection
+            return connectionID
+        }
+    }
+
+    func verifiedInboundConnectionCountForTesting() -> Int {
+        queue.sync { verifiedInboundPairingConnectionIDs.count }
+    }
+
+    func pairingIsInFlightForNetworkCheckForTesting() -> Bool {
+        queue.sync { hasPairingInFlightForNetworkCheck }
+    }
+
+    func verifyInboundTimeoutForTesting(
+        after timeout: TimeInterval,
+        completion: @escaping (_ scheduledBeforeStart: Bool, _ removedAfterTimeout: Bool) -> Void
+    ) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            let connection = NWConnection(
+                host: "127.0.0.1",
+                port: 9,
+                using: .tcp
+            )
+            let connectionID = ObjectIdentifier(connection)
+            self.accept(
+                connection,
+                startConnection: false,
+                inboundTimeoutOverride: timeout
+            )
+            let scheduledBeforeStart =
+                self.connectionTimeouts[connectionID] != nil
+            self.queue.asyncAfter(deadline: .now() + timeout + 0.05) {
+                let removedAfterTimeout =
+                    self.unauthenticatedConnections[connectionID] == nil
+                    && self.connectionTimeouts[connectionID] == nil
+                DispatchQueue.main.async {
+                    completion(scheduledBeforeStart, removedAfterTimeout)
+                }
+            }
         }
     }
 
@@ -1257,7 +1334,8 @@ final class PeerDiscoveryService: ObservableObject {
             }
 
             guard let peer = self.localNetworkCheckPeer(
-                preferredPeerID: preferredPeerID
+                preferredPeerID: preferredPeerID,
+                allowUnpairedFallback: !isAutomatic
             ) else {
                 self.waitForLocalNetworkPeer(
                     preferredPeerID: preferredPeerID,
@@ -1270,9 +1348,8 @@ final class PeerDiscoveryService: ObservableObject {
         }
     }
 
-    func stop() {
-        queue.async { [weak self] in
-            guard let self else { return }
+    func stop(completion: (() -> Void)? = nil) {
+        queue.async { [self] in
             self.networkServicesStarted = false
             self.stopLocalNetworkProbeRecovery()
             if let probe = self.localNetworkProbeConnection {
@@ -1321,6 +1398,8 @@ final class PeerDiscoveryService: ObservableObject {
             self.browserIsReady = false
             self.requestConnections.removeAll()
             self.unauthenticatedConnections.removeAll()
+            self.verifiedInboundPairingConnectionIDs.removeAll()
+            self.perSourceAdmissionLimiter.reset()
             self.requestMessages.removeAll()
             self.pendingPairingAttemptTokens.removeAll()
             self.consumedPairingAttemptTokens.removeAll()
@@ -1369,8 +1448,7 @@ final class PeerDiscoveryService: ObservableObject {
             // Stop is authoritative even if start() is already queued behind
             // it. Do not epoch-gate this cleanup, or the next start could
             // advance the epoch before the main queue clears stale UI state.
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
+            DispatchQueue.main.async { [self] in
                 self.peers.removeAll()
                 self.pendingRequests.removeAll()
                 self.activeVerificationCode = nil
@@ -1379,6 +1457,7 @@ final class PeerDiscoveryService: ObservableObject {
                 self.pairingRetryPeer = nil
                 self.localNetworkAccessBlocked = false
                 self.status = "Discovery stopped"
+                completion?()
             }
         }
     }
@@ -1559,7 +1638,10 @@ final class PeerDiscoveryService: ObservableObject {
     }
 
     private func scheduleLocalNetworkProbeRecovery() {
-        let hasPeer = localNetworkCheckPeer(preferredPeerID: nil) != nil
+        let hasPeer = localNetworkCheckPeer(
+            preferredPeerID: nil,
+            allowUnpairedFallback: false
+        ) != nil
         let action = localNetworkProbeRecoveryState.reconcile(
             isBlocked: localNetworkProbeBlockedState.isBlocked
                 || pairingTransportLocalNetworkState.isBlocked,
@@ -1594,7 +1676,10 @@ final class PeerDiscoveryService: ObservableObject {
     }
 
     private func runLocalNetworkProbeRecovery() {
-        let hasPeer = localNetworkCheckPeer(preferredPeerID: nil) != nil
+        let hasPeer = localNetworkCheckPeer(
+            preferredPeerID: nil,
+            allowUnpairedFallback: false
+        ) != nil
         let isBlocked = localNetworkProbeBlockedState.isBlocked
             || pairingTransportLocalNetworkState.isBlocked
         let pairingIsInFlight = hasPairingInFlightForNetworkCheck
@@ -1616,7 +1701,10 @@ final class PeerDiscoveryService: ObservableObject {
             scheduleLocalNetworkProbeRecovery()
             return
         }
-        guard let peer = localNetworkCheckPeer(preferredPeerID: nil) else {
+        guard let peer = localNetworkCheckPeer(
+            preferredPeerID: nil,
+            allowUnpairedFallback: false
+        ) else {
             scheduleLocalNetworkProbeRecovery()
             return
         }
@@ -1801,12 +1889,19 @@ final class PeerDiscoveryService: ObservableObject {
         // Every completed probe fences an earlier main-actor recovery callback,
         // including inconclusive results that leave the visible block intact.
         localNetworkAccessStateEpoch.advance()
-        let probeSourceChanged = localNetworkProbeBlockedState.record(result)
+        let peerIsPaired = peerID.map {
+            registry.publicKey(for: $0) != nil
+        } ?? false
+        let mayApplyReachability = result != .reachable || peerIsPaired
+        let probeSourceChanged = mayApplyReachability
+            ? localNetworkProbeBlockedState.record(result)
+            : false
         let transportSourceChanged = result == .reachable
+            && peerIsPaired
             && isAutomaticRecovery
             && pairingTransportLocalNetworkState
                 .recoveredAfterSuccessfulLocalNetworkProbe()
-        if result == .reachable {
+        if result == .reachable, peerIsPaired {
             resetLocalNetworkProbeRecoveryState()
         }
         if probeSourceChanged || transportSourceChanged {
@@ -1814,7 +1909,9 @@ final class PeerDiscoveryService: ObservableObject {
         } else {
             scheduleLocalNetworkProbeRecovery()
         }
-        if result == .reachable, !isLocalNetworkAccessBlocked {
+        if result == .reachable,
+           peerIsPaired,
+           !isLocalNetworkAccessBlocked {
             notifyLocalNetworkAccessRecovered(peerID: peerID)
         }
     }
@@ -1865,7 +1962,7 @@ final class PeerDiscoveryService: ObservableObject {
             activeOutboundRequest: activeOutboundRequestID != nil,
             trackedRequestCount: requestConnections.count
                 + requestMessages.count,
-            incomingConnectionCount: unauthenticatedConnections.count,
+            incomingConnectionCount: verifiedInboundPairingConnectionIDs.count,
             pendingConfirmation: pendingPairingConfirmationRequestID != nil,
             persistenceJobCount: pairingPersistenceJobs.count,
             hasScheduledRetry: pendingRetryPeer != nil
@@ -1889,12 +1986,14 @@ final class PeerDiscoveryService: ObservableObject {
     }
 
     private func localNetworkCheckPeer(
-        preferredPeerID: UUID?
+        preferredPeerID: UUID?,
+        allowUnpairedFallback: Bool
     ) -> DiscoveredPeer? {
         let peerID = LocalNetworkCheckPolicy.preferredPeerID(
             requestedPeerID: preferredPeerID,
             pairedPeerIDs: registry.pairedPeerIDs,
-            availablePeerIDs: Array(discoveredPeersByID.keys)
+            availablePeerIDs: Array(discoveredPeersByID.keys),
+            allowUnpairedFallback: allowUnpairedFallback
         )
         return peerID.flatMap { discoveredPeersByID[$0] }
     }
@@ -1907,6 +2006,7 @@ final class PeerDiscoveryService: ObservableObject {
         localNetworkProbeGeneration &+= 1
         let generation = localNetworkProbeGeneration
         localNetworkDiscoveryPreferredPeerID = preferredPeerID
+        localNetworkDiscoveryAllowsUnpairedFallback = !isAutomatic
         localNetworkDiscoveryCompletion = completion
 
         // With both services present, a manual check rebuilds discovery.
@@ -1960,12 +2060,14 @@ final class PeerDiscoveryService: ObservableObject {
             return
         }
         if let peer = localNetworkCheckPeer(
-            preferredPeerID: localNetworkDiscoveryPreferredPeerID
+            preferredPeerID: localNetworkDiscoveryPreferredPeerID,
+            allowUnpairedFallback: localNetworkDiscoveryAllowsUnpairedFallback
         ) {
             localNetworkDiscoveryTimeout?.cancel()
             localNetworkDiscoveryTimeout = nil
             localNetworkDiscoveryCompletion = nil
             localNetworkDiscoveryPreferredPeerID = nil
+            localNetworkDiscoveryAllowsUnpairedFallback = true
             startLocalNetworkProbe(to: peer, completion: completion)
         } else if timeoutExpired {
             finishLocalNetworkDiscoveryWait(
@@ -1990,6 +2092,7 @@ final class PeerDiscoveryService: ObservableObject {
         localNetworkDiscoveryTimeout = nil
         localNetworkDiscoveryCompletion = nil
         localNetworkDiscoveryPreferredPeerID = nil
+        localNetworkDiscoveryAllowsUnpairedFallback = true
         deliverLocalNetworkCheckResult(result, completion: completion)
     }
 
@@ -2002,6 +2105,7 @@ final class PeerDiscoveryService: ObservableObject {
         localNetworkDiscoveryTimeout = nil
         localNetworkDiscoveryCompletion = nil
         localNetworkDiscoveryPreferredPeerID = nil
+        localNetworkDiscoveryAllowsUnpairedFallback = true
         localNetworkProbeGeneration &+= 1
         let generation = localNetworkProbeGeneration
         let parameters = NWParameters.tcp
@@ -2963,19 +3067,39 @@ final class PeerDiscoveryService: ObservableObject {
         browser.start(queue: queue)
     }
 
-    private func accept(_ connection: NWConnection) {
-        guard unauthenticatedConnections.count
-                < Self.maximumUnauthenticatedConnections,
-              admissionLimiter.allows(
-                  eventAt: DispatchTime.now().uptimeNanoseconds
-              ) else {
+    private func accept(
+        _ connection: NWConnection,
+        startConnection: Bool = true,
+        inboundTimeoutOverride: TimeInterval? = nil
+    ) {
+        let eventAt = DispatchTime.now().uptimeNanoseconds
+        let globalAdmissionAllowed =
+            unauthenticatedConnections.count
+                < Self.maximumUnauthenticatedConnections
+                && admissionLimiter.allows(eventAt: eventAt)
+        let connectionID = ObjectIdentifier(connection)
+        let sourceKey = Self.sourceHostKey(for: connection.endpoint)
+        let sourceAdmissionAllowed: Bool
+        if globalAdmissionAllowed, let sourceKey {
+            sourceAdmissionAllowed = perSourceAdmissionLimiter.allows(
+                connectionID: connectionID,
+                sourceKey: sourceKey,
+                eventAt: eventAt
+            )
+        } else {
+            // Endpoints without a host use only the existing global limits.
+            sourceAdmissionAllowed = true
+        }
+        guard globalAdmissionAllowed, sourceAdmissionAllowed else {
+            let reason = sourceAdmissionAllowed
+                ? "admission-limit"
+                : "per-source-limit"
             MacKVMLogger.pairing.error(
-                "phase=transport.rejected reason=admission-limit"
+                "phase=transport.rejected reason=\(reason, privacy: .public)"
             )
             connection.cancel()
             return
         }
-        let connectionID = ObjectIdentifier(connection)
         unauthenticatedConnections[connectionID] = connection
         let shortConnectionID = String(String(describing: connectionID).suffix(8))
         MacKVMLogger.pairing.info(
@@ -3011,7 +3135,31 @@ final class PeerDiscoveryService: ObservableObject {
                 break
             }
         }
-        connection.start(queue: queue)
+        // Bound setup/waiting sockets before Network.framework reports ready.
+        // The ready callback replaces this with a fresh inbound transport
+        // deadline through scheduleTimeout's existing cancellation path.
+        scheduleTimeout(
+            for: connection,
+            phase: .inboundTransport,
+            durationOverride: inboundTimeoutOverride
+        )
+        if startConnection {
+            connection.start(queue: queue)
+        }
+    }
+
+    private static func sourceHostKey(for endpoint: NWEndpoint) -> String? {
+        guard case let .hostPort(host, _) = endpoint else { return nil }
+        switch host {
+        case let .name(name, _):
+            return "name:\(name.lowercased())"
+        case let .ipv4(address):
+            return "ipv4:\(address)"
+        case let .ipv6(address):
+            return "ipv6:\(address)"
+        @unknown default:
+            return nil
+        }
     }
 
     private func receive(on connection: NWConnection) {
@@ -3060,6 +3208,15 @@ final class PeerDiscoveryService: ObservableObject {
             }
             messages.forEach { message in
                 if unauthenticatedConnections[connectionID] === connection {
+                    // PairingWireCodec returned this only after verifying
+                    // the complete frame's signature and signed extensions.
+                    verifiedInboundPairingConnectionIDs.insert(connectionID)
+                    // The source's concurrent unauthenticated slot ends at
+                    // this authenticated framing boundary; its accept-window
+                    // event remains until the sliding window expires.
+                    perSourceAdmissionLimiter.remove(
+                        connectionID: connectionID
+                    )
                     let shortConnectionID = String(
                         String(describing: connectionID).suffix(8)
                     )
@@ -4221,6 +4378,8 @@ final class PeerDiscoveryService: ObservableObject {
         connectionTimeouts.removeValue(forKey: connectionID)?.cancel()
         receiveBuffers.removeValue(forKey: connectionID)
         unauthenticatedConnections.removeValue(forKey: connectionID)
+        verifiedInboundPairingConnectionIDs.remove(connectionID)
+        perSourceAdmissionLimiter.remove(connectionID: connectionID)
     }
 
     /// A listener/browser failure can leave Network.framework's connection
@@ -4239,8 +4398,11 @@ final class PeerDiscoveryService: ObservableObject {
             }
             || !unauthenticatedConnections.isEmpty
         requestIDs.forEach { finish(requestID: $0) }
-        unauthenticatedConnections.values.forEach { $0.cancel() }
-        unauthenticatedConnections.removeAll()
+        let unauthenticated = Array(unauthenticatedConnections.values)
+        unauthenticated.forEach {
+            $0.cancel()
+            cleanup($0)
+        }
         return hadConnections
     }
 
@@ -4269,11 +4431,12 @@ final class PeerDiscoveryService: ObservableObject {
 
     private func scheduleTimeout(
         for connection: NWConnection,
-        phase: PairingTimeoutPhase
+        phase: PairingTimeoutPhase,
+        durationOverride: TimeInterval? = nil
     ) {
         let connectionID = ObjectIdentifier(connection)
         connectionTimeouts.removeValue(forKey: connectionID)?.cancel()
-        let seconds = PairingTimeoutPolicy.duration(for: phase)
+        let seconds = durationOverride ?? PairingTimeoutPolicy.duration(for: phase)
 
         let timeout = DispatchWorkItem { [weak self, weak connection] in
             guard let self, let connection else { return }

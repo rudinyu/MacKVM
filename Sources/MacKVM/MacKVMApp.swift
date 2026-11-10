@@ -371,6 +371,79 @@ private func peerDisplayName(
     return boundedName.isEmpty ? "Mac" : boundedName
 }
 
+enum TerminationServiceStopBarrier {
+    typealias Stop = (@escaping () -> Void) -> Void
+
+    static func wait(
+        for stops: [Stop],
+        timeout: TimeInterval = 1,
+        completion: @escaping (_ timedOut: Bool) -> Void
+    ) {
+        let group = DispatchGroup()
+        let progress = CompletionProgress(remaining: stops.count)
+        let continuationGate = OneShotGate()
+        let timeoutWorkItem = DispatchWorkItem {
+            guard !progress.isComplete else { return }
+            continuationGate.run { completion(true) }
+        }
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + max(0, timeout),
+            execute: timeoutWorkItem
+        )
+
+        for stop in stops {
+            group.enter()
+            let stopGate = OneShotGate()
+            stop {
+                stopGate.run {
+                    progress.recordCompletion()
+                    group.leave()
+                }
+            }
+        }
+
+        group.notify(queue: .main) {
+            timeoutWorkItem.cancel()
+            continuationGate.run { completion(false) }
+        }
+    }
+
+    private final class OneShotGate {
+        private let lock = NSLock()
+        private var hasRun = false
+
+        func run(_ action: () -> Void) {
+            lock.lock()
+            let shouldRun = !hasRun
+            hasRun = true
+            lock.unlock()
+            guard shouldRun else { return }
+            action()
+        }
+    }
+
+    private final class CompletionProgress {
+        private let lock = NSLock()
+        private var remaining: Int
+
+        init(remaining: Int) {
+            self.remaining = remaining
+        }
+
+        var isComplete: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return remaining == 0
+        }
+
+        func recordCompletion() {
+            lock.lock()
+            remaining = max(0, remaining - 1)
+            lock.unlock()
+        }
+    }
+}
+
 @MainActor
 private final class AppBootstrap: ObservableObject {
     let discovery: PeerDiscoveryService?
@@ -891,9 +964,7 @@ private final class AppBootstrap: ObservableObject {
         controlRequestNotifier?.clearAllControlRequestNotifications()
 
         guard let control, let monitor else {
-            discovery?.stop()
-            secureSession?.stop()
-            completion()
+            waitForNetworkServicesToStop(completion: completion)
             return
         }
 
@@ -906,25 +977,43 @@ private final class AppBootstrap: ObservableObject {
                 completion()
                 return
             }
-            self.discovery?.stop()
-            self.secureSession?.stop()
-            let finishTermination: () -> Void = {
-                completion()
-            }
-            switch terminationDisplayRole {
-            case .some(.local):
-                monitor.switchToLocalForTermination(
-                    completion: finishTermination
-                )
-            case .some(.remote):
-                monitor.switchToRemoteForTermination(
-                    completion: finishTermination
-                )
-            case .some(.unknown), .none:
-                finishTermination()
+            self.waitForNetworkServicesToStop {
+                switch terminationDisplayRole {
+                case .some(.local):
+                    monitor.switchToLocalForTermination(
+                        completion: completion
+                    )
+                case .some(.remote):
+                    monitor.switchToRemoteForTermination(
+                        completion: completion
+                    )
+                case .some(.unknown), .none:
+                    completion()
+                }
             }
         }
         cancelledMonitorRoutes.forEach { $0() }
+    }
+
+    private func waitForNetworkServicesToStop(
+        completion: @escaping () -> Void
+    ) {
+        var stops: [TerminationServiceStopBarrier.Stop] = []
+        if let discovery {
+            stops.append { done in discovery.stop(completion: done) }
+        }
+        if let secureSession {
+            stops.append { done in secureSession.stop(completion: done) }
+        }
+
+        TerminationServiceStopBarrier.wait(for: stops) { timedOut in
+            if timedOut {
+                MacKVMLogger.secureSession.warning(
+                    "phase=shutdown.network-services timeout=1s"
+                )
+            }
+            completion()
+        }
     }
 
     func resetIdentity() {

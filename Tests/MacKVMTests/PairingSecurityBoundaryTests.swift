@@ -229,7 +229,10 @@ final class PairingSecurityBoundaryTests: XCTestCase {
         // packets after the premature completion retires that connection.
         let state = fixture.service.handleIncomingPairingFramesForTesting(capturedWire)
         assertOutgoingPreserved(fixture.service, requestID: outboundID, target: target.peer,
-                                state: state, incomingRequestID: nil)
+                                state: (
+                                    outboundRequestID: state.outboundRequestID,
+                                    trackedRequestIDs: state.trackedRequestIDs
+                                ), incomingRequestID: nil)
         XCTAssertFalse(fixture.registry.contains(target.peer.id))
     }
 

@@ -345,11 +345,11 @@ if mode != "missing-sdk-nuspec":
 runtime_target_name = f".NETCoreApp,Version=v8.0/{runtime_id}"
 app_dependencies = {runtimepack_id: version}
 libraries = {
-    "WindowsKVM/1.03.00": {"type": "project", "serviceable": False, "sha512": ""},
+    "WindowsKVM/1.03.01": {"type": "project", "serviceable": False, "sha512": ""},
     f"{runtimepack_id}/{version}": {"type": "runtimepack", "serviceable": False, "sha512": ""},
 }
 target_entries = {
-    "WindowsKVM/1.03.00": {
+    "WindowsKVM/1.03.01": {
         "dependencies": app_dependencies,
         "runtime": {"WindowsKVM.dll": {}},
     },
