@@ -67,6 +67,8 @@ protocol ControlInputCapture: AnyObject {
     var onEmergencyStop: (() -> Void)? { get set }
     var onSwitchControl: (() -> Void)? { get set }
     var onSwitchMonitor: (() -> Void)? { get set }
+    var onCycleInputTarget: (() -> Void)? { get set }
+    var onSelectInputTarget: ((Int) -> Void)? { get set }
 
     func refreshPermission()
     func startCapture(suppressingLocalEvents: Bool)
@@ -453,7 +455,8 @@ final class ControlCoordinator: ObservableObject {
     /// explicit display-and-input return even if K started the session.
     func stopControl(
         reason: String = "Control returned locally",
-        returnDisplayLocally: Bool = false
+        returnDisplayLocally: Bool = false,
+        preserveDisplayRoute: Bool = false
     ) {
         if isReceivingControl {
             endReceivingControl(reason: reason)
@@ -505,10 +508,13 @@ final class ControlCoordinator: ObservableObject {
         // A live manual-monitor (K) session must end input without touching
         // the display the user routed by hand; the plain and combined routes
         // still restore the local display here.
-        if (wasControlling && (sessionManagedDisplayRoute || returnDisplayLocally))
-            || (wasWaitingForControlGrant
-                && ((sessionManagedDisplayRoute && !displayWasAlreadyRemote)
-                    || returnDisplayLocally)) {
+        if !preserveDisplayRoute
+            && ((wasControlling
+                    && (sessionManagedDisplayRoute || returnDisplayLocally))
+                || (wasWaitingForControlGrant
+                    && ((sessionManagedDisplayRoute
+                            && !displayWasAlreadyRemote)
+                        || returnDisplayLocally))) {
             onControllingStopped?()
         }
         if wasControlling {

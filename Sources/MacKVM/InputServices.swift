@@ -241,6 +241,50 @@ enum OtherMonitorSwitchHotKey {
     }
 }
 
+/// Shortcuts for choosing a paired input destination. The physical server's
+/// keyboard and pointing devices stay local unless a target is selected.
+enum InputTargetHotKey {
+    static let cycleKeyCode: UInt16 = 124 // Right Arrow
+    static let returnLocalKeyCode: UInt16 = 37 // L
+    static let cycleDisplayName = "Control-Option-Command-Right Arrow"
+    static let returnLocalDisplayName = "Control-Option-Command-L"
+
+    private static let keyCodesBySlot: [Int: UInt16] = [
+        1: 18, // 1
+        2: 19, // 2
+        3: 20, // 3
+        4: 21, // 4
+        5: 23, // 5
+        6: 22, // 6
+        7: 26, // 7
+        8: 28, // 8
+        9: 25 // 9
+    ]
+
+    static func keyCode(forOneBasedSlot slot: Int) -> UInt16? {
+        keyCodesBySlot[slot]
+    }
+
+    static func oneBasedSlot(for keyCode: UInt16) -> Int? {
+        keyCodesBySlot.first { $0.value == keyCode }?.key
+    }
+
+    static func matches(
+        keyCode: UInt16,
+        flags: CGEventFlags,
+        expectedKeyCode: UInt16
+    ) -> Bool {
+        keyCode == expectedKeyCode && hasRequiredModifiers(flags)
+    }
+
+    static func hasRequiredModifiers(_ flags: CGEventFlags) -> Bool {
+        let required: CGEventFlags = [
+            .maskControl, .maskAlternate, .maskCommand
+        ]
+        return flags.intersection(required) == required
+    }
+}
+
 /// Media, brightness, and illumination keys are delivered as `NSSystemDefined`
 /// events, which `CGEventType` has no case for. The tap mask and the dispatch
 /// below therefore both work from the raw event type, and the payload is read
@@ -630,6 +674,8 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
     var onEmergencyStop: (() -> Void)?
     var onSwitchControl: (() -> Void)?
     var onSwitchMonitor: (() -> Void)?
+    var onCycleInputTarget: (() -> Void)?
+    var onSelectInputTarget: ((Int) -> Void)?
 
     var keyboardLayoutIdentifier: String? {
         KeyboardLayoutIdentifier.current()
@@ -642,6 +688,9 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
     private var registeredHotKey: EventHotKeyRef?
     private var registeredEmergencyHotKey: EventHotKeyRef?
     private var registeredMonitorSwitchHotKey: EventHotKeyRef?
+    private var registeredTargetCycleHotKey: EventHotKeyRef?
+    private var registeredReturnLocalHotKey: EventHotKeyRef?
+    private var registeredTargetSelectionHotKeys: [EventHotKeyRef] = []
     private var registeredHotKeyHandler: EventHandlerRef?
     private var suppressesLocalEvents = false
     private var capsLockCapturePolicy = CapsLockCapturePolicy()
@@ -786,20 +835,60 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
             modifiers: RegisteredMonitorSwitchHotKey.modifiers,
             storage: &registeredMonitorSwitchHotKey
         )
+        let targetCycleStatus = registerCarbonHotKey(
+            keyCode: InputTargetHotKey.cycleKeyCode,
+            id: RegisteredTargetHotKey.cycleID,
+            modifiers: RegisteredTargetHotKey.modifiers,
+            storage: &registeredTargetCycleHotKey
+        )
+        let returnLocalStatus = registerCarbonHotKey(
+            keyCode: InputTargetHotKey.returnLocalKeyCode,
+            id: RegisteredTargetHotKey.returnLocalID,
+            modifiers: RegisteredTargetHotKey.modifiers,
+            storage: &registeredReturnLocalHotKey
+        )
+        var targetSelectionStatuses: [OSStatus] = []
+        for slot in 1...RegisteredTargetHotKey.maximumDirectSlots {
+            guard let keyCode = InputTargetHotKey.keyCode(
+                forOneBasedSlot: slot
+            ) else {
+                continue
+            }
+            var registered: EventHotKeyRef?
+            targetSelectionStatuses.append(
+                registerCarbonHotKey(
+                    keyCode: keyCode,
+                    id: RegisteredTargetHotKey.id(for: slot),
+                    modifiers: RegisteredTargetHotKey.modifiers,
+                    storage: &registered
+                )
+            )
+            if let registered {
+                registeredTargetSelectionHotKeys.append(registered)
+            }
+        }
 
-        // Registration is intentionally independent. A conflicting K
-        // shortcut must not remove Escape emergency recovery or the monitor
-        // route shortcut, and vice versa.
+        // Registration is intentionally independent. A conflicting shortcut
+        // must not remove emergency recovery or another route action.
         if switchStatus != noErr {
             status = "Could not create the global input-sharing shortcut"
         } else if emergencyStatus != noErr {
             status = "Could not create the global emergency shortcut"
         } else if monitorStatus != noErr {
             status = "Could not create the global monitor shortcut"
+        } else if targetCycleStatus != noErr {
+            status = "Could not create the global target-cycling shortcut"
+        } else if returnLocalStatus != noErr {
+            status = "Could not create the global local-return shortcut"
+        } else if targetSelectionStatuses.contains(where: { $0 != noErr }) {
+            status = "Could not create every direct target shortcut"
         }
         if registeredHotKey == nil,
            registeredEmergencyHotKey == nil,
-           registeredMonitorSwitchHotKey == nil {
+           registeredMonitorSwitchHotKey == nil,
+           registeredTargetCycleHotKey == nil,
+           registeredReturnLocalHotKey == nil,
+           registeredTargetSelectionHotKeys.isEmpty {
             if let registeredHotKeyHandler {
                 RemoveEventHandler(registeredHotKeyHandler)
             }
@@ -853,12 +942,24 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
         if let registeredMonitorSwitchHotKey {
             UnregisterEventHotKey(registeredMonitorSwitchHotKey)
         }
+        if let registeredTargetCycleHotKey {
+            UnregisterEventHotKey(registeredTargetCycleHotKey)
+        }
+        if let registeredReturnLocalHotKey {
+            UnregisterEventHotKey(registeredReturnLocalHotKey)
+        }
+        registeredTargetSelectionHotKeys.forEach {
+            _ = UnregisterEventHotKey($0)
+        }
         if let registeredHotKeyHandler {
             RemoveEventHandler(registeredHotKeyHandler)
         }
         registeredHotKey = nil
         registeredEmergencyHotKey = nil
         registeredMonitorSwitchHotKey = nil
+        registeredTargetCycleHotKey = nil
+        registeredReturnLocalHotKey = nil
+        registeredTargetSelectionHotKeys.removeAll()
         registeredHotKeyHandler = nil
     }
 
@@ -922,6 +1023,27 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
         ) else {
             return false
         }
+        if isReturnLocalShortcut(type: type, event: event) {
+            if type == .keyDown,
+               event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
+                dispatchEmergencyStop()
+            }
+            return true
+        }
+        if isTargetCycleShortcut(type: type, event: event) {
+            if type == .keyDown,
+               event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
+                dispatchTargetCycle()
+            }
+            return true
+        }
+        if let targetSlot = targetSelectionSlot(type: type, event: event) {
+            if type == .keyDown,
+               event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
+                dispatchTargetSelection(targetSlot)
+            }
+            return true
+        }
         if isMonitorSwitchShortcut(type: type, event: event) {
             if type == .keyDown,
                event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
@@ -948,8 +1070,8 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
         if suppressesLocalEvents,
            type == .flagsChanged,
            Self.shouldSuppressReservedHotKeyModifierFlags(event.flags) {
-            // K, O, and Escape all reserve the same three modifiers. Consume
-            // the flagsChanged edge that completes that chord so the remote
+            // Reserved K/O/Escape and target shortcuts use the same three
+            // modifiers. Consume the flagsChanged edge that completes that chord so the remote
             // Mac never observes the full modifier-only combination before
             // the trigger key can be handled locally. Partial modifier use
             // remains available for ordinary remote shortcuts.
@@ -1000,6 +1122,49 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
             && event.flags.intersection(required) == required
     }
 
+    private func isReturnLocalShortcut(
+        type: CGEventType,
+        event: CGEvent
+    ) -> Bool {
+        guard type == .keyDown || type == .keyUp else { return false }
+        return InputTargetHotKey.matches(
+            keyCode: UInt16(
+                event.getIntegerValueField(.keyboardEventKeycode)
+            ),
+            flags: event.flags,
+            expectedKeyCode: InputTargetHotKey.returnLocalKeyCode
+        )
+    }
+
+    private func isTargetCycleShortcut(
+        type: CGEventType,
+        event: CGEvent
+    ) -> Bool {
+        guard type == .keyDown || type == .keyUp else { return false }
+        return InputTargetHotKey.matches(
+            keyCode: UInt16(
+                event.getIntegerValueField(.keyboardEventKeycode)
+            ),
+            flags: event.flags,
+            expectedKeyCode: InputTargetHotKey.cycleKeyCode
+        )
+    }
+
+    private func targetSelectionSlot(
+        type: CGEventType,
+        event: CGEvent
+    ) -> Int? {
+        guard type == .keyDown || type == .keyUp,
+              InputTargetHotKey.hasRequiredModifiers(event.flags) else {
+            return nil
+        }
+        return InputTargetHotKey.oneBasedSlot(
+            for: UInt16(
+                event.getIntegerValueField(.keyboardEventKeycode)
+            )
+        )
+    }
+
     private func isSwitchShortcut(
         type: CGEventType,
         event: CGEvent
@@ -1038,6 +1203,18 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
         }
     }
 
+    private func dispatchTargetCycle() {
+        DispatchQueue.main.async { [weak self] in
+            self?.onCycleInputTarget?()
+        }
+    }
+
+    private func dispatchTargetSelection(_ slot: Int) {
+        DispatchQueue.main.async { [weak self] in
+            self?.onSelectInputTarget?(slot)
+        }
+    }
+
     private func dispatchEmergencyStop() {
         DispatchQueue.main.async { [weak self] in
             self?.onEmergencyStop?()
@@ -1069,8 +1246,14 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
             dispatchEmergencyStop()
         case .monitorSwitch:
             dispatchMonitorSwitch()
+        case .cycleTargets:
+            dispatchTargetCycle()
+        case .returnLocally:
+            dispatchEmergencyStop()
         case .switchControl:
             dispatchSwitchHotKey()
+        case .selectTarget(let slot):
+            dispatchTargetSelection(slot)
         }
     }
 
@@ -1094,7 +1277,21 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
             type: type,
             event: event
         )
-        guard isSwitchShortcut || isEmergencyShortcut || isMonitorSwitchShortcut
+        let isReturnLocalShortcut = isReturnLocalShortcut(
+            type: type,
+            event: event
+        )
+        let isTargetCycleShortcut = isTargetCycleShortcut(
+            type: type,
+            event: event
+        )
+        let targetSlot = targetSelectionSlot(type: type, event: event)
+        guard isSwitchShortcut
+            || isEmergencyShortcut
+            || isMonitorSwitchShortcut
+            || isReturnLocalShortcut
+            || isTargetCycleShortcut
+            || targetSlot != nil
         else { return false }
         if type == .keyDown,
            event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
@@ -1102,6 +1299,12 @@ final class InputCaptureService: ObservableObject, ControlInputCapture {
                 dispatchSwitchHotKey()
             } else if isEmergencyShortcut {
                 dispatchEmergencyStop()
+            } else if isReturnLocalShortcut {
+                dispatchEmergencyStop()
+            } else if isTargetCycleShortcut {
+                dispatchTargetCycle()
+            } else if let targetSlot {
+                dispatchTargetSelection(targetSlot)
             } else {
                 dispatchMonitorSwitch()
             }
@@ -2375,6 +2578,9 @@ enum RegisteredHotKeyAction: Equatable {
     case switchControl
     case emergencyStop
     case monitorSwitch
+    case cycleTargets
+    case returnLocally
+    case selectTarget(Int)
 
     static func resolve(
         parameterStatus: OSStatus,
@@ -2388,6 +2594,14 @@ enum RegisteredHotKeyAction: Equatable {
             return .emergencyStop
         case RegisteredMonitorSwitchHotKey.id:
             return .monitorSwitch
+        case RegisteredTargetHotKey.cycleID:
+            return .cycleTargets
+        case RegisteredTargetHotKey.returnLocalID:
+            return .returnLocally
+        case let targetID where RegisteredTargetHotKey.slot(for: targetID) != nil:
+            return .selectTarget(
+                RegisteredTargetHotKey.slot(for: targetID)!
+            )
         default:
             return nil
         }
@@ -2410,6 +2624,25 @@ private enum RegisteredMonitorSwitchHotKey {
     static let id: UInt32 = 3
     static let modifiers: UInt32 =
         UInt32(controlKey | optionKey | cmdKey)
+}
+
+private enum RegisteredTargetHotKey {
+    static let signature: OSType = RegisteredSwitchHotKey.signature
+    static let cycleID: UInt32 = 4
+    static let returnLocalID: UInt32 = 5
+    static let firstDirectID: UInt32 = 100
+    static let maximumDirectSlots = 9
+    static let modifiers: UInt32 = UInt32(controlKey | optionKey | cmdKey)
+
+    static func id(for slot: Int) -> UInt32 {
+        firstDirectID + UInt32(slot - 1)
+    }
+
+    static func slot(for id: UInt32) -> Int? {
+        guard id >= firstDirectID else { return nil }
+        let slot = Int(id - firstDirectID) + 1
+        return (1...maximumDirectSlots).contains(slot) ? slot : nil
+    }
 }
 
 private let registeredHotKeyEventHandler: EventHandlerUPP = {

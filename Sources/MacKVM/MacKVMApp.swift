@@ -453,6 +453,7 @@ private final class AppBootstrap: ObservableObject {
     let control: ControlCoordinator?
     let monitor: MonitorController?
     let controlRequestNotifier: ControlRequestNotifier?
+    private let inputTargetRouter: InputTargetRouter?
     let signingIdentityDiagnostics =
         CodeSigningIdentityDiagnosticStore.captureCurrentProcess()
     let inputTopology = InputTopologyController()
@@ -505,6 +506,8 @@ private final class AppBootstrap: ObservableObject {
     private var localNetworkCheckGeneration: UUID?
     private var localNetworkAccessObservation: AnyCancellable?
     private var lifecycleObservations = Set<AnyCancellable>()
+    private static let inputTargetOrderDefaultsKey =
+        "MacKVM.inputTargetOrder.v1"
     private let mainWindowPermissionRefreshSurfaceID = UUID()
     private lazy var permissionRefreshMonitor = PermissionRefreshMonitor {
         [weak self] in
@@ -551,6 +554,43 @@ private final class AppBootstrap: ObservableObject {
                     discovery?.clipboardSyncEnabled(for: peerID) ?? false
                 }
             )
+            let inputTargetRouter = InputTargetRouter(
+                actions: .init(
+                    connectedPeerID: { [weak secureSession] in
+                        secureSession?.connectedPeerID
+                    },
+                    connectingPeerID: { [weak secureSession] in
+                        secureSession?.connectingPeerID
+                    },
+                    disconnect: { [weak secureSession] in
+                        secureSession?.disconnect()
+                    },
+                    connect: { [weak secureSession] peerID in
+                        secureSession?.connect(to: peerID)
+                    },
+                    stopControl: { [weak control] reason in
+                        control?.stopControl(reason: reason)
+                    },
+                    stopControlForTargetSwitch: { [weak control] reason in
+                        control?.stopControl(
+                            reason: reason,
+                            preserveDisplayRoute: true
+                        )
+                    },
+                    isControlActive: { [weak control] in
+                        guard let control else { return false }
+                        return control.state == .controlling
+                            || control.state == .suspended
+                            || control.isReceivingControl
+                            || control.isRemoteInputTearingDown
+                    },
+                    requestControl: { [weak control] in
+                        control?.requestControl(
+                            managesDisplayRoute: false
+                        ) ?? false
+                    }
+                )
+            )
             control.onControllingStarted = { monitor.switchToRemote() }
             control.onControllingStopped = { monitor.switchToLocal() }
             control.onReceivingStarted = {
@@ -581,12 +621,19 @@ private final class AppBootstrap: ObservableObject {
             self.control = control
             self.monitor = monitor
             self.controlRequestNotifier = controlRequestNotifier
+            self.inputTargetRouter = inputTargetRouter
             // Keep the dedicated switch shortcut available even when the
             // menu-bar window is closed. The active capture tap handles it
             // while sharing; an event tap or Carbon registered hot key handles
             // the idle and receiving sides without leaking it to other apps.
             errorMessage = nil
             canResetIdentity = false
+            updateInputTargetOrder(
+                pairedPeerIDs: discovery.pairedPeerIDs,
+                availablePeerIDs: Set(
+                    discovery.peers.map(\.identity.id)
+                )
+            )
             localNetworkAccessObservation = discovery
                 .$localNetworkAccessBlocked
                 .removeDuplicates()
@@ -600,6 +647,27 @@ private final class AppBootstrap: ObservableObject {
                 .receive(on: DispatchQueue.main)
                 .sink { [weak self] peerID in
                     self?.authenticatedConnectionDidChange(to: peerID)
+                    self?.inputTargetRouter?.connectionChanged(to: peerID)
+                }
+                .store(in: &lifecycleObservations)
+            inputTargetRouter.objectWillChange
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] _ in
+                    self?.objectWillChange.send()
+                }
+                .store(in: &lifecycleObservations)
+            discovery.$pairedPeerIDs
+                .removeDuplicates()
+                .dropFirst()
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self, weak discovery] peerIDs in
+                    let availablePeerIDs = Set(
+                        discovery?.peers.map(\.identity.id) ?? []
+                    )
+                    self?.updateInputTargetOrder(
+                        pairedPeerIDs: peerIDs,
+                        availablePeerIDs: availablePeerIDs
+                    )
                 }
                 .store(in: &lifecycleObservations)
             discovery.$peers
@@ -669,6 +737,7 @@ private final class AppBootstrap: ObservableObject {
             // capture after the user has already asked to return locally.
             inputCapture.onEmergencyStop = { [weak self, weak control, weak monitor] in
                 guard let control else { return }
+                self?.inputTargetRouter?.invalidatePendingSwitch()
                 let hadCombinedRequest = self?.combinedControlRequestInFlight ?? false
                 let wasReceivingControl = control.isReceivingControl
                 let wasRemoteInputTearingDown = control.isRemoteInputTearingDown
@@ -711,10 +780,20 @@ private final class AppBootstrap: ObservableObject {
                 // (for example with the monitor OSD). It changes only
                 // keyboard/mouse ownership; O performs the automatic
                 // display-first route.
-                self.control?.toggleControlFromManualMonitorHotKey()
+                if let inputTargetRouter = self.inputTargetRouter {
+                    inputTargetRouter.toggleSelectedTarget()
+                } else {
+                    self.control?.toggleControlFromManualMonitorHotKey()
+                }
             }
             inputCapture.onSwitchMonitor = { [weak self] in
                 self?.switchToOtherMac()
+            }
+            inputCapture.onCycleInputTarget = { [weak inputTargetRouter] in
+                inputTargetRouter?.cycleToNextOnlineTarget()
+            }
+            inputCapture.onSelectInputTarget = { [weak inputTargetRouter] slot in
+                inputTargetRouter?.selectTarget(atOneBasedSlot: slot)
             }
             inputCapture.startHotKeyMonitoring()
             discovery.onPairingCompleted = { [weak secureSession] peerID, pairingGeneration in
@@ -780,6 +859,7 @@ private final class AppBootstrap: ObservableObject {
             control = nil
             monitor = nil
             controlRequestNotifier = nil
+            inputTargetRouter = nil
             errorMessage = "Could not access the device key: \(error.localizedDescription)"
             canResetIdentity = error is DeviceCredentialError
             MacKVMApplicationTermination.handler = { completion in
@@ -825,6 +905,91 @@ private final class AppBootstrap: ObservableObject {
         combinedControlRequestInFlight = false
     }
 
+    var inputTargetOrder: [UUID] {
+        inputTargetRouter?.orderedPeerIDs ?? []
+    }
+
+    var selectedInputTargetID: UUID? {
+        inputTargetRouter?.selectedPeerID
+    }
+
+    var canActivateSelectedInputTarget: Bool {
+        guard let selectedInputTargetID else { return false }
+        return availableInputTargetIDs.contains(selectedInputTargetID)
+    }
+
+    func inputTargetNumber(for peerID: UUID) -> Int? {
+        inputTargetOrder.firstIndex(of: peerID).map { $0 + 1 }
+    }
+
+    func makeInputTargetPrimary(_ peerID: UUID) {
+        guard discovery?.pairedPeerIDs.contains(peerID) == true else {
+            return
+        }
+        let newOrder = InputTargetSelectionPolicy.makingPrimary(
+            peerID,
+            in: inputTargetOrder
+        )
+        guard newOrder != inputTargetOrder else { return }
+        persistInputTargetOrder(newOrder)
+        inputTargetRouter?.updateTargets(
+            orderedPeerIDs: newOrder,
+            availablePeerIDs: availableInputTargetIDs
+        )
+    }
+
+    func activateSelectedInputTarget() {
+        inputTargetRouter?.activateSelectedTarget()
+    }
+
+    private var availableInputTargetIDs: Set<UUID> {
+        var available = Set(discovery?.peers.map(\.identity.id) ?? [])
+        if let connectedPeerID = secureSession?.connectedPeerID {
+            available.insert(connectedPeerID)
+        }
+        return available
+    }
+
+    private func updateInputTargetOrder(
+        pairedPeerIDs: Set<UUID>,
+        availablePeerIDs: Set<UUID>
+    ) {
+        let defaults = UserDefaults.standard
+        let storedStrings = defaults.stringArray(
+            forKey: Self.inputTargetOrderDefaultsKey
+        ) ?? []
+        let storedOrder = storedStrings.compactMap(UUID.init(uuidString:))
+        let order = InputTargetSelectionPolicy.updatingOrder(
+            storedOrder,
+            pairedPeerIDs: pairedPeerIDs
+        )
+        persistInputTargetOrder(order, previousStrings: storedStrings)
+        var available = availablePeerIDs
+        if let connectedPeerID = secureSession?.connectedPeerID {
+            available.insert(connectedPeerID)
+        }
+        inputTargetRouter?.updateTargets(
+            orderedPeerIDs: order,
+            availablePeerIDs: available
+        )
+    }
+
+    private func persistInputTargetOrder(
+        _ order: [UUID],
+        previousStrings: [String]? = nil
+    ) {
+        let strings = order.map(\.uuidString)
+        let previous = previousStrings
+            ?? UserDefaults.standard.stringArray(
+                forKey: Self.inputTargetOrderDefaultsKey
+            )
+        guard previous != strings else { return }
+        UserDefaults.standard.set(
+            strings,
+            forKey: Self.inputTargetOrderDefaultsKey
+        )
+    }
+
     /// Switches monitor input together with keyboard/mouse ownership: routes
     /// display and input to the other device if this Mac currently owns them, or
     /// ends receiving and restores the controller's display if this Mac is
@@ -833,6 +998,7 @@ private final class AppBootstrap: ObservableObject {
     /// diverge.
     func switchToOtherMac() {
         guard let control, let monitor else { return }
+        inputTargetRouter?.invalidatePendingSwitch()
         let hadCombinedRequest = combinedControlRequestInFlight
         let shouldCancelWaitingControl =
             hadCombinedRequest && control.state == .suspended
@@ -873,6 +1039,12 @@ private final class AppBootstrap: ObservableObject {
             monitor.switchToRemote()
         } else if control.state == .connected
             && inputTopology.allowsLocalControl {
+            guard secureSession?.connectedPeerID == selectedInputTargetID,
+                  selectedInputTargetID != nil else {
+                combinedControlStatus =
+                    "Connect to the selected client before switching the display."
+                return
+            }
             if !startCombinedControlRequest() {
                 monitor.switchToRemote()
             }
@@ -891,6 +1063,13 @@ private final class AppBootstrap: ObservableObject {
                 "Keyboard, mouse, and trackpad sharing is unavailable while MacKVM is starting."
             return false
         }
+        guard let selectedInputTargetID,
+              secureSession?.connectedPeerID == selectedInputTargetID else {
+            combinedControlStatus =
+                "Connect to the selected client before sharing keyboard, mouse, and trackpad."
+            return false
+        }
+        inputTargetRouter?.invalidatePendingSwitch()
         guard control.canRequestControl() else {
             combinedControlStatus =
                 "Connect to the other device and complete the control setup before sharing keyboard, mouse, and trackpad."
@@ -1128,6 +1307,14 @@ private final class AppBootstrap: ObservableObject {
 
     private func discoveredPeersDidChange(_ peerIDs: Set<UUID>) {
         guard !terminationCleanupStarted else { return }
+        var availableTargetIDs = peerIDs
+        if let connectedPeerID = secureSession?.connectedPeerID {
+            availableTargetIDs.insert(connectedPeerID)
+        }
+        inputTargetRouter?.updateTargets(
+            orderedPeerIDs: inputTargetOrder,
+            availablePeerIDs: availableTargetIDs
+        )
         var evidence = localNetworkCheckEvidence
         guard evidence.invalidateIfPeerUnavailable(
             availablePeerIDs: peerIDs
@@ -2208,6 +2395,35 @@ private struct MacKVMMenuView: View {
             } else {
                 ForEach(pairedProfiles) { profile in
                     VStack(alignment: .leading, spacing: 3) {
+                        HStack {
+                            if let targetNumber = bootstrap.inputTargetNumber(
+                                for: profile.peerID
+                            ) {
+                                Text(
+                                    targetNumber == 1
+                                        ? "Client \(targetNumber) · Primary"
+                                        : "Client \(targetNumber)"
+                                )
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            }
+                            if bootstrap.selectedInputTargetID == profile.peerID {
+                                Label("Selected", systemImage: "keyboard")
+                                    .font(.caption2)
+                                    .foregroundStyle(.blue)
+                            }
+                            Spacer()
+                            if bootstrap.inputTargetNumber(
+                                for: profile.peerID
+                            ) != 1 {
+                                Button("Make primary") {
+                                    bootstrap.makeInputTargetPrimary(
+                                        profile.peerID
+                                    )
+                                }
+                                .font(.caption)
+                            }
+                        }
                         HStack(spacing: 6) {
                             Image(systemName: "laptopcomputer")
                             TextField(
@@ -2301,12 +2517,12 @@ private struct MacKVMMenuView: View {
                 signingPublicKey: publicKey
             )
         }
+        let order = bootstrap.inputTargetOrder
         return profiles.sorted {
-            let nameComparison = $0.friendlyName.localizedStandardCompare(
-                $1.friendlyName
-            )
-            if nameComparison != .orderedSame {
-                return nameComparison == .orderedAscending
+            let leftIndex = order.firstIndex(of: $0.peerID) ?? Int.max
+            let rightIndex = order.firstIndex(of: $1.peerID) ?? Int.max
+            if leftIndex != rightIndex {
+                return leftIndex < rightIndex
             }
             return $0.peerID.uuidString < $1.peerID.uuidString
         }
@@ -2505,13 +2721,13 @@ private struct MacKVMMenuView: View {
                     if monitor.automationEnabled {
                         _ = bootstrap.startCombinedControlRequest()
                     } else {
-                        control.requestControl()
+                        bootstrap.activateSelectedInputTarget()
                     }
                 }
                 .disabled(
                     !inputCapture.hasInputMonitoringPermission
                         || !inputSink.hasAccessibilityPermission
-                        || secureSession.connectedPeerID == nil
+                        || !bootstrap.canActivateSelectedInputTarget
                         || !inputTopology.allowsLocalControl
                         || control.isReceivingControl
                         || control.isRemoteInputTearingDown
@@ -2528,7 +2744,19 @@ private struct MacKVMMenuView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Text("After manually selecting the monitor input, Control-Option-Command-K switches keyboard, mouse, and trackpad control. Control-Option-Command-O automatically switches the display first and then transfers input ownership. Escape is the emergency local-return shortcut.")
+            if let selectedPeerID = bootstrap.selectedInputTargetID,
+               let selectedProfile = discovery.pairedPeerProfile(
+                   for: selectedPeerID
+               ),
+               let targetNumber = bootstrap.inputTargetNumber(
+                   for: selectedPeerID
+               ) {
+                Text("Input destination: Client \(targetNumber), \(selectedProfile.friendlyName)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            Text("Control-Option-Command-Right Arrow cycles through online clients. Control-Option-Command-1 through 9 selects a client in saved order. Control-Option-Command-L or Escape returns input locally. K and O keep their existing control and display actions.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
@@ -2724,7 +2952,7 @@ private struct MacKVMMenuView: View {
                         || bootstrap.combinedControlRequestInFlight
                 )
                 Text(
-                    "This switches the display, then shares the keyboard, mouse, and trackpad. Control-Option-Command-O performs the same automatic toggle; press it again from the other device to return the display and input. If you switched the monitor input manually, use Control-Option-Command-K to change keyboard, mouse, and trackpad control. Control-Option-Command-Escape interrupts and returns them to this Mac."
+                    "This switches the display, then shares the keyboard, mouse, and trackpad. Control-Option-Command-O performs the same automatic toggle; press it again from the other device to return the display and input. If you switched the monitor input manually, use Control-Option-Command-K to change keyboard, mouse, and trackpad control. Control-Option-Command-Right Arrow cycles online clients, and Control-Option-Command-1 through 9 selects a client in saved order. Control-Option-Command-L or Escape returns input locally."
                 )
                     .font(.caption2)
                     .foregroundStyle(.secondary)

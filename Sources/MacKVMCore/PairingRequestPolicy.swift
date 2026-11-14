@@ -36,6 +36,8 @@ public enum PairingRequestPolicy {
         maximumPendingRequests: Int,
         activeUnpairedRequestCount: Int = 0,
         maximumUnpairedPendingRequests: Int = 4,
+        activeUnpairedRequestCountForSource: Int? = nil,
+        maximumUnpairedPendingRequestsPerSource: Int = 2,
         selectedOutboundPeer: PeerIdentity? = nil
     ) -> PairingRequestDecision {
         if let selectedOutboundPeer,
@@ -59,6 +61,14 @@ public enum PairingRequestPolicy {
         // legitimate request from an already-paired peer.
         if pinnedPublicKey == nil,
            activeUnpairedRequestCount >= maximumUnpairedPendingRequests {
+            return .rejectAtCapacity
+        }
+        // Some endpoints do not expose a stable host identity. Keep those
+        // requests under the existing global limits without guessing a source.
+        if pinnedPublicKey == nil,
+           let activeUnpairedRequestCountForSource,
+           activeUnpairedRequestCountForSource
+                >= maximumUnpairedPendingRequestsPerSource {
             return .rejectAtCapacity
         }
         let unpairedCapacity = max(0, maximumPendingRequests - 1)

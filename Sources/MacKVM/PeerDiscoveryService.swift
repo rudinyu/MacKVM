@@ -707,6 +707,8 @@ final class PeerDiscoveryService: ObservableObject {
     // the verification code. Allow a small unpaired pool for multi-Mac setup,
     // while the policy reserves one of the five total slots for a paired peer.
     private static let maximumUnpairedPendingRequests = 4
+    // A single LAN host must not occupy the entire first-time-pairing pool.
+    private static let maximumUnpairedPendingRequestsPerSource = 2
     private static let maximumUnauthenticatedConnections = 16
     private static let maximumPairingMessagesPerReceive = 16
     private static let localNetworkCheckTimeout: TimeInterval = 7
@@ -744,6 +746,10 @@ final class PeerDiscoveryService: ObservableObject {
     private var perSourceAdmissionLimiter =
         PerSourceConnectionAdmissionLimiter()
     private var requestMessages: [UUID: PairingEnvelope] = [:]
+    // Only accepted inbound requests with a usable endpoint host are recorded.
+    // Entries share the request lifecycle and are removed by finish(requestID:)
+    // or when the service stops.
+    private var requestSourceHostKeys: [UUID: String] = [:]
     // Incoming prompts are bound to a fresh local attempt token. Wire UUIDs
     // identify protocol messages, but are not sufficient to identify a UI
     // consent action after a connection has been replaced.
@@ -1401,6 +1407,7 @@ final class PeerDiscoveryService: ObservableObject {
             self.verifiedInboundPairingConnectionIDs.removeAll()
             self.perSourceAdmissionLimiter.reset()
             self.requestMessages.removeAll()
+            self.requestSourceHostKeys.removeAll()
             self.pendingPairingAttemptTokens.removeAll()
             self.consumedPairingAttemptTokens.removeAll()
             self.requestTargets.removeAll()
@@ -3317,6 +3324,21 @@ final class PeerDiscoveryService: ObservableObject {
             let prospectiveRequests = requestMessages.filter {
                 !replacesOutbound || $0.key != collisionRequestID
             }
+            let sourceHostKey = Self.sourceHostKey(for: connection.endpoint)
+            let activeUnpairedRequestCountForSource = sourceHostKey.map {
+                sourceKey in
+                prospectiveRequests.reduce(into: 0) { count, entry in
+                    let request = entry.value
+                    guard requestSourceHostKeys[entry.key] == sourceKey,
+                          request.kind == .request,
+                          request.sender.id != identity.id,
+                          registry.publicKey(for: request.sender.id) == nil
+                    else {
+                        return
+                    }
+                    count += 1
+                }
+            }
             let decision = PairingRequestPolicy.evaluate(
                 request: message,
                 pinnedPublicKey: registry.publicKey(for: message.sender.id),
@@ -3335,6 +3357,10 @@ final class PeerDiscoveryService: ObservableObject {
                 }.count,
                 maximumUnpairedPendingRequests:
                     Self.maximumUnpairedPendingRequests,
+                activeUnpairedRequestCountForSource:
+                    activeUnpairedRequestCountForSource,
+                maximumUnpairedPendingRequestsPerSource:
+                    Self.maximumUnpairedPendingRequestsPerSource,
                 selectedOutboundPeer: selectedOutboundPeer
             )
             guard decision == .allow else {
@@ -3413,6 +3439,9 @@ final class PeerDiscoveryService: ObservableObject {
             )
             requestConnections[message.requestID] = connection
             requestMessages[message.requestID] = message
+            if let sourceHostKey {
+                requestSourceHostKeys[message.requestID] = sourceHostKey
+            }
             pendingPairingAttemptTokens[message.requestID] = UUID()
             if message.supportsCompletionClose == true {
                 peerSupportsCompletionCloseRequestIDs.insert(message.requestID)
@@ -4256,6 +4285,7 @@ final class PeerDiscoveryService: ObservableObject {
             }
         }
         requestMessages.removeValue(forKey: requestID)
+        requestSourceHostKeys.removeValue(forKey: requestID)
         requestPeerDescriptors.removeValue(forKey: requestID)
         requestTargets.removeValue(forKey: requestID)
         provisionalCollisionOutboundRequestIDs.removeValue(forKey: requestID)

@@ -371,6 +371,37 @@ final class ControlCoordinatorTests: XCTestCase {
         XCTAssertEqual(fixture.coordinator.state, .connected)
     }
 
+    func testTargetHandoffStopsInputWithoutRestoringDisplayRoute() throws {
+        let fixture = makeFixture()
+        var routeRestoreCount = 0
+        fixture.coordinator.onControllingStopped = {
+            routeRestoreCount += 1
+        }
+
+        XCTAssertTrue(fixture.coordinator.requestControl())
+        let requestID = try XCTUnwrap(
+            fixture.transport.sentMessages.last?.requestID
+        )
+        fixture.transport.deliver(controlMessage(.controlGranted, requestID))
+        drainMainQueue()
+        XCTAssertEqual(fixture.coordinator.state, .controlling)
+
+        fixture.coordinator.stopControl(
+            reason: "Switching input target",
+            preserveDisplayRoute: true
+        )
+
+        XCTAssertEqual(fixture.coordinator.state, .connected)
+        XCTAssertFalse(fixture.capture.isCapturing)
+        XCTAssertEqual(routeRestoreCount, 0)
+        XCTAssertEqual(
+            fixture.transport.sentMessages.filter {
+                $0.kind == .endControl && $0.requestID == requestID
+            }.count,
+            1
+        )
+    }
+
     func testInputPermissionRevocationEndsOutboundControlOnce() throws {
         let fixture = makeFixture()
         XCTAssertTrue(fixture.coordinator.requestControl())
@@ -1987,6 +2018,8 @@ private final class FakeInputCapture: ControlInputCapture {
     var onEmergencyStop: (() -> Void)?
     var onSwitchControl: (() -> Void)?
     var onSwitchMonitor: (() -> Void)?
+    var onCycleInputTarget: (() -> Void)?
+    var onSelectInputTarget: ((Int) -> Void)?
     var onStartCapture: (() -> Void)?
     private(set) var startCount = 0
     private(set) var stopCount = 0
