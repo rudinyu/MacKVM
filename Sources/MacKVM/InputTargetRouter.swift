@@ -8,8 +8,9 @@ import MacKVMCore
 final class InputTargetRouter: ObservableObject {
     struct Actions {
         let connectedPeerID: () -> UUID?
-        let connectingPeerID: () -> UUID?
-        let disconnect: () -> Void
+        let isConnected: (UUID) -> Bool
+        let isConnecting: (UUID) -> Bool
+        let selectPeer: (UUID) -> Void
         let connect: (UUID) -> Void
         let stopControl: (String) -> Void
         let stopControlForTargetSwitch: (String) -> Void
@@ -94,6 +95,7 @@ final class InputTargetRouter: ObservableObject {
               pendingTarget.generation == operationGeneration,
               peerID == pendingTarget.peerID,
               availablePeerIDs.contains(pendingTarget.peerID),
+              actions.isConnected(pendingTarget.peerID),
               actions.connectedPeerID() == pendingTarget.peerID else {
             return
         }
@@ -138,11 +140,14 @@ final class InputTargetRouter: ObservableObject {
             return
         }
 
+        let isNewTarget = selectedPeerID != peerID
         selectedPeerID = peerID
         operationGeneration &+= 1
         let generation = operationGeneration
 
-        if actions.connectedPeerID() == peerID {
+        if !isNewTarget,
+           actions.connectedPeerID() == peerID,
+           actions.isConnected(peerID) {
             pendingTarget = nil
             guard !actions.isControlActive() else { return }
             _ = actions.requestControl()
@@ -150,13 +155,14 @@ final class InputTargetRouter: ObservableObject {
         }
 
         pendingTarget = (peerID, generation)
-        actions.stopControlForTargetSwitch(
-            "Switching input to the selected client"
-        )
-        if actions.connectedPeerID() != nil
-            || actions.connectingPeerID() != nil {
-            actions.disconnect()
+        if actions.isControlActive() {
+            actions.stopControlForTargetSwitch(
+                "Switching input to the selected client"
+            )
         }
-        actions.connect(peerID)
+        actions.selectPeer(peerID)
+        if !actions.isConnected(peerID), !actions.isConnecting(peerID) {
+            actions.connect(peerID)
+        }
     }
 }

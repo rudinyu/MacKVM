@@ -624,7 +624,9 @@ final class LocalNetworkCheckLifecycleTests: XCTestCase {
         XCTAssertTrue(shouldRestartPendingOutbound(state: waiting))
         XCTAssertTrue(shouldRestartPendingOutbound(state: .preparing))
         XCTAssertFalse(shouldRestartPendingOutbound(state: .ready))
-        XCTAssertFalse(
+        // A live session for a different peer does not block retrying this
+        // selected peer's stalled outbound connection.
+        XCTAssertTrue(
             shouldRestartPendingOutbound(state: waiting, hasActiveContext: true)
         )
         XCTAssertFalse(
@@ -639,7 +641,7 @@ final class LocalNetworkCheckLifecycleTests: XCTestCase {
                 desiredPeerIsLocallyDisconnected: true
             )
         )
-        XCTAssertFalse(
+        XCTAssertTrue(
             shouldRestartPendingOutbound(state: waiting, contextCount: 2)
         )
         XCTAssertFalse(
@@ -656,8 +658,8 @@ final class LocalNetworkCheckLifecycleTests: XCTestCase {
         hasDesiredPeer: Bool = true,
         desiredPeerIsLocallyDisconnected: Bool = false,
         hasPendingConnect: Bool = false,
-        hasActiveContext: Bool = false,
-        contextCount: Int = 1,
+        hasActiveContext _: Bool = false,
+        contextCount _: Int = 1,
         contextMatchesDesiredPeer: Bool = true,
         contextIsInitiator: Bool = true,
         contextIsAuthenticated: Bool = false,
@@ -669,8 +671,6 @@ final class LocalNetworkCheckLifecycleTests: XCTestCase {
             desiredPeerIsLocallyDisconnected:
                 desiredPeerIsLocallyDisconnected,
             hasPendingConnect: hasPendingConnect,
-            hasActiveContext: hasActiveContext,
-            contextCount: contextCount,
             contextMatchesDesiredPeer: contextMatchesDesiredPeer,
             contextIsInitiator: contextIsInitiator,
             contextIsAuthenticated: contextIsAuthenticated,

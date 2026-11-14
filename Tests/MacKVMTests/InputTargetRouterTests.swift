@@ -17,8 +17,9 @@ final class InputTargetRouterTests: XCTestCase {
         fixture.router.cycleToNextOnlineTarget()
 
         XCTAssertEqual(fixture.router.selectedPeerID, third)
-        XCTAssertEqual(fixture.actions.disconnectedCount, 1)
+        XCTAssertEqual(fixture.actions.disconnectedCount, 0)
         XCTAssertEqual(fixture.actions.connectedTargets, [third])
+        XCTAssertEqual(fixture.actions.selectedTargets, [third])
         XCTAssertEqual(
             fixture.actions.targetSwitchStopReasons,
             ["Switching input to the selected client"]
@@ -27,6 +28,7 @@ final class InputTargetRouterTests: XCTestCase {
         XCTAssertEqual(fixture.actions.requestControlCount, 0)
 
         fixture.actions.currentConnectedPeerID = third
+        fixture.actions.connectedPeerIDs.insert(third)
         fixture.router.connectionChanged(to: third)
 
         XCTAssertEqual(fixture.actions.requestControlCount, 1)
@@ -63,12 +65,14 @@ final class InputTargetRouterTests: XCTestCase {
         fixture.router.selectTarget(atOneBasedSlot: 2)
         fixture.router.selectTarget(atOneBasedSlot: 3)
         fixture.actions.currentConnectedPeerID = second
+        fixture.actions.connectedPeerIDs.insert(second)
         fixture.router.connectionChanged(to: second)
 
         XCTAssertEqual(fixture.router.selectedPeerID, third)
         XCTAssertEqual(fixture.actions.requestControlCount, 0)
 
         fixture.actions.currentConnectedPeerID = third
+        fixture.actions.connectedPeerIDs.insert(third)
         fixture.router.connectionChanged(to: third)
 
         XCTAssertEqual(fixture.actions.requestControlCount, 1)
@@ -138,23 +142,63 @@ final class InputTargetRouterTests: XCTestCase {
         XCTAssertTrue(fixture.actions.connectedTargets.isEmpty)
     }
 
+    func testSwitchToWarmTargetSelectsAndRequestsWithoutReconnect() {
+        let first = UUID()
+        let second = UUID()
+        let fixture = makeFixture(
+            orderedPeerIDs: [first, second],
+            availablePeerIDs: Set([first, second]),
+            connectedPeerID: first,
+            connectedPeerIDs: Set([first, second])
+        )
+
+        fixture.router.selectTarget(atOneBasedSlot: 2)
+
+        XCTAssertEqual(fixture.router.selectedPeerID, second)
+        XCTAssertEqual(fixture.actions.selectedTargets, [second])
+        XCTAssertTrue(fixture.actions.connectedTargets.isEmpty)
+        XCTAssertEqual(fixture.actions.disconnectedCount, 0)
+        XCTAssertEqual(
+            fixture.actions.targetSwitchStopReasons,
+            ["Switching input to the selected client"]
+        )
+        XCTAssertEqual(fixture.actions.requestControlCount, 0)
+
+        fixture.actions.currentConnectedPeerID = second
+        fixture.router.connectionChanged(to: second)
+
+        XCTAssertEqual(fixture.actions.requestControlCount, 1)
+        XCTAssertEqual(fixture.actions.disconnectedCount, 0)
+        XCTAssertTrue(fixture.actions.connectedTargets.isEmpty)
+    }
+
     private func makeFixture(
         orderedPeerIDs: [UUID],
         availablePeerIDs: Set<UUID>,
-        connectedPeerID: UUID?
+        connectedPeerID: UUID?,
+        connectedPeerIDs: Set<UUID>? = nil
     ) -> Fixture {
-        let actions = FakeTargetActions(connectedPeerID: connectedPeerID)
+        let actions = FakeTargetActions(
+            connectedPeerID: connectedPeerID,
+            connectedPeerIDs: connectedPeerIDs
+                ?? Set(connectedPeerID.map { [$0] } ?? [])
+        )
         let router = InputTargetRouter(
             actions: .init(
                 connectedPeerID: { [weak actions] in
                     actions?.currentConnectedPeerID
                 },
-                connectingPeerID: { [weak actions] in
-                    actions?.currentConnectingPeerID
+                isConnected: { [weak actions] peerID in
+                    actions?.connectedPeerIDs.contains(peerID) ?? false
                 },
-                disconnect: { [weak actions] in
-                    actions?.disconnectedCount += 1
-                    actions?.currentConnectedPeerID = nil
+                isConnecting: { [weak actions] peerID in
+                    actions?.connectingPeerIDs.contains(peerID) ?? false
+                },
+                selectPeer: { [weak actions] peerID in
+                    actions?.selectedTargets.append(peerID)
+                    if actions?.connectedPeerIDs.contains(peerID) == true {
+                        actions?.currentConnectedPeerID = peerID
+                    }
                 },
                 connect: { [weak actions] peerID in
                     actions?.connectedTargets.append(peerID)
@@ -188,7 +232,9 @@ final class InputTargetRouterTests: XCTestCase {
 @MainActor
 private final class FakeTargetActions {
     var currentConnectedPeerID: UUID?
-    var currentConnectingPeerID: UUID?
+    var connectedPeerIDs: Set<UUID>
+    var connectingPeerIDs = Set<UUID>()
+    var selectedTargets: [UUID] = []
     var connectedTargets: [UUID] = []
     var disconnectedCount = 0
     var localStopReasons: [String] = []
@@ -196,8 +242,9 @@ private final class FakeTargetActions {
     var requestControlCount = 0
     var controlIsActive = true
 
-    init(connectedPeerID: UUID?) {
+    init(connectedPeerID: UUID?, connectedPeerIDs: Set<UUID>) {
         currentConnectedPeerID = connectedPeerID
+        self.connectedPeerIDs = connectedPeerIDs
     }
 }
 

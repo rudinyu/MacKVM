@@ -559,11 +559,14 @@ private final class AppBootstrap: ObservableObject {
                     connectedPeerID: { [weak secureSession] in
                         secureSession?.connectedPeerID
                     },
-                    connectingPeerID: { [weak secureSession] in
-                        secureSession?.connectingPeerID
+                    isConnected: { [weak secureSession] peerID in
+                        secureSession?.isConnected(to: peerID) ?? false
                     },
-                    disconnect: { [weak secureSession] in
-                        secureSession?.disconnect()
+                    isConnecting: { [weak secureSession] peerID in
+                        secureSession?.connectingPeerIDs.contains(peerID) ?? false
+                    },
+                    selectPeer: { [weak secureSession] peerID in
+                        secureSession?.selectPeer(peerID)
                     },
                     connect: { [weak secureSession] peerID in
                         secureSession?.connect(to: peerID)
@@ -647,7 +650,25 @@ private final class AppBootstrap: ObservableObject {
                 .receive(on: DispatchQueue.main)
                 .sink { [weak self] peerID in
                     self?.authenticatedConnectionDidChange(to: peerID)
-                    self?.inputTargetRouter?.connectionChanged(to: peerID)
+                }
+                .store(in: &lifecycleObservations)
+            secureSession.connectionPublicationPublisher
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] publication in
+                    self?.inputTargetRouter?.connectionChanged(
+                        to: publication.peerID
+                    )
+                }
+                .store(in: &lifecycleObservations)
+            secureSession.peerConnectionPublicationPublisher
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self, weak discovery] _ in
+                    self?.updateInputTargetOrder(
+                        pairedPeerIDs: discovery?.pairedPeerIDs ?? [],
+                        availablePeerIDs: Set(
+                            discovery?.peers.map(\.identity.id) ?? []
+                        )
+                    )
                 }
                 .store(in: &lifecycleObservations)
             inputTargetRouter.objectWillChange
@@ -944,9 +965,8 @@ private final class AppBootstrap: ObservableObject {
 
     private var availableInputTargetIDs: Set<UUID> {
         var available = Set(discovery?.peers.map(\.identity.id) ?? [])
-        if let connectedPeerID = secureSession?.connectedPeerID {
-            available.insert(connectedPeerID)
-        }
+        available.formUnion(secureSession?.connectedPeerIDs ?? [])
+        available.formUnion(secureSession?.connectingPeerIDs ?? [])
         return available
     }
 
@@ -965,9 +985,8 @@ private final class AppBootstrap: ObservableObject {
         )
         persistInputTargetOrder(order, previousStrings: storedStrings)
         var available = availablePeerIDs
-        if let connectedPeerID = secureSession?.connectedPeerID {
-            available.insert(connectedPeerID)
-        }
+        available.formUnion(secureSession?.connectedPeerIDs ?? [])
+        available.formUnion(secureSession?.connectingPeerIDs ?? [])
         inputTargetRouter?.updateTargets(
             orderedPeerIDs: order,
             availablePeerIDs: available
@@ -1220,6 +1239,9 @@ private final class AppBootstrap: ObservableObject {
         }
         discovery.start()
         secureSession.start()
+        if let selectedPeerID = inputTargetRouter?.selectedPeerID {
+            secureSession.selectPeer(selectedPeerID)
+        }
         networkServicesStarted = true
     }
 
@@ -1281,10 +1303,10 @@ private final class AppBootstrap: ObservableObject {
         !terminationCleanupStarted
             && LocalNetworkCheckLifecyclePolicy.canRunManualCheck(
                 hasActiveAuthenticatedConnection:
-                    secureSession?.connectedPeerID != nil,
+                    !(secureSession?.connectedPeerIDs.isEmpty ?? true),
                 hasActivePairing: hasPairingActivityForNetworkCheck,
                 hasPendingConnectionAttempt:
-                    secureSession?.connectingPeerID != nil
+                    !(secureSession?.connectingPeerIDs.isEmpty ?? true)
             )
     }
 
@@ -1308,9 +1330,8 @@ private final class AppBootstrap: ObservableObject {
     private func discoveredPeersDidChange(_ peerIDs: Set<UUID>) {
         guard !terminationCleanupStarted else { return }
         var availableTargetIDs = peerIDs
-        if let connectedPeerID = secureSession?.connectedPeerID {
-            availableTargetIDs.insert(connectedPeerID)
-        }
+        availableTargetIDs.formUnion(secureSession?.connectedPeerIDs ?? [])
+        availableTargetIDs.formUnion(secureSession?.connectingPeerIDs ?? [])
         inputTargetRouter?.updateTargets(
             orderedPeerIDs: inputTargetOrder,
             availablePeerIDs: availableTargetIDs
@@ -1354,7 +1375,7 @@ private final class AppBootstrap: ObservableObject {
 
     private func localNetworkAccessProbeDidSucceed(peerID: UUID?) {
         guard !terminationCleanupStarted,
-              secureSession?.connectedPeerID == nil,
+              secureSession?.connectedPeerIDs.isEmpty ?? true,
               !hasPairingActivityForNetworkCheck,
               let peerID,
               discoveredPeerIDs.contains(peerID) else {
@@ -1450,10 +1471,10 @@ private final class AppBootstrap: ObservableObject {
             lastStartedAt: lastLocalNetworkCheckStartedAt,
             now: now,
             hasActiveAuthenticatedConnection:
-                secureSession?.connectedPeerID != nil,
+                !(secureSession?.connectedPeerIDs.isEmpty ?? true),
             hasActivePairing: hasPairingActivityForNetworkCheck,
             hasPendingConnectionAttempt:
-                secureSession?.connectingPeerID != nil,
+                !(secureSession?.connectingPeerIDs.isEmpty ?? true),
             hasFreshReachableEvidence:
                 localNetworkCheckResult == .reachable,
             eventDriven: eventDriven
@@ -1945,7 +1966,7 @@ private struct MacKVMMenuView: View {
     private var localNetworkSetupStatus: LocalNetworkSetupStatus {
         LocalNetworkSetupStatus.resolve(
             hasCurrentAuthenticatedConnection:
-                secureSession.connectedPeerID != nil,
+                !secureSession.connectedPeerIDs.isEmpty,
             isExplicitlyBlocked: secureSession.localNetworkAccessBlocked
                 || discovery.localNetworkAccessBlocked,
             isChecking: bootstrap.localNetworkCheckInProgress,
@@ -2358,11 +2379,11 @@ private struct MacKVMMenuView: View {
 
     @ViewBuilder
     private func secureConnectionControls(for peerID: UUID) -> some View {
-        if secureSession.connectedPeerID == peerID {
+        if secureSession.isConnected(to: peerID) {
             Button("Disconnect") {
-                secureSession.disconnect()
+                secureSession.disconnect(peerID)
             }
-        } else if secureSession.connectingPeerID == peerID {
+        } else if secureSession.connectingPeerIDs.contains(peerID) {
             Label("Connecting…", systemImage: "arrow.triangle.2.circlepath")
                 .font(.caption)
             Button("Cancel") {
@@ -2650,14 +2671,12 @@ private struct MacKVMMenuView: View {
     private var unavailablePairedPeerIDs: [UUID] {
         let visiblePeerIDs = Set(discovery.peers.map(\.identity.id))
         var unavailable = discovery.pairedPeerIDs.subtracting(visiblePeerIDs)
-        if let connectedPeerID = secureSession.connectedPeerID,
-           !visiblePeerIDs.contains(connectedPeerID) {
-            unavailable.insert(connectedPeerID)
-        }
-        if let connectingPeerID = secureSession.connectingPeerID,
-           !visiblePeerIDs.contains(connectingPeerID) {
-            unavailable.insert(connectingPeerID)
-        }
+        unavailable.formUnion(
+            secureSession.connectedPeerIDs.subtracting(visiblePeerIDs)
+        )
+        unavailable.formUnion(
+            secureSession.connectingPeerIDs.subtracting(visiblePeerIDs)
+        )
         return unavailable.sorted {
             $0.uuidString.localizedStandardCompare($1.uuidString)
                 == .orderedAscending
