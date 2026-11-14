@@ -91,8 +91,6 @@ enum SecureSessionNetworkCheckRetryPolicy {
         hasDesiredPeer: Bool,
         desiredPeerIsLocallyDisconnected: Bool,
         hasPendingConnect: Bool,
-        hasActiveContext: Bool,
-        contextCount: Int,
         contextMatchesDesiredPeer: Bool,
         contextIsInitiator: Bool,
         contextIsAuthenticated: Bool,
@@ -103,8 +101,6 @@ enum SecureSessionNetworkCheckRetryPolicy {
               hasDesiredPeer,
               !desiredPeerIsLocallyDisconnected,
               !hasPendingConnect,
-              !hasActiveContext,
-              contextCount == 1,
               contextMatchesDesiredPeer,
               contextIsInitiator,
               !contextIsAuthenticated,
@@ -281,30 +277,107 @@ enum SecureSessionDisconnectPolicy {
 
 final class SecureSessionService: ObservableObject, ControlSessionTransport {
     @Published private(set) var connectedPeerID: UUID?
+    @Published private(set) var connectedPeerIDs = Set<UUID>()
     @Published private(set) var connectingPeerID: UUID?
+    @Published private(set) var connectingPeerIDs = Set<UUID>()
     @Published private(set) var status = "Secure session idle"
     @Published private(set) var isReconnecting = false
     @Published private(set) var localNetworkAccessBlocked = false
     @Published private(set) var lastListenerError: NetworkServiceErrorDiagnostic?
     @Published private(set) var lastBrowserError: NetworkServiceErrorDiagnostic?
 
-    var onPayload: ((Data) -> Void)?
-    var onAuthenticated: (() -> UInt64)?
-    var onHeartbeat: ((SecureSessionHeartbeatAcknowledgement) -> Void)?
+    var onPayload: ((UUID, UInt64, Data) -> Void)?
+    var onAuthenticated: ((UUID) -> UInt64)?
+    var onHeartbeat: ((UUID, UInt64, SecureSessionHeartbeatAcknowledgement) -> Void)?
     /// Emitted after the monitor's initial sample and only when the observed
     /// network-path signature changes.
     var onNetworkPathChanged: (() -> Void)?
 
     private let connectionPublicationSubject =
         PassthroughSubject<ControlConnectionPublication, Never>()
+    private let peerConnectionPublicationSubject =
+        PassthroughSubject<SecureSessionPeerPublication, Never>()
 
     var connectedPeerIDPublisher: AnyPublisher<UUID?, Never> {
         $connectedPeerID.eraseToAnyPublisher()
     }
 
+    func isConnected(to peerID: UUID) -> Bool {
+        connectedPeerIDs.contains(peerID)
+    }
+
+    /// Selects which authenticated peer receives local control messages. The
+    /// underlying context is already live when possible, so this operation
+    /// never tears down another peer's session.
+    func selectPeer(_ peerID: UUID) {
+        queue.async { [weak self] in
+            guard let self,
+                  PeerArbitration.isValidPeerPair(
+                      localID: credentials.identity.id,
+                      remoteID: peerID
+                  ) else {
+                return
+            }
+            locallyDisconnectedPeerIDs.remove(peerID)
+            locallyDisconnectedPeerGenerations.removeValue(forKey: peerID)
+            cancelledConnectPairingGenerations.removeValue(forKey: peerID)
+            desiredPeerIDs.insert(peerID)
+            desiredPeerID = peerID
+            selectPeerOnQueue(peerID, connectIfMissing: false)
+        }
+    }
+
+    private func selectPeerOnQueue(
+        _ peerID: UUID,
+        context suppliedContext: SessionConnectionContext? = nil,
+        connectIfMissing: Bool = true
+    ) {
+        desiredPeerID = peerID
+        let context = suppliedContext ?? contexts.values.first {
+            $0.isAuthenticated
+                && !$0.isClosing
+                && $0.expectedPeer?.id == peerID
+        }
+        if let context {
+            activeContextID = ObjectIdentifier(context)
+            if pendingConnectPeerID == peerID {
+                pendingConnectPeerID = nil
+            }
+            publishConnection(
+                peerID: peerID,
+                status: "Encrypted session connected to "
+                    + (context.expectedPeer?.name ?? "the paired Mac"),
+                admissionGeneration: context.admissionGeneration
+            )
+            cancelReconnect(for: peerID, resetAttempt: false)
+            return
+        }
+
+        activeContextID = nil
+        publishConnection(
+            peerID: nil,
+            status: "Connecting to the selected paired Mac…"
+        )
+        publishConnectingPeer(peerID)
+        if contexts.values.contains(where: {
+            $0.isClosing && $0.expectedPeer?.id == peerID
+        }) {
+            pendingConnectPeerID = peerID
+            publishPeerConnecting(peerID, isConnecting: true)
+        }
+        if connectIfMissing {
+            connectOnQueue(to: peerID)
+        }
+    }
+
     var connectionPublicationPublisher:
         AnyPublisher<ControlConnectionPublication, Never> {
         connectionPublicationSubject.eraseToAnyPublisher()
+    }
+
+    var peerConnectionPublicationPublisher:
+        AnyPublisher<SecureSessionPeerPublication, Never> {
+        peerConnectionPublicationSubject.eraseToAnyPublisher()
     }
 
     private static let serviceType = "_mackvm-secure._tcp"
@@ -372,6 +445,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
     private var preferredPeerEndpoints: [UUID: NWEndpoint] = [:]
     private var contexts: [ObjectIdentifier: SessionConnectionContext] = [:]
     private var activeContextID: ObjectIdentifier?
+    private var authenticatedPeerIDs = Set<UUID>()
     private let connectionEpoch = EpochGuard()
     private let peerEpochs = GenerationGuard<UUID>()
     private var admissionLimiter =
@@ -384,6 +458,9 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
     private var secureServicesStarted = false
     private var systemSleepLatchWorkItem: DispatchWorkItem?
     private var desiredPeerID: UUID?
+    /// Every paired peer keeps a reconnect intent so discovering one client
+    /// does not displace another authenticated session.
+    private var desiredPeerIDs = Set<UUID>()
     private var pendingConnectPeerID: UUID?
     private var selectedConnectingPeerID: UUID?
     /// Cancellation suppresses a queued pairing-completion callback from
@@ -399,8 +476,8 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
     /// allowing that genuinely new pairing to auto-connect without allowing a
     /// stale completion callback from the old pairing to do so.
     private var locallyDisconnectedPeerGenerations: [UUID: UInt64] = [:]
-    private var reconnectAttempt = 0
-    private var reconnectWorkItem: DispatchWorkItem?
+    private var reconnectAttempts: [UUID: Int] = [:]
+    private var reconnectWorkItems: [UUID: DispatchWorkItem] = [:]
     private let reconnectBackoff = ReconnectBackoffPolicy()
     private let powerNotificationCenterOverride: NotificationCenter?
     private let networkServicesEnabled: Bool
@@ -466,6 +543,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             // A previous run must never leave the sleep guards latched on.
             clearSystemSleepLatch()
             secureServicesStarted = true
+            desiredPeerIDs.formUnion(registry.pairedPeerIDs)
             startPowerLifecycleObserver(
                 notificationCenter: powerNotificationCenter
             )
@@ -481,12 +559,14 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             clearSystemSleepLatch()
             connectionEpoch.advance()
             desiredPeerID = nil
+            desiredPeerIDs.removeAll()
             pendingConnectPeerID = nil
             publishConnectingPeer(nil)
+            publishConnectingPeerIDs([])
             locallyDisconnectedPeerIDs.removeAll()
             locallyDisconnectedPeerGenerations.removeAll()
             cancelledConnectPairingGenerations.removeAll()
-            cancelReconnect(resetAttempt: true)
+            cancelAllReconnects(resetAttempts: true)
             networkRecoveryGeneration &+= 1
             networkRecoveryWorkItem?.cancel()
             networkRecoveryWorkItem = nil
@@ -515,6 +595,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             activeContextID = nil
             peerEpochs.removeAll()
             admissionLimiter.reset()
+            publishConnectedPeerIDs([])
             if hadActiveContext {
                 // remove(_:) already published the generation-tagged nil
                 // connection event; update only the human-readable status.
@@ -555,9 +636,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                         hasDesiredPeer: self.desiredPeerID != nil,
                         desiredPeerIsLocallyDisconnected:
                             self.locallyDisconnectedPeerIDs.contains(peerID),
-                        hasPendingConnect: self.pendingConnectPeerID != nil,
-                        hasActiveContext: self.activeContextID != nil,
-                        contextCount: self.contexts.count,
+                        hasPendingConnect: self.pendingConnectPeerID == peerID,
                         contextMatchesDesiredPeer:
                             context.expectedPeer?.id == peerID,
                         contextIsInitiator:
@@ -574,7 +653,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                 peerID: peerID,
                 context: context
             )
-            self.cancelReconnect(resetAttempt: true)
+            self.cancelReconnect(for: peerID, resetAttempt: true)
             context.suppressesReconnect = true
             context.connection.cancel()
             self.remove(context)
@@ -593,6 +672,13 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             guard let self else { return }
             let activePeerID = self.activeContextID
                 .flatMap { self.contexts[$0]?.expectedPeer?.id }
+            guard !self.authenticatedPeerIDs.contains(peerID) else {
+                self.logSecurePhase(
+                    "connect.cancel-ignored-active-session",
+                    peerID: peerID
+                )
+                return
+            }
             let pendingContexts = self.contexts.values.filter {
                 $0.expectedPeer?.id == peerID
                     && !$0.isAuthenticated
@@ -601,7 +687,9 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             guard SecureSessionAttemptCancellationPolicy.shouldCancel(
                 selectedPeerID: peerID,
                 desiredPeerID: self.desiredPeerID,
-                pendingPeerID: self.pendingConnectPeerID,
+                pendingPeerID: self.pendingConnectPeerID == peerID
+                    || self.reconnectWorkItems[peerID] != nil
+                    ? peerID : nil,
                 activePeerID: activePeerID,
                 hasUnauthenticatedContext: !pendingContexts.isEmpty
             ) else {
@@ -616,8 +704,14 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
 
             if self.desiredPeerID == peerID {
                 self.desiredPeerID = nil
-                self.cancelReconnect(resetAttempt: true)
+                self.activeContextID = nil
+                self.publishConnection(
+                    peerID: nil,
+                    status: "Secure connection attempt cancelled"
+                )
             }
+            self.desiredPeerIDs.remove(peerID)
+            self.cancelReconnect(for: peerID, resetAttempt: true)
             if self.pendingConnectPeerID == peerID {
                 self.pendingConnectPeerID = nil
             }
@@ -626,13 +720,14 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             self.publishConnectingPeer(
                 self.desiredPeerID ?? self.pendingConnectPeerID
             )
+            self.publishPeerConnecting(peerID, isConnecting: false)
             pendingContexts.forEach { context in
                 context.suppressesReconnect = true
                 context.connection.cancel()
                 self.remove(context)
             }
             self.logSecurePhase("connect.cancelled", peerID: peerID)
-            if self.desiredPeerID == nil, self.pendingConnectPeerID == nil {
+            if self.desiredPeerID == nil {
                 self.publishStatus("Secure session idle")
             }
         }
@@ -644,6 +739,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
     func startNetworkServicesForTesting() {
         queue.sync {
             secureServicesStarted = true
+            desiredPeerIDs.formUnion(registry.pairedPeerIDs)
             startMissingNetworkServices()
         }
     }
@@ -709,6 +805,44 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         }
     }
 
+    func removeUnauthenticatedContextForTesting(to peerID: UUID) {
+        queue.sync {
+            guard let context = contexts.values.first(where: {
+                $0.expectedPeer?.id == peerID && !$0.isAuthenticated
+            }) else {
+                return
+            }
+            context.connection.cancel()
+            remove(context)
+        }
+    }
+
+    func markContextsClosingForTesting(to peerID: UUID) {
+        queue.sync {
+            for context in contexts.values
+            where context.expectedPeer?.id == peerID {
+                context.isClosing = true
+                context.suppressesReconnect = true
+            }
+        }
+    }
+
+    func removeAuthenticatedContextForTesting(to peerID: UUID) {
+        queue.sync {
+            guard let context = contexts.values.first(where: {
+                $0.expectedPeer?.id == peerID && $0.isAuthenticated
+            }) else {
+                return
+            }
+            context.connection.cancel()
+            remove(context)
+        }
+    }
+
+    func hasPendingConnectForTesting(to peerID: UUID) -> Bool {
+        queue.sync { pendingConnectPeerID == peerID }
+    }
+
     func installAuthenticatedContextForTesting(to peer: PeerIdentity) {
         queue.sync {
             let endpoint = NWEndpoint.hostPort(
@@ -727,16 +861,8 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             )
             context.epoch = connectionEpoch.current()
             context.peerEpoch = peerEpochs.current(for: peer.id)
-            context.isAuthenticated = true
             install(context)
-            activeContextID = ObjectIdentifier(context)
-            pendingConnectPeerID = nil
-            reconnectAttempt = 0
-            cancelReconnect(resetAttempt: false)
-            publishConnection(
-                peerID: peer.id,
-                status: "Encrypted session connected to \(peer.name)"
-            )
+            contextDidAuthenticate(context)
         }
     }
 
@@ -746,6 +872,14 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
 
     func publishAuthenticatedPeerForTesting(_ peerID: UUID) {
         queue.sync {
+            authenticatedPeerIDs.insert(peerID)
+            publishPeerConnection(
+                SecureSessionPeerPublication(
+                    peerID: peerID,
+                    isConnected: true,
+                    admissionGeneration: onAuthenticated?(peerID) ?? 0
+                )
+            )
             publishConnection(
                 peerID: peerID,
                 status: "Encrypted session connected"
@@ -831,108 +965,48 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                     return
                 }
             }
-            let hasClosingContext = contexts.values.contains {
-                $0.isClosing
-            }
-            if hasClosingContext {
-                desiredPeerID = peerID
-                pendingConnectPeerID = peerID
-                publishConnectingPeer(peerID)
-                cancelReconnect(resetAttempt: true)
-                logSecurePhase(
-                    "connect.queued-while-disconnecting",
-                    peerID: peerID
-                )
-                publishStatus("Waiting for the secure session to close…")
-                return
-            }
-            if !automaticPairing,
-               desiredPeerID == peerID,
-               activeContextID == nil,
-               retrySelectedPendingConnection(to: peerID) {
-                locallyDisconnectedPeerIDs.remove(peerID)
-                locallyDisconnectedPeerGenerations.removeValue(forKey: peerID)
-                cancelledConnectPairingGenerations.removeValue(forKey: peerID)
-                return
-            }
-            // A pairing completion can race with the automatic secure
-            // connection it triggers. If authentication wins that race, the
-            // active responder context is already established when this
-            // callback arrives. Preserve the reconnect intent for that same
-            // peer instead of rejecting it with no desiredPeerID; otherwise a
-            // later network interruption would have no target to reconnect.
-            let authenticatedContext = contexts.values.first {
-                $0.isAuthenticated && $0.expectedPeer?.id == peerID
-            }
-            let hasExistingSession = activeContextID != nil
-                || contexts.values.contains(where: {
-                    $0.localRole == .initiator
-                })
-            if hasExistingSession {
-                guard authenticatedContext != nil else {
-                    // A pairing callback can race the very handshake it
-                    // triggered. That in-flight context is the session this
-                    // callback asked for, so record the intent instead of
-                    // telling the user to disconnect a session they just
-                    // created; otherwise this Mac ends up authenticated with
-                    // no reconnect target at all.
-                    if automaticPairing,
-                       contexts.values.contains(
-                           where: { $0.expectedPeer?.id == peerID }
-                       ) {
-                        desiredPeerID = peerID
-                        publishConnectingPeer(peerID)
-                        cancelReconnect(resetAttempt: true)
-                        logSecurePhase(
-                            "connect.intent-recorded-pending-handshake",
-                            peerID: peerID,
-                            detail: "automatic-pairing-race"
-                        )
-                        return
-                    }
-                    logSecurePhase(
-                        "connect.rejected-existing-session",
-                        peerID: peerID,
-                        detail: "desired-peer-preserved-pending-handshake"
-                    )
-                    publishStatus("Disconnect the current secure session first")
-                    return
-                }
-                if !automaticPairing {
-                    locallyDisconnectedPeerIDs.remove(peerID)
-                    locallyDisconnectedPeerGenerations.removeValue(
-                        forKey: peerID
-                    )
-                }
-                pendingConnectPeerID = nil
-                desiredPeerID = peerID
-                publishConnectingPeer(nil)
-                cancelReconnect(resetAttempt: true)
-                logSecurePhase(
-                    "connect.intent-recorded-active-session",
-                    peerID: peerID,
-                    context: authenticatedContext,
-                    detail: "automatic-pairing-race"
-                )
-                publishStatus("Secure session already connected; reconnect target saved")
-                return
-            }
-            // Clear the deliberate-disconnect gate only once this explicit
-            // request is actually eligible to establish a session. A Connect
-            // rejected because another peer is active must leave the gate in
-            // place, or a later automatic callback could undo Disconnect.
             if !automaticPairing {
                 locallyDisconnectedPeerIDs.remove(peerID)
                 locallyDisconnectedPeerGenerations.removeValue(
                     forKey: peerID
                 )
                 cancelledConnectPairingGenerations.removeValue(forKey: peerID)
+                desiredPeerID = peerID
+                selectPeerOnQueue(peerID, connectIfMissing: false)
+            } else if desiredPeerID == nil {
+                desiredPeerID = peerID
+                selectPeerOnQueue(peerID, connectIfMissing: false)
             }
-            pendingConnectPeerID = nil
+            desiredPeerIDs.insert(peerID)
             logSecurePhase("connect.requested", peerID: peerID)
-            desiredPeerID = peerID
-            publishConnectingPeer(peerID)
-            cancelReconnect(resetAttempt: true)
+            cancelReconnect(for: peerID, resetAttempt: true)
+            if let context = contexts.values.first(where: {
+                $0.isAuthenticated
+                    && !$0.isClosing
+                    && $0.expectedPeer?.id == peerID
+            }) {
+                if !automaticPairing || desiredPeerID == peerID {
+                    selectPeerOnQueue(peerID, context: context)
+                }
+                return
+            }
+            if contexts.values.contains(where: {
+                $0.isClosing && $0.expectedPeer?.id == peerID
+            }) {
+                if desiredPeerID == peerID {
+                    pendingConnectPeerID = peerID
+                    publishConnectingPeer(peerID)
+                }
+                logSecurePhase(
+                    "connect.queued-while-disconnecting",
+                    peerID: peerID
+                )
+                return
+            }
+            if !automaticPairing,
+               retrySelectedPendingConnection(to: peerID) {
+                return
+            }
             // Secure Bonjour intentionally filters out identities that are not
             // pinned yet. Pairing can therefore finish after the last browser
             // callback for this service; refresh discovery so the newly pinned
@@ -960,7 +1034,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             isSystemSleeping = true
             scheduleSystemSleepLatchTimeout()
             logSecurePhase("power.will-sleep")
-            cancelReconnect(resetAttempt: true)
+            cancelAllReconnects(resetAttempts: true)
             networkRecoveryGeneration &+= 1
             networkRecoveryWorkItem?.cancel()
             networkRecoveryWorkItem = nil
@@ -1039,7 +1113,9 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         // restarting now, so a zero-delay attempt is guaranteed to find no
         // candidate and publish a false "service is not available" status.
         // Start from the first backed-off step so discovery gets a turn.
-        reconnectAttempt = max(reconnectAttempt, 1)
+        for peerID in desiredPeerIDs {
+            reconnectAttempts[peerID] = max(reconnectAttempts[peerID] ?? 0, 1)
+        }
         retryConnectionIfNeeded()
         publishStatus(
             desiredPeerID == nil
@@ -1053,6 +1129,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
     struct SleepLifecycleSnapshot: Equatable {
         var isSystemSleeping: Bool
         var desiredPeerID: UUID?
+        var desiredPeerIDs: Set<UUID>
         var reconnectAttempt: Int
         var hasScheduledReconnect: Bool
     }
@@ -1062,8 +1139,11 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             SleepLifecycleSnapshot(
                 isSystemSleeping: isSystemSleeping,
                 desiredPeerID: desiredPeerID,
-                reconnectAttempt: reconnectAttempt,
-                hasScheduledReconnect: reconnectWorkItem != nil
+                desiredPeerIDs: desiredPeerIDs,
+                reconnectAttempt: desiredPeerID.flatMap {
+                    reconnectAttempts[$0]
+                } ?? 0,
+                hasScheduledReconnect: !reconnectWorkItems.isEmpty
             )
         }
     }
@@ -1097,15 +1177,61 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         )
     }
 
+    /// Disconnects one paired peer while leaving every other warm session
+    /// available for immediate target selection.
+    func disconnect(_ peerID: UUID) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            logSecurePhase("disconnect.peer-requested", peerID: peerID)
+            desiredPeerIDs.remove(peerID)
+            locallyDisconnectedPeerIDs.insert(peerID)
+            locallyDisconnectedPeerGenerations[peerID] = registry.generation(
+                for: peerID
+            )
+            pendingConnectPeerID = pendingConnectPeerID == peerID
+                ? nil : pendingConnectPeerID
+            cancelReconnect(for: peerID, resetAttempt: true)
+            publishPeerConnecting(peerID, isConnecting: false)
+            if desiredPeerID == peerID {
+                desiredPeerID = nil
+                if let contextID = activeContextID,
+                   let context = contexts[contextID],
+                   context.expectedPeer?.id == peerID {
+                    activeContextID = nil
+                    publishConnection(
+                        peerID: nil,
+                        status: "Secure session disconnected"
+                    )
+                }
+                publishConnectingPeer(nil)
+            }
+            let peerContexts = contexts.values.filter {
+                $0.expectedPeer?.id == peerID
+            }
+            for context in peerContexts {
+                context.suppressesReconnect = true
+                if context.channel != nil {
+                    sendDisconnectSignal(for: context)
+                } else {
+                    context.connection.cancel()
+                    remove(context)
+                }
+            }
+        }
+    }
+
+    /// Session-wide emergency and shutdown disconnect. Normal target switching
+    /// uses `selectPeer(_:)` and does not close any secure context.
     func disconnect() {
         queue.async { [weak self] in
             guard let self else { return }
             logSecurePhase("disconnect.requested")
             let previouslyDesiredPeerID = desiredPeerID
             desiredPeerID = nil
+            desiredPeerIDs.removeAll()
             pendingConnectPeerID = nil
             publishConnectingPeer(nil)
-            cancelReconnect(resetAttempt: true)
+            cancelAllReconnects(resetAttempts: true)
             connectionEpoch.advance()
             // Disconnect is a session-wide local safety action. Cancel every
             // context, including handshakes that have not selected a peer,
@@ -1205,8 +1331,10 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             if desiredPeerID == peerID {
                 desiredPeerID = nil
                 publishConnectingPeer(nil)
-                cancelReconnect(resetAttempt: true)
             }
+            desiredPeerIDs.remove(peerID)
+            cancelReconnect(for: peerID, resetAttempt: true)
+            publishPeerConnecting(peerID, isConnecting: false)
             peerEpochs.advance(for: peerID)
             preferredPeerEndpoints.removeValue(forKey: peerID)
             // Anonymous contexts cannot be safely attributed to a different
@@ -1253,16 +1381,27 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
     }
 
     func send(_ payload: Data) {
+        guard let peerID = connectedPeerID else {
+            publishStatus("No encrypted session is connected")
+            return
+        }
+        send(payload, to: peerID)
+    }
+
+    func send(_ payload: Data, to peerID: UUID) {
         queue.async { [weak self] in
             guard let self,
-                  let activeContextID,
-                  let context = contexts[activeContextID],
+                  let context = contexts.values.first(where: {
+                      $0.isAuthenticated
+                          && !$0.isClosing
+                          && $0.expectedPeer?.id == peerID
+                  }),
                   context.channel != nil else {
                 self?.logSecurePhase(
                     "payload.send.rejected",
-                    detail: "no-active-session"
+                    peerID: peerID,
+                    detail: "peer-session-unavailable"
                 )
-                self?.publishStatus("No encrypted session is connected")
                 return
             }
             guard payload.count <= SecureSessionChannel.maximumPlaintextLength else {
@@ -1327,32 +1466,32 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         guard !isSystemSleeping,
               networkPathSatisfied else {
             logSecurePhase("connect.waiting-for-network", peerID: peerID)
-            publishStatus("Network unavailable; waiting to reconnect")
+            publishPeerConnecting(peerID, isConnecting: true)
+            if desiredPeerID == peerID {
+                publishConnectingPeer(peerID)
+                publishStatus("Network unavailable; waiting to reconnect")
+            }
             return
         }
-        guard activeContextID == nil else {
-            logSecurePhase("connect.rejected-existing-session", peerID: peerID)
-            publishStatus("Disconnect the current secure session first")
-            return
-        }
-        if contexts.values.contains(where: { $0.isClosing }) {
+        if contexts.values.contains(where: {
+            $0.isClosing && $0.expectedPeer?.id == peerID
+        }) {
             pendingConnectPeerID = peerID
-            logSecurePhase(
-                "connect.queued-while-disconnecting",
-                peerID: peerID
-            )
-            publishStatus("Waiting for the secure session to close…")
             return
         }
-        guard !contexts.values.contains(where: { $0.localRole == .initiator }) else {
-            logSecurePhase("connect.rejected-existing-session", peerID: peerID)
-            publishStatus("Disconnect the current secure session first")
+        if contexts.values.contains(where: {
+            $0.expectedPeer?.id == peerID
+                && !$0.isClosing
+        }) {
             return
         }
         guard let candidates = peersByID[peerID], !candidates.isEmpty else {
             logSecurePhase("connect.waiting-for-discovery", peerID: peerID)
-            publishStatus("The paired Mac's secure service is not available; waiting to reconnect")
-            scheduleReconnect()
+            if desiredPeerID == peerID {
+                publishConnectingPeer(peerID)
+                publishStatus("The paired Mac's secure service is not available; waiting to reconnect")
+            }
+            scheduleReconnect(for: peerID)
             return
         }
         let candidateIndex = min(
@@ -1372,7 +1511,11 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             return
         }
 
-        publishStatus("Connecting securely to \(peer.identity.name)…")
+        if desiredPeerID == peerID {
+            publishConnectingPeer(peerID)
+            publishStatus("Connecting securely to \(peer.identity.name)…")
+        }
+        publishPeerConnecting(peerID, isConnecting: true)
 
         // Keep the connect path aligned with the peer-to-peer Bonjour browser.
         // Without this, a service discovered over AWDL can be visible in the
@@ -1491,18 +1634,13 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
     /// ready handshake, incoming connection, active session, or different
     /// peer's context remains untouched.
     private func retrySelectedPendingConnection(to peerID: UUID) -> Bool {
-        guard !isSystemSleeping,
-              activeContextID == nil,
-              !contexts.values.contains(where: {
-                  $0.localRole == .initiator
-                      && $0.expectedPeer?.id != peerID
-              }) else {
-            return false
-        }
+        guard !isSystemSleeping else { return false }
 
-        cancelReconnect(resetAttempt: true)
-        pendingConnectPeerID = nil
-        publishConnectingPeer(peerID)
+        cancelReconnect(for: peerID, resetAttempt: true)
+        if desiredPeerID == peerID {
+            pendingConnectPeerID = nil
+            publishConnectingPeer(peerID)
+        }
 
         if let context = contexts.values.first(where: {
             $0.expectedPeer?.id == peerID
@@ -1570,8 +1708,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             if self.networkPathSatisfied {
                 self.retryConnectionIfNeeded()
             } else {
-                self.reconnectWorkItem?.cancel()
-                self.reconnectWorkItem = nil
+                self.cancelAllReconnects(resetAttempts: false)
                 self.publishReconnecting(true)
                 self.publishStatus("Network unavailable; waiting to reconnect")
             }
@@ -1809,55 +1946,77 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
 
     private func retryConnectionIfNeeded() {
         guard !isSystemSleeping,
-              desiredPeerID != nil,
-              networkPathSatisfied,
-              activeContextID == nil,
-              !contexts.values.contains(where: { $0.localRole == .initiator }) else {
+              networkPathSatisfied else {
             return
         }
-        publishConnectingPeer(desiredPeerID)
-        scheduleReconnect()
+        for peerID in desiredPeerIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
+            guard reconnectWorkItems[peerID] == nil,
+                  !contexts.values.contains(where: {
+                      $0.expectedPeer?.id == peerID
+                  }) else {
+                continue
+            }
+            connectOnQueue(to: peerID)
+        }
     }
 
-    private func scheduleReconnect() {
+    private func scheduleReconnect(for peerID: UUID) {
         guard !isSystemSleeping,
-              let peerID = desiredPeerID,
+              desiredPeerIDs.contains(peerID),
               networkPathSatisfied,
-              activeContextID == nil,
-              !contexts.values.contains(where: { $0.localRole == .initiator }),
-              reconnectWorkItem == nil else {
+              !contexts.values.contains(where: {
+                  $0.expectedPeer?.id == peerID
+              }),
+              reconnectWorkItems[peerID] == nil else {
             return
         }
-        let delay = reconnectBackoff.delay(forAttempt: reconnectAttempt)
-        reconnectAttempt += 1
-        publishConnectingPeer(peerID)
-        publishReconnecting(true)
-        publishStatus(
-            delay == 0
-                ? "Reconnecting to the paired Mac…"
-                : "Secure session lost; retrying in \(Int(ceil(delay)))s…"
-        )
+        let attempt = reconnectAttempts[peerID] ?? 0
+        let delay = reconnectBackoff.delay(forAttempt: attempt)
+        reconnectAttempts[peerID] = attempt + 1
+        if desiredPeerID == peerID {
+            publishConnectingPeer(peerID)
+            publishStatus(
+                delay == 0
+                    ? "Reconnecting to the paired Mac…"
+                    : "Secure session lost; retrying in \(Int(ceil(delay)))s…"
+            )
+        }
         let workItem = DispatchWorkItem { [weak self] in
             guard let self,
-                  desiredPeerID == peerID,
+                  desiredPeerIDs.contains(peerID),
                   networkPathSatisfied else {
                 return
             }
-            reconnectWorkItem = nil
+            reconnectWorkItems.removeValue(forKey: peerID)
+            publishPeerConnecting(peerID, isConnecting: true)
+            publishReconnecting(!reconnectWorkItems.isEmpty)
             connectOnQueue(to: peerID)
         }
-        reconnectWorkItem = workItem
+        reconnectWorkItems[peerID] = workItem
+        publishPeerConnecting(peerID, isConnecting: true)
+        publishReconnecting(true)
         queue.asyncAfter(
             deadline: .now() + delay,
             execute: workItem
         )
     }
 
-    private func cancelReconnect(resetAttempt: Bool) {
-        reconnectWorkItem?.cancel()
-        reconnectWorkItem = nil
+    private func cancelReconnect(
+        for peerID: UUID,
+        resetAttempt: Bool
+    ) {
+        reconnectWorkItems.removeValue(forKey: peerID)?.cancel()
         if resetAttempt {
-            reconnectAttempt = 0
+            reconnectAttempts.removeValue(forKey: peerID)
+        }
+        publishReconnecting(!reconnectWorkItems.isEmpty)
+    }
+
+    private func cancelAllReconnects(resetAttempts: Bool) {
+        reconnectWorkItems.values.forEach { $0.cancel() }
+        reconnectWorkItems.removeAll()
+        if resetAttempts {
+            reconnectAttempts.removeAll()
         }
         publishReconnecting(false)
     }
@@ -2089,9 +2248,10 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
     }
 
     private func accept(_ connection: NWConnection) {
-        guard activeContextID == nil,
-              !contexts.values.contains(where: { $0.isClosing }),
-              contexts.count < Self.maximumPendingConnections,
+        let pendingContextCount = contexts.values.filter {
+            !$0.isAuthenticated
+        }.count
+        guard pendingContextCount < Self.maximumPendingConnections,
               admissionLimiter.allows(
                   eventAt: DispatchTime.now().uptimeNanoseconds
               ) else {
@@ -2353,8 +2513,13 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                                 self.sendHeartbeatAcknowledgement(for: context)
                             }
                         }
-                    if let onHeartbeat {
-                        onHeartbeat(acknowledgement)
+                    if let onHeartbeat,
+                       let peerID = context.expectedPeer?.id {
+                        onHeartbeat(
+                            peerID,
+                            context.admissionGeneration ?? 0,
+                            acknowledgement
+                        )
                     } else {
                         // Keep the transport usable in isolation tests and for
                         // any future embedding that does not own remote input.
@@ -2371,7 +2536,6 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             if !context.isAuthenticated {
                 guard context.localRole == .responder,
                       payload == Self.keyConfirmation,
-                      activeContextID == nil,
                       let peer = context.expectedPeer,
                       registry.publicKey(for: peer.id)
                         == peer.signingPublicKey else {
@@ -2391,21 +2555,15 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                     )
                     throw SecureSessionError.invalidHandshake
                 }
-                context.isAuthenticated = true
-                context.handshakeTimeout?.cancel()
-                activeContextID = ObjectIdentifier(context)
-                reconnectAttempt = 0
-                cancelReconnect(resetAttempt: false)
-                context.admissionGeneration = onAuthenticated?()
+                guard !authenticatedPeerIDs.contains(peer.id) else {
+                    context.suppressesReconnect = true
+                    throw SecureSessionError.invalidHandshake
+                }
+                contextDidAuthenticate(context)
                 updateConnectionProfile(
                     for: peer.id,
                     model: context.peerModel,
                     friendlyName: peer.name
-                )
-                publishConnection(
-                    peerID: peer.id,
-                    status: "Encrypted session connected to \(peer.name)",
-                    admissionGeneration: context.admissionGeneration
                 )
                 logSecurePhase(
                     "session.authenticated",
@@ -2421,7 +2579,14 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             ) else {
                 throw SecureSessionError.invalidFrame
             }
-            onPayload?(payload)
+            guard let peerID = context.expectedPeer?.id else {
+                throw SecureSessionError.invalidFrame
+            }
+            onPayload?(
+                peerID,
+                context.admissionGeneration ?? 0,
+                payload
+            )
         }
     }
 
@@ -2436,13 +2601,18 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         context.pendingPayloads.removeAll()
         context.isSendingPayload = false
         let peerID = context.expectedPeer?.id
-        // Preserve an explicit Connect that was queued while the close was in
-        // flight. A remote disconnect must cancel automatic reconnect intent,
-        // but it must not erase the user's newer Connect request.
+        let wasSelected = desiredPeerID == peerID
+        if let peerID {
+            desiredPeerIDs.remove(peerID)
+            locallyDisconnectedPeerIDs.insert(peerID)
+            locallyDisconnectedPeerGenerations[peerID] = registry.generation(
+                for: peerID
+            )
+            cancelReconnect(for: peerID, resetAttempt: true)
+        }
         if desiredPeerID == peerID, pendingConnectPeerID != peerID {
             desiredPeerID = nil
             publishConnectingPeer(nil)
-            cancelReconnect(resetAttempt: true)
         }
         let wasActive = activeContextID == ObjectIdentifier(context)
         if wasActive {
@@ -2459,7 +2629,9 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
             )
         }
         sendDisconnectAcknowledgement(for: context)
-        publishStatus("Peer disconnected the secure session")
+        if wasSelected {
+            publishStatus("Peer disconnected the secure session")
+        }
     }
 
     private func handle(
@@ -2546,7 +2718,7 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                     return
                 }
                 guard sent,
-                      self.activeContextID == nil,
+                      !self.authenticatedPeerIDs.contains(expectedPeer.id),
                       self.registry.publicKey(for: expectedPeer.id)
                         == expectedPeer.signingPublicKey else {
                     self.logSecurePhase(
@@ -2561,23 +2733,14 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                     return
                 }
                 context.isAuthenticated = true
-                context.handshakeTimeout?.cancel()
                 if let endpoint = context.candidateEndpoint {
                     self.preferredPeerEndpoints[expectedPeer.id] = endpoint
                 }
-                self.activeContextID = ObjectIdentifier(context)
-                self.reconnectAttempt = 0
-                self.cancelReconnect(resetAttempt: false)
-                context.admissionGeneration = self.onAuthenticated?()
+                self.contextDidAuthenticate(context)
                 self.updateConnectionProfile(
                     for: expectedPeer.id,
                     model: context.peerModel,
                     friendlyName: expectedPeer.name
-                )
-                self.publishConnection(
-                    peerID: expectedPeer.id,
-                    status: "Encrypted session connected to \(expectedPeer.name)",
-                    admissionGeneration: context.admissionGeneration
                 )
                 self.logSecurePhase(
                     "key-confirmation.send.confirmed",
@@ -3155,6 +3318,23 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         context.disconnectTimeout = nil
         context.partialFrameDeadline = nil
         contexts.removeValue(forKey: contextID)
+        if let peerID,
+           context.isAuthenticated,
+           !contexts.values.contains(where: {
+               $0.expectedPeer?.id == peerID && $0.isAuthenticated
+           }) {
+            authenticatedPeerIDs.remove(peerID)
+            if pendingConnectPeerID != peerID {
+                publishPeerConnecting(peerID, isConnecting: false)
+            }
+            publishPeerConnection(
+                SecureSessionPeerPublication(
+                    peerID: peerID,
+                    isConnected: false,
+                    admissionGeneration: context.admissionGeneration
+                )
+            )
+        }
         if activeContextID == contextID {
             let admissionGeneration = context.admissionGeneration
             activeContextID = nil
@@ -3164,48 +3344,46 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
                 admissionGeneration: admissionGeneration
             )
         }
-        let startedPendingConnect = startPendingConnectIfReady()
-        let shouldRetry = SecureSessionDisconnectPolicy.shouldRetryAfterRemoval(
-            removedActiveContext: removedActiveContext,
-            localRole: context.localRole,
-            retriesAfterRemoval: context.retriesAfterRemoval,
-            desiredPeerMatches: desiredPeerID == peerID,
-            hasDesiredPeer: desiredPeerID != nil,
-            suppressesReconnect: context.suppressesReconnect
-        )
-        if !startedPendingConnect && shouldRetry && !preferredIncomingPending {
-            retryConnectionIfNeeded()
-        } else if !startedPendingConnect,
-                  !shouldRetry,
-                  let peerID,
-                  selectedConnectingPeerID == peerID,
-                  desiredPeerID != peerID,
-                  pendingConnectPeerID != peerID {
-            publishConnectingPeer(desiredPeerID ?? pendingConnectPeerID)
+        var shouldStartPendingConnect = false
+        if let peerID, pendingConnectPeerID == peerID {
+            let hasRemainingPeerContext = contexts.values.contains {
+                $0.expectedPeer?.id == peerID
+            }
+            let shouldHonorPendingConnect = desiredPeerID == peerID
+                && desiredPeerIDs.contains(peerID)
+            // Retain a selected reconnect intent until every old context for
+            // this peer has been removed.
+            if !(shouldHonorPendingConnect && hasRemainingPeerContext) {
+                pendingConnectPeerID = nil
+                shouldStartPendingConnect = shouldHonorPendingConnect
+            }
+        }
+        let shouldRetry = (peerID.map { desiredPeerIDs.contains($0) } ?? false)
+            && SecureSessionDisconnectPolicy.shouldRetryAfterRemoval(
+                removedActiveContext: removedActiveContext,
+                localRole: context.localRole,
+                retriesAfterRemoval: context.retriesAfterRemoval,
+                desiredPeerMatches: peerID.map {
+                    desiredPeerIDs.contains($0)
+                } ?? false,
+                hasDesiredPeer: !desiredPeerIDs.isEmpty,
+                suppressesReconnect: context.suppressesReconnect
+            )
+        if let peerID, shouldStartPendingConnect {
+            connectOnQueue(to: peerID)
+        } else if let peerID, shouldRetry, !preferredIncomingPending {
+            scheduleReconnect(for: peerID)
+        } else if let peerID,
+                  desiredPeerID == peerID,
+                  pendingConnectPeerID == nil {
+            publishConnectingPeer(nil)
         }
         logSecurePhase(
             "context.removed",
             peerID: peerID,
             context: context,
-            detail: "active=\(removedActiveContext) retry=\(shouldRetry && !preferredIncomingPending && !startedPendingConnect)"
+            detail: "active=\(removedActiveContext) retry=\(shouldRetry && !preferredIncomingPending)"
         )
-    }
-
-    private func startPendingConnectIfReady() -> Bool {
-        guard let peerID = pendingConnectPeerID,
-              desiredPeerID == peerID,
-              activeContextID == nil,
-              contexts.isEmpty else {
-            return false
-        }
-        pendingConnectPeerID = nil
-        locallyDisconnectedPeerIDs.remove(peerID)
-        locallyDisconnectedPeerGenerations.removeValue(forKey: peerID)
-        if peersByID[peerID]?.isEmpty != false {
-            refreshBrowserOnQueue()
-        }
-        connectOnQueue(to: peerID)
-        return true
     }
 
     /// Sends an authenticated close marker before canceling the local socket.
@@ -3370,7 +3548,9 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         message: String
     ) {
         logSecurePhase("session.failed", context: context, detail: message)
-        publishStatus(message)
+        if context.expectedPeer?.id == desiredPeerID {
+            publishStatus(message)
+        }
         context.connection.cancel()
         remove(context, advanceCandidate: true)
     }
@@ -3389,12 +3569,11 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         on connection: NWConnection,
         completion: ((Bool) -> Void)? = nil
     ) {
-        connection.send(content: data, completion: .contentProcessed { [weak self] error in
+        connection.send(content: data, completion: .contentProcessed { error in
             if let error {
                 MacKVMLogger.secureSession.error(
                     "phase=wire.send.failed error=\(error.localizedDescription, privacy: .public)"
                 )
-                self?.publishStatus("Secure send failed: \(error.localizedDescription)")
                 connection.cancel()
             }
             completion?(error == nil)
@@ -3473,6 +3652,74 @@ final class SecureSessionService: ObservableObject, ControlSessionTransport {
         selectedConnectingPeerID = peerID
         DispatchQueue.main.async { [weak self] in
             self?.connectingPeerID = peerID
+        }
+    }
+
+    private func publishConnectingPeerIDs(_ peerIDs: Set<UUID>) {
+        DispatchQueue.main.async { [weak self] in
+            self?.connectingPeerIDs = peerIDs
+        }
+    }
+
+    private func publishPeerConnecting(
+        _ peerID: UUID,
+        isConnecting: Bool
+    ) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if isConnecting {
+                connectingPeerIDs.insert(peerID)
+            } else {
+                connectingPeerIDs.remove(peerID)
+            }
+        }
+    }
+
+    private func publishConnectedPeerIDs(_ peerIDs: Set<UUID>) {
+        DispatchQueue.main.async { [weak self] in
+            self?.connectedPeerIDs = peerIDs
+        }
+    }
+
+    private func publishPeerConnection(
+        _ publication: SecureSessionPeerPublication
+    ) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if publication.isConnected {
+                connectedPeerIDs.insert(publication.peerID)
+            } else {
+                connectedPeerIDs.remove(publication.peerID)
+            }
+            peerConnectionPublicationSubject.send(publication)
+        }
+    }
+
+    private func contextDidAuthenticate(_ context: SessionConnectionContext) {
+        guard let peer = context.expectedPeer else { return }
+        let peerID = peer.id
+        context.isAuthenticated = true
+        context.handshakeTimeout?.cancel()
+        context.admissionGeneration = onAuthenticated?(peerID) ?? 0
+        authenticatedPeerIDs.insert(peerID)
+        publishPeerConnecting(peerID, isConnecting: false)
+        publishPeerConnection(
+            SecureSessionPeerPublication(
+                peerID: peerID,
+                isConnected: true,
+                admissionGeneration: context.admissionGeneration
+            )
+        )
+        cancelReconnect(for: peerID, resetAttempt: false)
+        if desiredPeerID == nil {
+            desiredPeerID = peerID
+        }
+        if desiredPeerID == peerID {
+            selectPeerOnQueue(
+                peerID,
+                context: context,
+                connectIfMissing: false
+            )
         }
     }
 

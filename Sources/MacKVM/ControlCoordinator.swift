@@ -42,21 +42,43 @@ struct ControlConnectionPublication: Equatable {
     let admissionGeneration: UInt64?
 }
 
+struct SecureSessionPeerPublication: Equatable {
+    let peerID: UUID
+    let isConnected: Bool
+    let admissionGeneration: UInt64?
+}
+
+private struct ControlPeerSession: Equatable {
+    let peerID: UUID
+    let generation: UInt64
+}
+
+private struct IncomingRequestSessionKey: Hashable {
+    let requestID: UUID
+    let peerID: UUID
+}
+
 /// Narrow abstractions keep the consent coordinator testable without changing
 /// the production secure-session or input-service implementations.
 protocol ControlSessionTransport: AnyObject {
     var connectedPeerID: UUID? { get }
+    var connectedPeerIDs: Set<UUID> { get }
     var connectedPeerIDPublisher: AnyPublisher<UUID?, Never> { get }
     var connectionPublicationPublisher:
         AnyPublisher<ControlConnectionPublication, Never> { get }
-    var onPayload: ((Data) -> Void)? { get set }
-    var onAuthenticated: (() -> UInt64)? { get set }
-    var onHeartbeat: ((SecureSessionHeartbeatAcknowledgement) -> Void)? {
+    var peerConnectionPublicationPublisher:
+        AnyPublisher<SecureSessionPeerPublication, Never> { get }
+    var onPayload: ((UUID, UInt64, Data) -> Void)? { get set }
+    var onAuthenticated: ((UUID) -> UInt64)? { get set }
+    var onHeartbeat: ((UUID, UInt64, SecureSessionHeartbeatAcknowledgement) -> Void)? {
         get set
     }
 
-    func send(_ payload: Data)
+    func isConnected(to peerID: UUID) -> Bool
+    func selectPeer(_ peerID: UUID)
+    func send(_ payload: Data, to peerID: UUID)
     func disconnect()
+    func disconnect(_ peerID: UUID)
 }
 
 protocol ControlInputCapture: AnyObject {
@@ -67,6 +89,8 @@ protocol ControlInputCapture: AnyObject {
     var onEmergencyStop: (() -> Void)? { get set }
     var onSwitchControl: (() -> Void)? { get set }
     var onSwitchMonitor: (() -> Void)? { get set }
+    var onCycleInputTarget: (() -> Void)? { get set }
+    var onSelectInputTarget: ((Int) -> Void)? { get set }
 
     func refreshPermission()
     func startCapture(suppressingLocalEvents: Bool)
@@ -165,6 +189,7 @@ final class ControlCoordinator: ObservableObject {
     private let remoteInputPermissionProbe: any RuntimePermissionProbing
     private var machine = ControlSessionStateMachine()
     private var connectionObservation: AnyCancellable?
+    private var peerConnectionObservation: AnyCancellable?
     private var requestTimeout: DispatchWorkItem?
     private var incomingRequestTimeout: DispatchWorkItem?
     private var activeOutboundRequestID: UUID?
@@ -194,19 +219,20 @@ final class ControlCoordinator: ObservableObject {
         (generation: UInt64, operation: any RuntimePermissionProbeResource)?
     private var receiverTeardown: ReceiverTeardown?
     private var transientRemoteInputTeardownCompletions: [() -> Void] = []
+    private struct PendingHeartbeatAcknowledgement {
+        let session: ControlPeerSession
+        let acknowledgement: SecureSessionHeartbeatAcknowledgement
+    }
     private var pendingHeartbeatAcknowledgements:
-        [SecureSessionHeartbeatAcknowledgement] = []
+        [PendingHeartbeatAcknowledgement] = []
     private var isStoppingForQuit = false
-    private var hasObservedConnectionState = false
-    private var observedConnectedPeerID: UUID?
-    private var observedAdmissionGeneration: UInt64?
-    // Starts enabled so a payload cannot race the first asynchronous
-    // connected-peer publisher update; authentication re-activates it after
-    // a disconnect invalidates the previous generation.
-    private let inboundAdmission = BoundedAdmissionGate(
-        capacity: BoundedAdmissionGate.defaultCapacity,
-        initiallyEnabled: true
-    )
+    private var observedSelectedPeerID: UUID?
+    private var observedSelectedAdmissionGeneration: UInt64?
+    private let peerAdmissionLock = NSLock()
+    private var inboundAdmissions: [UUID: BoundedAdmissionGate] = [:]
+    private var incomingRequestSessions: [IncomingRequestSessionKey: ControlPeerSession] = [:]
+    private var activeOutboundSession: ControlPeerSession?
+    private var activeInboundSession: ControlPeerSession?
 
     deinit {
         pendingRemoteInputPermissionProbe?.operation.cancel()
@@ -257,18 +283,18 @@ final class ControlCoordinator: ObservableObject {
         self.clipboardSyncEnabled = clipboardSyncEnabled
         self.clipboardSync = clipboardSync
         self.remoteInputPermissionProbe = remoteInputPermissionProbe
-        // Treat the initial publisher value as describing the gate's initial
-        // generation. If authentication races that first nil delivery, the
-        // nil event must not invalidate the newer authenticated generation.
-        observedAdmissionGeneration = inboundAdmission.currentGeneration()
-
         inputCapture.onEvent = { [weak self] event in
             guard let self,
                   state == .controlling,
-                  let requestID = activeOutboundRequestID else {
+                  let requestID = activeOutboundRequestID,
+                  let session = activeOutboundSession else {
                 return
             }
-            send(.input(event, requestID: requestID))
+            send(
+                .input(event, requestID: requestID),
+                to: session,
+                requiringSelection: true
+            )
         }
         clipboardSync.onLocalTextChange = { [weak self] text in
             self?.sendClipboardText(text)
@@ -291,30 +317,82 @@ final class ControlCoordinator: ObservableObject {
         inputSink.onControlFailure = { [weak self] failure in
             self?.remoteInputSinkFailed(failure)
         }
-        secureSession.onPayload = { [weak self] data in
-            self?.receive(data)
+        secureSession.onPayload = { [weak self] peerID, generation, data in
+            self?.receive(data, from: ControlPeerSession(
+                peerID: peerID,
+                generation: generation
+            ))
         }
-        secureSession.onHeartbeat = { [weak self] acknowledgement in
+        secureSession.onHeartbeat = { [weak self] peerID, generation, acknowledgement in
             guard let self else {
                 acknowledgement.complete()
                 return
             }
-            self.acknowledgeHeartbeatAfterControlPathProgress(acknowledgement)
+            self.acknowledgeHeartbeatAfterControlPathProgress(
+                acknowledgement,
+                from: ControlPeerSession(
+                    peerID: peerID,
+                    generation: generation
+                )
+            )
         }
-        secureSession.onAuthenticated = { [weak self] in
+        secureSession.onAuthenticated = { [weak self] peerID in
             guard let self else { return 0 }
-            // Authentication starts a fresh generation even if the previous
-            // disconnect is still waiting in the main-queue publisher. The
-            // returned token travels with that publication, so stale UI
-            // events cannot invalidate a newer authenticated session.
-            self.inboundAdmission.begin()
-            return self.inboundAdmission.currentGeneration()
+            return self.beginInboundSession(for: peerID)
         }
         connectionObservation = secureSession.connectionPublicationPublisher
             .receive(on: DispatchQueue.main)
             .sink { [weak self] publication in
                 self?.connectionChanged(publication)
             }
+        peerConnectionObservation = secureSession.peerConnectionPublicationPublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] publication in
+                self?.peerConnectionChanged(publication)
+            }
+    }
+
+    private func admissionGate(for peerID: UUID) -> BoundedAdmissionGate {
+        peerAdmissionLock.lock()
+        defer { peerAdmissionLock.unlock() }
+        if let gate = inboundAdmissions[peerID] {
+            return gate
+        }
+        // A session may deliver its first authenticated payload before the
+        // main-queue connection publication. Keep that narrow race open, then
+        // let the authentication callback advance the peer's generation.
+        let gate = BoundedAdmissionGate(
+            capacity: BoundedAdmissionGate.defaultCapacity,
+            initiallyEnabled: true
+        )
+        inboundAdmissions[peerID] = gate
+        return gate
+    }
+
+    private func beginInboundSession(for peerID: UUID) -> UInt64 {
+        let gate = admissionGate(for: peerID)
+        gate.begin()
+        return gate.currentGeneration()
+    }
+
+    private func currentSession(for peerID: UUID) -> ControlPeerSession {
+        ControlPeerSession(
+            peerID: peerID,
+            generation: admissionGate(for: peerID).currentGeneration()
+        )
+    }
+
+    private func isCurrentSession(
+        _ session: ControlPeerSession,
+        requiringSelection: Bool = false
+    ) -> Bool {
+        guard admissionGate(for: session.peerID).currentGeneration()
+                == session.generation,
+              secureSession.isConnected(to: session.peerID) else {
+            return false
+        }
+        return !requiringSelection
+            || secureSession.connectedPeerID == session.peerID
     }
 
     /// Performs the same side-effect-free admission checks used immediately
@@ -335,7 +413,8 @@ final class ControlCoordinator: ObservableObject {
             status = "Wait for remote input to finish returning locally"
             return false
         }
-        guard secureSession.connectedPeerID != nil else {
+        guard let peerID = secureSession.connectedPeerID,
+              secureSession.isConnected(to: peerID) else {
             status = "Connect to a paired Mac first"
             return false
         }
@@ -380,7 +459,14 @@ final class ControlCoordinator: ObservableObject {
             completion?(false)
             return false
         }
-        guard let peerID = secureSession.connectedPeerID else {
+        guard let peerID = secureSession.connectedPeerID,
+              secureSession.isConnected(to: peerID) else {
+            completion?(false)
+            return false
+        }
+        let session = currentSession(for: peerID)
+        guard isCurrentSession(session, requiringSelection: true) else {
+            status = "Connect to a paired Mac first"
             completion?(false)
             return false
         }
@@ -388,6 +474,7 @@ final class ControlCoordinator: ObservableObject {
             let requestID = UUID()
             state = try machine.handle(.requestControl)
             activeOutboundRequestID = requestID
+            activeOutboundSession = session
             activeControlRequestCompletion = completion
             activeControlDisplayAlreadyRemote = displayAlreadyRemote
             activeControlManagesDisplayRoute = managesDisplayRoute
@@ -398,7 +485,8 @@ final class ControlCoordinator: ObservableObject {
                     keyboardLayoutIdentifier: keyboardLayoutIdentifier(),
                     managesDisplayRoute: managesDisplayRoute,
                     clipboardEnabled: clipboardSyncEnabled(peerID)
-                )
+                ),
+                to: session
             )
             scheduleRequestTimeout()
             return true
@@ -453,7 +541,8 @@ final class ControlCoordinator: ObservableObject {
     /// explicit display-and-input return even if K started the session.
     func stopControl(
         reason: String = "Control returned locally",
-        returnDisplayLocally: Bool = false
+        returnDisplayLocally: Bool = false,
+        preserveDisplayRoute: Bool = false
     ) {
         if isReceivingControl {
             endReceivingControl(reason: reason)
@@ -485,17 +574,20 @@ final class ControlCoordinator: ObservableObject {
         inputCapture.stopCapture()
         if state == .controlling || state == .suspended {
             let requestID = activeOutboundRequestID
+            let session = activeOutboundSession
             _ = try? machine.handle(.stopControl)
             state = machine.state
             activeOutboundRequestID = nil
+            activeOutboundSession = nil
             activeControlDisplayAlreadyRemote = false
             activeControlManagesDisplayRoute = true
-            if let requestID {
+            if let requestID, let session {
                 send(
                     ControlMessage(
                         kind: .endControl,
                         requestID: requestID
-                    )
+                    ),
+                    to: session
                 )
             }
         }
@@ -505,10 +597,13 @@ final class ControlCoordinator: ObservableObject {
         // A live manual-monitor (K) session must end input without touching
         // the display the user routed by hand; the plain and combined routes
         // still restore the local display here.
-        if (wasControlling && (sessionManagedDisplayRoute || returnDisplayLocally))
-            || (wasWaitingForControlGrant
-                && ((sessionManagedDisplayRoute && !displayWasAlreadyRemote)
-                    || returnDisplayLocally)) {
+        if !preserveDisplayRoute
+            && ((wasControlling
+                    && (sessionManagedDisplayRoute || returnDisplayLocally))
+                || (wasWaitingForControlGrant
+                    && ((sessionManagedDisplayRoute
+                            && !displayWasAlreadyRemote)
+                        || returnDisplayLocally))) {
             onControllingStopped?()
         }
         if wasControlling {
@@ -530,6 +625,14 @@ final class ControlCoordinator: ObservableObject {
             status = "Control request expired before Allow was selected"
             return
         }
+        guard let session = sessionBinding(for: request),
+              isCurrentSession(session) else {
+            cancelIncomingControlRequest(
+                request,
+                reason: "Control request expired because the secure session changed"
+            )
+            return
+        }
         incomingRequestTimeout?.cancel()
         incomingRequestTimeout = nil
         resolvePendingIncomingControlRequest(request)
@@ -542,11 +645,6 @@ final class ControlCoordinator: ObservableObject {
             )
             return
         }
-        guard secureSession.connectedPeerID == request.peerID else {
-            status = "Control request expired because the secure session changed"
-            return
-        }
-
         let authorizationGeneration = beginIncomingAuthorizationGeneration()
         preparingIncomingControlRequest = request
         preparingIncomingAuthorizationGeneration = authorizationGeneration
@@ -658,17 +756,20 @@ final class ControlCoordinator: ObservableObject {
         let wasWaitingForControlGrant = state == .suspended
         if state == .controlling || state == .suspended {
             let requestID = activeOutboundRequestID
+            let session = activeOutboundSession
             _ = try? machine.handle(.stopControl)
             state = machine.state
             activeOutboundRequestID = nil
+            activeOutboundSession = nil
             activeControlDisplayAlreadyRemote = false
             activeControlManagesDisplayRoute = true
-            if let requestID {
+            if let requestID, let session {
                 send(
                     ControlMessage(
                         kind: .endControl,
                         requestID: requestID
-                    )
+                    ),
+                    to: session
                 )
             }
         }
@@ -712,15 +813,25 @@ final class ControlCoordinator: ObservableObject {
         status = "MacKVM is quitting"
     }
 
-    private func receive(_ data: Data) {
-        let admission = inboundAdmission.reserve()
+    private func receive(
+        _ data: Data,
+        from session: ControlPeerSession
+    ) {
+        let gate = admissionGate(for: session.peerID)
+        guard gate.currentGeneration() == session.generation else { return }
+        let admission = gate.reserve()
         guard admission.accepted else {
             if admission.shouldSignalFailure {
                 // Control messages include state transitions and key/button
                 // releases. Once the main queue cannot keep up, terminate
-                // the encrypted session instead of silently losing ordering.
-                secureSession.disconnect()
+                // only this encrypted session instead of silently losing
+                // ordering for one peer while interrupting unrelated peers.
+                secureSession.disconnect(session.peerID)
             }
+            return
+        }
+        guard admission.generation == session.generation else {
+            gate.release(admission)
             return
         }
         let message: ControlMessage
@@ -728,17 +839,18 @@ final class ControlCoordinator: ObservableObject {
             message = try ControlMessageCodec.decode(data)
         } catch {
             DispatchQueue.main.async { [weak self] in
-                self?.inboundAdmission.release(admission)
-                self?.status = "Rejected an invalid control message"
+                gate.release(admission)
+                guard let self, self.isCurrentSession(session) else { return }
+                self.status = "Rejected an invalid control message"
             }
             return
         }
         DispatchQueue.main.async { [weak self] in
+            defer { gate.release(admission) }
             guard let self else { return }
-            let isCurrent = self.inboundAdmission.isCurrent(admission)
-            self.inboundAdmission.release(admission)
-            guard isCurrent else { return }
-            self.handle(message)
+            guard gate.isCurrent(admission),
+                  self.isCurrentSession(session) else { return }
+            self.handle(message, from: session)
         }
     }
 
@@ -747,7 +859,8 @@ final class ControlCoordinator: ObservableObject {
     /// acknowledge heartbeats while the main or injection queue is stalled,
     /// leaving the controller with a live lease and no usable control path.
     private func acknowledgeHeartbeatAfterControlPathProgress(
-        _ acknowledgement: SecureSessionHeartbeatAcknowledgement
+        _ acknowledgement: SecureSessionHeartbeatAcknowledgement,
+        from session: ControlPeerSession
     ) {
         DispatchQueue.main.async { [weak self] in
             guard let self else {
@@ -755,17 +868,31 @@ final class ControlCoordinator: ObservableObject {
                 return
             }
             guard !self.isStoppingForQuit else { return }
+            guard self.isCurrentSession(session) else {
+                acknowledgement.complete()
+                return
+            }
             guard !self.isRemoteInputTearingDown else {
+                guard self.activeTeardownSession == session else {
+                    acknowledgement.complete()
+                    return
+                }
                 // During receiver teardown, deliberately retain this
                 // acknowledgement. A stalled release/monitor-restoration path
                 // must still let the peer's heartbeat lease expire, but a
                 // teardown that completes normally should release the same
                 // token below instead of making a healthy session wait for its
                 // 15-second timeout.
-                self.pendingHeartbeatAcknowledgements.append(acknowledgement)
+                self.pendingHeartbeatAcknowledgements.append(
+                    PendingHeartbeatAcknowledgement(
+                        session: session,
+                        acknowledgement: acknowledgement
+                    )
+                )
                 return
             }
-            guard self.isReceivingControl else {
+            guard self.isReceivingControl,
+                  self.activeInboundSession == session else {
                 // With no active receiver there is no remote-input queue to
                 // prove. The secure session itself is still a valid lease.
                 acknowledgement.complete()
@@ -778,14 +905,29 @@ final class ControlCoordinator: ObservableObject {
                         return
                     }
                     guard !self.isStoppingForQuit else { return }
+                    guard self.isCurrentSession(session) else {
+                        acknowledgement.complete()
+                        return
+                    }
                     if self.isRemoteInputTearingDown {
+                        guard self.activeTeardownSession == session else {
+                            acknowledgement.complete()
+                            return
+                        }
                         // Teardown may begin after the input barrier was
                         // queued but before its callback reaches the main
                         // queue. Re-evaluate this token when teardown finishes.
-                        self.pendingHeartbeatAcknowledgements.append(acknowledgement)
+                        self.pendingHeartbeatAcknowledgements.append(
+                            PendingHeartbeatAcknowledgement(
+                                session: session,
+                                acknowledgement: acknowledgement
+                            )
+                        )
                         return
                     }
-                    if didProgress || !self.isReceivingControl {
+                    if self.activeInboundSession != session
+                        || didProgress
+                        || !self.isReceivingControl {
                         acknowledgement.complete()
                     }
                 }
@@ -793,25 +935,51 @@ final class ControlCoordinator: ObservableObject {
         }
     }
 
-    private func completeDeferredHeartbeatAcknowledgements() {
-        guard !isRemoteInputTearingDown else { return }
-        let acknowledgements = pendingHeartbeatAcknowledgements
-        pendingHeartbeatAcknowledgements.removeAll()
-        guard !isStoppingForQuit else { return }
-        acknowledgements.forEach { $0.complete() }
+    private var activeTeardownSession: ControlPeerSession? {
+        receiverTeardown.flatMap { sessionBinding(for: $0.request) }
     }
 
-    private func handle(_ message: ControlMessage) {
+    private func completeDeferredHeartbeatAcknowledgements(
+        for session: ControlPeerSession? = nil
+    ) {
+        guard !isRemoteInputTearingDown else { return }
+        let acknowledgements: [PendingHeartbeatAcknowledgement]
+        if let session {
+            acknowledgements = pendingHeartbeatAcknowledgements.filter {
+                $0.session == session
+            }
+            pendingHeartbeatAcknowledgements.removeAll {
+                $0.session == session
+            }
+        } else {
+            acknowledgements = pendingHeartbeatAcknowledgements
+            pendingHeartbeatAcknowledgements.removeAll()
+        }
         guard !isStoppingForQuit else { return }
+        acknowledgements.forEach { $0.acknowledgement.complete() }
+    }
+
+    private func handle(
+        _ message: ControlMessage,
+        from session: ControlPeerSession
+    ) {
+        guard !isStoppingForQuit,
+              isCurrentSession(session) else { return }
         switch message.kind {
         case .requestControl:
             guard let requestID = message.requestID else { return }
-            handleControlRequest(message: message, requestID: requestID)
+            handleControlRequest(
+                message: message,
+                requestID: requestID,
+                session: session
+            )
         case .controlGranted:
-            guard message.requestID == activeOutboundRequestID else { return }
+            guard session == activeOutboundSession,
+                  message.requestID == activeOutboundRequestID else { return }
             handleControlGranted(message: message)
         case .controlDenied:
             guard state == .suspended,
+                  session == activeOutboundSession,
                   message.requestID == activeOutboundRequestID else {
                 return
             }
@@ -819,13 +987,15 @@ final class ControlCoordinator: ObservableObject {
             _ = try? machine.handle(.stopControl)
             state = machine.state
             activeOutboundRequestID = nil
+            activeOutboundSession = nil
             stopClipboardSync()
             activeControlDisplayAlreadyRemote = false
             activeControlManagesDisplayRoute = true
             completeActiveControlRequest(false)
             status = "The other device denied control"
         case .endControl:
-            if message.requestID == activeOutboundRequestID,
+            if session == activeOutboundSession,
+               message.requestID == activeOutboundRequestID,
                (state == .controlling || state == .suspended) {
                 let wasControlling = state == .controlling
                 let wasWaitingForControlGrant = state == .suspended
@@ -836,6 +1006,7 @@ final class ControlCoordinator: ObservableObject {
                 _ = try? machine.handle(.stopControl)
                 state = machine.state
                 activeOutboundRequestID = nil
+                activeOutboundSession = nil
                 stopClipboardSync()
                 activeControlDisplayAlreadyRemote = false
                 activeControlManagesDisplayRoute = true
@@ -853,14 +1024,16 @@ final class ControlCoordinator: ObservableObject {
                 status = "The other device ended control; input is local"
             }
             if let request = pendingIncomingControlRequest,
-               message.requestID == request.id {
+               message.requestID == request.id,
+               sessionBinding(for: request) == session {
                 cancelIncomingControlRequest(
                     request,
                     reason: "The other device cancelled its control request"
                 )
             }
             if let request = preparingIncomingControlRequest,
-               message.requestID == request.id {
+               message.requestID == request.id,
+               sessionBinding(for: request) == session {
                 cancelIncomingControlRequest(
                     request,
                     reason: "The other device cancelled its control request"
@@ -868,6 +1041,7 @@ final class ControlCoordinator: ObservableObject {
             }
             if let request = activeInboundControlRequest,
                message.requestID == request.id,
+               activeInboundSession == session,
                isReceivingControl {
                 finishReceivingControl(
                     request,
@@ -878,13 +1052,16 @@ final class ControlCoordinator: ObservableObject {
         case .input:
             if let input = message.input,
                message.requestID == activeInboundControlRequest?.id,
+               activeInboundSession == session,
                isReceivingControl {
                 inputSink.receive(input)
             }
         case .clipboard:
             let matchesActiveRequest =
-                message.requestID == activeOutboundRequestID
-                    || message.requestID == activeInboundControlRequest?.id
+                (session == activeOutboundSession
+                    && message.requestID == activeOutboundRequestID)
+                    || (session == activeInboundSession
+                        && message.requestID == activeInboundControlRequest?.id)
             if let text = message.clipboardText,
                clipboardSyncIsActive,
                matchesActiveRequest,
@@ -896,24 +1073,39 @@ final class ControlCoordinator: ObservableObject {
 
     private func handleControlRequest(
         message: ControlMessage,
-        requestID: UUID
+        requestID: UUID,
+        session: ControlPeerSession
     ) {
-        guard let peerID = secureSession.connectedPeerID else {
-            status = "Ignored a control request without a secure session"
-            return
-        }
         let request = IncomingControlRequest(
             id: requestID,
-            peerID: peerID,
+            peerID: session.peerID,
             managesDisplayRoute: message.managesDisplayRoute ?? true,
             supportsClipboard: message.supportsClipboard,
             clipboardEnabled: message.clipboardEnabled
         )
+        if let existing = preparingIncomingControlRequest
+            ?? pendingIncomingControlRequest
+            ?? activeInboundControlRequest,
+           existing.id == requestID,
+           existing.peerID == session.peerID {
+            guard sessionBinding(for: existing) != session else { return }
+            // A peer can reconnect and replay a request ID while its previous
+            // consent prompt is still visible. Preserve the old prompt's
+            // generation binding and reject the replayed request directly to
+            // the new session so the old UI action cannot authorize it.
+            send(
+                ControlMessage(kind: .controlDenied, requestID: requestID),
+                to: session
+            )
+            return
+        }
+        bind(request, to: session)
         guard ControlProtocolCompatibility.isCompatible(
             remoteVersion: message.protocolVersion,
             remoteMinimumVersion: message.minimumProtocolVersion
         ) else {
             sendResponse(kind: .controlDenied, for: request)
+            removeSessionBinding(for: request)
             status = "Denied control: the other device uses an incompatible protocol"
             return
         }
@@ -930,11 +1122,13 @@ final class ControlCoordinator: ObservableObject {
            remoteLayout != localLayout,
            (message.protocolVersion ?? 1) < 2 {
             sendResponse(kind: .controlDenied, for: request)
+            removeSessionBinding(for: request)
             status = "Denied control: the other device's keyboard layout differs and its MacKVM version cannot remap it"
             return
         }
         guard !isRemoteInputTearingDown else {
             sendResponse(kind: .controlDenied, for: request)
+            removeSessionBinding(for: request)
             status = "Denied a control request while remote input is returning locally"
             return
         }
@@ -943,16 +1137,14 @@ final class ControlCoordinator: ObservableObject {
                 kind: .controlDenied,
                 for: request
             )
+            removeSessionBinding(for: request)
             status = "Denied a second request while remote control is active"
-            return
-        }
-        if pendingIncomingControlRequest?.id == requestID
-            || preparingIncomingControlRequest?.id == requestID {
             return
         }
         guard pendingIncomingControlRequest == nil,
               preparingIncomingControlRequest == nil else {
             sendResponse(kind: .controlDenied, for: request)
+            removeSessionBinding(for: request)
             status = "Denied a second control request while another is pending"
             return
         }
@@ -962,19 +1154,21 @@ final class ControlCoordinator: ObservableObject {
                 kind: .controlDenied,
                 for: request
             )
+            removeSessionBinding(for: request)
             status = inputSink.permissionDenialReason
             return
         }
         if state == .controlling || state == .suspended {
             let localWins = PeerArbitration.localIDWins(
                 localID: localID,
-                remoteID: peerID
+                remoteID: session.peerID
             )
             if localWins {
                 sendResponse(
                     kind: .controlDenied,
                     for: request
                 )
+                removeSessionBinding(for: request)
                 status = "Kept local control after a simultaneous request"
                 return
             }
@@ -987,7 +1181,7 @@ final class ControlCoordinator: ObservableObject {
             }
         }
         pendingIncomingControlRequest = request
-        if seamlessControlAuthorized(peerID) {
+        if seamlessControlAuthorized(session.peerID) {
             // This is a local, receiver-side one-time authorization for the
             // already authenticated pinned peer. Keep the same acceptance
             // path so Accessibility checks, session freshness, teardown, and
@@ -1046,13 +1240,16 @@ final class ControlCoordinator: ObservableObject {
             )
             return
         }
-        guard secureSession.connectedPeerID == request.peerID else {
+        guard let session = sessionBinding(for: request),
+              isCurrentSession(session) else {
             endTransientRemoteInput()
             status = "Control request expired because the secure session changed"
+            removeSessionBinding(for: request)
             return
         }
 
         activeInboundControlRequest = request
+        activeInboundSession = session
         isReceivingControl = true
         let clipboardIsMutuallyEnabled = clipboardSyncEnabled(request.peerID)
             && request.supportsClipboard == true
@@ -1096,7 +1293,9 @@ final class ControlCoordinator: ObservableObject {
             && incomingAuthorizationGeneration == generation
             && preparingIncomingAuthorizationGeneration == generation
             && preparingIncomingControlRequest == request
-            && secureSession.connectedPeerID == request.peerID
+            && sessionBinding(for: request).map {
+                isCurrentSession($0)
+            } == true
     }
 
     private func completeIncomingPermissionProbe(
@@ -1164,20 +1363,25 @@ final class ControlCoordinator: ObservableObject {
         requestTimeout?.cancel()
         requestTimeout = nil
         let grantedRequestID = activeOutboundRequestID
-        let grantedPeerID = secureSession.connectedPeerID
+        let grantedSession = activeOutboundSession
         do {
             state = try machine.handle(.controlGranted)
             inputCapture.startCapture(suppressingLocalEvents: true)
             let grantIsStillCurrent = {
                 grantedRequestID != nil
-                    && grantedPeerID != nil
+                    && grantedSession != nil
                     && self.state == .controlling
                     && self.activeOutboundRequestID == grantedRequestID
-                    && self.secureSession.connectedPeerID == grantedPeerID
+                    && self.activeOutboundSession == grantedSession
+                    && grantedSession.map {
+                        self.isCurrentSession($0, requiringSelection: true)
+                    } == true
             }
             guard grantIsStillCurrent() else {
-                inputCapture.stopCapture()
-                completeActiveControlRequest(false)
+                rejectStaleControlGrant(
+                    requestID: grantedRequestID,
+                    session: grantedSession
+                )
                 return
             }
 
@@ -1187,8 +1391,10 @@ final class ControlCoordinator: ObservableObject {
             inputCapture.refreshPermission()
             inputSink.refreshPermission()
             guard grantIsStillCurrent() else {
-                inputCapture.stopCapture()
-                completeActiveControlRequest(false)
+                rejectStaleControlGrant(
+                    requestID: grantedRequestID,
+                    session: grantedSession
+                )
                 return
             }
             guard inputCapture.isCapturing,
@@ -1199,14 +1405,16 @@ final class ControlCoordinator: ObservableObject {
                 _ = try? machine.handle(.stopControl)
                 state = machine.state
                 activeOutboundRequestID = nil
+                activeOutboundSession = nil
                 activeControlDisplayAlreadyRemote = false
                 activeControlManagesDisplayRoute = true
-                if let requestID {
+                if let requestID, let grantedSession {
                     send(
                         ControlMessage(
                             kind: .endControl,
                             requestID: requestID
-                        )
+                        ),
+                        to: grantedSession
                     )
                 }
                 completeActiveControlRequest(false)
@@ -1218,7 +1426,7 @@ final class ControlCoordinator: ObservableObject {
             if !displayAlreadyRemote && activeControlManagesDisplayRoute {
                 onControllingStarted?()
             }
-            if let peerID = secureSession.connectedPeerID {
+            if let peerID = grantedSession?.peerID {
                 if clipboardSyncEnabled(peerID),
                    message.supportsClipboard == true,
                    message.clipboardEnabled == true {
@@ -1229,15 +1437,18 @@ final class ControlCoordinator: ObservableObject {
             completeActiveControlRequest(true)
             status = "Controlling the other device — ⌃⌥⌘Esc returns locally"
         } catch {
-            if let requestID = activeOutboundRequestID {
+            if let requestID = activeOutboundRequestID,
+               let session = activeOutboundSession {
                 send(
                     ControlMessage(
                         kind: .endControl,
                         requestID: requestID
-                    )
+                    ),
+                    to: session
                 )
             }
             activeOutboundRequestID = nil
+            activeOutboundSession = nil
             activeControlDisplayAlreadyRemote = false
             activeControlManagesDisplayRoute = true
             completeActiveControlRequest(false)
@@ -1245,96 +1456,208 @@ final class ControlCoordinator: ObservableObject {
         }
     }
 
+    private func rejectStaleControlGrant(
+        requestID: UUID?,
+        session: ControlPeerSession?
+    ) {
+        inputCapture.stopCapture()
+        guard let requestID,
+              let session,
+              activeOutboundRequestID == requestID,
+              activeOutboundSession == session else {
+            completeActiveControlRequest(false)
+            return
+        }
+        send(
+            ControlMessage(kind: .endControl, requestID: requestID),
+            to: session
+        )
+        _ = try? machine.handle(.stopControl)
+        state = machine.state
+        activeOutboundRequestID = nil
+        activeOutboundSession = nil
+        stopClipboardSync()
+        activeControlDisplayAlreadyRemote = false
+        activeControlManagesDisplayRoute = true
+        completeActiveControlRequest(false)
+    }
+
     private func connectionChanged(
         _ publication: ControlConnectionPublication
     ) {
         let peerID = publication.peerID
-        if let publicationGeneration = publication.admissionGeneration,
-           publicationGeneration < inboundAdmission.currentGeneration() {
+        if let peerID,
+           let generation = publication.admissionGeneration,
+           admissionGate(for: peerID).currentGeneration() != generation {
             return
         }
-        let isSamePeer = hasObservedConnectionState
-            && observedConnectedPeerID == peerID
-        let isNewSessionGeneration = isSamePeer
-            && peerID != nil
-            && publication.admissionGeneration != nil
-            && publication.admissionGeneration != observedAdmissionGeneration
-        guard !isSamePeer || isNewSessionGeneration else {
+        if peerID == nil,
+           let generation = publication.admissionGeneration,
+           observedSelectedPeerID != nil,
+           generation != observedSelectedAdmissionGeneration {
+            // A delayed nil publication from an older selected session must
+            // not reset a peer that has already authenticated again.
             return
         }
-        hasObservedConnectionState = true
-        observedConnectedPeerID = peerID
-        if peerID == nil {
-            inboundAdmission.invalidate(
-                ifCurrentGeneration: observedAdmissionGeneration
-            )
-            observedAdmissionGeneration = nil
+
+        let isSameSelection = observedSelectedPeerID == peerID
+            && observedSelectedAdmissionGeneration == publication.admissionGeneration
+        guard !isSameSelection else { return }
+
+        let previousPeerID = observedSelectedPeerID
+        let previousGeneration = observedSelectedAdmissionGeneration
+        observedSelectedPeerID = peerID
+        if let peerID {
+            observedSelectedAdmissionGeneration =
+                publication.admissionGeneration
+                    ?? admissionGate(for: peerID).currentGeneration()
         } else {
-            // SecureSessionService already applies a byte/packet budget, but
-            // keep a second bounded gate at the UI boundary. This prevents a
-            // burst of valid messages from creating an unbounded main-queue
-            // backlog that could delay consent or teardown actions.
-            inboundAdmission.activate()
-            observedAdmissionGeneration = publication.admissionGeneration
-                ?? inboundAdmission.currentGeneration()
+            observedSelectedAdmissionGeneration = nil
         }
+
+        let selectedSession = peerID.map { currentSession(for: $0) }
+        let selectedSessionChanged = previousPeerID != peerID
+            || (peerID != nil
+                && publication.admissionGeneration != previousGeneration)
+        if selectedSessionChanged,
+           let outboundSession = activeOutboundSession,
+           outboundSession != selectedSession {
+            if isCurrentSession(outboundSession) {
+                stopControl(
+                    reason: peerID == nil
+                        ? "Secure session disconnected; input is local"
+                        : "Input returned locally while changing targets",
+                    preserveDisplayRoute: peerID != nil
+                )
+            } else {
+                finishDisconnectedOutboundSession(outboundSession)
+            }
+        }
+        if selectedSessionChanged,
+           activeInboundSession != nil,
+           activeInboundSession != selectedSession {
+            endReceivingControl(
+                reason: peerID == nil
+                    ? "Secure session disconnected; input is local"
+                    : "Input returned locally while changing targets"
+            )
+        }
+
+        if let peerID {
+            guard secureSession.isConnected(to: peerID) else { return }
+            if state != .controlling && state != .suspended {
+                _ = try? machine.handle(.transportConnected)
+                state = machine.state
+                if !isReceivingControl {
+                    status = "Secure session connected; input is local"
+                }
+            }
+        } else if peerID == nil {
+            if state != .disconnected {
+                _ = try? machine.handle(.transportDisconnected)
+                state = machine.state
+                if !isReceivingControl && !isRemoteInputTearingDown {
+                    status = "Secure session disconnected; input is local"
+                }
+            }
+        }
+    }
+
+    private func peerConnectionChanged(
+        _ publication: SecureSessionPeerPublication
+    ) {
+        let gate = admissionGate(for: publication.peerID)
+        if publication.isConnected {
+            if let generation = publication.admissionGeneration {
+                guard gate.currentGeneration() == generation else { return }
+            } else {
+                gate.activate()
+            }
+            return
+        }
+
+        let generation = publication.admissionGeneration
+            ?? gate.currentGeneration()
+        guard gate.currentGeneration() == generation else { return }
+        gate.invalidate(ifCurrentGeneration: generation)
+        let disconnectedSession = ControlPeerSession(
+            peerID: publication.peerID,
+            generation: generation
+        )
+
+        let completedAcknowledgements = pendingHeartbeatAcknowledgements.filter {
+            $0.session == disconnectedSession
+        }
+        pendingHeartbeatAcknowledgements.removeAll {
+            $0.session == disconnectedSession
+        }
+        completedAcknowledgements.forEach { $0.acknowledgement.complete() }
+
+        if let request = pendingIncomingControlRequest,
+           sessionBinding(for: request) == disconnectedSession {
+            cancelIncomingControlRequest(
+                request,
+                reason: "Secure session disconnected; input is local"
+            )
+        }
+        if let request = preparingIncomingControlRequest,
+           sessionBinding(for: request) == disconnectedSession {
+            cancelIncomingControlRequest(
+                request,
+                reason: "Secure session disconnected; input is local"
+            )
+        }
+        if let request = activeInboundControlRequest,
+           activeInboundSession == disconnectedSession,
+           isReceivingControl {
+            finishReceivingControl(
+                request,
+                reason: "Secure session disconnected; input is local",
+                notifyPeer: false
+            )
+        }
+        if let outboundSession = activeOutboundSession,
+           outboundSession == disconnectedSession,
+           state == .controlling || state == .suspended {
+            finishDisconnectedOutboundSession(outboundSession)
+        }
+    }
+
+    private func finishDisconnectedOutboundSession(
+        _ session: ControlPeerSession
+    ) {
+        guard activeOutboundSession == session else { return }
         let wasControlling = state == .controlling
         let wasWaitingForControlGrant = state == .suspended
-        stopClipboardSync()
-        let sessionManagedDisplayRoute = activeControlManagesDisplayRoute
+        let managesDisplayRoute = activeControlManagesDisplayRoute
         requestTimeout?.cancel()
         requestTimeout = nil
-        incomingRequestTimeout?.cancel()
-        incomingRequestTimeout = nil
+        inputCapture.stopCapture()
+        stopClipboardSync()
+        if state == .controlling || state == .suspended {
+            _ = try? machine.handle(.stopControl)
+            state = machine.state
+        }
         activeOutboundRequestID = nil
+        activeOutboundSession = nil
         activeControlDisplayAlreadyRemote = false
         activeControlManagesDisplayRoute = true
         if wasWaitingForControlGrant {
             completeActiveControlRequest(false)
         }
-        if let request = pendingIncomingControlRequest {
-            resolvePendingIncomingControlRequest(request)
-        }
-        invalidateIncomingAuthorization()
-        preparingIncomingControlRequest = nil
-        if wasControlling && sessionManagedDisplayRoute {
+        if wasControlling && managesDisplayRoute {
             onControllingStopped?()
         }
         if wasControlling {
             notifyOwnershipTransition(.returnedLocally)
         }
-        if var teardown = receiverTeardown {
-            teardown.restoreMonitor = false
-            receiverTeardown = teardown
-        } else if let request = activeInboundControlRequest,
-           isReceivingControl {
-            finishReceivingControl(
-                request,
-                reason: peerID == nil
-                    ? "Secure session disconnected; input is local"
-                    : "Secure session changed; input is local",
-                notifyPeer: false
-            )
-        } else if !isRemoteInputTearingDown {
-            endTransientRemoteInput()
-        }
-        activeInboundControlRequest = nil
-        if peerID == nil {
-            inputCapture.stopCapture()
-            isReceivingControl = false
+        if secureSession.connectedPeerID == session.peerID {
             _ = try? machine.handle(.transportDisconnected)
             state = machine.state
-            status = "Secure session disconnected; input is local"
-        } else {
-            if state == .controlling || state == .suspended {
-                inputCapture.stopCapture()
-            }
-            isReceivingControl = false
-            _ = try? machine.handle(.transportConnected)
-            state = machine.state
-            status = "Secure session connected; input is local"
         }
-        stopClipboardSync()
+        if !isReceivingControl {
+            status = "Secure session disconnected; input is local"
+        }
     }
 
     private func remoteInputSinkFailed(_ failure: ControlInputFailure) {
@@ -1374,6 +1697,7 @@ final class ControlCoordinator: ObservableObject {
         _ = try? machine.handle(.stopControl)
         state = machine.state
         activeOutboundRequestID = nil
+        activeOutboundSession = nil
         activeControlDisplayAlreadyRemote = false
         activeControlManagesDisplayRoute = true
         completeActiveControlRequest(false)
@@ -1427,7 +1751,38 @@ final class ControlCoordinator: ObservableObject {
             endTransientRemoteInput()
         }
         sendResponse(kind: .controlDenied, for: request)
+        removeSessionBinding(for: request)
         status = reason
+    }
+
+    private func requestSessionKey(
+        for request: IncomingControlRequest
+    ) -> IncomingRequestSessionKey {
+        IncomingRequestSessionKey(
+            requestID: request.id,
+            peerID: request.peerID
+        )
+    }
+
+    private func bind(
+        _ request: IncomingControlRequest,
+        to session: ControlPeerSession
+    ) {
+        incomingRequestSessions[requestSessionKey(for: request)] = session
+    }
+
+    private func sessionBinding(
+        for request: IncomingControlRequest
+    ) -> ControlPeerSession? {
+        incomingRequestSessions[requestSessionKey(for: request)]
+    }
+
+    private func removeSessionBinding(
+        for request: IncomingControlRequest
+    ) {
+        incomingRequestSessions.removeValue(
+            forKey: requestSessionKey(for: request)
+        )
     }
 
     /// Clears a pending request only when the exact request is still active,
@@ -1457,6 +1812,7 @@ final class ControlCoordinator: ObservableObject {
             preparingIncomingControlRequest = nil
             endTransientRemoteInput()
         }
+        removeSessionBinding(for: request)
         status = reason
     }
 
@@ -1474,6 +1830,7 @@ final class ControlCoordinator: ObservableObject {
         }
         isReceivingControl = false
         activeInboundControlRequest = nil
+        activeInboundSession = nil
         stopClipboardSync()
         isRemoteInputTearingDown = true
         receiverTeardown = ReceiverTeardown(
@@ -1526,6 +1883,7 @@ final class ControlCoordinator: ObservableObject {
         guard receiverTeardown?.request.id == teardown.request.id else {
             return
         }
+        let session = sessionBinding(for: teardown.request)
         receiverTeardown = nil
         isRemoteInputTearingDown = false
         if !isStoppingForQuit {
@@ -1534,8 +1892,11 @@ final class ControlCoordinator: ObservableObject {
         if teardown.notifyPeer {
             sendResponse(kind: .endControl, for: teardown.request)
         }
+        removeSessionBinding(for: teardown.request)
         teardown.completions.forEach { $0() }
-        completeDeferredHeartbeatAcknowledgements()
+        if let session {
+            completeDeferredHeartbeatAcknowledgements(for: session)
+        }
     }
 
     /// Cleans up a cancelled incoming acceptance or a connection transition.
@@ -1563,7 +1924,8 @@ final class ControlCoordinator: ObservableObject {
         for request: IncomingControlRequest,
         clipboardEnabled: Bool? = nil
     ) {
-        guard secureSession.connectedPeerID == request.peerID else {
+        guard let session = sessionBinding(for: request),
+              isCurrentSession(session) else {
             return
         }
         let message: ControlMessage
@@ -1575,7 +1937,7 @@ final class ControlCoordinator: ObservableObject {
         } else {
             message = ControlMessage(kind: kind, requestID: request.id)
         }
-        send(message)
+        send(message, to: session)
     }
 
     /// A live control session was negotiated with the prior per-peer
@@ -1583,7 +1945,11 @@ final class ControlCoordinator: ObservableObject {
     /// stops reading or sending clipboard content immediately and the next
     /// session renegotiates both sides' consent.
     func clipboardSyncPreferenceChanged(for peerID: UUID) {
-        guard secureSession.connectedPeerID == peerID else { return }
+        guard isReceivingControl && activeInboundSession?.peerID == peerID
+                || (state == .controlling || state == .suspended)
+                    && activeOutboundSession?.peerID == peerID else {
+            return
+        }
         if isReceivingControl,
            activeInboundControlRequest?.peerID == peerID {
             endReceivingControl(
@@ -1618,25 +1984,60 @@ final class ControlCoordinator: ObservableObject {
 
     private func sendClipboardText(_ text: String) {
         guard clipboardSyncIsActive,
-              (state == .controlling || isReceivingControl),
-              let requestID = activeOutboundRequestID
-                    ?? activeInboundControlRequest?.id else {
+              (state == .controlling || isReceivingControl) else {
             return
+        }
+        let session: ControlPeerSession
+        let requestID: UUID
+        let requiresSelection: Bool
+        if state == .controlling {
+            guard let outboundSession = activeOutboundSession,
+                  let outboundRequestID = activeOutboundRequestID else {
+                return
+            }
+            session = outboundSession
+            requestID = outboundRequestID
+            requiresSelection = true
+        } else {
+            guard let inboundSession = activeInboundSession,
+                  let inboundRequestID = activeInboundControlRequest?.id else {
+                return
+            }
+            session = inboundSession
+            requestID = inboundRequestID
+            requiresSelection = false
         }
         do {
             let payload = try ControlMessageCodec.encode(
                 .clipboard(text, requestID: requestID)
             )
-            secureSession.send(payload)
+            guard isCurrentSession(
+                session,
+                requiringSelection: requiresSelection
+            ) else {
+                return
+            }
+            secureSession.send(payload, to: session.peerID)
         } catch {
             // Clipboard size/encoding failures are intentionally silent. The
             // text itself must never appear in a status, diagnostic, or log.
         }
     }
 
-    private func send(_ message: ControlMessage) {
+    private func send(
+        _ message: ControlMessage,
+        to session: ControlPeerSession,
+        requiringSelection: Bool = false
+    ) {
         do {
-            secureSession.send(try ControlMessageCodec.encode(message))
+            let payload = try ControlMessageCodec.encode(message)
+            guard isCurrentSession(
+                session,
+                requiringSelection: requiringSelection
+            ) else {
+                return
+            }
+            secureSession.send(payload, to: session.peerID)
         } catch {
             status = "Could not encode the control message"
         }

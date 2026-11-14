@@ -4,6 +4,18 @@
 
 ## Unreleased
 
+### MacKVM 1.103.00 (build 107) — Multi-client pairing and input target control
+
+- Allow up to four unpaired pairing requests at once, with at most two per
+  source and five admission slots total; reserve one slot for an already-paired
+  peer.
+- Persist the server-side input target order, with client 1 as the primary
+  target. Cycle through online targets with Ctrl-Option-Command-Right, select
+  slots 1–9 directly, or return control to the local Mac with
+  Ctrl-Option-Command-L or Escape. Keep paired clients' secure sessions warm
+  and switch control targets immediately, with peer-scoped input and session
+  fencing. Existing K/O shortcuts keep their behavior.
+
 ### MacKVM 1.102.09 (build 106) — Pairing admission, recovery, and shutdown fixes
 
 - Restrict automatic Local Network recovery checks to paired peers, so an

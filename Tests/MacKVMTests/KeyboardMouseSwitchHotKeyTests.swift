@@ -63,6 +63,37 @@ final class KeyboardMouseSwitchHotKeyTests: XCTestCase {
         )
     }
 
+    func testTargetHotkeysUseDedicatedKeysAndRequiredModifiers() {
+        let flags: CGEventFlags = [
+            .maskControl, .maskAlternate, .maskCommand
+        ]
+
+        XCTAssertTrue(
+            InputTargetHotKey.matches(
+                keyCode: InputTargetHotKey.cycleKeyCode,
+                flags: flags,
+                expectedKeyCode: InputTargetHotKey.cycleKeyCode
+            )
+        )
+        XCTAssertTrue(
+            InputTargetHotKey.matches(
+                keyCode: InputTargetHotKey.returnLocalKeyCode,
+                flags: flags,
+                expectedKeyCode: InputTargetHotKey.returnLocalKeyCode
+            )
+        )
+        XCTAssertFalse(
+            InputTargetHotKey.matches(
+                keyCode: InputTargetHotKey.cycleKeyCode,
+                flags: [.maskControl, .maskCommand],
+                expectedKeyCode: InputTargetHotKey.cycleKeyCode
+            )
+        )
+        XCTAssertEqual(InputTargetHotKey.oneBasedSlot(for: 18), 1)
+        XCTAssertEqual(InputTargetHotKey.oneBasedSlot(for: 25), 9)
+        XCTAssertNil(InputTargetHotKey.oneBasedSlot(for: 29))
+    }
+
     func testReservedModifierChordIsConsumedBeforeTriggerKey() {
         XCTAssertTrue(
             InputCaptureService.shouldSuppressReservedHotKeyModifierFlags([
@@ -100,6 +131,22 @@ final class KeyboardMouseSwitchHotKeyTests: XCTestCase {
         XCTAssertEqual(
             RegisteredHotKeyAction.resolve(parameterStatus: noErr, id: 3),
             .monitorSwitch
+        )
+        XCTAssertEqual(
+            RegisteredHotKeyAction.resolve(parameterStatus: noErr, id: 4),
+            .cycleTargets
+        )
+        XCTAssertEqual(
+            RegisteredHotKeyAction.resolve(parameterStatus: noErr, id: 5),
+            .returnLocally
+        )
+        XCTAssertEqual(
+            RegisteredHotKeyAction.resolve(parameterStatus: noErr, id: 100),
+            .selectTarget(1)
+        )
+        XCTAssertEqual(
+            RegisteredHotKeyAction.resolve(parameterStatus: noErr, id: 108),
+            .selectTarget(9)
         )
         XCTAssertNil(
             RegisteredHotKeyAction.resolve(parameterStatus: noErr, id: 99)

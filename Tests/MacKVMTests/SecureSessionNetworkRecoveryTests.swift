@@ -281,6 +281,90 @@ final class SecureSessionNetworkRecoveryTests: XCTestCase {
         waitUntil { !fixture.service.localNetworkAccessBlocked }
     }
 
+    func testWarmPeerSessionsSwitchWithoutDisconnectingOtherPeer() throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanUp() }
+        let first = makePeer(name: "First Mac")
+        let second = makePeer(name: "Second Mac")
+        fixture.registry.add(first)
+        fixture.registry.add(second)
+        fixture.service.startNetworkServicesForTesting()
+        XCTAssertEqual(
+            fixture.service.sleepLifecycleSnapshot.desiredPeerIDs,
+            Set([first.id, second.id])
+        )
+
+        fixture.service.installAuthenticatedContextForTesting(to: first)
+        fixture.service.installAuthenticatedContextForTesting(to: second)
+        waitUntil {
+            fixture.service.connectedPeerIDs == Set([first.id, second.id])
+        }
+        waitUntil {
+            fixture.service.connectingPeerIDs.isDisjoint(
+                with: Set([first.id, second.id])
+            )
+        }
+        XCTAssertEqual(fixture.service.connectedPeerID, first.id)
+
+        fixture.service.selectPeer(second.id)
+        waitUntil { fixture.service.connectedPeerID == second.id }
+        XCTAssertEqual(fixture.service.connectedPeerIDs, Set([first.id, second.id]))
+
+        fixture.service.disconnect(first.id)
+        waitUntil {
+            fixture.service.connectedPeerIDs == Set([second.id])
+        }
+        XCTAssertEqual(fixture.service.connectedPeerID, second.id)
+    }
+
+    func testSelectedPeerReconnectWaitsForAllClosingContextsToLeave() throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanUp() }
+        let peer = makePeer(name: "Paired Mac")
+        fixture.registry.add(peer)
+        fixture.service.installAuthenticatedContextForTesting(to: peer)
+        waitUntil { fixture.service.connectedPeerIDs == Set([peer.id]) }
+        fixture.service.installUnauthenticatedContextForTesting(to: peer)
+        fixture.service.markContextsClosingForTesting(to: peer.id)
+
+        fixture.service.selectPeer(peer.id)
+        waitUntil {
+            fixture.service.hasPendingConnectForTesting(to: peer.id)
+        }
+
+        fixture.service.removeAuthenticatedContextForTesting(to: peer.id)
+        waitUntil { fixture.service.connectedPeerIDs.isEmpty }
+        XCTAssertTrue(
+            fixture.service.hasPendingConnectForTesting(to: peer.id)
+        )
+        XCTAssertTrue(fixture.service.connectingPeerIDs.contains(peer.id))
+
+        fixture.service.removeUnauthenticatedContextForTesting(to: peer.id)
+        waitUntil {
+            !fixture.service.hasPendingConnectForTesting(to: peer.id)
+        }
+        waitUntil {
+            fixture.service.sleepLifecycleSnapshot.hasScheduledReconnect
+        }
+    }
+
+    func testRemovingUnauthenticatedDuplicateKeepsWarmPeerPublished() throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanUp() }
+        let peer = makePeer(name: "Paired Mac")
+        fixture.registry.add(peer)
+
+        fixture.service.installAuthenticatedContextForTesting(to: peer)
+        fixture.service.installUnauthenticatedContextForTesting(to: peer)
+        waitUntil { fixture.service.connectedPeerIDs == Set([peer.id]) }
+
+        fixture.service.removeUnauthenticatedContextForTesting(to: peer.id)
+        drainMainQueue()
+
+        XCTAssertEqual(fixture.service.connectedPeerIDs, Set([peer.id]))
+        XCTAssertEqual(fixture.service.connectedPeerID, peer.id)
+    }
+
     func testConnectTracksDiscoveryWaitAndRepeatedConnectRetriesSamePeer() throws {
         let fixture = try makeFixture()
         defer { fixture.cleanUp() }

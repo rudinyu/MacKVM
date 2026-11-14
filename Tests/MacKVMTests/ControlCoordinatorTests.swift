@@ -13,6 +13,10 @@ final class ControlCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(fixture.coordinator.pendingIncomingControlRequest?.id, requestID)
 
+        fixture.transport.deliver(controlMessage(.requestControl, requestID))
+        drainMainQueue()
+        XCTAssertEqual(fixture.coordinator.pendingIncomingControlRequest?.id, requestID)
+
         fixture.coordinator.acceptIncomingControlRequest(UUID())
 
         XCTAssertEqual(fixture.coordinator.pendingIncomingControlRequest?.id, requestID)
@@ -275,7 +279,7 @@ final class ControlCoordinatorTests: XCTestCase {
         let heartbeatAcknowledgement = SecureSessionHeartbeatAcknowledgement {
             acknowledged = true
         }
-        fixture.transport.onHeartbeat?(heartbeatAcknowledgement)
+        fixture.transport.deliverHeartbeat(heartbeatAcknowledgement)
         drainMainQueue()
 
         XCTAssertEqual(fixture.sink.awaitInputProcessingCount, 1)
@@ -294,7 +298,7 @@ final class ControlCoordinatorTests: XCTestCase {
             acknowledged = true
         }
 
-        fixture.transport.onHeartbeat?(heartbeatAcknowledgement)
+        fixture.transport.deliverHeartbeat(heartbeatAcknowledgement)
         drainMainQueue()
 
         XCTAssertTrue(acknowledged)
@@ -316,7 +320,7 @@ final class ControlCoordinatorTests: XCTestCase {
         let heartbeatAcknowledgement = SecureSessionHeartbeatAcknowledgement {
             acknowledged = true
         }
-        fixture.transport.onHeartbeat?(heartbeatAcknowledgement)
+        fixture.transport.deliverHeartbeat(heartbeatAcknowledgement)
         drainMainQueue()
 
         XCTAssertFalse(acknowledged)
@@ -338,7 +342,7 @@ final class ControlCoordinatorTests: XCTestCase {
         let heartbeatAcknowledgement = SecureSessionHeartbeatAcknowledgement {
             acknowledged = true
         }
-        fixture.transport.onHeartbeat?(heartbeatAcknowledgement)
+        fixture.transport.deliverHeartbeat(heartbeatAcknowledgement)
         drainMainQueue()
         XCTAssertEqual(fixture.sink.awaitInputProcessingCount, 1)
 
@@ -355,6 +359,275 @@ final class ControlCoordinatorTests: XCTestCase {
         XCTAssertTrue(acknowledged)
     }
 
+    func testInboundControlAndHeartbeatAreBoundToTheirPeer() {
+        let controller = UUID()
+        let unrelatedPeer = UUID()
+        let fixture = makeFixture(
+            remoteID: controller
+        )
+        fixture.transport.registerConnectedPeer(unrelatedPeer)
+        drainMainQueue()
+
+        let requestID = UUID()
+        fixture.transport.deliver(
+            controlMessage(.requestControl, requestID),
+            from: controller
+        )
+        drainMainQueue()
+        XCTAssertEqual(
+            fixture.coordinator.pendingIncomingControlRequest?.peerID,
+            controller
+        )
+        fixture.coordinator.acceptIncomingControlRequest(requestID)
+        XCTAssertTrue(fixture.coordinator.isReceivingControl)
+        XCTAssertEqual(
+            fixture.transport.sentMessagesByPeer[controller]?.last?.kind,
+            .controlGranted
+        )
+        XCTAssertTrue(fixture.transport.sentMessagesByPeer[unrelatedPeer, default: []].isEmpty)
+
+        let input = RemoteInputEvent(
+            kind: .mouseMoved,
+            location: NormalizedPoint(x: 0.4, y: 0.6)
+        )
+        fixture.transport.deliver(
+            .input(input, requestID: requestID),
+            from: unrelatedPeer
+        )
+        drainMainQueue()
+        XCTAssertEqual(fixture.sink.receiveCount, 0)
+
+        fixture.transport.deliver(
+            .input(input, requestID: requestID),
+            from: controller
+        )
+        drainMainQueue()
+        XCTAssertEqual(fixture.sink.receiveCount, 1)
+
+        var unrelatedHeartbeatAcknowledged = false
+        fixture.transport.deliverHeartbeat(
+            SecureSessionHeartbeatAcknowledgement {
+                unrelatedHeartbeatAcknowledged = true
+            },
+            from: unrelatedPeer
+        )
+        drainMainQueue()
+        XCTAssertTrue(unrelatedHeartbeatAcknowledged)
+        XCTAssertEqual(fixture.sink.awaitInputProcessingCount, 0)
+
+        var controllerHeartbeatAcknowledged = false
+        fixture.transport.deliverHeartbeat(
+            SecureSessionHeartbeatAcknowledgement {
+                controllerHeartbeatAcknowledged = true
+            },
+            from: controller
+        )
+        drainMainQueue()
+        XCTAssertFalse(controllerHeartbeatAcknowledged)
+        XCTAssertEqual(fixture.sink.awaitInputProcessingCount, 1)
+        fixture.sink.completeNextInputProgress()
+        drainMainQueue()
+        XCTAssertTrue(controllerHeartbeatAcknowledged)
+    }
+
+    func testInboundControlFromAStaleGenerationCannotChangeCurrentOwnership() {
+        let fixture = makeFixture()
+        let peerID = fixture.transport.connectedPeerID!
+        let oldGeneration = fixture.transport.authenticate(peerID)
+        fixture.transport.setConnection(peerID, admissionGeneration: oldGeneration)
+        drainMainQueue()
+
+        let oldRequestID = UUID()
+        fixture.transport.deliver(
+            controlMessage(.requestControl, oldRequestID),
+            from: peerID,
+            generation: oldGeneration
+        )
+        drainMainQueue()
+        fixture.coordinator.acceptIncomingControlRequest(oldRequestID)
+        XCTAssertTrue(fixture.coordinator.isReceivingControl)
+
+        fixture.transport.setConnection(nil, admissionGeneration: oldGeneration)
+        drainMainQueue()
+        XCTAssertFalse(fixture.coordinator.isReceivingControl)
+
+        let newGeneration = fixture.transport.authenticate(peerID)
+        fixture.transport.setConnection(peerID, admissionGeneration: newGeneration)
+        drainMainQueue()
+        let newRequestID = UUID()
+        fixture.transport.deliver(
+            controlMessage(.requestControl, newRequestID),
+            from: peerID,
+            generation: newGeneration
+        )
+        drainMainQueue()
+        fixture.coordinator.acceptIncomingControlRequest(newRequestID)
+        XCTAssertTrue(fixture.coordinator.isReceivingControl)
+
+        fixture.transport.deliver(
+            controlMessage(.endControl, newRequestID),
+            from: peerID,
+            generation: oldGeneration
+        )
+        drainMainQueue()
+        XCTAssertTrue(fixture.coordinator.isReceivingControl)
+        XCTAssertEqual(fixture.sink.endCount, 1)
+
+        var staleHeartbeatAcknowledged = false
+        fixture.transport.deliverHeartbeat(
+            SecureSessionHeartbeatAcknowledgement {
+                staleHeartbeatAcknowledged = true
+            },
+            from: peerID,
+            generation: oldGeneration
+        )
+        drainMainQueue()
+        XCTAssertTrue(staleHeartbeatAcknowledged)
+        XCTAssertEqual(fixture.sink.awaitInputProcessingCount, 0)
+    }
+
+    func testReplayedRequestIDFromNewGenerationCannotAuthorizeOldPrompt() {
+        let fixture = makeFixture()
+        let peerID = fixture.transport.connectedPeerID!
+        let oldGeneration = fixture.transport.authenticate(peerID)
+        fixture.transport.setConnection(peerID, admissionGeneration: oldGeneration)
+        drainMainQueue()
+
+        let requestID = UUID()
+        fixture.transport.deliver(
+            controlMessage(.requestControl, requestID),
+            from: peerID,
+            generation: oldGeneration
+        )
+        drainMainQueue()
+        XCTAssertEqual(fixture.coordinator.pendingIncomingControlRequest?.id, requestID)
+
+        let newGeneration = fixture.transport.authenticate(peerID)
+        fixture.transport.setConnection(peerID, admissionGeneration: newGeneration)
+        drainMainQueue()
+        fixture.transport.deliver(
+            controlMessage(.requestControl, requestID),
+            from: peerID,
+            generation: newGeneration
+        )
+        drainMainQueue()
+
+        XCTAssertEqual(fixture.coordinator.pendingIncomingControlRequest?.id, requestID)
+        XCTAssertEqual(fixture.transport.sentMessages.last?.kind, .controlDenied)
+
+        fixture.coordinator.acceptIncomingControlRequest(requestID)
+
+        XCTAssertNil(fixture.coordinator.pendingIncomingControlRequest)
+        XCTAssertFalse(fixture.coordinator.isReceivingControl)
+        XCTAssertEqual(fixture.sink.beginCount, 0)
+        XCTAssertFalse(
+            fixture.transport.sentMessages.contains {
+                $0.kind == .controlGranted && $0.requestID == requestID
+            }
+        )
+    }
+
+    func testDuplicateActiveRequestPreservesItsPeerSessionBinding() {
+        let fixture = makeFixture()
+        let peerID = fixture.transport.connectedPeerID!
+        let requestID = UUID()
+        fixture.transport.deliver(
+            controlMessage(.requestControl, requestID),
+            from: peerID
+        )
+        drainMainQueue()
+        fixture.coordinator.acceptIncomingControlRequest(requestID)
+        XCTAssertTrue(fixture.coordinator.isReceivingControl)
+        XCTAssertEqual(
+            fixture.transport.sentMessagesByPeer[peerID]?.last?.kind,
+            .controlGranted
+        )
+
+        fixture.transport.deliver(
+            controlMessage(.requestControl, requestID),
+            from: peerID
+        )
+        drainMainQueue()
+        XCTAssertTrue(fixture.coordinator.isReceivingControl)
+        XCTAssertEqual(
+            fixture.transport.sentMessagesByPeer[peerID]?.last?.kind,
+            .controlGranted
+        )
+
+        fixture.coordinator.endReceivingControl()
+
+        XCTAssertFalse(fixture.coordinator.isReceivingControl)
+        XCTAssertEqual(
+            fixture.transport.sentMessagesByPeer[peerID]?.last,
+            controlMessage(.endControl, requestID)
+        )
+    }
+
+    func testTargetSwitchEndsOldPeerAndKeepsOtherWarmPeerActive() throws {
+        let oldPeer = UUID()
+        let newPeer = UUID()
+        let fixture = makeFixture(remoteID: oldPeer)
+        fixture.transport.registerConnectedPeer(newPeer)
+        drainMainQueue()
+
+        XCTAssertTrue(fixture.coordinator.requestControl())
+        let oldRequestID = try XCTUnwrap(
+            fixture.transport.sentMessagesByPeer[oldPeer]?.last?.requestID
+        )
+        fixture.transport.deliver(
+            controlMessage(.controlGranted, oldRequestID),
+            from: oldPeer
+        )
+        drainMainQueue()
+        XCTAssertEqual(fixture.coordinator.state, .controlling)
+
+        fixture.capture.onEvent?(
+            RemoteInputEvent(kind: .mouseMoved, location: NormalizedPoint(x: 0.2, y: 0.3))
+        )
+        XCTAssertEqual(fixture.transport.sentMessagePeers.last, oldPeer)
+        XCTAssertEqual(fixture.transport.sentMessages.last?.kind, .input)
+
+        fixture.coordinator.stopControl(
+            reason: "Switching input target",
+            preserveDisplayRoute: true
+        )
+        XCTAssertEqual(fixture.transport.sentMessagePeers.last, oldPeer)
+        XCTAssertEqual(fixture.transport.sentMessages.last?.kind, .endControl)
+        XCTAssertFalse(fixture.capture.isCapturing)
+
+        fixture.transport.selectPeer(newPeer)
+        drainMainQueue()
+        XCTAssertEqual(fixture.coordinator.state, .connected)
+        XCTAssertTrue(fixture.coordinator.requestControl())
+        let newRequestID = try XCTUnwrap(
+            fixture.transport.sentMessagesByPeer[newPeer]?.last?.requestID
+        )
+        XCTAssertEqual(
+            fixture.transport.sentMessagesByPeer[newPeer]?.last?.kind,
+            .requestControl
+        )
+        fixture.transport.deliver(
+            controlMessage(.controlGranted, newRequestID),
+            from: newPeer
+        )
+        drainMainQueue()
+
+        fixture.transport.disconnect(oldPeer)
+        drainMainQueue()
+        XCTAssertEqual(fixture.coordinator.state, .controlling)
+        XCTAssertTrue(fixture.transport.isConnected(to: newPeer))
+
+        fixture.capture.onEvent?(
+            RemoteInputEvent(kind: .mouseMoved, location: NormalizedPoint(x: 0.7, y: 0.8))
+        )
+        XCTAssertEqual(fixture.transport.sentMessagePeers.last, newPeer)
+        XCTAssertEqual(fixture.transport.sentMessages.last?.kind, .input)
+        XCTAssertEqual(
+            fixture.transport.sentMessagesByPeer[oldPeer]?.filter { $0.kind == .endControl }.count,
+            1
+        )
+    }
+
     func testStoppingAWaitingControlRequestRestoresTheLocalRoute() {
         let fixture = makeFixture()
         var routeRestoreCount = 0
@@ -369,6 +642,37 @@ final class ControlCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(routeRestoreCount, 1)
         XCTAssertEqual(fixture.coordinator.state, .connected)
+    }
+
+    func testTargetHandoffStopsInputWithoutRestoringDisplayRoute() throws {
+        let fixture = makeFixture()
+        var routeRestoreCount = 0
+        fixture.coordinator.onControllingStopped = {
+            routeRestoreCount += 1
+        }
+
+        XCTAssertTrue(fixture.coordinator.requestControl())
+        let requestID = try XCTUnwrap(
+            fixture.transport.sentMessages.last?.requestID
+        )
+        fixture.transport.deliver(controlMessage(.controlGranted, requestID))
+        drainMainQueue()
+        XCTAssertEqual(fixture.coordinator.state, .controlling)
+
+        fixture.coordinator.stopControl(
+            reason: "Switching input target",
+            preserveDisplayRoute: true
+        )
+
+        XCTAssertEqual(fixture.coordinator.state, .connected)
+        XCTAssertFalse(fixture.capture.isCapturing)
+        XCTAssertEqual(routeRestoreCount, 0)
+        XCTAssertEqual(
+            fixture.transport.sentMessages.filter {
+                $0.kind == .endControl && $0.requestID == requestID
+            }.count,
+            1
+        )
     }
 
     func testInputPermissionRevocationEndsOutboundControlOnce() throws {
@@ -1085,7 +1389,7 @@ final class ControlCoordinatorTests: XCTestCase {
         fixture.transport.connectedPeerID = nil
         drainMainQueue()
         fixture.transport.connectedPeerID = peerID
-        fixture.transport.onAuthenticated?()
+        fixture.transport.authenticate(peerID)
         fixture.transport.deliver(controlMessage(.requestControl, requestID))
         drainMainQueue()
 
@@ -1101,7 +1405,7 @@ final class ControlCoordinatorTests: XCTestCase {
         let peerID = fixture.transport.connectedPeerID!
 
         fixture.transport.connectedPeerID = nil
-        fixture.transport.onAuthenticated?()
+        fixture.transport.authenticate(peerID)
         fixture.transport.connectedPeerID = peerID
         fixture.transport.deliver(controlMessage(.requestControl, requestID))
         drainMainQueue()
@@ -1117,7 +1421,7 @@ final class ControlCoordinatorTests: XCTestCase {
         let peerID = UUID()
         let requestID = UUID()
 
-        fixture.transport.onAuthenticated?()
+        fixture.transport.authenticate(peerID)
         fixture.transport.connectedPeerID = peerID
         fixture.transport.deliver(controlMessage(.requestControl, requestID))
         drainMainQueue()
@@ -1133,7 +1437,7 @@ final class ControlCoordinatorTests: XCTestCase {
         let peerID = fixture.transport.connectedPeerID!
         let requestID = UUID()
 
-        let firstGeneration = fixture.transport.onAuthenticated?() ?? 0
+        let firstGeneration = fixture.transport.authenticate(peerID)
         fixture.transport.setConnection(
             peerID,
             admissionGeneration: firstGeneration
@@ -1142,7 +1446,7 @@ final class ControlCoordinatorTests: XCTestCase {
             nil,
             admissionGeneration: firstGeneration
         )
-        let secondGeneration = fixture.transport.onAuthenticated?() ?? 0
+        let secondGeneration = fixture.transport.authenticate(peerID)
         fixture.transport.setConnection(
             peerID,
             admissionGeneration: secondGeneration
@@ -1170,7 +1474,7 @@ final class ControlCoordinatorTests: XCTestCase {
     func testSamePeerReconnectEndsActiveControlAndRejectsOldInput() {
         let fixture = makeFixture()
         let peerID = fixture.transport.connectedPeerID!
-        let firstGeneration = fixture.transport.onAuthenticated?() ?? 0
+        let firstGeneration = fixture.transport.authenticate(peerID)
         fixture.transport.setConnection(
             peerID,
             admissionGeneration: firstGeneration
@@ -1190,7 +1494,7 @@ final class ControlCoordinatorTests: XCTestCase {
             nil,
             admissionGeneration: firstGeneration
         )
-        let secondGeneration = fixture.transport.onAuthenticated?() ?? 0
+        let secondGeneration = fixture.transport.authenticate(peerID)
         fixture.transport.setConnection(
             peerID,
             admissionGeneration: secondGeneration
@@ -1919,20 +2223,33 @@ private final class FakeControlTransport: ControlSessionTransport {
     private let connectionSubject: CurrentValueSubject<UUID?, Never>
     private let connectionPublicationSubject:
         CurrentValueSubject<ControlConnectionPublication, Never>
-    private var nextAdmissionGeneration: UInt64?
+    private let peerConnectionPublicationSubject =
+        PassthroughSubject<SecureSessionPeerPublication, Never>()
+    private var selectedPeerID: UUID?
+    private var peerAdmissionGenerations: [UUID: UInt64] = [:]
+    private var connectedPeers: Set<UUID>
 
     var connectedPeerID: UUID? {
-        didSet {
-            connectionSubject.send(connectedPeerID)
-            connectionPublicationSubject.send(
-                ControlConnectionPublication(
-                    peerID: connectedPeerID,
-                    admissionGeneration: nextAdmissionGeneration
-                )
-            )
-            nextAdmissionGeneration = nil
+        get { selectedPeerID }
+        set {
+            if let newValue {
+                if !connectedPeers.contains(newValue) {
+                    connectedPeers.insert(newValue)
+                    peerConnectionPublicationSubject.send(
+                        SecureSessionPeerPublication(
+                            peerID: newValue,
+                            isConnected: true,
+                            admissionGeneration: peerAdmissionGenerations[newValue]
+                        )
+                    )
+                }
+                publishSelectedPeer(newValue, admissionGeneration: nil)
+            } else if let oldValue = selectedPeerID {
+                setConnection(nil, admissionGeneration: peerAdmissionGenerations[oldValue])
+            }
         }
     }
+    var connectedPeerIDs: Set<UUID> { connectedPeers }
     var connectedPeerIDPublisher: AnyPublisher<UUID?, Never> {
         connectionSubject.eraseToAnyPublisher()
     }
@@ -1940,13 +2257,22 @@ private final class FakeControlTransport: ControlSessionTransport {
         AnyPublisher<ControlConnectionPublication, Never> {
         connectionPublicationSubject.eraseToAnyPublisher()
     }
-    var onPayload: ((Data) -> Void)?
-    var onAuthenticated: (() -> UInt64)?
-    var onHeartbeat: ((SecureSessionHeartbeatAcknowledgement) -> Void)?
+    var peerConnectionPublicationPublisher:
+        AnyPublisher<SecureSessionPeerPublication, Never> {
+        peerConnectionPublicationSubject.eraseToAnyPublisher()
+    }
+    var onPayload: ((UUID, UInt64, Data) -> Void)?
+    var onAuthenticated: ((UUID) -> UInt64)?
+    var onHeartbeat: ((UUID, UInt64, SecureSessionHeartbeatAcknowledgement) -> Void)?
     var sentMessages: [ControlMessage] = []
+    private(set) var sentMessagesByPeer: [UUID: [ControlMessage]] = [:]
+    private(set) var sentMessagePeers: [UUID] = []
     private(set) var disconnectCount = 0
 
     init(connectedPeerID: UUID?) {
+        selectedPeerID = connectedPeerID
+        connectedPeers = connectedPeerID.map { [$0] } ?? []
+        peerAdmissionGenerations = connectedPeerID.map { [$0: 0] } ?? [:]
         connectionSubject = CurrentValueSubject(connectedPeerID)
         connectionPublicationSubject = CurrentValueSubject(
             ControlConnectionPublication(
@@ -1954,28 +2280,181 @@ private final class FakeControlTransport: ControlSessionTransport {
                 admissionGeneration: nil
             )
         )
-        self.connectedPeerID = connectedPeerID
     }
 
-    func send(_ payload: Data) {
-        sentMessages.append(try! ControlMessageCodec.decode(payload))
+    func isConnected(to peerID: UUID) -> Bool {
+        connectedPeers.contains(peerID)
+    }
+
+    func selectPeer(_ peerID: UUID) {
+        guard connectedPeers.contains(peerID) else {
+            publishSelectedPeer(nil, admissionGeneration: nil)
+            return
+        }
+        publishSelectedPeer(
+            peerID,
+            admissionGeneration: peerAdmissionGenerations[peerID]
+        )
+    }
+
+    func registerConnectedPeer(
+        _ peerID: UUID,
+        admissionGeneration: UInt64 = 0
+    ) {
+        guard connectedPeers.insert(peerID).inserted else { return }
+        peerAdmissionGenerations[peerID] = admissionGeneration
+        peerConnectionPublicationSubject.send(
+            SecureSessionPeerPublication(
+                peerID: peerID,
+                isConnected: true,
+                admissionGeneration: admissionGeneration
+            )
+        )
+    }
+
+    func send(_ payload: Data, to peerID: UUID) {
+        let message = try! ControlMessageCodec.decode(payload)
+        sentMessages.append(message)
+        sentMessagePeers.append(peerID)
+        sentMessagesByPeer[peerID, default: []].append(message)
     }
 
     func disconnect() {
         disconnectCount += 1
-        connectedPeerID = nil
+        for peerID in connectedPeers {
+            peerConnectionPublicationSubject.send(
+                SecureSessionPeerPublication(
+                    peerID: peerID,
+                    isConnected: false,
+                    admissionGeneration: peerAdmissionGenerations[peerID]
+                )
+            )
+        }
+        connectedPeers.removeAll()
+        publishSelectedPeer(nil, admissionGeneration: nil)
+    }
+
+    func disconnect(_ peerID: UUID) {
+        disconnectCount += 1
+        guard connectedPeers.remove(peerID) != nil else { return }
+        peerConnectionPublicationSubject.send(
+            SecureSessionPeerPublication(
+                peerID: peerID,
+                isConnected: false,
+                admissionGeneration: peerAdmissionGenerations[peerID]
+            )
+        )
+        if selectedPeerID == peerID {
+            publishSelectedPeer(
+                nil,
+                admissionGeneration: peerAdmissionGenerations[peerID]
+            )
+        }
     }
 
     func setConnection(
         _ peerID: UUID?,
         admissionGeneration: UInt64?
     ) {
-        nextAdmissionGeneration = admissionGeneration
-        connectedPeerID = peerID
+        if let oldPeerID = selectedPeerID, oldPeerID != peerID {
+            connectedPeers.remove(oldPeerID)
+            peerConnectionPublicationSubject.send(
+                SecureSessionPeerPublication(
+                    peerID: oldPeerID,
+                    isConnected: false,
+                    admissionGeneration: admissionGeneration
+                        ?? peerAdmissionGenerations[oldPeerID]
+                )
+            )
+        }
+        if let peerID {
+            connectedPeers.insert(peerID)
+            if let admissionGeneration {
+                peerAdmissionGenerations[peerID] = admissionGeneration
+            }
+            peerConnectionPublicationSubject.send(
+                SecureSessionPeerPublication(
+                    peerID: peerID,
+                    isConnected: true,
+                    admissionGeneration: admissionGeneration
+                )
+            )
+        }
+        publishSelectedPeer(peerID, admissionGeneration: admissionGeneration)
     }
 
     func deliver(_ message: ControlMessage) {
-        onPayload?(try! ControlMessageCodec.encode(message))
+        guard let peerID = selectedPeerID else { return }
+        deliver(
+            message,
+            from: peerID,
+            generation: peerAdmissionGenerations[peerID] ?? 0
+        )
+    }
+
+    func deliver(
+        _ message: ControlMessage,
+        from peerID: UUID,
+        generation: UInt64? = nil
+    ) {
+        onPayload?(
+            peerID,
+            generation ?? peerAdmissionGenerations[peerID] ?? 0,
+            try! ControlMessageCodec.encode(message)
+        )
+    }
+
+    func deliverHeartbeat(
+        _ acknowledgement: SecureSessionHeartbeatAcknowledgement,
+        from peerID: UUID? = nil,
+        generation: UInt64? = nil
+    ) {
+        guard let peerID = peerID ?? selectedPeerID else {
+            acknowledgement.complete()
+            return
+        }
+        onHeartbeat?(
+            peerID,
+            generation ?? peerAdmissionGenerations[peerID] ?? 0,
+            acknowledgement
+        )
+    }
+
+    @discardableResult
+    func authenticate(_ peerID: UUID) -> UInt64 {
+        let generation = onAuthenticated?(peerID)
+            ?? peerAdmissionGenerations[peerID]
+            ?? 0
+        peerAdmissionGenerations[peerID] = generation
+        return generation
+    }
+
+    func publishPeerConnection(
+        _ peerID: UUID,
+        isConnected: Bool,
+        admissionGeneration: UInt64?
+    ) {
+        peerConnectionPublicationSubject.send(
+            SecureSessionPeerPublication(
+                peerID: peerID,
+                isConnected: isConnected,
+                admissionGeneration: admissionGeneration
+            )
+        )
+    }
+
+    private func publishSelectedPeer(
+        _ peerID: UUID?,
+        admissionGeneration: UInt64?
+    ) {
+        selectedPeerID = peerID
+        connectionSubject.send(peerID)
+        connectionPublicationSubject.send(
+            ControlConnectionPublication(
+                peerID: peerID,
+                admissionGeneration: admissionGeneration
+            )
+        )
     }
 }
 
@@ -1987,6 +2466,8 @@ private final class FakeInputCapture: ControlInputCapture {
     var onEmergencyStop: (() -> Void)?
     var onSwitchControl: (() -> Void)?
     var onSwitchMonitor: (() -> Void)?
+    var onCycleInputTarget: (() -> Void)?
+    var onSelectInputTarget: ((Int) -> Void)?
     var onStartCapture: (() -> Void)?
     private(set) var startCount = 0
     private(set) var stopCount = 0

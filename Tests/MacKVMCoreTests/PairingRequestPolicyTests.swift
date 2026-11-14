@@ -84,14 +84,27 @@ final class PairingRequestPolicyTests: XCTestCase {
         )
     }
 
-    func testRejectsSecondUnpairedRequestBeforeGlobalCapacity() {
+    func testAllowsFourthUnpairedRequestAtPoolCapacity() {
         let request = makeRequest()
 
         XCTAssertEqual(
             evaluate(
                 request,
-                activeRequestCount: 1,
-                activeUnpairedRequestCount: 1
+                activeRequestCount: 3,
+                activeUnpairedRequestCount: 3
+            ),
+            .allow
+        )
+    }
+
+    func testRejectsFifthUnpairedRequestAtPoolCapacity() {
+        let request = makeRequest()
+
+        XCTAssertEqual(
+            evaluate(
+                request,
+                activeRequestCount: 4,
+                activeUnpairedRequestCount: 4
             ),
             .rejectAtCapacity
         )
@@ -106,9 +119,23 @@ final class PairingRequestPolicyTests: XCTestCase {
                 request,
                 pinnedPublicKey: pinnedKey,
                 activeRequestCount: 4,
-                activeUnpairedRequestCount: 1
+                activeUnpairedRequestCount: 4
             ),
             .allow
+        )
+    }
+
+    func testRejectsPairedRequestWhenAllFiveSlotsArePending() {
+        let request = makeRequest()
+
+        XCTAssertEqual(
+            evaluate(
+                request,
+                pinnedPublicKey: request.sender.signingPublicKey,
+                activeRequestCount: 5,
+                activeUnpairedRequestCount: 4
+            ),
+            .rejectAtCapacity
         )
     }
 
@@ -119,6 +146,76 @@ final class PairingRequestPolicyTests: XCTestCase {
             evaluate(
                 request,
                 activeRequestCount: 4
+            ),
+            .rejectAtCapacity
+        )
+    }
+
+    func testSameSourceAllowsTwoUnpairedRequestsAndRejectsTheNext() {
+        let request = makeRequest()
+
+        XCTAssertEqual(
+            evaluate(
+                request,
+                activeRequestCount: 0,
+                activeUnpairedRequestCount: 0,
+                activeUnpairedRequestCountForSource: 0
+            ),
+            .allow
+        )
+        XCTAssertEqual(
+            evaluate(
+                request,
+                activeRequestCount: 1,
+                activeUnpairedRequestCount: 1,
+                activeUnpairedRequestCountForSource: 1
+            ),
+            .allow
+        )
+        XCTAssertEqual(
+            evaluate(
+                request,
+                activeRequestCount: 2,
+                activeUnpairedRequestCount: 2,
+                activeUnpairedRequestCountForSource: 2
+            ),
+            .rejectAtCapacity
+        )
+    }
+
+    func testPairedRequestIsNotRestrictedByUnpairedSourceQuota() {
+        let request = makeRequest()
+
+        XCTAssertEqual(
+            evaluate(
+                request,
+                pinnedPublicKey: request.sender.signingPublicKey,
+                activeRequestCount: 4,
+                activeUnpairedRequestCount: 4,
+                activeUnpairedRequestCountForSource: 2
+            ),
+            .allow
+        )
+    }
+
+    func testUnknownSourceFallsBackToGlobalUnpairedCapacity() {
+        let request = makeRequest()
+
+        XCTAssertEqual(
+            evaluate(
+                request,
+                activeRequestCount: 2,
+                activeUnpairedRequestCount: 2,
+                activeUnpairedRequestCountForSource: nil
+            ),
+            .allow
+        )
+        XCTAssertEqual(
+            evaluate(
+                request,
+                activeRequestCount: 4,
+                activeUnpairedRequestCount: 4,
+                activeUnpairedRequestCountForSource: nil
             ),
             .rejectAtCapacity
         )
@@ -152,7 +249,8 @@ final class PairingRequestPolicyTests: XCTestCase {
         activeRequestIDs: Set<UUID> = [],
         pendingSenderIDs: Set<UUID> = [],
         activeRequestCount: Int = 0,
-        activeUnpairedRequestCount: Int = 0
+        activeUnpairedRequestCount: Int = 0,
+        activeUnpairedRequestCountForSource: Int? = nil
     ) -> PairingRequestDecision {
         PairingRequestPolicy.evaluate(
             request: request,
@@ -162,7 +260,10 @@ final class PairingRequestPolicyTests: XCTestCase {
             activeRequestCount: activeRequestCount,
             maximumPendingRequests: 5,
             activeUnpairedRequestCount: activeUnpairedRequestCount,
-            maximumUnpairedPendingRequests: 1
+            maximumUnpairedPendingRequests: 4,
+            activeUnpairedRequestCountForSource:
+                activeUnpairedRequestCountForSource,
+            maximumUnpairedPendingRequestsPerSource: 2
         )
     }
 
