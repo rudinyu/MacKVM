@@ -35,7 +35,7 @@ public enum PairingRequestPolicy {
         activeRequestCount: Int,
         maximumPendingRequests: Int,
         activeUnpairedRequestCount: Int = 0,
-        maximumUnpairedPendingRequests: Int = 1,
+        maximumUnpairedPendingRequests: Int = 4,
         selectedOutboundPeer: PeerIdentity? = nil
     ) -> PairingRequestDecision {
         if let selectedOutboundPeer,

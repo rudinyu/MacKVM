@@ -84,14 +84,27 @@ final class PairingRequestPolicyTests: XCTestCase {
         )
     }
 
-    func testRejectsSecondUnpairedRequestBeforeGlobalCapacity() {
+    func testAllowsFourthUnpairedRequestAtPoolCapacity() {
         let request = makeRequest()
 
         XCTAssertEqual(
             evaluate(
                 request,
-                activeRequestCount: 1,
-                activeUnpairedRequestCount: 1
+                activeRequestCount: 3,
+                activeUnpairedRequestCount: 3
+            ),
+            .allow
+        )
+    }
+
+    func testRejectsFifthUnpairedRequestAtPoolCapacity() {
+        let request = makeRequest()
+
+        XCTAssertEqual(
+            evaluate(
+                request,
+                activeRequestCount: 4,
+                activeUnpairedRequestCount: 4
             ),
             .rejectAtCapacity
         )
@@ -106,9 +119,23 @@ final class PairingRequestPolicyTests: XCTestCase {
                 request,
                 pinnedPublicKey: pinnedKey,
                 activeRequestCount: 4,
-                activeUnpairedRequestCount: 1
+                activeUnpairedRequestCount: 4
             ),
             .allow
+        )
+    }
+
+    func testRejectsPairedRequestWhenAllFiveSlotsArePending() {
+        let request = makeRequest()
+
+        XCTAssertEqual(
+            evaluate(
+                request,
+                pinnedPublicKey: request.sender.signingPublicKey,
+                activeRequestCount: 5,
+                activeUnpairedRequestCount: 4
+            ),
+            .rejectAtCapacity
         )
     }
 
@@ -162,7 +189,7 @@ final class PairingRequestPolicyTests: XCTestCase {
             activeRequestCount: activeRequestCount,
             maximumPendingRequests: 5,
             activeUnpairedRequestCount: activeUnpairedRequestCount,
-            maximumUnpairedPendingRequests: 1
+            maximumUnpairedPendingRequests: 4
         )
     }
 

@@ -704,9 +704,9 @@ final class PeerDiscoveryService: ObservableObject {
     // advertiser publishes a large number of unique identities.
     private static let maximumDiscoveredPeers = 64
     // New devices are not authenticated until the user compares and accepts
-    // the verification code. Admit only one unsolicited unpaired request at
-    // a time so cheap self-signed identities cannot hold every slot for 60s.
-    private static let maximumUnpairedPendingRequests = 1
+    // the verification code. Allow a small unpaired pool for multi-Mac setup,
+    // while the policy reserves one of the five total slots for a paired peer.
+    private static let maximumUnpairedPendingRequests = 4
     private static let maximumUnauthenticatedConnections = 16
     private static let maximumPairingMessagesPerReceive = 16
     private static let localNetworkCheckTimeout: TimeInterval = 7
